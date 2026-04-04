@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+installer/Output/
+cutsmart_crash.log
+crash_stdout.log
+crash_stderr.log
+secret/
+*.exe
+src/cutsmart/local_data/data.json
+src/cutsmart/local_data/session.json
+src/cutsmart/local_data/register_avatars/
+src/cutsmart/local_data/user_avatars/
+*.cpython-*.py
+.tmp_*.txt
