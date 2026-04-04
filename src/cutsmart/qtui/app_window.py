@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QComboBox, QMainWindow, QPushButton, QSplashScreen, QToolButton, QWidget
 
 from cutsmart.app.bootstrap import AppContainer
@@ -18,6 +19,53 @@ from cutsmart.qtui.screens.company_join import CompanyJoinScreen
 from cutsmart.qtui.screens.company_select import CompanySelectScreen
 from cutsmart.qtui.screens.dashboard_shell import DashboardShellScreen
 from cutsmart.qtui.screens.splash_screen import SplashScreen
+
+
+def _checkbox_tick_icon_url(tint_hex: str = "#374151") -> str:
+    candidates = [
+        Path(__file__).resolve().parent / "assets" / "icons" / "check.png",
+        Path(__file__).resolve().parent.parent / "qtui" / "assets" / "icons" / "check.png",
+    ]
+    src_path = next((p for p in candidates if p.exists()), None)
+    if src_path is None:
+        return ""
+    src = QPixmap(str(src_path))
+    if src.isNull():
+        return ""
+    out = QPixmap(src.size())
+    out.fill(Qt.GlobalColor.transparent)
+    p = QPainter(out)
+    p.drawPixmap(0, 0, src)
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    p.fillRect(out.rect(), QColor(str(tint_hex or "#374151")))
+    p.end()
+    cache_dir = Path(tempfile.gettempdir()) / "cutsmart_runtime_assets"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out_path = cache_dir / f"checkbox_tick_{str(tint_hex).replace('#', '').lower()}.png"
+        out.save(str(out_path), "PNG")
+        return out_path.as_posix()
+    except Exception:
+        return src_path.as_posix()
+
+
+def _apply_global_checkbox_style(app: QApplication) -> None:
+    base = str(app.styleSheet() or "").strip()
+    accent = "#374151"
+    tick_url = _checkbox_tick_icon_url(accent)
+    checked_chunk = (
+        f"QCheckBox::indicator:checked {{ background:#FFFFFF; border:1px solid {accent}; "
+        f"image:url({tick_url}); }}"
+        if tick_url
+        else f"QCheckBox::indicator:checked {{ background:#FFFFFF; border:1px solid {accent}; }}"
+    )
+    checkbox_css = (
+        "QCheckBox::indicator { width:11px; height:11px; border-radius:2px; "
+        f"background:#FFFFFF; border:1px solid {accent}; }}"
+        + checked_chunk +
+        "QCheckBox::indicator:disabled { background:#E5E7EB; border:1px solid #9CA3AF; }"
+    )
+    app.setStyleSheet((base + "\n" + checkbox_css).strip())
 
 
 class CutsmartQtWindow(QMainWindow):
@@ -311,6 +359,7 @@ class _NoWheelComboFilter(QObject):
 
 def run_qt(app_container: AppContainer, splash: QSplashScreen | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
+    _apply_global_checkbox_style(app)
     # App-wide: prevent mouse wheel from accidentally changing combo selections.
     combo_wheel_filter = _NoWheelComboFilter(app)
     app.installEventFilter(combo_wheel_filter)

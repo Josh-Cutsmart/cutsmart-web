@@ -109,8 +109,7 @@ class LoginScreen(QWidget):
         self.remember_me.setChecked(True)
         self.remember_me.setStyleSheet(
             "QCheckBox { font-size: 13px; color: #3C3C43; background: transparent; border: none; }"
-            "QCheckBox::indicator { width: 16px; height: 16px; background: #FFFFFF; border: 1px solid #C9CED8; border-radius: 3px; }"
-            "QCheckBox::indicator:checked { background: #5A8FD8; border: 1px solid #5A8FD8; }"
+            "QCheckBox::indicator { width: 11px; height: 11px; border-radius: 2px; }"
         )
         form.addWidget(self.remember_me)
         form.addSpacing(8)

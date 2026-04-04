@@ -1211,7 +1211,7 @@ class CNCCutlistDialog(QDialog):
                     f"QWidget#cncVisibilityRow {{ background:{row_bg_hex}; border:1px solid {row_border_hex}; border-radius:8px; }}"
                     "QWidget#cncVisibilityRow QLabel { background:transparent; border:none; }"
                     "QWidget#cncVisibilityRow QCheckBox { background:transparent; border:none; }"
-                    "QWidget#cncVisibilityRow QCheckBox::indicator { width:13px; height:13px; }"
+                    "QWidget#cncVisibilityRow QCheckBox::indicator { width:11px; height:11px; }"
                 )
                 self._visibility_host_l.addWidget(line)
                 search_blob = f"{part_type} {self._row_get(row, 'name', 'partName')} {room_val}".lower()

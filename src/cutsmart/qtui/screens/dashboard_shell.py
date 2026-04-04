@@ -4926,8 +4926,7 @@ class DashboardShellScreen(ProjectGeneralMediaMixin, DashboardFiltersMixin, Dash
             cb.setEnabled(bool(can_sales_edit))
             cb.setStyleSheet(
                 "QCheckBox { color:#1F2937; font-size:12px; font-weight:600; spacing:7px; }"
-                f"QCheckBox::indicator:checked {{ background:{quote_theme}; border:1px solid {quote_theme}; border-radius:3px; }}"
-                "QCheckBox::indicator:unchecked { background:#FFFFFF; border:1px solid #A8B4C7; border-radius:3px; }"
+                "QCheckBox::indicator { width:11px; height:11px; }"
             )
             extras_list_lay.addWidget(cb)
             quote_extra_checks.append(cb)

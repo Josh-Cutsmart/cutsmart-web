@@ -5192,9 +5192,7 @@ class CompanySalesMixin:
         default_cb.setChecked(bool(default_included))
         default_cb.setCursor(Qt.CursorShape.PointingHandCursor)
         default_cb.setStyleSheet(
-            "QCheckBox::indicator { width:16px; height:16px; }"
-            "QCheckBox::indicator:unchecked { background:#FFFFFF; border:1px solid #A8B4C7; border-radius:3px; }"
-            f"QCheckBox::indicator:checked {{ background:{self._sales_theme_hex()}; border:1px solid {self._sales_theme_hex()}; border-radius:3px; }}"
+            "QCheckBox::indicator { width:11px; height:11px; }"
         )
         default_cb.toggled.connect(lambda _=False: self._queue_company_autosave("quote_extras", self._autosave_company_quote_extras))
         default_host = QWidget()
@@ -5728,9 +5726,7 @@ class CompanySalesMixin:
         cb.setChecked(bool(checked))
         cb.setCursor(Qt.CursorShape.PointingHandCursor)
         cb.setStyleSheet(
-            "QCheckBox::indicator { width: 16px; height: 16px; }"
-            "QCheckBox::indicator:unchecked { background:#FFFFFF; border:1px solid #A8B4C7; border-radius:3px; }"
-            f"QCheckBox::indicator:checked {{ background:{self._sales_theme_hex()}; border:1px solid {self._sales_theme_hex()}; border-radius:3px; }}"
+            "QCheckBox::indicator { width:11px; height:11px; }"
         )
         cb.toggled.connect(lambda _=False: self._queue_company_autosave("quote_extras", self._autosave_company_quote_extras))
         host = QWidget()

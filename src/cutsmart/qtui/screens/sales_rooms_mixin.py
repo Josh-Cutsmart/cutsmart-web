@@ -105,7 +105,7 @@ class SalesRoomsMixin:
         cb.setText("Yes" if is_on else "No")
         cb.setStyleSheet(
             f"QCheckBox {{ color:{text_color}; font-size:12px; font-weight:700; spacing:4px; }}"
-            "QCheckBox::indicator { width:14px; height:14px; }"
+            "QCheckBox::indicator { width:11px; height:11px; }"
         )
 
     def _on_sales_room_included_toggled(self, use_dashboard: bool, cb: QCheckBox) -> None:
@@ -791,7 +791,7 @@ class SalesRoomsMixin:
                 cb.setCursor(Qt.CursorShape.PointingHandCursor)
                 cb.setStyleSheet(
                     "QCheckBox { color:#1F2937; font-size:13px; font-weight:600; spacing:7px; }"
-                    "QCheckBox::indicator { width:14px; height:14px; }"
+                    "QCheckBox::indicator { width:11px; height:11px; }"
                 )
                 cb.toggled.connect(lambda _=False, u=use_dashboard: self._save_sales_job_types_from_panel(u))
                 layout.addWidget(cb, 0, Qt.AlignmentFlag.AlignLeft)
@@ -1106,7 +1106,7 @@ class SalesRoomsMixin:
             cb.setEnabled(bool(can_edit))
             cb.setStyleSheet(
                 "QCheckBox { color:#1F2937; font-size:13px; font-weight:600; spacing:7px; }"
-                "QCheckBox::indicator { width:14px; height:14px; }"
+                "QCheckBox::indicator { width:11px; height:11px; }"
             )
             cb.toggled.connect(lambda _=False, u=use_dashboard: self._save_sales_quote_extras_from_panel(u))
             line_lay.addWidget(cb, 1)
