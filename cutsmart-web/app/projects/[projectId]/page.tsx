@@ -7,6 +7,7 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs } from "@/components/ui/tabs";
+import { useAuth } from "@/lib/auth-context";
 import { fetchChanges, fetchCutlists, fetchProjectById, fetchQuotes } from "@/lib/firestore-data";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
 
@@ -18,6 +19,7 @@ const tabItems = [
 
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
+  const { user } = useAuth();
   const [tab, setTab] = useState("overview");
   const [project, setProject] = useState<Project | null>(null);
   const [changes, setChanges] = useState<ProjectChange[]>([]);
@@ -38,10 +40,10 @@ export default function ProjectDetailsPage() {
       }
 
       const [projectItem, changeItems, quoteItems, cutlistItems] = await Promise.all([
-        fetchProjectById(projectId),
+        fetchProjectById(projectId, user?.uid),
         fetchChanges(projectId),
         fetchQuotes(),
-        fetchCutlists(projectId),
+        fetchCutlists(projectId, user?.uid),
       ]);
 
       setProject(projectItem);
@@ -52,7 +54,7 @@ export default function ProjectDetailsPage() {
     };
 
     void load();
-  }, [params.projectId]);
+  }, [params.projectId, user?.uid]);
 
   if (isLoading) {
     return (

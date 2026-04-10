@@ -21,7 +21,10 @@ export interface Project {
   companyId: string;
   name: string;
   customer: string;
+  createdAt: string;
+  createdByName: string;
   status: "draft" | "quoted" | "approved" | "in-production" | "complete";
+  statusLabel: string;
   priority: "low" | "medium" | "high";
   updatedAt: string;
   dueDate: string;

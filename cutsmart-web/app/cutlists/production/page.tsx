@@ -20,18 +20,18 @@ export default function ProductionCutlistPage() {
 
   useEffect(() => {
     const load = async () => {
-      const projects = await fetchProjects();
+      const projects = await fetchProjects(user?.uid);
       const firstProject = projects[0] ?? null;
       setProject(firstProject);
 
       if (firstProject) {
-        const cutlists = await fetchCutlists(firstProject.id);
+        const cutlists = await fetchCutlists(firstProject.id, user?.uid);
         setProduction(cutlists.find((item) => item.type === "production") ?? null);
       }
       setIsLoading(false);
     };
     void load();
-  }, []);
+  }, [user?.uid]);
 
   return (
     <ProtectedRoute>

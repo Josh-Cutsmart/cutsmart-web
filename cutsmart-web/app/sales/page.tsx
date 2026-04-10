@@ -5,23 +5,25 @@ import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useAuth } from "@/lib/auth-context";
 import { fetchProjects, fetchQuotes } from "@/lib/firestore-data";
 import type { Project, SalesQuote } from "@/lib/types";
 
 export default function SalesPage() {
+  const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [quotes, setQuotes] = useState<SalesQuote[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const load = async () => {
-      const [projectItems, quoteItems] = await Promise.all([fetchProjects(), fetchQuotes()]);
+      const [projectItems, quoteItems] = await Promise.all([fetchProjects(user?.uid), fetchQuotes()]);
       setProjects(projectItems);
       setQuotes(quoteItems);
       setIsLoading(false);
     };
     void load();
-  }, []);
+  }, [user?.uid]);
 
   return (
     <ProtectedRoute>
