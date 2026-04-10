@@ -1,15 +1,32 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getProjectCutlists } from "@/lib/data";
-import { mockProjects } from "@/lib/mock-data";
+import { fetchCutlists, fetchProjects } from "@/lib/firestore-data";
+import type { Cutlist, Project } from "@/lib/types";
 
 export default function InitialCutlistPage() {
-  const project = mockProjects[0];
-  const cutlist = getProjectCutlists(project.id).find((item) => item.type === "initial");
+  const [project, setProject] = useState<Project | null>(null);
+  const [cutlist, setCutlist] = useState<Cutlist | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      const projects = await fetchProjects();
+      const firstProject = projects[0] ?? null;
+      setProject(firstProject);
+
+      if (firstProject) {
+        const cutlists = await fetchCutlists(firstProject.id);
+        setCutlist(cutlists.find((item) => item.type === "initial") ?? null);
+      }
+      setIsLoading(false);
+    };
+    void load();
+  }, []);
 
   return (
     <ProtectedRoute>
@@ -22,9 +39,10 @@ export default function InitialCutlistPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>{project.name}</CardTitle>
+              <CardTitle>{project?.name ?? "No project found"}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {isLoading && <p className="text-sm text-slate-500">Loading cutlist...</p>}
               <p className="text-sm text-slate-600">
                 Revision {cutlist?.revision ?? "-"} generated {cutlist?.generatedAt ?? "-"}
               </p>

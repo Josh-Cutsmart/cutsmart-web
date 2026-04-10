@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs } from "@/components/ui/tabs";
-import { getProject, getProjectChanges, getProjectCutlists, getProjectQuotes } from "@/lib/data";
+import { fetchChanges, fetchCutlists, fetchProjectById, fetchQuotes } from "@/lib/firestore-data";
+import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
 
 const tabItems = [
   { value: "overview", label: "Overview" },
@@ -17,8 +18,53 @@ const tabItems = [
 
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
-  const project = getProject(params.projectId);
   const [tab, setTab] = useState("overview");
+  const [project, setProject] = useState<Project | null>(null);
+  const [changes, setChanges] = useState<ProjectChange[]>([]);
+  const [quotes, setQuotes] = useState<SalesQuote[]>([]);
+  const [cutlists, setCutlists] = useState<Cutlist[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const projectId = params.projectId;
+    const load = async () => {
+      if (!projectId) {
+        setProject(null);
+        setChanges([]);
+        setQuotes([]);
+        setCutlists([]);
+        setIsLoading(false);
+        return;
+      }
+
+      const [projectItem, changeItems, quoteItems, cutlistItems] = await Promise.all([
+        fetchProjectById(projectId),
+        fetchChanges(projectId),
+        fetchQuotes(),
+        fetchCutlists(projectId),
+      ]);
+
+      setProject(projectItem);
+      setChanges(changeItems);
+      setQuotes(quoteItems.filter((item) => item.projectId === projectId));
+      setCutlists(cutlistItems);
+      setIsLoading(false);
+    };
+
+    void load();
+  }, [params.projectId]);
+
+  if (isLoading) {
+    return (
+      <ProtectedRoute>
+        <AppShell>
+          <Card>
+            <CardContent className="pt-5 text-sm text-slate-700">Loading project...</CardContent>
+          </Card>
+        </AppShell>
+      </ProtectedRoute>
+    );
+  }
 
   if (!project) {
     return (
@@ -33,10 +79,6 @@ export default function ProjectDetailsPage() {
       </ProtectedRoute>
     );
   }
-
-  const changes = getProjectChanges(project.id);
-  const quotes = getProjectQuotes(project.id);
-  const cutlists = getProjectCutlists(project.id);
 
   return (
     <ProtectedRoute>

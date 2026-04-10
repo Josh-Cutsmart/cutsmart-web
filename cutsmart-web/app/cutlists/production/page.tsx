@@ -1,18 +1,37 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/lib/auth-context";
-import { getProjectCutlists } from "@/lib/data";
+import { fetchCutlists, fetchProjects } from "@/lib/firestore-data";
 import { canAccess } from "@/lib/permissions";
+import type { Cutlist, Project } from "@/lib/types";
 
 export default function ProductionCutlistPage() {
   const { user } = useAuth();
-  const production = getProjectCutlists("prj_1001").find((item) => item.type === "production");
+  const [project, setProject] = useState<Project | null>(null);
+  const [production, setProduction] = useState<Cutlist | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const allowed = user ? canAccess("productionCutlist", user.role) : false;
+
+  useEffect(() => {
+    const load = async () => {
+      const projects = await fetchProjects();
+      const firstProject = projects[0] ?? null;
+      setProject(firstProject);
+
+      if (firstProject) {
+        const cutlists = await fetchCutlists(firstProject.id);
+        setProduction(cutlists.find((item) => item.type === "production") ?? null);
+      }
+      setIsLoading(false);
+    };
+    void load();
+  }, []);
 
   return (
     <ProtectedRoute>
@@ -36,6 +55,8 @@ export default function ProductionCutlistPage() {
                   <CardTitle>Current revision</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-slate-700">
+                  {isLoading && <p>Loading production cutlist...</p>}
+                  {project && <p>Project: {project.name}</p>}
                   <p>Revision: {production?.revision ?? "-"}</p>
                   <p>Generated: {production?.generatedAt ?? "-"}</p>
                   <p>Total parts: {production?.parts.length ?? 0}</p>

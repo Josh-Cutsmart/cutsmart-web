@@ -7,8 +7,9 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { listProjects } from "@/lib/data";
-import { useMemo, useState } from "react";
+import { fetchProjects } from "@/lib/firestore-data";
+import type { Project } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
 
 function statusBadge(status: string) {
   switch (status) {
@@ -28,8 +29,30 @@ function statusBadge(status: string) {
 export default function DashboardPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const projects = useMemo(() => listProjects(search, status), [search, status]);
+  useEffect(() => {
+    const load = async () => {
+      const items = await fetchProjects();
+      setAllProjects(items);
+      setIsLoading(false);
+    };
+    void load();
+  }, []);
+
+  const projects = useMemo(
+    () =>
+      allProjects.filter((project) => {
+        const matchesSearch =
+          !search ||
+          project.name.toLowerCase().includes(search.toLowerCase()) ||
+          project.customer.toLowerCase().includes(search.toLowerCase());
+        const matchesStatus = !status || status === "all" || project.status === status;
+        return matchesSearch && matchesStatus;
+      }),
+    [allProjects, search, status],
+  );
 
   const stats = useMemo(() => {
     const total = projects.length;
@@ -111,6 +134,13 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
+                    {isLoading && (
+                      <tr className="border-t border-slate-100">
+                        <td className="py-4 text-slate-500" colSpan={6}>
+                          Loading projects...
+                        </td>
+                      </tr>
+                    )}
                     {projects.map((project) => (
                       <tr key={project.id} className="border-t border-slate-100">
                         <td className="py-3">
