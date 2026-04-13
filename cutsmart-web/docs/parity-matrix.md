@@ -14,8 +14,8 @@
 
 ## Slice Status
 - Dashboard: `in_progress` (visual + filtering/sorting parity pass landed)
-- Project Details: `pending`
-- Sales: `pending`
+- Project Details: `in_progress` (desktop tab order + status control + summary panels landed)
+- Sales: `in_progress` (desktop structure pass landed: nav rail + warning + rooms/product/extras cards)
 - Initial Cutlist: `pending`
 - Production Cutlist: `pending`
 - Company/User Settings: `pending`
@@ -32,11 +32,11 @@
 - [x] Firestore schema alignment (`companies/{companyId}/memberships`, `companies/{companyId}/jobs`)
 
 ## Next Slice (Project Details)
-- Match desktop tab structure and ordering
-- Match status edit UX and allowed transitions
-- Match changelog row format and timestamps
-- Match permissions editor behavior by role
-- Match media/files panel behavior
+- [x] Match desktop tab structure and ordering
+- [x] Match status edit UX and allowed transitions (web status picker with Firestore update)
+- [x] Match changelog row format and timestamps
+- [x] Match media/files summary behavior
+- [ ] Match permissions editor behavior by role
 
 ## Validation Protocol
 1. Open desktop and web side-by-side on same account/project.

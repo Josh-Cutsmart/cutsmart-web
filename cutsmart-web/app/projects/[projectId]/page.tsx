@@ -1,31 +1,1948 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import Link from "next/link";
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, ChevronDown, ClipboardList, Cpu, FolderOpen, GitBranch, ListChecks, Lock, Minus, Plus, Quote, Ruler, Scissors, ShoppingCart, Tag, Trash2, Upload, X } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth-context";
-import { fetchChanges, fetchCutlists, fetchProjectById, fetchQuotes } from "@/lib/firestore-data";
+import {
+  fetchCompanyDoc,
+  fetchCompanyMembers,
+  fetchChanges,
+  fetchCutlists,
+  fetchProjectById,
+  fetchQuotes,
+  grantTempProductionAccess,
+  saveCompanyDocPatch,
+  softDeleteProject,
+  updateProjectPatch,
+  updateProjectStatus,
+  updateProjectTags,
+} from "@/lib/firestore-data";
+import type { CompanyMemberOption } from "@/lib/firestore-data";
+import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
+import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
 
 const tabItems = [
-  { value: "overview", label: "Overview" },
+  { value: "general", label: "General" },
+  { value: "sales", label: "Sales" },
+  { value: "production", label: "Production" },
   { value: "settings", label: "Settings" },
-  { value: "changelog", label: "Changelog" },
 ];
+
+const statusDefaults = ["New", "Quoting", "Drafting", "Ready for CNC", "Running", "In Production", "Paused", "Completed"];
+
+function shortDate(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return "-";
+  }
+  return d.toLocaleString();
+}
+
+type DrawerHeightOption = { token: string; value: string };
+type HardwareDrawerType = {
+  name: string;
+  isDefault: boolean;
+  heightLetters: string[];
+  heightOptions: DrawerHeightOption[];
+  bottomsWidthMinus: number | null;
+  bottomsDepthMinus: number | null;
+  backsWidthMinus: number | null;
+  hardwareLengths: number[];
+  spaceRequirement: number | null;
+};
+type HardwareTypeRow = { name: string; isDefault: boolean; drawers: HardwareDrawerType[] };
+type SheetSizeOption = { h: string; w: string; isDefault: boolean };
+type BoardColourMemoryRow = { value: string; count: number };
+type ProductionBoardRow = {
+  id: string;
+  colour: string;
+  thickness: string;
+  finish: string;
+  edging: string;
+  grain: boolean;
+  lacquer: boolean;
+  sheetSize: string;
+  sheets: string;
+  edgetape: string;
+};
+type ProductionFormState = {
+  existing: {
+    carcassThickness: string;
+    panelThickness: string;
+    frontsThickness: string;
+  };
+  cabinetry: {
+    baseCabHeight: string;
+    footDistanceBack: string;
+    tallCabHeight: string;
+    footHeight: string;
+    hobCentre: string;
+    hobSide: string;
+  };
+  hardware: {
+    hardwareCategory: string;
+    newDrawerType: string;
+    hingeType: string;
+  };
+  boardTypes: ProductionBoardRow[];
+};
+
+type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock";
+type CutlistRow = {
+  id: string;
+  room: string;
+  partType: string;
+  board: string;
+  name: string;
+  height: string;
+  width: string;
+  depth: string;
+  quantity: string;
+  clashing: string;
+  clashLeft?: string;
+  clashRight?: string;
+  fixedShelf?: string;
+  adjustableShelf?: string;
+  fixedShelfDrilling?: string;
+  adjustableShelfDrilling?: string;
+  information: string;
+  grain: boolean;
+  includeInNesting?: boolean;
+};
+type CutlistDraftRow = CutlistRow;
+type CabinetryDerivedPiece = {
+  key: string;
+  partName: string;
+  height: string;
+  width: string;
+  depth: string;
+  quantity: string;
+  clashLeft: string;
+  clashRight: string;
+};
+type DrawerDerivedPiece = {
+  key: string;
+  partName: string;
+  height: string;
+  width: string;
+  depth: string;
+  quantity: string;
+  clashLeft: string;
+  clashRight: string;
+};
+type SalesRoomRow = { name: string; included: boolean; totalPrice: string };
+type CutlistEditableField =
+  | "room"
+  | "partType"
+  | "board"
+  | "name"
+  | "height"
+  | "width"
+  | "depth"
+  | "quantity"
+  | "clashing"
+  | "information"
+  | "grain";
+type CutlistActivityEntry = {
+  id: number;
+  message: string;
+  action?: string;
+  actionKind?: "clear" | "undo" | "";
+  dedupeKey?: string;
+  partType?: string;
+  partTypeTo?: string;
+  valueFrom?: string;
+  valueTo?: string;
+};
+
+type CutlistValidationIssue = {
+  field: "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity";
+  message: string;
+};
+
+function toStr(value: unknown, fallback = "") {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function toNum(value: unknown): number {
+  const n = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parsePositiveNumber(value: unknown): number | null {
+  const n = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function parseSheetSizePair(value: string): [number, number] | null {
+  const src = String(value || "").trim();
+  if (!src) return null;
+  const m = src.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const a = Number.parseFloat(m[1] || "");
+  const b = Number.parseFloat(m[2] || "");
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return null;
+  return [a, b];
+}
+
+function formatMm(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, "");
+}
+
+function autoClashByDominant(primary: number, secondary: number): { clashLeft: string; clashRight: string } {
+  if (!Number.isFinite(primary) || !Number.isFinite(secondary) || primary <= 0 || secondary <= 0) {
+    return { clashLeft: "", clashRight: "" };
+  }
+  return primary > secondary ? { clashLeft: "1L", clashRight: "" } : { clashLeft: "", clashRight: "1S" };
+}
+
+function normalizeMmOptions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((v) => String(v ?? "").replace(/mm$/i, "").trim())
+    .filter(Boolean);
+}
+
+function normalizeBoardFinishes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((v) => String(v ?? "").trim()).filter(Boolean);
+}
+
+function normalizeSheetSizes(raw: unknown): SheetSizeOption[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      const h = toStr(item.h ?? item.height);
+      const w = toStr(item.w ?? item.width);
+      const isDefault = Boolean(item.isDefault ?? item.default);
+      return { h, w, isDefault };
+    })
+    .filter((row) => row.h && row.w);
+}
+
+function normalizeDrawerTypes(raw: unknown): HardwareDrawerType[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HardwareDrawerType[] = [];
+  const extractDrawerHeightLabel = (value: unknown): string => {
+    if (value == null) return "";
+    const rawText =
+      typeof value === "string"
+        ? value
+        : toStr(
+            (value as Record<string, unknown>)?.letter ??
+            (value as Record<string, unknown>)?.label ??
+            (value as Record<string, unknown>)?.code ??
+            (value as Record<string, unknown>)?.name ??
+            (value as Record<string, unknown>)?.value,
+          );
+    const raw = toStr(rawText);
+    if (!raw) return "";
+    const withoutTrailingNumber = raw.replace(/\s*\d+(\.\d+)?\s*$/g, "").trim();
+    const cleaned = withoutTrailingNumber.replace(/[:|,\-]+$/g, "").trim();
+    return cleaned || raw;
+  };
+  const extractDrawerHeightValue = (value: unknown, label: string): string => {
+    if (value == null) return "";
+    if (typeof value === "string") {
+      const raw = toStr(value);
+      if (!raw) return "";
+      const prefix = String(label || "").trim();
+      if (!prefix) return "";
+      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const remaining = raw.replace(new RegExp(`^\\s*${escaped}\\s*`, "i"), "").trim();
+      return remaining;
+    }
+    return toStr(
+      (value as Record<string, unknown>)?.value ??
+      (value as Record<string, unknown>)?.height ??
+      (value as Record<string, unknown>)?.mm ??
+      (value as Record<string, unknown>)?.size,
+    );
+  };
+  for (const row of raw) {
+    if (typeof row === "string") {
+      const name = row.trim();
+      if (name) {
+        out.push({
+          name,
+          isDefault: false,
+          heightLetters: [],
+          heightOptions: [],
+          bottomsWidthMinus: null,
+          bottomsDepthMinus: null,
+          backsWidthMinus: null,
+          hardwareLengths: [],
+          spaceRequirement: null,
+        });
+      }
+      continue;
+    }
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const name = toStr(item.name ?? item.type ?? item.label);
+    if (!name) continue;
+    const bottoms = item.bottoms && typeof item.bottoms === "object" ? (item.bottoms as Record<string, unknown>) : {};
+    const backs = item.backs && typeof item.backs === "object" ? (item.backs as Record<string, unknown>) : {};
+    const heightRows = Array.isArray(backs.heights)
+      ? backs.heights
+      : Array.isArray(backs.letters)
+        ? backs.letters
+        : [];
+    const heightLetters: string[] = [];
+    const heightOptions: DrawerHeightOption[] = [];
+    const seen = new Set<string>();
+    for (const rawHeight of heightRows) {
+      const label = extractDrawerHeightLabel(rawHeight);
+      if (!label) continue;
+      const key = label.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      heightLetters.push(label);
+      const value = extractDrawerHeightValue(rawHeight, label);
+      heightOptions.push({ token: label, value });
+    }
+    const bottomsWidthMinus = toNum(bottoms.widthMinus ?? item.widthMinus);
+    const bottomsDepthMinus = toNum(bottoms.depthMinus ?? item.depthMinus);
+    const backsWidthMinus = toNum(backs.widthMinus);
+    const hardwareLengths = Array.isArray(item.hardwareLengths)
+      ? (item.hardwareLengths as unknown[])
+          .map((v) => toNum(v))
+          .filter((v) => Number.isFinite(v) && v > 0)
+      : [];
+    const spaceParsed = toNum(item.spaceRequirement ?? item.clearance);
+    const spaceRequirement = Number.isFinite(spaceParsed) && spaceParsed > 0 ? spaceParsed : null;
+    out.push({
+      name,
+      isDefault: Boolean(item.default ?? item.isDefault),
+      heightLetters,
+      heightOptions,
+      bottomsWidthMinus: bottomsWidthMinus > 0 ? bottomsWidthMinus : null,
+      bottomsDepthMinus: bottomsDepthMinus > 0 ? bottomsDepthMinus : null,
+      backsWidthMinus: backsWidthMinus > 0 ? backsWidthMinus : null,
+      hardwareLengths,
+      spaceRequirement,
+    });
+  }
+  return out;
+}
+
+function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      return {
+        name,
+        isDefault: Boolean(item.default),
+        drawers: normalizeDrawerTypes(item.drawers),
+      };
+    })
+    .filter((row) => row.name);
+}
+
+function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    const colours = Array.isArray(obj.colours) ? obj.colours : [];
+    return colours
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const item = row as Record<string, unknown>;
+        return {
+          value: toStr(item.value),
+          count: Number(item.count ?? 0),
+        };
+      })
+      .filter((row) => row.value)
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+  }
+
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      return {
+        value: toStr(item.value ?? item.colour ?? item.color),
+        count: Number(item.count ?? 0),
+      };
+    })
+    .filter((row) => row.value)
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+}
+
+function normalizeHexColor(input: string): string | null {
+  const value = input.trim();
+  if (!value.startsWith("#")) return null;
+  if (value.length === 4) {
+    const r = value[1];
+    const g = value[2];
+    const b = value[3];
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  if (value.length === 7) return value;
+  return null;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const safe = normalizeHexColor(hex) ?? "#94A3B8";
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function isLightHex(hex: string): boolean {
+  const safe = normalizeHexColor(hex) ?? "#94A3B8";
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.62;
+}
+
+function darkenHex(hex: string, amount: number): string {
+  const safe = normalizeHexColor(hex) ?? "#94A3B8";
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const ratio = Math.max(0, Math.min(1, amount));
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  const nr = clamp(r * (1 - ratio));
+  const ng = clamp(g * (1 - ratio));
+  const nb = clamp(b * (1 - ratio));
+  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
+function lightenHex(hex: string, amount: number): string {
+  const safe = normalizeHexColor(hex) ?? "#94A3B8";
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const ratio = Math.max(0, Math.min(1, amount));
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  const nr = clamp(r + (255 - r) * ratio);
+  const ng = clamp(g + (255 - g) * ratio);
+  const nb = clamp(b + (255 - b) * ratio);
+  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
+function groupColorPalette(baseColor: string) {
+  const light = isLightHex(baseColor);
+  return {
+    text: light ? "#000000" : "#FFFFFF",
+    titleBarBg: light ? lightenHex(baseColor, 0.3) : lightenHex(baseColor, 0.08),
+    headerBg: light ? lightenHex(baseColor, 0.22) : darkenHex(baseColor, 0.06),
+    rowBg: light ? lightenHex(baseColor, 0.34) : lightenHex(baseColor, 0.12),
+    divider: baseColor,
+    titleChipBg: baseColor,
+    titleChipBorder: darkenHex(baseColor, light ? 0.18 : 0.1),
+  };
+}
+
+const CLASH_LEFT_OPTIONS = ["1L", "2L"] as const;
+const CLASH_RIGHT_OPTIONS = ["1S", "2S"] as const;
+const DRILLING_OPTIONS = ["No", "Even Spacing", "Centre"] as const;
+
+function splitClashing(raw: string): { left: string; right: string } {
+  const upper = String(raw || "").toUpperCase();
+  const left = CLASH_LEFT_OPTIONS.find((v) => upper.includes(v)) ?? "";
+  let right = CLASH_RIGHT_OPTIONS.find((v) => upper.includes(v)) ?? "";
+  if (!right && upper.includes("2SH")) right = "2S";
+  return { left, right };
+}
+
+function joinClashing(left: string, right: string): string {
+  return [String(left || "").trim(), String(right || "").trim()].filter(Boolean).join(" ");
+}
+
+function normalizeDrillingValue(value: unknown): "No" | "Even Spacing" | "Centre" {
+  const txt = String(value ?? "").trim().toLowerCase();
+  if (["even spacing", "even", "spacing", "equal spacing", "evenly spaced", "even-spaced"].includes(txt)) {
+    return "Even Spacing";
+  }
+  if (["centre", "center", "centred", "centered"].includes(txt)) {
+    return "Centre";
+  }
+  return "No";
+}
+
+function parseDrawerHeightTokens(value: string): string[] {
+  const txt = String(value || "").trim();
+  if (!txt) return [];
+  return txt
+    .split(/[,+/\\\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+function formatDrawerHeightTokens(values: string[]): string {
+  return values
+    .map((v) => String(v || "").trim().replace(/,+$/g, ""))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function summarizeDrawerHeightTokens(value: string): string {
+  const tokens = parseDrawerHeightTokens(value);
+  if (!tokens.length) return "";
+  const order: string[] = [];
+  const labelsByKey = new Map<string, string>();
+  const countsByKey = new Map<string, number>();
+  for (const token of tokens) {
+    const label = String(token || "").trim();
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (!labelsByKey.has(key)) {
+      labelsByKey.set(key, label);
+      order.push(key);
+    }
+    countsByKey.set(key, (countsByKey.get(key) ?? 0) + 1);
+  }
+  return order
+    .map((key) => {
+      const label = labelsByKey.get(key) ?? key;
+      const count = countsByKey.get(key) ?? 0;
+      return count > 1 ? `${label} (x${count})` : label;
+    })
+    .join(", ");
+}
+
+function informationLinesFromValue(value: string): string[] {
+  const lines = String(value ?? "")
+    .replace(/\r/g, "")
+    .split("\n");
+  return lines.length ? lines : [""];
+}
+
+function informationValueFromLines(lines: string[]): string {
+  return [...lines].join("\n");
+}
+
+function normalizeProjectTagUsage(raw: unknown): Array<{ value: string; count: number }> {
+  if (!raw || typeof raw !== "object") return [];
+  const obj = raw as Record<string, unknown>;
+  const tags = Array.isArray(obj.tags) ? obj.tags : [];
+  const out: Array<{ value: string; count: number }> = [];
+  for (const row of tags) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const value = String(item.value ?? "").trim();
+    const count = Number(item.count ?? 0);
+    if (!value) continue;
+    out.push({ value, count: Number.isFinite(count) ? count : 0 });
+  }
+  return out.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+}
+
+type DrawerHeightDropdownProps = {
+  value: string;
+  options: string[];
+  disabled?: boolean;
+  bg: string;
+  border: string;
+  text: string;
+  className?: string;
+  title?: string;
+  compact?: boolean;
+  onAdd: (token: string) => void;
+  onRemove: (token: string) => void;
+  onOpenChange?: (open: boolean) => void;
+};
+
+function DrawerHeightDropdown({
+  value,
+  options,
+  disabled,
+  bg,
+  border,
+  text,
+  className,
+  title,
+  compact,
+  onAdd,
+  onRemove,
+  onOpenChange,
+}: DrawerHeightDropdownProps) {
+  const [open, setOpen] = useState(false);
+  const [hoverExpand, setHoverExpand] = useState(false);
+  const [hoverRect, setHoverRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const labelRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e: MouseEvent) => {
+      if (!hostRef.current) return;
+      if (!hostRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        onOpenChange?.(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [open, onOpenChange]);
+
+  const counts = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const tok of parseDrawerHeightTokens(value)) {
+      const k = tok.toLowerCase();
+      out.set(k, (out.get(k) ?? 0) + 1);
+    }
+    return out;
+  }, [value]);
+
+  const heightCls = compact ? "h-6 text-[11px]" : "h-8 text-[12px]";
+  const summaryValue = summarizeDrawerHeightTokens(String(value || ""));
+  const hoverPreview = summaryValue || String(value || "").trim();
+  const showHoverPreview = hoverPreview.length > 0 && isOverflowing;
+  const shouldExpand = showHoverPreview && hoverExpand && !open;
+
+  const updateHoverRect = () => {
+    if (!buttonRef.current) return;
+    const r = buttonRef.current.getBoundingClientRect();
+    setHoverRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+  };
+
+  const updateOverflowState = () => {
+    if (!labelRef.current) {
+      setIsOverflowing(false);
+      return;
+    }
+    const el = labelRef.current;
+    setIsOverflowing(el.scrollWidth > el.clientWidth + 1);
+  };
+
+  useEffect(() => {
+    updateOverflowState();
+  }, [hoverPreview]);
+
+  useEffect(() => {
+    if (!shouldExpand || !buttonRef.current) return;
+    updateHoverRect();
+    window.addEventListener("scroll", updateHoverRect, true);
+    window.addEventListener("resize", updateHoverRect);
+    return () => {
+      window.removeEventListener("scroll", updateHoverRect, true);
+      window.removeEventListener("resize", updateHoverRect);
+    };
+  }, [shouldExpand]);
+
+  return (
+    <div ref={hostRef} className="relative min-w-0 overflow-visible">
+      <button
+        ref={buttonRef}
+        type="button"
+        disabled={disabled}
+        onMouseEnter={() => {
+          setHoverExpand(true);
+          updateOverflowState();
+          updateHoverRect();
+        }}
+        onMouseLeave={() => setHoverExpand(false)}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          onOpenChange?.(next);
+        }}
+        title={title}
+        className={`${heightCls} inline-flex w-full items-center justify-between rounded-[8px] border px-2 text-left transition-all duration-150 disabled:opacity-70 ${className ?? ""}`}
+        style={{
+          backgroundColor: bg,
+          borderColor: border,
+          color: text,
+        }}
+      >
+        <span ref={labelRef} className="truncate">{summaryValue || value || ""}</span>
+        <ChevronDown size={compact ? 13 : 14} />
+      </button>
+      {shouldExpand && hoverRect && (
+        <div
+          className={`${heightCls} pointer-events-none fixed z-[1000] inline-flex items-center justify-between rounded-[8px] border px-2 text-left`}
+          style={{
+            left: hoverRect.left,
+            top: hoverRect.top,
+            minWidth: hoverRect.width,
+            width: "max-content",
+            maxWidth: 420,
+            height: hoverRect.height,
+            backgroundColor: bg,
+            borderColor: border,
+            color: text,
+            boxShadow: "0 8px 24px rgba(15,23,42,0.16)",
+          }}
+        >
+          <span className="whitespace-nowrap pr-2">{hoverPreview}</span>
+          <ChevronDown size={compact ? 13 : 14} />
+        </div>
+      )}
+      {open && !disabled && (
+        <div className="absolute left-0 top-[calc(100%+2px)] z-40 min-w-[220px] rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]">
+          {options.length === 0 ? (
+            <p className="px-2 py-1 text-[11px] text-[#64748B]">No heights configured</p>
+          ) : (
+            <div className="space-y-[2px]">
+              {options.map((opt) => {
+                const count = counts.get(opt.toLowerCase()) ?? 0;
+                return (
+                  <div key={opt} className="grid grid-cols-[30px_minmax(96px,1fr)_24px_24px] items-center gap-1 rounded-[6px] px-1 py-[2px] hover:bg-[#F8FAFC]">
+                    <span className="text-center text-[10px] font-bold text-[#475569]">{count}</span>
+                    <span className="truncate text-[11px] font-semibold text-[#0F172A]">{opt}</span>
+                    <button
+                      type="button"
+                      onClick={() => onAdd(opt)}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border border-[#A9DDBF] bg-[#EAF8F0] text-[12px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      disabled={count <= 0}
+                      onClick={() => onRemove(opt)}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-45"
+                    >
+                      <X size={11} strokeWidth={2.8} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type BoardPillDropdownProps = {
+  value: string;
+  options: string[];
+  disabled?: boolean;
+  bg: string;
+  border: string;
+  text: string;
+  className?: string;
+  title?: string;
+  getSize: (value: string) => string;
+  getLabel: (value: string) => string;
+  onChange: (value: string) => void;
+};
+
+function BoardPillDropdown({
+  value,
+  options,
+  disabled,
+  bg,
+  border,
+  text,
+  className,
+  title,
+  getSize,
+  getLabel,
+  onChange,
+}: BoardPillDropdownProps) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  const refreshRect = () => {
+    if (!buttonRef.current) return;
+    const r = buttonRef.current.getBoundingClientRect();
+    setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    refreshRect();
+    const onDocDown = (e: MouseEvent) => {
+      if (!hostRef.current) return;
+      if (!hostRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onWin = () => refreshRect();
+    document.addEventListener("mousedown", onDocDown);
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [open]);
+
+  const selectedSize = getSize(value);
+  const selectedLabel = getLabel(value);
+
+  return (
+    <div ref={hostRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        disabled={disabled}
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+        className={`h-8 w-full rounded-[8px] border px-2 text-left text-[12px] disabled:opacity-70 ${className ?? ""}`}
+        style={{ backgroundColor: bg, borderColor: border, color: text }}
+      >
+        <span className="inline-flex w-full items-center justify-between gap-2">
+          <span className="inline-flex min-w-0 items-center gap-2">
+            {!!selectedSize && (
+              <span
+                className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
+                style={{ backgroundColor: darkenHex(bg, 0.15), color: text }}
+              >
+                {selectedSize}
+              </span>
+            )}
+            <span className="truncate">{selectedLabel}</span>
+          </span>
+          <ChevronDown size={14} />
+        </span>
+      </button>
+      {open && rect && !disabled && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 pointer-events-none" style={{ zIndex: 2147483647 }}>
+          <div
+            className="pointer-events-auto fixed max-h-[280px] overflow-auto rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
+            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                onChange("");
+                setOpen(false);
+              }}
+              className="flex h-8 w-full items-center rounded-[6px] px-2 text-left text-[12px] text-[#64748B] hover:bg-[#F8FAFC]"
+            >
+              <span className="truncate"></span>
+            </button>
+            {options.map((opt) => {
+              const sz = getSize(opt);
+              const lb = getLabel(opt);
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => {
+                    onChange(opt);
+                    setOpen(false);
+                  }}
+                  className="flex h-8 w-full items-center rounded-[6px] px-2 text-left text-[12px] text-[#0F172A] hover:bg-[#F8FAFC]"
+                >
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                  {!!sz && (
+                    <span className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] bg-[#B6C3D4] px-2 text-[10px] font-bold text-[#0F172A]">
+                      {sz}
+                    </span>
+                  )}
+                    <span className="truncate">{lb}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+function normalizeSalesRooms(raw: unknown): SalesRoomRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SalesRoomRow[] = [];
+  const seen = new Set<string>();
+  for (const row of raw) {
+    const item = (row ?? {}) as Record<string, unknown>;
+    const name = String((typeof row === "string" ? row : item.name) ?? "").trim();
+    const key = name.toLowerCase();
+    if (!name || key === "all" || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      name,
+      included: typeof row === "string" ? true : Boolean(item.included ?? true),
+      totalPrice: typeof row === "string" ? "0.00" : String(item.totalPrice ?? "0.00"),
+    });
+  }
+  return out;
+}
 
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { user } = useAuth();
-  const [tab, setTab] = useState("overview");
   const [project, setProject] = useState<Project | null>(null);
   const [changes, setChanges] = useState<ProjectChange[]>([]);
   const [quotes, setQuotes] = useState<SalesQuote[]>([]);
-  const [cutlists, setCutlists] = useState<Cutlist[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSavingStatus, setIsSavingStatus] = useState(false);
+  const [projectTags, setProjectTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  const [isSavingTags, setIsSavingTags] = useState(false);
+  const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+  const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [lockMessage, setLockMessage] = useState("");
+  const [unlockHours, setUnlockHours] = useState<number>(6);
+  const [unlockTick, setUnlockTick] = useState(0);
+  const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
+  const [unlockMembers, setUnlockMembers] = useState<CompanyMemberOption[]>([]);
+  const [unlockTargetUid, setUnlockTargetUid] = useState("");
+  const [companyAccess, setCompanyAccess] = useState<CompanyAccessInfo | null>(null);
+  const [companyDoc, setCompanyDoc] = useState<Record<string, unknown> | null>(null);
+  const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
+  const [nestingFullscreen, setNestingFullscreen] = useState(false);
+  const boardColourEditStartRef = useRef<Record<string, string>>({});
+  const [productionCutlist, setProductionCutlist] = useState<Cutlist | null>(null);
+  const [cutlistRows, setCutlistRows] = useState<CutlistRow[]>([]);
+  const [cutlistSearch, setCutlistSearch] = useState("");
+  const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
+  const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
+  const [nestingSearch, setNestingSearch] = useState("");
+  const [nestingVisibilityMap, setNestingVisibilityMap] = useState<Record<string, boolean>>({});
+  const [nestingCollapsedGroups, setNestingCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
+  const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>({
+    partType: "",
+    board: "",
+    name: "",
+    height: "",
+    width: "",
+    depth: "",
+    quantity: "1",
+    clashing: "",
+    clashLeft: "",
+    clashRight: "",
+    fixedShelf: "",
+    adjustableShelf: "",
+    fixedShelfDrilling: "No",
+    adjustableShelfDrilling: "No",
+    information: "",
+    grain: false,
+  });
+  const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
+  const [cutlistDraftRows, setCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
+  const [cutlistDraftInitialized, setCutlistDraftInitialized] = useState(false);
+  const [cutlistCellWarnings, setCutlistCellWarnings] = useState<Record<string, Record<string, string>>>({});
+  const [cutlistFlashingCells, setCutlistFlashingCells] = useState<Record<string, boolean>>({});
+  const [cutlistActivityFeed, setCutlistActivityFeed] = useState<CutlistActivityEntry[]>([]);
+  const [cutlistFlashPhaseOn, setCutlistFlashPhaseOn] = useState(false);
+  const cutlistFlashTimeoutRef = useRef<number | null>(null);
+  const cutlistFlashIntervalRef = useRef<number | null>(null);
+  const cutlistActivityScrollRef = useRef<HTMLDivElement | null>(null);
+  const cutlistActivityInnerRef = useRef<HTMLDivElement | null>(null);
+  const cutlistActivityNextIdRef = useRef<number>(1);
+  const cutlistActivityDraggingRef = useRef(false);
+  const cutlistActivityActivePointerIdRef = useRef<number | null>(null);
+  const cutlistActivityDragStartXRef = useRef(0);
+  const cutlistActivityDragStartOffsetRef = useRef(0);
+  const [cutlistActivityOffset, setCutlistActivityOffset] = useState(0);
+  const cutlistActivityOffsetRef = useRef(0);
+  const cutlistActivityMinOffsetRef = useRef(0);
+  const cutlistActivityMaxOffsetRef = useRef(0);
+  const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
+  const [editingCell, setEditingCell] = useState<{ rowId: string; key: CutlistEditableField } | null>(null);
+  const [editingCellValue, setEditingCellValue] = useState("");
+  const [editingClashLeft, setEditingClashLeft] = useState("");
+  const [editingClashRight, setEditingClashRight] = useState("");
+  const [editingFixedShelf, setEditingFixedShelf] = useState("");
+  const [editingAdjustableShelf, setEditingAdjustableShelf] = useState("");
+  const [editingFixedShelfDrilling, setEditingFixedShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
+  const [editingAdjustableShelfDrilling, setEditingAdjustableShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
+  const [editingInfoFocusLine, setEditingInfoFocusLine] = useState<{ rowId: string; lineIndex: number } | null>(null);
+  const [expandedCabinetryRows, setExpandedCabinetryRows] = useState<Record<string, boolean>>({});
+  const [expandedDrawerRows, setExpandedDrawerRows] = useState<Record<string, boolean>>({});
+  const [cutlistUiStateReady, setCutlistUiStateReady] = useState(false);
+  const [productionForm, setProductionForm] = useState<ProductionFormState>({
+    existing: { carcassThickness: "", panelThickness: "", frontsThickness: "" },
+    cabinetry: { baseCabHeight: "", footDistanceBack: "", tallCabHeight: "", footHeight: "", hobCentre: "", hobSide: "" },
+    hardware: { hardwareCategory: "", newDrawerType: "", hingeType: "" },
+    boardTypes: [],
+  });
+
+  const tab = useMemo(() => {
+    const requestedTab = searchParams.get("tab");
+    const allowedTabs = new Set(tabItems.map((item) => item.value));
+    if (requestedTab && allowedTabs.has(requestedTab)) {
+      return requestedTab;
+    }
+    return "general";
+  }, [searchParams]);
+
+  const effectiveRole = companyAccess?.role ?? user?.role ?? "viewer";
+  const effectivePermissions = companyAccess?.permissionKeys ?? user?.permissions ?? [];
+  const salesAccess = projectTabAccess(project, effectiveRole, "sales", user?.uid, effectivePermissions);
+  const productionAccess = projectTabAccess(project, effectiveRole, "production", user?.uid, effectivePermissions);
+  const settingsAccess = projectTabAccess(project, effectiveRole, "settings", user?.uid, effectivePermissions);
+  const generalAccess = projectTabAccess(project, effectiveRole, "general", user?.uid, effectivePermissions);
+  const salesReadOnly = salesAccess.view && !salesAccess.edit;
+  const productionReadOnly = productionAccess.view && !productionAccess.edit;
+  const canEditStatus =
+    effectiveRole === "owner" ||
+    effectiveRole === "admin" ||
+    effectivePermissions.some((p) => String(p).toLowerCase() === "projects.status");
+  const canDeleteProject =
+    effectiveRole === "owner" ||
+    effectiveRole === "admin" ||
+    effectivePermissions.some((p) => String(p).toLowerCase() === "projects.delete");
+  const canEditTags = generalAccess.edit;
+  const canGrantProductionUnlock =
+    effectiveRole === "owner" ||
+    effectiveRole === "admin" ||
+    effectivePermissions.some((p) => String(p).toLowerCase() === "production.key");
+  const productionUnlockRemainingSeconds = getProductionUnlockRemainingSeconds(project, user?.uid) + unlockTick * 0;
+  const productionTabLabel =
+    productionUnlockRemainingSeconds > 0
+      ? `Production (${Math.max(1, Math.ceil(productionUnlockRemainingSeconds / 60))}m)`
+      : "Production";
+  const boardThicknessOptions = useMemo(
+    () => normalizeMmOptions(companyDoc?.boardThicknesses),
+    [companyDoc?.boardThicknesses],
+  );
+  const boardFinishOptions = useMemo(
+    () => normalizeBoardFinishes(companyDoc?.boardFinishes),
+    [companyDoc?.boardFinishes],
+  );
+  const sheetSizeOptions = useMemo(
+    () => normalizeSheetSizes(companyDoc?.sheetSizes),
+    [companyDoc?.sheetSizes],
+  );
+  const hardwareRows = useMemo(
+    () => normalizeHardwareRows(companyDoc?.hardwareSettings),
+    [companyDoc?.hardwareSettings],
+  );
+  const boardColourMemory = useMemo(
+    () => normalizeBoardColourMemory(companyDoc?.boardMaterialUsage),
+    [companyDoc?.boardMaterialUsage],
+  );
+  const boardColourSuggestions = useMemo(
+    () => boardColourMemory.map((row) => row.value),
+    [boardColourMemory],
+  );
+  const companyTagSuggestions = useMemo(
+    () => normalizeProjectTagUsage((companyDoc?.projectTagUsage ?? {}) as Record<string, unknown>),
+    [companyDoc?.projectTagUsage],
+  );
+  const availableTagSuggestions = useMemo(
+    () =>
+      companyTagSuggestions
+        .map((row) => row.value)
+        .filter((value) => !projectTags.some((tag) => tag.toLowerCase() === value.toLowerCase())),
+    [companyTagSuggestions, projectTags],
+  );
+  const filteredTagSuggestions = useMemo(() => {
+    const q = String(tagInput || "").trim().toLowerCase();
+    if (!q) return availableTagSuggestions.slice(0, 12);
+    const starts = availableTagSuggestions.filter((tag) => tag.toLowerCase().startsWith(q));
+    const contains = availableTagSuggestions.filter(
+      (tag) => !tag.toLowerCase().startsWith(q) && tag.toLowerCase().includes(q),
+    );
+    return [...starts, ...contains].slice(0, 12);
+  }, [availableTagSuggestions, tagInput]);
+  const salesPayload = useMemo(() => {
+    const raw = (project?.projectSettings ?? {}) as Record<string, unknown>;
+    const payload = raw.sales;
+    if (payload && typeof payload === "object") return { ...(payload as Record<string, unknown>) };
+    if (typeof payload === "string" && payload.trim()) {
+      try {
+        const parsed = JSON.parse(payload);
+        if (parsed && typeof parsed === "object") return { ...(parsed as Record<string, unknown>) };
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }, [project?.projectSettings]);
+  const salesRoomRows = useMemo(
+    () => normalizeSalesRooms((salesPayload as Record<string, unknown>).rooms),
+    [salesPayload],
+  );
+  const salesRoomNames = useMemo(() => salesRoomRows.map((row) => row.name), [salesRoomRows]);
+  const boardBaseLabelFromRow = (row: ProductionBoardRow) => {
+    const colour = String(row.colour || "").trim();
+    const thicknessRaw = String(row.thickness || "").trim();
+    const finish = String(row.finish || "").trim();
+    const thickness = thicknessRaw
+      ? thicknessRaw.toLowerCase().endsWith("mm")
+        ? thicknessRaw
+        : `${thicknessRaw}mm`
+      : "";
+    return [colour, thickness, finish].filter(Boolean).join(" ").trim();
+  };
+  const boardKeyFromRow = (row: ProductionBoardRow) => {
+    const label = boardBaseLabelFromRow(row);
+    if (!label) return "";
+    const sheet = String(row.sheetSize || "").trim();
+    return sheet ? `${label} @@ ${sheet}` : label;
+  };
+  const boardMetaByKey = useMemo(() => {
+    const out: Record<string, { label: string; sheet: string; size: string; lacquer: boolean; thickness: number }> = {};
+    for (const row of productionForm.boardTypes) {
+      const key = boardKeyFromRow(row);
+      if (!key) continue;
+      const label = boardBaseLabelFromRow(row);
+      const sheet = String(row.sheetSize || "").trim();
+      const mm = Number.parseFloat(sheet.split("x")[0]?.trim() || "");
+      const size = Number.isFinite(mm) && mm > 0
+        ? (Math.floor(mm / 100) / 10).toFixed(1).replace(/\.0$/, "")
+        : "";
+      out[key] = {
+        label,
+        sheet,
+        size,
+        lacquer: Boolean(row.lacquer),
+        thickness: toNum(row.thickness),
+      };
+    }
+    return out;
+  }, [productionForm.boardTypes]);
+  const cutlistBoardOptions = useMemo(() => Object.keys(boardMetaByKey), [boardMetaByKey]);
+  const resolveBoardKey = (value: string) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (boardMetaByKey[raw]) return raw;
+    const legacyMatch = Object.entries(boardMetaByKey).find(([, meta]) => meta.label === raw)?.[0];
+    return legacyMatch ?? raw;
+  };
+  const boardSizeByLabel = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [key, meta] of Object.entries(boardMetaByKey)) {
+      if (meta.size) out[key] = meta.size;
+    }
+    return out;
+  }, [boardMetaByKey]);
+  const boardLacquerByLabel = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    for (const [key, meta] of Object.entries(boardMetaByKey)) out[key] = meta.lacquer;
+    return out;
+  }, [boardMetaByKey]);
+  const boardSheetByLabel = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [key, meta] of Object.entries(boardMetaByKey)) out[key] = meta.sheet;
+    return out;
+  }, [boardMetaByKey]);
+  const boardThicknessByLabel = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [key, meta] of Object.entries(boardMetaByKey)) out[key] = meta.thickness;
+    return out;
+  }, [boardMetaByKey]);
+  const boardSizeFor = (value: string) => boardSizeByLabel[resolveBoardKey(value)] ?? "";
+  const boardSheetFor = (value: string) => boardSheetByLabel[resolveBoardKey(value)] ?? "";
+  const boardLacquerFor = (value: string) => Boolean(boardLacquerByLabel[resolveBoardKey(value)]);
+  const boardThicknessFor = (value: string) => boardThicknessByLabel[resolveBoardKey(value)] ?? 0;
+  const boardDisplayLabel = (value: string) => {
+    const key = resolveBoardKey(value);
+    return boardMetaByKey[key]?.label ?? String(value || "").trim();
+  };
+  const boardOptionLabel = (value: string) => {
+    const key = resolveBoardKey(value);
+    const meta = boardMetaByKey[key];
+    if (!meta) return value;
+    return meta.label;
+  };
+  const showCutlistGrainColumn = useMemo(
+    () => productionForm.boardTypes.some((row) => Boolean(row.grain)),
+    [productionForm.boardTypes],
+  );
+  const cutlistEntryGridClass = showCutlistGrainColumn
+    ? "grid grid-cols-[28px_230px_230px_70px_70px_70px_70px_84px_84px_minmax(216px,1fr)_60px] gap-2"
+    : "grid grid-cols-[28px_230px_230px_70px_70px_70px_70px_84px_84px_minmax(216px,1fr)] gap-2";
+
+  const tabItemsWithAccess = useMemo(
+    () =>
+      tabItems.map((item) => {
+        if (item.value === "sales") {
+          return { ...item, disabled: !salesAccess.view, title: !salesAccess.view ? "Sales is locked for your role" : undefined };
+        }
+        if (item.value === "production") {
+          return {
+            ...item,
+            label: productionTabLabel,
+            disabled: !productionAccess.view,
+            title: !productionAccess.view ? "Production is locked for your role" : undefined,
+          };
+        }
+        if (item.value === "settings") {
+          return { ...item, disabled: !settingsAccess.view, title: !settingsAccess.view ? "Settings is locked for your role" : undefined };
+        }
+        return item;
+      }),
+    [productionAccess.view, productionTabLabel, salesAccess.view, settingsAccess.view],
+  );
+
+  const resolvedTab = (() => {
+    if (tab === "sales" && !salesAccess.view) {
+      return "general";
+    }
+    if (tab === "production" && !productionAccess.view) {
+      return "general";
+    }
+    if (tab === "settings" && !settingsAccess.view) {
+      return "general";
+    }
+    return tab;
+  })();
+  const prevResolvedTabRef = useRef<string>(resolvedTab);
+  useEffect(() => {
+    const prev = prevResolvedTabRef.current;
+    if (resolvedTab === "production" && prev !== "production") {
+      setProductionNav("overview");
+      setNestingFullscreen(false);
+    }
+    prevResolvedTabRef.current = resolvedTab;
+  }, [resolvedTab]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setUnlockTick((v) => v + 1);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const formatUnlockTimer = (seconds: number) => {
+    const s = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (h <= 0) {
+      return `${Math.max(1, m)}m`;
+    }
+    return `${h}h ${m}m`;
+  };
+
+  const defaultHardwareCategory = () => {
+    const marked = hardwareRows.find((row) => row.isDefault)?.name;
+    if (marked) return marked;
+    return hardwareRows[0]?.name ?? "";
+  };
+
+  const drawerOptionsForCategory = (category: string) => {
+    const row = hardwareRows.find((item) => item.name === category);
+    return row?.drawers ?? [];
+  };
+
+  const defaultDrawerForCategory = (category: string) => {
+    const options = drawerOptionsForCategory(category);
+    const marked = options.find((row) => row.isDefault)?.name;
+    if (marked) return marked;
+    return options[0]?.name ?? "";
+  };
+
+  const drawerHeightLetterOptions = useMemo(() => {
+    const selectedCategory = String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim();
+    const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === selectedCategory.toLowerCase());
+    const categoryDrawerOptions = categoryRow?.drawers ?? [];
+    const categoryDefaultDrawer = categoryDrawerOptions.find((row) => row.isDefault)?.name ?? categoryDrawerOptions[0]?.name ?? "";
+    const selectedDrawer = String(productionForm.hardware.newDrawerType || categoryDefaultDrawer).trim();
+    const categories = selectedCategory
+      ? hardwareRows.filter((row) => row.name.toLowerCase() === selectedCategory.toLowerCase())
+      : hardwareRows;
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const cat of categories) {
+      for (const drawer of cat.drawers ?? []) {
+        const name = String(drawer?.name ?? "").trim();
+        if (selectedDrawer && name.toLowerCase() !== selectedDrawer.toLowerCase()) {
+          continue;
+        }
+        const letters = Array.isArray(drawer.heightLetters) ? drawer.heightLetters : [];
+        for (const letterItem of letters) {
+          const letter = String(letterItem ?? "").trim();
+          if (!letter) continue;
+          const key = letter.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(letter);
+        }
+        if (selectedDrawer) return out;
+      }
+    }
+    return out;
+  }, [hardwareRows, productionForm.hardware.hardwareCategory, productionForm.hardware.newDrawerType]);
+
+  const defaultSheetSize = () => {
+    const marked = sheetSizeOptions.find((row) => row.isDefault);
+    const target = marked ?? sheetSizeOptions[0];
+    return target ? `${target.h} x ${target.w}` : "";
+  };
+
+  const newBoardRow = (): ProductionBoardRow => ({
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    colour: "",
+    thickness: boardThicknessOptions[0] ?? "",
+    finish: boardFinishOptions[0] ?? "",
+    edging: "Matching",
+    grain: false,
+    lacquer: false,
+    sheetSize: defaultSheetSize(),
+    sheets: "",
+    edgetape: "",
+  });
+
+  const cutlistColumns = useMemo(() => {
+    const raw = (companyDoc?.cutlistColumnsByContext ?? {}) as Record<string, unknown>;
+    const production = Array.isArray(raw.production) ? raw.production : [];
+    const cleaned = production.map((v) => String(v ?? "").trim()).filter(Boolean);
+    return cleaned.length ? cleaned : ["Part Type", "Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
+  }, [companyDoc?.cutlistColumnsByContext]);
+
+  const partTypeOptions = useMemo(() => {
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc?.partTypes : [];
+    const parsed = raw
+      .filter((row) => row && typeof row === "object")
+      .map((row) => toStr((row as Record<string, unknown>).name))
+      .filter(Boolean);
+    return parsed.length ? parsed : ["Cabinet", "Drawer", "Panel", "Front"];
+  }, [companyDoc?.partTypes]);
+  const cutlistUiStateStorageKey = useMemo(() => {
+    if (!project?.id) return "";
+    return `cutsmart.web.cutlist.ui.${user?.uid ?? "anon"}.${project.id}`;
+  }, [project?.id, user?.uid]);
+
+  const partTypeCabinetryMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const isCabinetry = Boolean(
+        item.cabinetry ??
+        item.isCabinetry ??
+        item.cabinetryEnabled ??
+        item.enableCabinetry ??
+        item.partTypeCabinetry,
+      );
+      out[name.trim().toLowerCase()] = isCabinetry;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isCabinetryPartType = (partType: string) =>
+    Boolean(partTypeCabinetryMap[String(partType || "").trim().toLowerCase()]);
+
+  const partTypeDrawerMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const isDrawer = Boolean(
+        item.drawer ??
+        item.isDrawer ??
+        item.drawerEnabled ??
+        item.enableDrawer ??
+        item.partTypeDrawer,
+      );
+      out[name.trim().toLowerCase()] = isDrawer;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isDrawerPartType = (partType: string) =>
+    Boolean(partTypeDrawerMap[String(partType || "").trim().toLowerCase()]);
+
+  const partTypeAutoClashMap = useMemo(() => {
+    const out: Record<string, { left: string; right: string }> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const leftRaw = toStr(item.autoClashLeft ?? item.clashLeft).toUpperCase().trim();
+      const rightRaw = toStr(item.autoClashRight ?? item.clashRight).toUpperCase().trim();
+      const left = leftRaw === "1L" || leftRaw === "2L" ? leftRaw : "";
+      const right = rightRaw === "1S" || rightRaw === "2S" ? rightRaw : "";
+      out[name.trim().toLowerCase()] = { left, right };
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const partTypeColors = useMemo(() => {
+    const defaults: Record<string, string> = {
+      Front: "#F2D57A",
+      Panel: "#C6E8AE",
+      Extra: "#B7A4EB",
+      Drawer: "#B8D8F8",
+      Cabinet: "#4B5563",
+      "Special Panel": "#BF1D1D",
+      Unassigned: "#CBD5E1",
+    };
+    const out: Record<string, string> = { ...defaults };
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const color = toStr(item.color ?? item.colour ?? item.hex ?? item.chipColor);
+      const normalized = normalizeHexColor(color);
+      if (normalized) out[name] = normalized;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+  const activityColorsForPart = (partType: string, kind?: string) => {
+    if (String(kind || "").toLowerCase() === "clear") {
+      return {
+        chipBg: "#FFDCDC",
+        chipBorder: "#F2A7A7",
+        chipText: "#7F1D1D",
+        pillBg: "#FFECEC",
+        pillBorder: "#F7B8B8",
+        pillText: "#991B1B",
+      };
+    }
+    const base = normalizeHexColor(partTypeColors[String(partType || "").trim()]) ?? "#C8D6E6";
+    const textDark = "#0F172A";
+    const textLight = "#F8FAFC";
+    const useDark = isLightHex(base);
+    return {
+      chipBg: lightenHex(base, 0.38),
+      chipBorder: darkenHex(base, 0.12),
+      chipText: useDark ? textDark : textLight,
+      pillBg: lightenHex(base, 0.18),
+      pillBorder: darkenHex(base, 0.18),
+      pillText: useDark ? textDark : textLight,
+    };
+  };
+  const logCutlistActivity = (
+    message: string,
+    opts?: Partial<Omit<CutlistActivityEntry, "id" | "message">>,
+  ) => {
+    const msg = String(message || "").trim();
+    if (!msg) return;
+    setCutlistActivityFeed((prev) => {
+      const key = String(opts?.dedupeKey || "").trim();
+      let next = [...prev];
+      if (key) next = next.filter((item) => String(item.dedupeKey || "") !== key);
+      next.push({
+        id: cutlistActivityNextIdRef.current++,
+        message: msg,
+        action: String(opts?.action || "").trim(),
+        actionKind: (String(opts?.actionKind || "").trim().toLowerCase() as "clear" | "undo" | "") || "",
+        dedupeKey: key,
+        partType: String(opts?.partType || "").trim(),
+        partTypeTo: String(opts?.partTypeTo || "").trim(),
+        valueFrom: String(opts?.valueFrom || "").trim(),
+        valueTo: String(opts?.valueTo || "").trim(),
+      });
+      if (next.length > 120) next = next.slice(next.length - 120);
+      return next;
+    });
+  };
+  const removeCutlistActivity = (id: number) => {
+    setCutlistActivityFeed((prev) => prev.filter((entry) => entry.id !== id));
+  };
+  const warningTextForIssue = (issue: CutlistValidationIssue) => {
+    const field = String(issue.field || "").toLowerCase();
+    const msg = String(issue.message || "").toLowerCase();
+    if (field === "board") return "Board: Required";
+    if (field === "name") return "Part Name: Required";
+    if (field === "quantity") return "Quantity: Required";
+    if (field === "depth" && msg.includes("too small")) return "Depth: Too Small for Hardware";
+    if (msg.includes("fill at least 2")) return "Dimensions: Fill at least 2";
+    if (msg.includes("exceeds board sheet size")) {
+      const title = field ? `${field.charAt(0).toUpperCase()}${field.slice(1)}` : "Dimension";
+      return `${title}: Exceeds Sheet Size`;
+    }
+    if (field === "height") return "Height: Required";
+    if (field === "width") return "Width: Required";
+    if (field === "depth") return "Depth: Required";
+    return issue.message;
+  };
+  const cutlistFieldLabel = (key: CutlistEditableField) => {
+    if (key === "board") return "Board";
+    if (key === "name") return "Part Name";
+    if (key === "height") return "Height";
+    if (key === "width") return "Width";
+    if (key === "depth") return "Depth";
+    if (key === "quantity") return "Quantity";
+    if (key === "clashing") return "Clashing";
+    return key;
+  };
+  const cutlistValueForActivity = (row: CutlistRow, key: CutlistEditableField) => {
+    if (key === "board") return boardDisplayLabel(String(row.board || "").trim());
+    if (key === "clashing") {
+      if (isCabinetryPartType(row.partType)) {
+        const fs = String(row.fixedShelf || "").trim();
+        const as = String(row.adjustableShelf || "").trim();
+        const fd = normalizeDrillingValue(row.fixedShelfDrilling);
+        const ad = normalizeDrillingValue(row.adjustableShelfDrilling);
+        return `FS ${fs || "-"} (${fd}) | AS ${as || "-"} (${ad})`;
+      }
+      return joinClashing(String(row.clashLeft || ""), String(row.clashRight || "")) || String(row.clashing || "").trim();
+    }
+    return String(row[key] ?? "").trim();
+  };
+  const logCutlistValidationIssues = (issues: CutlistValidationIssue[], partType?: string) => {
+    const seen = new Set<string>();
+    for (const issue of issues) {
+      const key = `warn:${String(issue.field || "").toLowerCase()}:${warningTextForIssue(issue)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      logCutlistActivity(warningTextForIssue(issue), {
+        action: "Clear",
+        actionKind: "clear",
+        dedupeKey: key,
+        partType: partType || "",
+      });
+    }
+  };
+  const clampCutlistActivityOffset = (value: number) => {
+    const min = cutlistActivityMinOffsetRef.current;
+    const max = cutlistActivityMaxOffsetRef.current;
+    return Math.max(min, Math.min(max, value));
+  };
+  const setCutlistActivityOffsetClamped = (value: number) => {
+    const next = clampCutlistActivityOffset(value);
+    cutlistActivityOffsetRef.current = next;
+    setCutlistActivityOffset(next);
+  };
+  const recalcCutlistActivityBounds = (alignLatest: boolean) => {
+    const container = cutlistActivityScrollRef.current;
+    const inner = cutlistActivityInnerRef.current;
+    if (!container || !inner) return;
+    const containerW = container.clientWidth || 0;
+    const innerW = inner.scrollWidth || inner.offsetWidth || 0;
+    const min = Math.min(0, containerW - innerW);
+    cutlistActivityMinOffsetRef.current = min;
+    cutlistActivityMaxOffsetRef.current = 0;
+    if (alignLatest) {
+      cutlistActivityOffsetRef.current = min;
+      setCutlistActivityOffset(min);
+      return;
+    }
+    setCutlistActivityOffsetClamped(cutlistActivityOffsetRef.current);
+  };
+  const onCutlistActivityPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (!el) return;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("[data-cutlist-activity-control='true']")) return;
+    if (!cutlistActivityScrollRef.current) return;
+    recalcCutlistActivityBounds(false);
+    cutlistActivityDraggingRef.current = true;
+    cutlistActivityActivePointerIdRef.current = e.pointerId;
+    cutlistActivityDragStartXRef.current = e.clientX;
+    cutlistActivityDragStartOffsetRef.current = cutlistActivityOffsetRef.current;
+    el.style.cursor = "grabbing";
+    document.body.style.cursor = "grabbing";
+    document.body.style.userSelect = "none";
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {}
+    e.preventDefault();
+  };
+  const endCutlistActivityPointerDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (cutlistActivityActivePointerIdRef.current !== null && e.pointerId !== cutlistActivityActivePointerIdRef.current) return;
+    cutlistActivityDraggingRef.current = false;
+    cutlistActivityActivePointerIdRef.current = null;
+    const node = e.currentTarget;
+    if (node) {
+      node.style.cursor = "grab";
+      try {
+        node.releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+  useEffect(
+    () => () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    },
+    [],
+  );
+  useEffect(() => {
+    const onPointerMoveWindow = (ev: PointerEvent) => {
+      if (!cutlistActivityDraggingRef.current) return;
+      if (cutlistActivityActivePointerIdRef.current !== null && ev.pointerId !== cutlistActivityActivePointerIdRef.current) return;
+      const dx = ev.clientX - cutlistActivityDragStartXRef.current;
+      const target = cutlistActivityDragStartOffsetRef.current + dx;
+      setCutlistActivityOffsetClamped(target);
+      ev.preventDefault();
+    };
+    const onPointerUpWindow = (ev: PointerEvent) => {
+      if (!cutlistActivityDraggingRef.current) return;
+      if (cutlistActivityActivePointerIdRef.current !== null && ev.pointerId !== cutlistActivityActivePointerIdRef.current) return;
+      cutlistActivityDraggingRef.current = false;
+      const node = cutlistActivityScrollRef.current;
+      if (node) {
+        node.style.cursor = "grab";
+        try {
+          node.releasePointerCapture(ev.pointerId);
+        } catch {}
+      }
+      cutlistActivityActivePointerIdRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", onPointerMoveWindow, { passive: false });
+    window.addEventListener("pointerup", onPointerUpWindow);
+    window.addEventListener("pointercancel", onPointerUpWindow);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMoveWindow);
+      window.removeEventListener("pointerup", onPointerUpWindow);
+      window.removeEventListener("pointercancel", onPointerUpWindow);
+    };
+  }, []);
+  const scrollCutlistActivityToLatest = () => {
+    recalcCutlistActivityBounds(true);
+  };
+  const ensureCutlistActivityLatestVisible = () => {
+    if (cutlistActivityDraggingRef.current) return;
+    scrollCutlistActivityToLatest();
+    window.setTimeout(scrollCutlistActivityToLatest, 0);
+    window.setTimeout(scrollCutlistActivityToLatest, 80);
+  };
+  useEffect(() => {
+    const isFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
+    if (!isFullscreen) return;
+    ensureCutlistActivityLatestVisible();
+  }, [cutlistActivityFeed, resolvedTab, productionAccess.view, productionNav]);
+  useEffect(() => {
+    const isFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
+    if (!isFullscreen) return;
+    const onResize = () => {
+      recalcCutlistActivityBounds(false);
+    };
+    window.addEventListener("resize", onResize);
+    onResize();
+    return () => window.removeEventListener("resize", onResize);
+  }, [resolvedTab, productionAccess.view, productionNav]);
+  const activeCutlistEntryColor = partTypeColors[cutlistEntry.partType] ?? "#CBD5E1";
+  const activeCutlistEntryTextColor = isLightHex(activeCutlistEntryColor) ? "#1F2937" : "#F8FAFC";
+  const activeCutlistEntryFieldBg = lightenHex(activeCutlistEntryColor, 0.12);
+  const activeCutlistEntryFieldBorder = darkenHex(activeCutlistEntryColor, 0.2);
+
+  const salesRooms = useMemo(() => {
+    const base = salesRoomNames.length ? salesRoomNames : [];
+    return Array.from(new Set(base.map((row) => String(row || "").trim()).filter(Boolean)));
+  }, [salesRoomNames]);
+
+  const cutlistRoomTabs = useMemo(() => {
+    const fromRows = cutlistRows
+      .map((row) => String(row.room || "").trim())
+      .filter((v) => v && v !== "Project Cutlist");
+    const mergedRooms = Array.from(new Set([...salesRooms, ...fromRows]));
+    const tabs = mergedRooms.map((room) => ({ label: room, filter: room }));
+    tabs.push({ label: "Project Cutlist", filter: "Project Cutlist" });
+    return tabs;
+  }, [cutlistRows, salesRooms]);
+
+  const cutlistAddedRoomTabs = useMemo(
+    () => cutlistRoomTabs.filter((tab) => tab.filter !== "Project Cutlist"),
+    [cutlistRoomTabs],
+  );
+
+  const cutlistEntryRoomOptions = useMemo(
+    () => Array.from(new Set(cutlistRoomTabs.map((tab) => tab.filter))),
+    [cutlistRoomTabs],
+  );
+
+  const defaultCutlistRoom = useMemo(
+    () => cutlistEntryRoomOptions[0] ?? "Project Cutlist",
+    [cutlistEntryRoomOptions],
+  );
+
+  const defaultClashingForPartType = (partType: string, boardLabel: string) => {
+    const board = String(boardLabel || "").trim();
+    if (board && boardLacquerFor(board)) {
+      return { left: "", right: "" };
+    }
+    return partTypeAutoClashMap[String(partType || "").trim().toLowerCase()] ?? { left: "", right: "" };
+  };
+
+  const buildCabinetryDerivedPieces = (row: CutlistRow): CabinetryDerivedPiece[] => {
+    const width = toNum(row.width);
+    const height = toNum(row.height);
+    const depth = toNum(row.depth);
+    const thickness = boardThicknessFor(String(row.board || "").trim());
+    const widthMinus2T = width - 2 * thickness;
+    const depthMinusT = depth - thickness;
+    const adjustableWidth = widthMinus2T - 1;
+    const adjustableDepth = depthMinusT - 10;
+    const mainQty = Math.max(1, Math.floor(toNum(row.quantity) || 1));
+    const fixedBaseQty = Math.max(0, Math.floor(toNum(row.fixedShelf)));
+    const adjustableBaseQty = Math.max(0, Math.floor(toNum(row.adjustableShelf)));
+
+    const parts: CabinetryDerivedPiece[] = [
+      {
+        key: "top",
+        partName: "Top",
+        height: "",
+        width: formatMm(widthMinus2T),
+        depth: formatMm(depthMinusT),
+        quantity: "1",
+        ...autoClashByDominant(widthMinus2T, depthMinusT),
+      },
+      {
+        key: "bottom",
+        partName: "Bottom",
+        height: "",
+        width: formatMm(widthMinus2T),
+        depth: formatMm(depthMinusT),
+        quantity: "1",
+        ...autoClashByDominant(widthMinus2T, depthMinusT),
+      },
+      {
+        key: "left_side",
+        partName: "Left Side",
+        height: formatMm(height),
+        width: "",
+        depth: formatMm(depth),
+        quantity: "1",
+        ...autoClashByDominant(height, depth),
+      },
+      {
+        key: "right_side",
+        partName: "Right Side",
+        height: formatMm(height),
+        width: "",
+        depth: formatMm(depth),
+        quantity: "1",
+        ...autoClashByDominant(height, depth),
+      },
+      {
+        key: "back",
+        partName: "Back",
+        height: formatMm(height),
+        width: "",
+        depth: formatMm(depthMinusT),
+        quantity: "1",
+        clashLeft: "",
+        clashRight: "",
+      },
+    ];
+
+    const fixedShelfQty = fixedBaseQty > 0 ? String(fixedBaseQty * mainQty) : "";
+    const fixedShelfClash = fixedShelfQty ? autoClashByDominant(widthMinus2T, depthMinusT) : { clashLeft: "", clashRight: "" };
+    parts.push({
+      key: "fixed_shelf",
+      partName: "Fixed Shelf",
+      height: "",
+      width: formatMm(widthMinus2T),
+      depth: formatMm(depthMinusT),
+      quantity: fixedShelfQty,
+      ...fixedShelfClash,
+    });
+    const adjustableShelfQty = adjustableBaseQty > 0 ? String(adjustableBaseQty * mainQty) : "";
+    const adjustableShelfClash = adjustableShelfQty ? autoClashByDominant(adjustableWidth, adjustableDepth) : { clashLeft: "", clashRight: "" };
+    parts.push({
+      key: "adjustable_shelf",
+      partName: "Adjustable Shelf",
+      height: "",
+      width: formatMm(adjustableWidth),
+      depth: formatMm(adjustableDepth),
+      quantity: adjustableShelfQty,
+      ...adjustableShelfClash,
+    });
+
+    return parts;
+  };
+
+  const toggleCabinetryRowExpand = (rowId: string) => {
+    setExpandedCabinetryRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
+  };
+
+  const selectedDrawerBreakdown = useMemo(() => {
+    const selectedCategory = String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim();
+    const categoryRow = hardwareRows.find((row) => row.name.toLowerCase() === selectedCategory.toLowerCase());
+    const drawerOptions = categoryRow?.drawers ?? [];
+    const categoryDefaultDrawer = drawerOptions.find((row) => row.isDefault)?.name ?? drawerOptions[0]?.name ?? "";
+    const selectedDrawer = String(productionForm.hardware.newDrawerType || categoryDefaultDrawer).trim();
+    const drawerRow =
+      drawerOptions.find((row) => row.name.toLowerCase() === selectedDrawer.toLowerCase()) ??
+      drawerOptions.find((row) => row.isDefault) ??
+      drawerOptions[0];
+    const letterValueMap: Record<string, string> = {};
+    for (const opt of drawerRow?.heightOptions ?? []) {
+      const token = String(opt.token || "").trim();
+      if (!token) continue;
+      const key = token.toLowerCase();
+      letterValueMap[key] = String(opt.value || "").trim() || token;
+    }
+    return {
+      bottomsWidthMinus: drawerRow?.bottomsWidthMinus ?? null,
+      bottomsDepthMinus: drawerRow?.bottomsDepthMinus ?? null,
+      backsWidthMinus: drawerRow?.backsWidthMinus ?? null,
+      hardwareLengths: (drawerRow?.hardwareLengths ?? []).slice().sort((a, b) => a - b),
+      spaceRequirement: drawerRow?.spaceRequirement ?? null,
+      letterValueMap,
+    };
+  }, [
+    hardwareRows,
+    productionForm.hardware.hardwareCategory,
+    productionForm.hardware.newDrawerType,
+  ]);
+
+  const buildDrawerDerivedPieces = (row: CutlistRow): DrawerDerivedPiece[] => {
+    const widthVal = toNum(row.width);
+    const depthVal = toNum(row.depth);
+    const rawHeight = String(row.height || "").trim();
+    let tokens = parseDrawerHeightTokens(rawHeight);
+    if (!tokens.length && rawHeight) tokens = [rawHeight];
+    if (!tokens.length) tokens = [""];
+
+    const bottomQty = Math.max(1, tokens.length);
+    let depthBase: number | null = depthVal > 0 ? depthVal : null;
+    if (depthBase != null) {
+      let depthForHardware = depthBase;
+      if (selectedDrawerBreakdown.spaceRequirement != null) {
+        depthForHardware = Math.max(0, depthForHardware - selectedDrawerBreakdown.spaceRequirement);
+      }
+      let roundedHardwareDepth = depthForHardware;
+      if (selectedDrawerBreakdown.hardwareLengths.length) {
+        const candidates = selectedDrawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
+        if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
+      }
+      depthBase = roundedHardwareDepth;
+    }
+
+    const bottomW =
+      widthVal > 0 && selectedDrawerBreakdown.bottomsWidthMinus != null
+        ? widthVal - selectedDrawerBreakdown.bottomsWidthMinus
+        : widthVal > 0
+          ? widthVal
+          : null;
+    const bottomD =
+      depthBase != null && selectedDrawerBreakdown.bottomsDepthMinus != null
+        ? depthBase - selectedDrawerBreakdown.bottomsDepthMinus
+        : depthBase;
+    const backW =
+      widthVal > 0 && selectedDrawerBreakdown.backsWidthMinus != null
+        ? widthVal - selectedDrawerBreakdown.backsWidthMinus
+        : widthVal > 0
+          ? widthVal
+          : null;
+
+    const pieces: DrawerDerivedPiece[] = [];
+    pieces.push({
+      key: "drawer_bottom",
+      partName: "Bottom",
+      height: "",
+      width: formatMm(bottomW ?? 0),
+      depth: formatMm(bottomD ?? 0),
+      quantity: String(bottomQty),
+      clashLeft: "",
+      clashRight: "",
+    });
+
+    const grouped: Record<string, number> = {};
+    for (const token of tokens) {
+      const key = String(token || "").trim();
+      grouped[key] = (grouped[key] ?? 0) + 1;
+    }
+    for (const [token, count] of Object.entries(grouped)) {
+      const mappedHeight = selectedDrawerBreakdown.letterValueMap[String(token || "").trim().toLowerCase()] || token;
+      const backHNum = toNum(mappedHeight);
+      let clashLeft = "";
+      let clashRight = "";
+      if (backW != null && backW > 0 && backHNum > 0) {
+        if (backW < backHNum) clashRight = "1S";
+        else clashLeft = "1L";
+      }
+      pieces.push({
+        key: `drawer_back_${token || "blank"}`,
+        partName: token ? `Back (${token})` : "Back",
+        height: mappedHeight,
+        width: formatMm(backW ?? 0),
+        depth: "",
+        quantity: String(Math.max(1, count)),
+        clashLeft,
+        clashRight,
+      });
+    }
+    return pieces;
+  };
+
+  const toggleDrawerRowExpand = (rowId: string) => {
+    setExpandedDrawerRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
+  };
+
+  const createDraftCutlistRow = (
+    partType: string,
+    room: string,
+    seed?: Partial<CutlistDraftRow>,
+  ): CutlistDraftRow => {
+    const split = splitClashing(String(seed?.clashing ?? ""));
+    const board = String(seed?.board ?? "");
+    const defaults = defaultClashingForPartType(partType, board);
+    const seededLeft = String(seed?.clashLeft ?? split.left ?? "").trim().toUpperCase();
+    const seededRight = String(seed?.clashRight ?? split.right ?? "").trim().toUpperCase();
+    const left = seededLeft || defaults.left;
+    const right = seededRight || defaults.right;
+    return {
+      id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      room: room || "Project Cutlist",
+      partType,
+      board,
+      name: String(seed?.name ?? ""),
+      height: String(seed?.height ?? ""),
+      width: String(seed?.width ?? ""),
+      depth: String(seed?.depth ?? ""),
+      quantity: String(seed?.quantity ?? "1"),
+      clashing: joinClashing(left, right),
+      clashLeft: left,
+      clashRight: right,
+      fixedShelf: String(seed?.fixedShelf ?? ""),
+      adjustableShelf: String(seed?.adjustableShelf ?? ""),
+      fixedShelfDrilling: normalizeDrillingValue(seed?.fixedShelfDrilling),
+      adjustableShelfDrilling: normalizeDrillingValue(seed?.adjustableShelfDrilling),
+      information: String(seed?.information ?? ""),
+      grain: Boolean(seed?.grain ?? false),
+    };
+  };
+
+  const onChangeTab = (value: string) => {
+    if (value === "sales" && !salesAccess.view) {
+      setLockMessage("Sales is locked for your role on this project.");
+      return;
+    }
+    if (value === "production" && !productionAccess.view) {
+      setLockMessage("Production is locked for your role on this project.");
+      return;
+    }
+    if (value === "settings" && !settingsAccess.view) {
+      setLockMessage("Settings is locked for your role on this project.");
+      return;
+    }
+    setLockMessage("");
+    if (value === "production") {
+      setProductionNav("overview");
+      setNestingFullscreen(false);
+    }
+    const projectId = params.projectId;
+    if (!projectId) {
+      return;
+    }
+    router.replace(`/projects/${projectId}?tab=${value}`);
+  };
 
   useEffect(() => {
     const projectId = params.projectId;
@@ -34,34 +1951,1843 @@ export default function ProjectDetailsPage() {
         setProject(null);
         setChanges([]);
         setQuotes([]);
-        setCutlists([]);
         setIsLoading(false);
         return;
       }
 
-      const [projectItem, changeItems, quoteItems, cutlistItems] = await Promise.all([
+      const [projectItem, changeItems, quoteItems] = await Promise.all([
         fetchProjectById(projectId, user?.uid),
         fetchChanges(projectId),
         fetchQuotes(),
-        fetchCutlists(projectId, user?.uid),
       ]);
 
       setProject(projectItem);
+      setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
       setChanges(changeItems);
       setQuotes(quoteItems.filter((item) => item.projectId === projectId));
-      setCutlists(cutlistItems);
       setIsLoading(false);
     };
 
     void load();
   }, [params.projectId, user?.uid]);
 
+  useEffect(() => {
+    const loadAccess = async () => {
+      if (!project?.companyId || !user?.uid) {
+        setCompanyAccess(null);
+        return;
+      }
+      const access = await fetchCompanyAccess(project.companyId, user.uid);
+      setCompanyAccess(access);
+    };
+    void loadAccess();
+  }, [project?.companyId, user?.uid]);
+
+  useEffect(() => {
+    const loadCompanyDoc = async () => {
+      if (!project?.companyId) {
+        setCompanyDoc(null);
+        return;
+      }
+      const hit = await fetchCompanyDoc(project.companyId);
+      setCompanyDoc(hit);
+    };
+    void loadCompanyDoc();
+  }, [project?.companyId]);
+
+  useEffect(() => {
+    if (!project) return;
+    const raw = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const boardTypesRaw = Array.isArray(raw.boardTypes) ? raw.boardTypes : [];
+    const hardwareCategory = toStr(raw.hardwareCategory) || defaultHardwareCategory();
+    const boardRows: ProductionBoardRow[] = boardTypesRaw
+      .filter((row) => row && typeof row === "object")
+      .map((row, index) => {
+        const item = row as Record<string, unknown>;
+        return {
+          id: `${project.id}_${index}_${Math.random().toString(36).slice(2, 6)}`,
+          colour: toStr(item.colour ?? item.color),
+          thickness: toStr(item.thickness),
+          finish: toStr(item.finish),
+          edging: toStr(item.edging, "Matching"),
+          grain: Boolean(item.grain),
+          lacquer: Boolean(item.lacquer),
+          sheetSize: toStr(item.sheetSize ?? item.sheetSizeHw, defaultSheetSize()),
+          sheets: toStr(item.sheets),
+          edgetape: toStr(item.edgetape),
+        };
+      });
+
+    const resolvedCategory = hardwareCategory || defaultHardwareCategory();
+    const resolvedDrawer = toStr(raw.newDrawerType) || defaultDrawerForCategory(resolvedCategory);
+    const resolvedHinge = toStr(raw.hingeType) || resolvedCategory;
+
+    setProductionForm({
+      existing: {
+        carcassThickness: toStr(raw.carcassThickness),
+        panelThickness: toStr(raw.panelThickness),
+        frontsThickness: toStr(raw.frontsThickness),
+      },
+      cabinetry: {
+        baseCabHeight: toStr(raw.baseCabHeight),
+        footDistanceBack: toStr(raw.footDistanceBack),
+        tallCabHeight: toStr(raw.tallCabHeight),
+        footHeight: toStr(raw.footHeight),
+        hobCentre: toStr(raw.hobCentre),
+        hobSide: toStr(raw.hobSide),
+      },
+      hardware: {
+        hardwareCategory: resolvedCategory,
+        newDrawerType: resolvedDrawer,
+        hingeType: resolvedHinge,
+      },
+      boardTypes: boardRows.length ? boardRows : [newBoardRow()],
+    });
+  }, [project?.id, boardThicknessOptions, boardFinishOptions, sheetSizeOptions, hardwareRows]);
+
+  useEffect(() => {
+    const loadMembers = async () => {
+      if (!project?.companyId) {
+        setUnlockMembers([]);
+        setUnlockTargetUid("");
+        return;
+      }
+      const members = await fetchCompanyMembers(project.companyId);
+      const filtered = members.filter((m) => m.uid !== user?.uid);
+      setUnlockMembers(filtered);
+      if (filtered.length && !filtered.some((m) => m.uid === unlockTargetUid)) {
+        setUnlockTargetUid(filtered[0].uid);
+      }
+    };
+    void loadMembers();
+  }, [project?.companyId, unlockTargetUid, user?.uid]);
+
+  useEffect(() => {
+    return () => {
+      if (cutlistFlashTimeoutRef.current) {
+        window.clearTimeout(cutlistFlashTimeoutRef.current);
+      }
+      if (cutlistFlashIntervalRef.current) {
+        window.clearInterval(cutlistFlashIntervalRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const loadCutlist = async () => {
+      if (!project?.id) {
+        setProductionCutlist(null);
+        setCutlistRows([]);
+        return;
+      }
+      const projectRecord = project as unknown as Record<string, unknown>;
+      const cutlistRecord = (projectRecord.cutlist ?? null) as Record<string, unknown> | null;
+      const directRowsRaw = Array.isArray(cutlistRecord?.rows) ? (cutlistRecord?.rows as unknown[]) : [];
+      if (directRowsRaw.length) {
+        const mapped = directRowsRaw.map((row, idx) => {
+          const item = (row ?? {}) as Record<string, unknown>;
+          const clashing = String(item.Clashing ?? item.clashing ?? "");
+          const split = splitClashing(clashing);
+          const includeInNestingRaw = item.includeInNesting ?? item.IncludeInNesting;
+          const includeInNesting =
+            includeInNestingRaw === false ||
+            String(includeInNestingRaw ?? "").trim().toLowerCase() === "false"
+              ? false
+              : true;
+          return {
+            id: String(item.__cutlist_key ?? item.__id ?? `row_${idx + 1}`),
+            room: String(item.Room ?? item.room ?? "Project Cutlist"),
+            partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
+            board: String(item.Board ?? item.board ?? ""),
+            name: String(item.Name ?? item.name ?? ""),
+            height: String(item.Height ?? item.height ?? ""),
+            width: String(item.Width ?? item.width ?? ""),
+            depth: String(item.Depth ?? item.depth ?? ""),
+            quantity: String(item.Quantity ?? item.quantity ?? 1),
+            clashing,
+            clashLeft: String(item.clashLeft ?? split.left ?? ""),
+            clashRight: String(item.clashRight ?? split.right ?? ""),
+            fixedShelf: String(item.fixedShelf ?? item["Fixed Shelf"] ?? ""),
+            adjustableShelf: String(item.adjustableShelf ?? item["Adjustable Shelf"] ?? ""),
+            fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item["Fixed Shelf Drilling"]),
+            adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item["Adjustable Shelf Drilling"]),
+            information: String(item.Information ?? item.information ?? ""),
+            grain: String(item.Grain ?? item.grain ?? "").toLowerCase() === "yes" || Boolean(item.grain),
+            includeInNesting,
+          };
+        });
+        setCutlistRows(mapped);
+        setNestingVisibilityMap(
+          Object.fromEntries(mapped.map((row) => [row.id, row.includeInNesting !== false])),
+        );
+        setProductionCutlist(null);
+        return;
+      }
+      const all = await fetchCutlists(project.id, user?.uid);
+      const production = all.find((item) => item.type === "production") ?? all[0] ?? null;
+      setProductionCutlist(production);
+      const mapped = (production?.parts ?? []).map((part, idx) => ({
+        id: String(part.id ?? `row_${idx + 1}`),
+        room: String(part.room ?? "Project Cutlist"),
+        partType: String(part.partType ?? ""),
+        board: String(part.material ?? ""),
+        name: String(part.label ?? ""),
+        height: String(part.length ?? ""),
+        width: String(part.width ?? ""),
+        depth: String(part.depth ?? ""),
+        quantity: String(part.qty ?? 1),
+        clashing: String(part.clashing ?? ""),
+        clashLeft: splitClashing(String(part.clashing ?? "")).left,
+        clashRight: splitClashing(String(part.clashing ?? "")).right,
+        fixedShelf: String((part as unknown as Record<string, unknown>).fixedShelf ?? ""),
+        adjustableShelf: String((part as unknown as Record<string, unknown>).adjustableShelf ?? ""),
+        fixedShelfDrilling: normalizeDrillingValue((part as unknown as Record<string, unknown>).fixedShelfDrilling),
+        adjustableShelfDrilling: normalizeDrillingValue((part as unknown as Record<string, unknown>).adjustableShelfDrilling),
+        information: String(part.information ?? ""),
+        grain: Boolean(part.grain ?? false),
+        includeInNesting: true,
+      }));
+      setCutlistRows(mapped);
+      setNestingVisibilityMap(
+        Object.fromEntries(mapped.map((row) => [row.id, row.includeInNesting !== false])),
+      );
+    };
+    void loadCutlist();
+  }, [project, user?.uid]);
+
+  useEffect(() => {
+    if (!cutlistUiStateStorageKey) {
+      setCutlistUiStateReady(false);
+      setCutlistActivityFeed([]);
+      cutlistActivityNextIdRef.current = 1;
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(cutlistUiStateStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          cutlistRoomFilter?: string;
+          cutlistPartTypeFilter?: string;
+          cutlistSearch?: string;
+          nestingSearch?: string;
+          nestingVisibilityMap?: Record<string, boolean>;
+          nestingCollapsedGroups?: Record<string, boolean>;
+          collapsedCutlistGroups?: Record<string, boolean>;
+          expandedCabinetryRows?: Record<string, boolean>;
+          expandedDrawerRows?: Record<string, boolean>;
+          cutlistActivityFeed?: CutlistActivityEntry[];
+        };
+        if (typeof parsed.cutlistRoomFilter === "string" && parsed.cutlistRoomFilter.trim()) {
+          setCutlistRoomFilter(parsed.cutlistRoomFilter);
+        }
+        if (typeof parsed.cutlistPartTypeFilter === "string" && parsed.cutlistPartTypeFilter.trim()) {
+          setCutlistPartTypeFilter(parsed.cutlistPartTypeFilter);
+        }
+        if (typeof parsed.cutlistSearch === "string") {
+          setCutlistSearch(parsed.cutlistSearch);
+        }
+        if (typeof parsed.nestingSearch === "string") {
+          setNestingSearch(parsed.nestingSearch);
+        }
+        if (parsed.nestingVisibilityMap && typeof parsed.nestingVisibilityMap === "object") {
+          setNestingVisibilityMap(parsed.nestingVisibilityMap);
+        }
+        if (parsed.nestingCollapsedGroups && typeof parsed.nestingCollapsedGroups === "object") {
+          setNestingCollapsedGroups(parsed.nestingCollapsedGroups);
+        }
+        if (parsed.collapsedCutlistGroups && typeof parsed.collapsedCutlistGroups === "object") {
+          setCollapsedCutlistGroups(parsed.collapsedCutlistGroups);
+        }
+        if (parsed.expandedCabinetryRows && typeof parsed.expandedCabinetryRows === "object") {
+          setExpandedCabinetryRows(parsed.expandedCabinetryRows);
+        }
+        if (parsed.expandedDrawerRows && typeof parsed.expandedDrawerRows === "object") {
+          setExpandedDrawerRows(parsed.expandedDrawerRows);
+        }
+        if (Array.isArray(parsed.cutlistActivityFeed)) {
+          const restored = parsed.cutlistActivityFeed
+            .filter((entry) => entry && typeof entry === "object")
+            .map((entry) => {
+              const actionKindRaw = String((entry as CutlistActivityEntry).actionKind || "").trim().toLowerCase();
+              const actionKind: "" | "clear" | "undo" =
+                actionKindRaw === "clear" || actionKindRaw === "undo" ? actionKindRaw : "";
+              return {
+                id: Number((entry as CutlistActivityEntry).id || 0),
+                message: String((entry as CutlistActivityEntry).message || "").trim(),
+                action: String((entry as CutlistActivityEntry).action || "").trim(),
+                actionKind,
+                dedupeKey: String((entry as CutlistActivityEntry).dedupeKey || "").trim(),
+                partType: String((entry as CutlistActivityEntry).partType || "").trim(),
+                partTypeTo: String((entry as CutlistActivityEntry).partTypeTo || "").trim(),
+                valueFrom: String((entry as CutlistActivityEntry).valueFrom || "").trim(),
+                valueTo: String((entry as CutlistActivityEntry).valueTo || "").trim(),
+              };
+            })
+            .filter((entry) => entry.message)
+            .slice(-120);
+          setCutlistActivityFeed(restored);
+          const maxId = restored.reduce((m, e) => Math.max(m, Number(e.id || 0)), 0);
+          cutlistActivityNextIdRef.current = maxId + 1;
+        }
+      } else {
+        setCutlistActivityFeed([]);
+        cutlistActivityNextIdRef.current = 1;
+      }
+    } catch {
+      // Ignore invalid local state and continue with defaults.
+      setCutlistActivityFeed([]);
+      cutlistActivityNextIdRef.current = 1;
+    } finally {
+      setCutlistUiStateReady(true);
+    }
+  }, [cutlistUiStateStorageKey]);
+
+  useEffect(() => {
+    if (!cutlistUiStateStorageKey || !cutlistUiStateReady) return;
+    const payload = {
+      cutlistRoomFilter,
+      cutlistPartTypeFilter,
+      cutlistSearch,
+      nestingSearch,
+      nestingVisibilityMap,
+      nestingCollapsedGroups,
+      collapsedCutlistGroups,
+      expandedCabinetryRows,
+      expandedDrawerRows,
+      cutlistActivityFeed: cutlistActivityFeed.slice(-120),
+    };
+    try {
+      window.localStorage.setItem(cutlistUiStateStorageKey, JSON.stringify(payload));
+    } catch {
+      // Ignore storage failures in private/incognito/browser-restricted modes.
+    }
+  }, [
+    cutlistUiStateStorageKey,
+    cutlistUiStateReady,
+    cutlistRoomFilter,
+    cutlistPartTypeFilter,
+    cutlistSearch,
+    nestingSearch,
+    nestingVisibilityMap,
+    nestingCollapsedGroups,
+    collapsedCutlistGroups,
+    expandedCabinetryRows,
+    expandedDrawerRows,
+    cutlistActivityFeed,
+  ]);
+
+  useEffect(() => {
+    setNestingVisibilityMap((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const row of cutlistRows) {
+        const rowDefault = row.includeInNesting !== false;
+        next[row.id] = typeof prev[row.id] === "boolean" ? prev[row.id] : rowDefault;
+      }
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (prevKeys.length === nextKeys.length && nextKeys.every((k) => prev[k] === next[k])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [cutlistRows]);
+
+  useEffect(() => {
+    const filters = cutlistRoomTabs.map((tab) => tab.filter);
+    if (!filters.includes(cutlistRoomFilter)) {
+      setCutlistRoomFilter(defaultCutlistRoom);
+    }
+    if (!cutlistEntryRoomOptions.includes(cutlistEntryRoom)) {
+      const fallback = defaultCutlistRoom;
+      setCutlistEntryRoom(fallback);
+    }
+  }, [cutlistEntryRoom, cutlistRoomFilter, cutlistRoomTabs, cutlistEntryRoomOptions, defaultCutlistRoom]);
+
+  useEffect(() => {
+    if (!cutlistRoomFilter || cutlistRoomFilter === "Project Cutlist") {
+      return;
+    }
+    setCutlistEntryRoom(cutlistRoomFilter);
+    setCutlistDraftRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        room: cutlistRoomFilter,
+      })),
+    );
+  }, [cutlistRoomFilter]);
+
+  useEffect(() => {
+    const firstType = partTypeOptions[0] ?? "Part";
+    if (!activeCutlistPartType) {
+      setActiveCutlistPartType(firstType);
+    }
+    if (!cutlistDraftInitialized) {
+      setCutlistDraftRows((prev) => {
+        if (prev.length) return prev;
+        return [createDraftCutlistRow(firstType, defaultCutlistRoom, { board: cutlistBoardOptions[0] ?? "" })];
+      });
+      setCutlistDraftInitialized(true);
+    }
+  }, [activeCutlistPartType, partTypeOptions, defaultCutlistRoom, cutlistBoardOptions, cutlistDraftInitialized]);
+
+  const statusOptions = (() => {
+    const set = new Set<string>(statusDefaults);
+    if (project?.statusLabel) {
+      set.add(project.statusLabel);
+    }
+    return Array.from(set);
+  })();
+
+  const onChangeStatus = async (value: string) => {
+    if (!project || !value) {
+      return;
+    }
+
+    setIsSavingStatus(true);
+    const ok = await updateProjectStatus(project, value);
+    if (ok) {
+      setProject({ ...project, statusLabel: value });
+    }
+    setIsSavingStatus(false);
+  };
+
+  const saveTags = async (nextTags: string[]) => {
+    if (!project) {
+      return;
+    }
+    setIsSavingTags(true);
+    const ok = await updateProjectTags(project, nextTags, projectTags);
+    if (ok) {
+      setProjectTags(nextTags);
+      setProject({ ...project, tags: nextTags });
+      if (project.companyId) {
+        const refreshed = await fetchCompanyDoc(project.companyId);
+        if (refreshed) {
+          setCompanyDoc(refreshed);
+        }
+      }
+    }
+    setIsSavingTags(false);
+  };
+
+  const onAddTagValue = async (rawTag: string) => {
+    const typed = String(rawTag || "").trim();
+    const next =
+      companyTagSuggestions.find((row) => row.value.toLowerCase() === typed.toLowerCase())?.value ??
+      typed;
+    if (!next || !project || isSavingTags || projectTags.length >= 5 || !canEditTags) {
+      return;
+    }
+    const exists = projectTags.some((tag) => tag.toLowerCase() === next.toLowerCase());
+    if (exists) {
+      setTagInput("");
+      setShowTagSuggestions(false);
+      return;
+    }
+    const nextTags = [...projectTags, next].slice(0, 5);
+    setTagInput("");
+    setShowTagSuggestions(false);
+    await saveTags(nextTags);
+  };
+
+  const onAddTag = async () => {
+    await onAddTagValue(tagInput);
+  };
+
+  const onDeleteTag = async (tagToDelete: string) => {
+    if (!project || isSavingTags || !canEditTags) {
+      return;
+    }
+    const nextTags = projectTags.filter((tag) => tag.toLowerCase() !== tagToDelete.toLowerCase());
+    await saveTags(nextTags);
+  };
+
+  const onAddCutlistRoom = async () => {
+    if (!project || isSavingSalesRooms || !salesAccess.edit) {
+      return;
+    }
+    const input = window.prompt("Room name");
+    const next = String(input || "").trim();
+    if (!next) return;
+    const exists = salesRoomRows.some((row) => row.name.toLowerCase() === next.toLowerCase());
+    if (exists) {
+      setCutlistRoomFilter(next);
+      setCutlistEntryRoom(next);
+      return;
+    }
+    const nextSales = {
+      ...salesPayload,
+      rooms: [...salesRoomRows, { name: next, included: true, totalPrice: "0.00" }],
+    } as Record<string, unknown>;
+    setIsSavingSalesRooms(true);
+    const ok = await updateProjectPatch(project, {
+      sales: nextSales,
+      salesJson: JSON.stringify(nextSales),
+    });
+    if (ok) {
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              projectSettings: {
+                ...(prev.projectSettings ?? {}),
+                sales: nextSales,
+              },
+            }
+          : prev,
+      );
+    }
+    setIsSavingSalesRooms(false);
+    setCutlistRoomFilter(next);
+    setCutlistEntryRoom(next);
+  };
+
+  const onDeleteProject = async () => {
+    if (!project || isDeleting || !canDeleteProject) {
+      return;
+    }
+    if (!deleteArmed) {
+      setDeleteArmed(true);
+      return;
+    }
+    setIsDeleting(true);
+    const ok = await softDeleteProject(project);
+    if (ok) {
+      router.push("/dashboard");
+      return;
+    }
+    setDeleteArmed(false);
+    setIsDeleting(false);
+  };
+
+  const onGrantProductionUnlock = async () => {
+    if (!project || !canGrantProductionUnlock || isGrantingUnlock) {
+      return;
+    }
+    const targetUid = String(unlockTargetUid || "").trim();
+    if (!targetUid) {
+      setLockMessage("Select a staff member to unlock production for.");
+      return;
+    }
+    setIsGrantingUnlock(true);
+    const expiryIso = await grantTempProductionAccess(project, targetUid, unlockHours);
+    if (expiryIso) {
+      const settings = (project.projectSettings ?? {}) as Record<string, unknown>;
+      const map = ((settings.productionTempEdit ?? {}) as Record<string, unknown>);
+      const nextProject = {
+        ...project,
+        projectSettings: {
+          ...settings,
+          productionTempEdit: {
+            ...map,
+            [targetUid]: expiryIso,
+          },
+        },
+      };
+      setProject(nextProject);
+      setLockMessage("Production unlocked temporarily.");
+    } else {
+      setLockMessage("Could not unlock production right now.");
+    }
+    setIsGrantingUnlock(false);
+  };
+
+  const persistProductionForm = async (next: ProductionFormState) => {
+    if (!project) return false;
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const boardTypes = next.boardTypes.map((row) => ({
+      colour: row.colour,
+      thickness: row.thickness,
+      finish: row.finish,
+      edging: row.edging || "Matching",
+      grain: Boolean(row.grain),
+      lacquer: Boolean(row.lacquer),
+      sheetSize: row.sheetSize,
+      sheets: row.sheets,
+      edgetape: row.edgetape,
+    }));
+    const nextSettings: Record<string, unknown> = {
+      ...currentSettings,
+      carcassThickness: next.existing.carcassThickness,
+      panelThickness: next.existing.panelThickness,
+      frontsThickness: next.existing.frontsThickness,
+      baseCabHeight: next.cabinetry.baseCabHeight,
+      footDistanceBack: next.cabinetry.footDistanceBack,
+      tallCabHeight: next.cabinetry.tallCabHeight,
+      footHeight: next.cabinetry.footHeight,
+      hobCentre: next.cabinetry.hobCentre,
+      hobSide: next.cabinetry.hobSide,
+      hardwareCategory: next.hardware.hardwareCategory,
+      newDrawerType: next.hardware.newDrawerType,
+      hingeType: next.hardware.hingeType,
+      boardTypes,
+    };
+
+    const ok = await updateProjectPatch(project, {
+      projectSettings: nextSettings,
+      projectSettingsJson: JSON.stringify(nextSettings),
+    });
+    if (ok) {
+      setProject({ ...project, projectSettings: nextSettings });
+    }
+    return ok;
+  };
+
+  const boardColourCountsFromRows = (rows: ProductionBoardRow[]) => {
+    const map = new Map<string, BoardColourMemoryRow>();
+    for (const row of rows) {
+      const value = String(row.colour || "").trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      const hit = map.get(key);
+      if (hit) {
+        hit.count += 1;
+        hit.value = value;
+      } else {
+        map.set(key, { value, count: 1 });
+      }
+    }
+    return map;
+  };
+
+  const syncBoardColourMemoryDelta = async (prevRows: ProductionBoardRow[], nextRows: ProductionBoardRow[]) => {
+    if (!project?.companyId) return;
+
+    const previousCounts = boardColourCountsFromRows(prevRows);
+    const nextCounts = boardColourCountsFromRows(nextRows);
+
+    const fresh = (await fetchCompanyDoc(project.companyId)) ?? companyDoc ?? {};
+    const raw = (fresh.boardMaterialUsage ?? {}) as unknown;
+    const normalized = normalizeBoardColourMemory(raw);
+    const usage = new Map<string, BoardColourMemoryRow>();
+    for (const row of normalized) {
+      usage.set(row.value.toLowerCase(), { ...row });
+    }
+
+    const keys = new Set<string>([...previousCounts.keys(), ...nextCounts.keys()]);
+    for (const key of keys) {
+      const prevCount = previousCounts.get(key)?.count ?? 0;
+      const nowCount = nextCounts.get(key)?.count ?? 0;
+      const delta = nowCount - prevCount;
+      if (!delta) continue;
+
+      const existing = usage.get(key);
+      if (existing) {
+        const nextTotal = existing.count + delta;
+        if (nextTotal <= 0) {
+          usage.delete(key);
+        } else {
+          existing.count = nextTotal;
+          existing.value = nextCounts.get(key)?.value ?? existing.value;
+        }
+      } else if (delta > 0) {
+        usage.set(key, { value: nextCounts.get(key)?.value ?? key, count: delta });
+      }
+    }
+
+    const colours = Array.from(usage.values())
+      .filter((row) => row.count > 0 && String(row.value || "").trim())
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+    const nextUsage = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>), colours }
+      : { colours };
+
+    const ok = await saveCompanyDocPatch(project.companyId, { boardMaterialUsage: nextUsage });
+    if (ok) {
+      setCompanyDoc((prev) => ({ ...(prev ?? {}), boardMaterialUsage: nextUsage }));
+    }
+  };
+
+  const syncBoardColourMemorySingleChange = async (oldColourRaw: string, newColourRaw: string) => {
+    if (!project?.companyId) return;
+    const oldColour = String(oldColourRaw || "").trim();
+    const newColour = String(newColourRaw || "").trim();
+    if (!oldColour && !newColour) return;
+
+    const fresh = (await fetchCompanyDoc(project.companyId)) ?? companyDoc ?? {};
+    const raw = (fresh.boardMaterialUsage ?? {}) as unknown;
+    const normalized = normalizeBoardColourMemory(raw);
+    const usage = new Map<string, BoardColourMemoryRow>();
+    for (const row of normalized) {
+      usage.set(row.value.toLowerCase(), { ...row });
+    }
+
+    if (oldColour && oldColour.toLowerCase() !== newColour.toLowerCase()) {
+      const oldKey = oldColour.toLowerCase();
+      const oldHit = usage.get(oldKey);
+      if (oldHit) {
+        oldHit.count -= 1;
+        if (oldHit.count <= 0) usage.delete(oldKey);
+      }
+    }
+
+    if (newColour) {
+      const newKey = newColour.toLowerCase();
+      const newHit = usage.get(newKey);
+      if (newHit) {
+        newHit.count += 1;
+        newHit.value = newColour;
+      } else {
+        usage.set(newKey, { value: newColour, count: 1 });
+      }
+    }
+
+    const colours = Array.from(usage.values())
+      .filter((row) => row.count > 0 && String(row.value || "").trim())
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+    const nextUsage = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>), colours }
+      : { colours };
+
+    const ok = await saveCompanyDocPatch(project.companyId, { boardMaterialUsage: nextUsage });
+    if (ok) {
+      setCompanyDoc((prev) => ({ ...(prev ?? {}), boardMaterialUsage: nextUsage }));
+    }
+  };
+
+  const onChangeExisting = async (key: keyof ProductionFormState["existing"], value: string) => {
+    const next = {
+      ...productionForm,
+      existing: { ...productionForm.existing, [key]: value },
+    };
+    setProductionForm(next);
+    await persistProductionForm(next);
+  };
+
+  const onCabinetryDraftChange = (key: keyof ProductionFormState["cabinetry"], value: string) => {
+    setProductionForm((prev) => ({
+      ...prev,
+      cabinetry: { ...prev.cabinetry, [key]: value },
+    }));
+  };
+
+  const onCabinetryBlurSave = async () => {
+    await persistProductionForm(productionForm);
+  };
+
+  const onHardwareCategoryChange = async (category: string) => {
+    const drawer = defaultDrawerForCategory(category);
+    const next = {
+      ...productionForm,
+      hardware: {
+        hardwareCategory: category,
+        newDrawerType: drawer,
+        hingeType: category,
+      },
+    };
+    setProductionForm(next);
+    await persistProductionForm(next);
+  };
+
+  const onChangeDrawerType = async (value: string) => {
+    const next = {
+      ...productionForm,
+      hardware: { ...productionForm.hardware, newDrawerType: value },
+    };
+    setProductionForm(next);
+    await persistProductionForm(next);
+  };
+
+  const onAddBoardRow = async () => {
+    const next = {
+      ...productionForm,
+      boardTypes: [...productionForm.boardTypes, newBoardRow()],
+    };
+    setProductionForm(next);
+    await persistProductionForm(next);
+  };
+
+  const onRemoveBoardRow = async (id: string) => {
+    const prevRows = productionForm.boardTypes;
+    const nextRows = productionForm.boardTypes.filter((row) => row.id !== id);
+    const next = {
+      ...productionForm,
+      boardTypes: nextRows.length ? nextRows : [newBoardRow()],
+    };
+    setProductionForm(next);
+    const ok = await persistProductionForm(next);
+    if (ok) {
+      await syncBoardColourMemoryDelta(prevRows, next.boardTypes);
+    }
+  };
+
+  const onBoardFieldDraftChange = (id: string, patch: Partial<ProductionBoardRow>) => {
+    setProductionForm((prev) => ({
+      ...prev,
+      boardTypes: prev.boardTypes.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    }));
+  };
+
+  const onBoardFieldCommit = async (id: string, patch: Partial<ProductionBoardRow>, bumpColour = false, previousColourRaw?: string) => {
+    const prevRows = productionForm.boardTypes;
+    const next = {
+      ...productionForm,
+      boardTypes: productionForm.boardTypes.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    };
+    setProductionForm(next);
+    const ok = await persistProductionForm(next);
+    if (ok && bumpColour) {
+      const fallbackOld = String(prevRows.find((row) => row.id === id)?.colour ?? "").trim();
+      const oldColour = String(previousColourRaw ?? fallbackOld).trim();
+      const newColour = String(patch.colour ?? "").trim();
+      if (newColour.toLowerCase() !== oldColour.toLowerCase()) {
+        await syncBoardColourMemorySingleChange(oldColour, newColour);
+      }
+    }
+  };
+
+  const validateCutlistRowInput = (
+    row: Partial<CutlistRow>,
+    partType: string,
+    rowLabel: string,
+  ): CutlistValidationIssue[] => {
+    const errors: CutlistValidationIssue[] = [];
+    const isDrawer = isDrawerPartType(partType);
+    if (!String(partType || "").trim()) errors.push({ field: "partType", message: `${rowLabel}: Part Type is required.` });
+
+    const board = String(row.board || "").trim();
+    const name = String(row.name || "").trim();
+    const height = parsePositiveNumber(row.height);
+    const width = parsePositiveNumber(row.width);
+    const depth = parsePositiveNumber(row.depth);
+    const quantity = parsePositiveNumber(row.quantity);
+    const drawerTokens = parseDrawerHeightTokens(String(row.height ?? ""));
+
+    if (!board) errors.push({ field: "board", message: `${rowLabel}: Board is required.` });
+    if (!name) errors.push({ field: "name", message: `${rowLabel}: Part Name is required.` });
+
+    if (!quantity) errors.push({ field: "quantity", message: `${rowLabel}: Quantity must be greater than 0.` });
+
+    if (isDrawer || isCabinetryPartType(partType)) {
+      if (!width) errors.push({ field: "width", message: `${rowLabel}: Width is required.` });
+      if (!depth) errors.push({ field: "depth", message: `${rowLabel}: Depth is required.` });
+      if (!height && !isDrawer) errors.push({ field: "height", message: `${rowLabel}: Height is required.` });
+    }
+
+    if (isDrawer) {
+      if (!width) errors.push({ field: "width", message: `${rowLabel}: Width is required for drawer parts.` });
+      if (!depth) errors.push({ field: "depth", message: `${rowLabel}: Depth is required for drawer parts.` });
+      if (!drawerTokens.length) errors.push({ field: "height", message: `${rowLabel}: Height selection is required for drawer parts.` });
+      const compareDepth = depth == null
+        ? null
+        : Math.max(0, Number(depth) - Number(selectedDrawerBreakdown.spaceRequirement ?? 0));
+      const hasValidHardwareDepth =
+        compareDepth != null &&
+        (
+          !selectedDrawerBreakdown.hardwareLengths.length ||
+          selectedDrawerBreakdown.hardwareLengths.some((opt) => Number(opt) <= compareDepth)
+        );
+      if (compareDepth != null && !hasValidHardwareDepth) {
+        errors.push({ field: "depth", message: `${rowLabel}: Depth is too small for selected drawer hardware.` });
+      }
+    }
+
+    const filledDims = [height, width, depth].filter((v) => v != null).length;
+    if (!isDrawer && !isCabinetryPartType(partType) && filledDims < 2) {
+      if (height == null) errors.push({ field: "height", message: `${rowLabel}: Fill at least 2 dimensions (Height/Width/Depth).` });
+      if (width == null) errors.push({ field: "width", message: `${rowLabel}: Fill at least 2 dimensions (Height/Width/Depth).` });
+      if (depth == null) errors.push({ field: "depth", message: `${rowLabel}: Fill at least 2 dimensions (Height/Width/Depth).` });
+    }
+
+    if (board) {
+      const sheetText = String(boardSheetFor(board) || "").trim();
+      const sizePair = parseSheetSizePair(sheetText);
+      if (sizePair) {
+        const maxEdge = Math.max(sizePair[0], sizePair[1]);
+        const overs: string[] = [];
+        if (height != null && height > maxEdge) overs.push("Height");
+        if (width != null && width > maxEdge) overs.push("Width");
+        if (depth != null && depth > maxEdge) overs.push("Depth");
+        if (overs.length) {
+          if (height != null && height > maxEdge) errors.push({ field: "height", message: `${rowLabel}: Height exceeds board sheet size (${sheetText}).` });
+          if (width != null && width > maxEdge) errors.push({ field: "width", message: `${rowLabel}: Width exceeds board sheet size (${sheetText}).` });
+          if (depth != null && depth > maxEdge) errors.push({ field: "depth", message: `${rowLabel}: Depth exceeds board sheet size (${sheetText}).` });
+        }
+      }
+    }
+
+    return errors;
+  };
+
+  const makeWarningMapForRow = (issues: CutlistValidationIssue[]) => {
+    const out: Record<string, string> = {};
+    for (const issue of issues) {
+      if (!out[issue.field]) out[issue.field] = issue.message;
+    }
+    return out;
+  };
+
+  const flashCutlistWarningCells = (warnings: Record<string, Record<string, string>>) => {
+    const flashMap: Record<string, boolean> = {};
+    for (const [rowKey, rowWarnings] of Object.entries(warnings)) {
+      for (const field of Object.keys(rowWarnings)) {
+        flashMap[`${rowKey}::${field}`] = true;
+      }
+    }
+    if (!Object.keys(flashMap).length) return;
+    setCutlistFlashingCells(flashMap);
+    setCutlistFlashPhaseOn(true);
+    if (cutlistFlashIntervalRef.current) {
+      window.clearInterval(cutlistFlashIntervalRef.current);
+      cutlistFlashIntervalRef.current = null;
+    }
+    if (cutlistFlashTimeoutRef.current) {
+      window.clearTimeout(cutlistFlashTimeoutRef.current);
+    }
+    let ticks = 0;
+    cutlistFlashIntervalRef.current = window.setInterval(() => {
+      ticks += 1;
+      setCutlistFlashPhaseOn((prev) => !prev);
+      if (ticks >= 6) {
+        if (cutlistFlashIntervalRef.current) {
+          window.clearInterval(cutlistFlashIntervalRef.current);
+          cutlistFlashIntervalRef.current = null;
+        }
+      }
+    }, 90);
+    cutlistFlashTimeoutRef.current = window.setTimeout(() => {
+      setCutlistFlashingCells({});
+      setCutlistFlashPhaseOn(false);
+      cutlistFlashTimeoutRef.current = null;
+      if (cutlistFlashIntervalRef.current) {
+        window.clearInterval(cutlistFlashIntervalRef.current);
+        cutlistFlashIntervalRef.current = null;
+      }
+    }, 600);
+  };
+
+  const isFlashingCell = (rowKey: string, field: string) => Boolean(cutlistFlashingCells[`${rowKey}::${field}`]);
+  const isFlashPhaseActiveForCell = (rowKey: string, field: string) =>
+    isFlashingCell(rowKey, field) && cutlistFlashPhaseOn;
+  const warningForCell = (rowKey: string, field: string) => cutlistCellWarnings[rowKey]?.[field] ?? "";
+  const warningClassForCell = (rowKey: string, field: string) =>
+    isFlashPhaseActiveForCell(rowKey, field) ? "animate-[pulse_0.18s_ease-in-out_3]" : "";
+  const warningStyleForCell = (
+    rowKey: string,
+    field: string,
+    base: { backgroundColor?: string; borderColor?: string; color?: string },
+  ) =>
+    isFlashPhaseActiveForCell(rowKey, field)
+      ? {
+          ...base,
+          backgroundColor: "#FEF2F2",
+          borderColor: "#F87171",
+        }
+      : base;
+  const clearWarningForCell = (rowKey: string, field: string) => {
+    setCutlistCellWarnings((prev) => {
+      if (!prev[rowKey]?.[field]) return prev;
+      const nextRow = { ...(prev[rowKey] || {}) };
+      delete nextRow[field];
+      const next = { ...prev };
+      if (Object.keys(nextRow).length === 0) delete next[rowKey];
+      else next[rowKey] = nextRow;
+      return next;
+    });
+  };
+
+  const persistCutlistRows = async (nextRows: CutlistRow[]) => {
+    if (!project) return;
+    const rows = nextRows.map((row, idx) => {
+      const isCabinetry = isCabinetryPartType(row.partType);
+      return {
+        __id: idx + 1,
+        __cutlist_key: row.id,
+        Room: row.room,
+        partType: row.partType,
+        Board: row.board,
+        Name: row.name,
+        Height: row.height,
+        Width: row.width,
+        Depth: row.depth,
+        Quantity: row.quantity,
+        Clashing: isCabinetry
+          ? ""
+          : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing,
+        fixedShelf: isCabinetry ? String(row.fixedShelf ?? "") : "",
+        adjustableShelf: isCabinetry ? String(row.adjustableShelf ?? "") : "",
+        fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
+        adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
+        Information: row.information,
+        Grain: row.grain ? "Yes" : "",
+        includeInNesting: row.includeInNesting !== false,
+      };
+    });
+    await updateProjectPatch(project, { cutlist: { rows } });
+  };
+
+  const addCutlistRow = async () => {
+    const singleErrors = validateCutlistRowInput(
+      cutlistEntry as Partial<CutlistRow>,
+      String(cutlistEntry.partType || "").trim(),
+      "Entry",
+    );
+    if (singleErrors.length) {
+      const warnings = { single: makeWarningMapForRow(singleErrors) };
+      setCutlistCellWarnings(warnings);
+      flashCutlistWarningCells(warnings);
+      logCutlistValidationIssues(singleErrors, cutlistEntry.partType);
+      return;
+    }
+    setCutlistCellWarnings({});
+    const isCabinetry = isCabinetryPartType(cutlistEntry.partType);
+    const isDrawer = isDrawerPartType(cutlistEntry.partType);
+    const drawerTokens = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
+    const defaults = defaultClashingForPartType(cutlistEntry.partType, cutlistEntry.board);
+    const left = String(cutlistEntry.clashLeft ?? "").trim().toUpperCase() || defaults.left;
+    const right = String(cutlistEntry.clashRight ?? "").trim().toUpperCase() || defaults.right;
+    const row: CutlistRow = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      room: cutlistEntryRoom || "Project Cutlist",
+      ...cutlistEntry,
+      height: isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(cutlistEntry.height ?? ""),
+      quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(cutlistEntry.quantity ?? "1"),
+      clashing: isCabinetry ? "" : joinClashing(left, right),
+      clashLeft: isCabinetry ? "" : left,
+      clashRight: isCabinetry ? "" : right,
+      fixedShelf: isCabinetry ? String(cutlistEntry.fixedShelf ?? "") : "",
+      adjustableShelf: isCabinetry ? String(cutlistEntry.adjustableShelf ?? "") : "",
+      fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(cutlistEntry.fixedShelfDrilling) : "No",
+      adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(cutlistEntry.adjustableShelfDrilling) : "No",
+      includeInNesting: true,
+    };
+    const next = [...cutlistRows, row];
+    setCutlistRows(next);
+    logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, {
+      partType: row.partType,
+    });
+    setCutlistEntry({
+      partType: "",
+      board: "",
+      name: "",
+      height: "",
+      width: "",
+      depth: "",
+      quantity: "1",
+      clashing: "",
+      clashLeft: "",
+      clashRight: "",
+      fixedShelf: "",
+      adjustableShelf: "",
+      fixedShelfDrilling: "No",
+      adjustableShelfDrilling: "No",
+      information: "",
+      grain: false,
+    });
+    await persistCutlistRows(next);
+  };
+
+  const addDraftRowForPartType = (partType: string) => {
+    setActiveCutlistPartType(partType);
+    setCutlistDraftRows((prev) => {
+      const last = prev[prev.length - 1];
+      const seed = last ? { board: last.board, room: last.room } : { board: cutlistBoardOptions[0] ?? "" };
+      return [...prev, createDraftCutlistRow(partType, cutlistEntryRoom || defaultCutlistRoom, seed)];
+    });
+  };
+
+  const onSelectCutlistEntryPartType = (partType: string) => {
+    setCutlistEntry((prev) => {
+      const defaults = defaultClashingForPartType(partType, prev.board);
+      const clashLeft = defaults.left;
+      const clashRight = defaults.right;
+      return {
+        ...prev,
+        partType,
+        clashLeft,
+        clashRight,
+        clashing: joinClashing(clashLeft, clashRight),
+      };
+    });
+  };
+
+  const onCutlistEntryBoardChange = (board: string) => {
+    setCutlistEntry((prev) => {
+      const defaults = defaultClashingForPartType(prev.partType, board);
+      const currentLeft = String(prev.clashLeft ?? "").trim().toUpperCase();
+      const currentRight = String(prev.clashRight ?? "").trim().toUpperCase();
+      const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
+      const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
+      const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
+      return {
+        ...prev,
+        board,
+        clashLeft,
+        clashRight,
+        clashing: joinClashing(clashLeft, clashRight),
+      };
+    });
+  };
+
+  const onDraftBoardChange = (id: string, board: string) => {
+    setCutlistDraftRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const defaults = defaultClashingForPartType(row.partType, board);
+        const currentLeft = String(row.clashLeft ?? "").trim().toUpperCase();
+        const currentRight = String(row.clashRight ?? "").trim().toUpperCase();
+        const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
+        const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
+        const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
+        return {
+          ...row,
+          board,
+          clashLeft,
+          clashRight,
+          clashing: joinClashing(clashLeft, clashRight),
+        };
+      }),
+    );
+  };
+
+  const updateDraftCutlistRow = (id: string, patch: Partial<CutlistDraftRow>) => {
+    setCutlistDraftRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const next = { ...row, ...patch };
+        if (isDrawerPartType(next.partType)) {
+          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
+          next.height = formatDrawerHeightTokens(tokens);
+          next.quantity = String(Math.max(1, tokens.length));
+        }
+        return next;
+      }),
+    );
+  };
+
+  const updateDraftDrawerHeightTokens = (id: string, tokens: string[]) => {
+    const formatted = formatDrawerHeightTokens(tokens);
+    setCutlistDraftRows((prev) =>
+      prev.map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              height: formatted,
+              quantity: String(Math.max(1, parseDrawerHeightTokens(formatted).length)),
+            }
+          : row,
+      ),
+    );
+  };
+
+  const addDraftDrawerHeightToken = (id: string, token: string) => {
+    const row = cutlistDraftRows.find((r) => r.id === id);
+    if (!row) return;
+    const next = [...parseDrawerHeightTokens(String(row.height ?? "")), String(token || "").trim()].filter(Boolean);
+    updateDraftDrawerHeightTokens(id, next);
+  };
+
+  const removeDraftDrawerHeightToken = (id: string, token: string) => {
+    const row = cutlistDraftRows.find((r) => r.id === id);
+    if (!row) return;
+    const current = parseDrawerHeightTokens(String(row.height ?? ""));
+    const idx = current.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
+    if (idx < 0) return;
+    current.splice(idx, 1);
+    updateDraftDrawerHeightTokens(id, current);
+  };
+
+  const setCutlistEntryDrawerHeightTokens = (tokens: string[]) => {
+    const formatted = formatDrawerHeightTokens(tokens);
+    setCutlistEntry((prev) => ({
+      ...prev,
+      height: formatted,
+      quantity: String(Math.max(1, parseDrawerHeightTokens(formatted).length)),
+    }));
+  };
+
+  const addCutlistEntryDrawerHeightToken = (token: string) => {
+    const current = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
+    const next = [...current, String(token || "").trim()].filter(Boolean);
+    setCutlistEntryDrawerHeightTokens(next);
+  };
+
+  const removeCutlistEntryDrawerHeightToken = (token: string) => {
+    const current = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
+    const idx = current.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
+    if (idx < 0) return;
+    current.splice(idx, 1);
+    setCutlistEntryDrawerHeightTokens(current);
+  };
+
+  const addEditingDrawerHeightToken = (token: string) => {
+    const next = [...parseDrawerHeightTokens(String(editingCellValue ?? "")), String(token || "").trim()].filter(Boolean);
+    setEditingCellValue(formatDrawerHeightTokens(next));
+  };
+
+  const removeEditingDrawerHeightToken = (token: string) => {
+    const next = parseDrawerHeightTokens(String(editingCellValue ?? ""));
+    const idx = next.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
+    if (idx < 0) return;
+    next.splice(idx, 1);
+    setEditingCellValue(formatDrawerHeightTokens(next));
+  };
+
+  const setDraftInformationLines = (id: string, lines: string[]) => {
+    const value = informationValueFromLines(lines);
+    updateDraftCutlistRow(id, { information: value });
+  };
+
+  const onDraftInformationLineChange = (id: string, index: number, value: string) => {
+    const row = cutlistDraftRows.find((r) => r.id === id);
+    const lines = informationLinesFromValue(String(row?.information ?? ""));
+    const next = [...lines];
+    while (next.length <= index) next.push("");
+    next[index] = value;
+    setDraftInformationLines(id, next);
+  };
+
+  const onDraftAddInformationLine = (id: string) => {
+    const row = cutlistDraftRows.find((r) => r.id === id);
+    const lines = informationLinesFromValue(String(row?.information ?? ""));
+    setDraftInformationLines(id, [...lines, ""]);
+  };
+
+  const onDraftRemoveInformationLine = (id: string, index: number) => {
+    const row = cutlistDraftRows.find((r) => r.id === id);
+    const lines = informationLinesFromValue(String(row?.information ?? ""));
+    if (lines.length <= 1) {
+      setDraftInformationLines(id, [""]);
+      return;
+    }
+    const next = lines.filter((_, i) => i !== index);
+    setDraftInformationLines(id, next.length ? next : [""]);
+  };
+
+  const removeDraftCutlistRow = (id: string) => {
+    setCutlistDraftRows((prev) => prev.filter((row) => row.id !== id));
+  };
+
+  const addDraftRowsToCutlist = async () => {
+    const rejectedIds = new Set<string>();
+    const nextWarnings: Record<string, Record<string, string>> = {};
+    const accepted = cutlistDraftRows
+      .map((row, idx) => {
+        const partType = String(row.partType || activeCutlistPartType || "").trim();
+        const isCabinetry = isCabinetryPartType(partType);
+        const isDrawer = isDrawerPartType(partType);
+        const drawerTokens = parseDrawerHeightTokens(String(row.height ?? ""));
+        const normalizedHeight = isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(row.height || "").trim();
+        const normalizedRow = {
+          ...row,
+          room: String(row.room || cutlistEntryRoom || defaultCutlistRoom),
+          partType,
+          board: String(row.board || "").trim(),
+          name: String(row.name || "").trim(),
+          height: normalizedHeight,
+          quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(row.quantity ?? "").trim(),
+          clashing: isCabinetry ? "" : joinClashing(String(row.clashLeft || ""), String(row.clashRight || "")),
+          fixedShelf: isCabinetry ? String(row.fixedShelf || "") : "",
+          adjustableShelf: isCabinetry ? String(row.adjustableShelf || "") : "",
+          fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
+          adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
+          includeInNesting: row.includeInNesting !== false,
+        };
+        const rowErrors = validateCutlistRowInput(normalizedRow, partType, `Row ${idx + 1}`);
+        if (rowErrors.length) {
+          rejectedIds.add(row.id);
+          nextWarnings[row.id] = makeWarningMapForRow(rowErrors);
+          logCutlistValidationIssues(rowErrors, partType);
+          return null;
+        }
+        return normalizedRow;
+      })
+      .filter(Boolean) as CutlistDraftRow[];
+    setCutlistCellWarnings(nextWarnings);
+    flashCutlistWarningCells(nextWarnings);
+    if (!accepted.length) return;
+    const nextRows: CutlistRow[] = [...cutlistRows, ...accepted.map((row) => ({ ...row, id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}` }))];
+    for (const row of accepted) {
+      logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, {
+        partType: row.partType,
+      });
+    }
+    setCutlistRows(nextRows);
+    if (rejectedIds.size > 0) {
+      const rejectedRows = cutlistDraftRows.filter((row) => rejectedIds.has(row.id));
+      setCutlistDraftRows(rejectedRows.length ? rejectedRows : [createDraftCutlistRow(activeCutlistPartType || accepted[0].partType, cutlistEntryRoom || defaultCutlistRoom, { board: accepted[accepted.length - 1].board || cutlistBoardOptions[0] || "" })]);
+    } else {
+      setCutlistDraftRows([createDraftCutlistRow(activeCutlistPartType || accepted[0].partType, cutlistEntryRoom || defaultCutlistRoom, { board: accepted[accepted.length - 1].board || cutlistBoardOptions[0] || "" })]);
+    }
+    await persistCutlistRows(nextRows);
+  };
+
+  const removeCutlistRow = async (id: string) => {
+    const removed = cutlistRows.find((row) => row.id === id);
+    const next = cutlistRows.filter((row) => row.id !== id);
+    setCutlistRows(next);
+    if (removed) {
+      logCutlistActivity(`${removed.name || "Part"} removed`, {
+        partType: removed.partType,
+      });
+    }
+    await persistCutlistRows(next);
+  };
+
+  const onCutlistEntryInformationLineChange = (index: number, value: string) => {
+    setCutlistEntry((prev) => {
+      const lines = informationLinesFromValue(String(prev.information ?? ""));
+      const next = [...lines];
+      while (next.length <= index) next.push("");
+      next[index] = value;
+      return { ...prev, information: informationValueFromLines(next) };
+    });
+  };
+
+  const onCutlistEntryAddInformationLine = () => {
+    setCutlistEntry((prev) => {
+      const lines = informationLinesFromValue(String(prev.information ?? ""));
+      return { ...prev, information: informationValueFromLines([...lines, ""]) };
+    });
+  };
+
+  const onCutlistEntryRemoveInformationLine = (index: number) => {
+    setCutlistEntry((prev) => {
+      const lines = informationLinesFromValue(String(prev.information ?? ""));
+      if (lines.length <= 1) {
+        return { ...prev, information: "" };
+      }
+      const next = lines.filter((_, i) => i !== index);
+      return { ...prev, information: informationValueFromLines(next.length ? next : [""]) };
+    });
+  };
+
+  const onEditingInformationLineChange = (index: number, value: string) => {
+    const lines = informationLinesFromValue(String(editingCellValue ?? ""));
+    const next = [...lines];
+    while (next.length <= index) next.push("");
+    next[index] = value;
+    setEditingCellValue(informationValueFromLines(next));
+  };
+
+  const onEditingAddInformationLine = () => {
+    const lines = informationLinesFromValue(String(editingCellValue ?? ""));
+    setEditingCellValue(informationValueFromLines([...lines, ""]));
+  };
+
+  const onEditingRemoveInformationLine = (index: number) => {
+    const lines = informationLinesFromValue(String(editingCellValue ?? ""));
+    if (lines.length <= 1) {
+      setEditingCellValue("");
+      return;
+    }
+    const next = lines.filter((_, i) => i !== index);
+    setEditingCellValue(informationValueFromLines(next.length ? next : [""]));
+  };
+
+  const visibleCutlistRows = useMemo(() => {
+    const search = cutlistSearch.trim().toLowerCase();
+    return cutlistRows.filter((row) => {
+      const roomOk = cutlistRoomFilter === "Project Cutlist" ? true : row.room === cutlistRoomFilter;
+      const typeOk = cutlistPartTypeFilter === "All Part Types" || row.partType === cutlistPartTypeFilter;
+      const searchOk =
+        !search ||
+        [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(search));
+      return roomOk && typeOk && searchOk;
+    });
+  }, [cutlistRows, cutlistPartTypeFilter, cutlistSearch, cutlistRoomFilter]);
+
+  const visibleRowsAllCabinetry = useMemo(
+    () => visibleCutlistRows.length > 0 && visibleCutlistRows.every((row) => isCabinetryPartType(row.partType)),
+    [visibleCutlistRows],
+  );
+
+  const flatListShowsShelvesHeader = useMemo(
+    () =>
+      (cutlistPartTypeFilter !== "All Part Types" && isCabinetryPartType(cutlistPartTypeFilter)) ||
+      visibleRowsAllCabinetry,
+    [cutlistPartTypeFilter, visibleRowsAllCabinetry],
+  );
+
+  const draftEntryShowsShelvesHeader = useMemo(() => {
+    if (cutlistDraftRows.length) {
+      return cutlistDraftRows.every((row) => isCabinetryPartType(row.partType));
+    }
+    return isCabinetryPartType(activeCutlistPartType || cutlistEntry.partType);
+  }, [activeCutlistPartType, cutlistDraftRows, cutlistEntry.partType]);
+
+  const singleEntryShowsShelvesHeader = useMemo(
+    () => isCabinetryPartType(cutlistEntry.partType),
+    [cutlistEntry.partType],
+  );
+
+  useEffect(() => {
+    if (!isDrawerPartType(cutlistEntry.partType)) return;
+    const qty = String(Math.max(1, parseDrawerHeightTokens(String(cutlistEntry.height ?? "")).length));
+    if (cutlistEntry.quantity === qty) return;
+    setCutlistEntry((prev) => ({ ...prev, quantity: qty }));
+  }, [cutlistEntry.height, cutlistEntry.partType, cutlistEntry.quantity, isDrawerPartType]);
+
+  const groupedCutlistRows = useMemo(() => {
+    const grouped = new Map<string, CutlistRow[]>();
+    for (const row of visibleCutlistRows) {
+      const key = String(row.partType || "Unassigned");
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    const rank = new Map(partTypeOptions.map((name, idx) => [name, idx]));
+    return Array.from(grouped.entries())
+      .sort((a, b) => {
+        const ar = rank.has(a[0]) ? Number(rank.get(a[0])) : 999;
+        const br = rank.has(b[0]) ? Number(rank.get(b[0])) : 999;
+        return ar - br || a[0].localeCompare(b[0]);
+      })
+      .map(([partType, rows]) => ({ partType, rows }));
+  }, [visibleCutlistRows, partTypeOptions]);
+
+  const nestingSettings = useMemo(() => {
+    const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
+    const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
+    const sheetHeight = Math.max(100, toNum(rawNested.sheetHeight ?? rawNested.h ?? 2440) || 2440);
+    const sheetWidth = Math.max(100, toNum(rawNested.sheetWidth ?? rawNested.w ?? 1220) || 1220);
+    const kerf = Math.max(0, toNum(rawNested.kerf ?? 5) || 5);
+    const margin = Math.max(0, toNum(rawNested.margin ?? 10) || 10);
+    return { sheetHeight, sheetWidth, kerf, margin };
+  }, [companyDoc]);
+
+  const nestingVisibleRows = useMemo(() => {
+    const q = String(nestingSearch || "").trim().toLowerCase();
+    return cutlistRows.filter((row) => {
+      const visible = typeof nestingVisibilityMap[row.id] === "boolean" ? nestingVisibilityMap[row.id] : row.includeInNesting !== false;
+      if (!visible) return false;
+      if (!q) return true;
+      return [row.name, row.board, row.partType, row.room, row.information].some((v) =>
+        String(v || "").toLowerCase().includes(q),
+      );
+    });
+  }, [cutlistRows, nestingSearch, nestingVisibilityMap]);
+
+  const nestingRowsByBoard = useMemo(() => {
+    const grouped = new Map<string, CutlistRow[]>();
+    for (const row of nestingVisibleRows) {
+      const key = boardDisplayLabel(row.board) || "Unassigned Board";
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    return Array.from(grouped.entries())
+      .map(([boardLabel, rows]) => ({
+        boardLabel,
+        rows: [...rows].sort((a, b) => {
+          const byType = String(a.partType || "").localeCompare(String(b.partType || ""));
+          if (byType !== 0) return byType;
+          return String(a.name || "").localeCompare(String(b.name || ""));
+        }),
+      }))
+      .sort((a, b) => a.boardLabel.localeCompare(b.boardLabel));
+  }, [nestingVisibleRows]);
+
+  const nestingBoardLayouts = useMemo(() => {
+    type FlatPiece = {
+      id: string;
+      rowId: string;
+      row: CutlistRow;
+      name: string;
+      partType: string;
+      room: string;
+      width: number;
+      height: number;
+      area: number;
+    };
+    type SheetPlacement = {
+      piece: FlatPiece;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
+    type SheetLayout = { index: number; placements: SheetPlacement[] };
+
+    const toPositiveNum = (v: unknown) => {
+      const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+
+    const parseBoardSize = (boardLabel: string, fallbackW: number, fallbackH: number) => {
+      const raw = String(boardSizeByLabel[resolveBoardKey(boardLabel)] ?? "");
+      const match = raw.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)/);
+      if (!match) {
+        return { width: fallbackW, height: fallbackH, pill: `${(fallbackW / 1000).toFixed(1)}` };
+      }
+      const a = Number.parseFloat(match[1]);
+      const b = Number.parseFloat(match[2]);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) {
+        return { width: fallbackW, height: fallbackH, pill: `${(fallbackW / 1000).toFixed(1)}` };
+      }
+      const width = Math.max(a, b);
+      const height = Math.min(a, b);
+      return { width, height, pill: `${(width / 1000).toFixed(1)}` };
+    };
+
+    return nestingRowsByBoard.map((group) => {
+      const parsed = parseBoardSize(group.boardLabel, nestingSettings.sheetHeight, nestingSettings.sheetWidth);
+      const sheetWidth = Math.max(200, parsed.width);
+      const sheetHeight = Math.max(150, parsed.height);
+      const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
+      const innerH = Math.max(80, sheetHeight - nestingSettings.margin * 2);
+      const kerf = Math.max(0, nestingSettings.kerf);
+
+      const pieces: FlatPiece[] = [];
+      for (const row of group.rows) {
+        const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+        const width = toPositiveNum(row.width) || toPositiveNum(row.depth) || 120;
+        const height = toPositiveNum(row.height) || toPositiveNum(row.depth) || 80;
+        const partType = String(row.partType || "Unassigned");
+        const room = String(row.room || "Unassigned");
+        const name = String(row.name || "Part");
+        for (let i = 0; i < qty; i += 1) {
+          pieces.push({
+            id: `${row.id}_${i + 1}`,
+            rowId: row.id,
+            row,
+            name,
+            partType,
+            room,
+            width: Math.max(30, width),
+            height: Math.max(24, height),
+            area: Math.max(1, width * height),
+          });
+        }
+      }
+
+      const sorted = [...pieces].sort((a, b) => b.area - a.area);
+      const sheets: SheetLayout[] = [];
+      let current: SheetLayout = { index: 1, placements: [] };
+      let x = 0;
+      let y = 0;
+      let rowMax = 0;
+
+      const startNewSheet = () => {
+        if (current.placements.length > 0) sheets.push(current);
+        current = { index: sheets.length + 1, placements: [] };
+        x = 0;
+        y = 0;
+        rowMax = 0;
+      };
+
+      for (const piece of sorted) {
+        const w = Math.min(piece.width, innerW);
+        const h = Math.min(piece.height, innerH);
+
+        if (x > 0 && x + w > innerW) {
+          x = 0;
+          y += rowMax + kerf;
+          rowMax = 0;
+        }
+        if (y > 0 && y + h > innerH) {
+          startNewSheet();
+        }
+        if (x > 0 && x + w > innerW) {
+          x = 0;
+          y += rowMax + kerf;
+          rowMax = 0;
+        }
+        if (y > 0 && y + h > innerH) {
+          startNewSheet();
+        }
+
+        current.placements.push({ piece, x, y, w, h });
+        x += w + kerf;
+        rowMax = Math.max(rowMax, h);
+      }
+
+      if (current.placements.length > 0) {
+        sheets.push(current);
+      }
+
+      return {
+        boardLabel: group.boardLabel,
+        boardPill: parsed.pill,
+        sheetWidth,
+        sheetHeight,
+        innerW,
+        innerH,
+        sheets,
+      };
+    });
+  }, [nestingRowsByBoard, nestingSettings.kerf, nestingSettings.margin, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSizeByLabel]);
+
+  const nestingSummary = useMemo(() => {
+    const totalPieces = nestingVisibleRows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
+    const hiddenPieces = cutlistRows.length - nestingVisibleRows.length;
+    const sheets = Math.max(0, nestingBoardLayouts.reduce((sum, group) => sum + group.sheets.length, 0));
+    return { totalPieces, hiddenPieces, sheets };
+  }, [cutlistRows.length, nestingBoardLayouts, nestingVisibleRows]);
+
+  const toggleNestingGroup = (key: string) => {
+    setNestingCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const onToggleNestingVisibility = async (rowId: string, checked: boolean) => {
+    setNestingVisibilityMap((prev) => ({ ...prev, [rowId]: checked }));
+    const nextRows = cutlistRows.map((row) =>
+      row.id === rowId ? { ...row, includeInNesting: checked } : row,
+    );
+    setCutlistRows(nextRows);
+    await persistCutlistRows(nextRows);
+  };
+
+  const onShowAllNestingRows = async () => {
+    const nextRows = cutlistRows.map((row) => ({ ...row, includeInNesting: true }));
+    setNestingVisibilityMap(Object.fromEntries(nextRows.map((row) => [row.id, true])));
+    setCutlistRows(nextRows);
+    await persistCutlistRows(nextRows);
+  };
+
+  const toggleCutlistGroup = (groupKey: string) => {
+    setCollapsedCutlistGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
+  };
+
+  const cutlistColumnDefs = useMemo(
+    () =>
+      cutlistColumns
+      .map((label) => {
+        const key = label.toLowerCase().replace(/\s+/g, "");
+        if (key.includes("parttype")) return { label, key: "partType" as const };
+        if (key === "board") return { label, key: "board" as const };
+        if (key.includes("partname") || key === "name") return { label, key: "name" as const };
+        if (key.includes("height")) return { label, key: "height" as const };
+        if (key.includes("width")) return { label, key: "width" as const };
+        if (key.includes("depth")) return { label, key: "depth" as const };
+        if (key.includes("quantity")) return { label, key: "quantity" as const };
+        if (key.includes("clashing")) return { label, key: "clashing" as const };
+        if (key.includes("information")) return { label, key: "information" as const };
+        if (key.includes("grain")) return { label, key: "grain" as const };
+        return { label, key: "information" as const };
+      })
+      .filter((col) => (col.key === "grain" ? showCutlistGrainColumn : true)),
+    [cutlistColumns, showCutlistGrainColumn],
+  );
+  const showRoomColumnInList = cutlistRoomFilter === "Project Cutlist";
+  const cutlistListColumnDefs = useMemo(() => {
+    if (showRoomColumnInList) return cutlistColumnDefs;
+    const hasPartType = cutlistColumnDefs.some((col) => col.key === "partType");
+    if (hasPartType) return cutlistColumnDefs;
+    return [{ label: "Part", key: "partType" as const }, ...cutlistColumnDefs];
+  }, [cutlistColumnDefs, showRoomColumnInList]);
+
+  const cutlistListColumnStyle = (key: CutlistEditableField) => {
+    switch (key) {
+      case "partType":
+        return { width: 116, minWidth: 116 };
+      case "board":
+        return { width: 230, minWidth: 230 };
+      case "name":
+        return { width: 230, minWidth: 230 };
+      case "height":
+      case "width":
+      case "depth":
+      case "quantity":
+        return { width: 70, minWidth: 70 };
+      case "clashing":
+        return { width: 168, minWidth: 168 };
+      case "grain":
+        return { width: 60, minWidth: 60 };
+      case "information":
+        return { minWidth: 216 };
+      default:
+        return {};
+    }
+  };
+
+  const isCenteredCutlistColumn = (key: CutlistEditableField) =>
+    key === "height" ||
+    key === "width" ||
+    key === "depth" ||
+    key === "quantity" ||
+    key === "clashing" ||
+    key === "grain";
+
+  const cutlistHeaderAlignClass = (key: CutlistEditableField) => (isCenteredCutlistColumn(key) ? "text-center" : "text-left");
+  const cutlistCellAlignClass = (key: CutlistEditableField) => (isCenteredCutlistColumn(key) ? "text-center" : "text-left");
+
+  const startCellEdit = (row: CutlistRow, key: CutlistEditableField, infoLineIndex?: number) => {
+    setEditingCell({ rowId: row.id, key });
+    if (key === "information") {
+      setEditingInfoFocusLine({ rowId: row.id, lineIndex: Math.max(0, Number(infoLineIndex ?? 0)) });
+    } else {
+      setEditingInfoFocusLine(null);
+    }
+    if (key === "clashing") {
+      if (isCabinetryPartType(row.partType)) {
+        setEditingFixedShelf(String(row.fixedShelf ?? ""));
+        setEditingAdjustableShelf(String(row.adjustableShelf ?? ""));
+        setEditingFixedShelfDrilling(normalizeDrillingValue(row.fixedShelfDrilling));
+        setEditingAdjustableShelfDrilling(normalizeDrillingValue(row.adjustableShelfDrilling));
+        setEditingCellValue("");
+      } else {
+        const split = splitClashing(row.clashing);
+        setEditingClashLeft(split.left);
+        setEditingClashRight(split.right);
+        setEditingCellValue(row.clashing ?? "");
+      }
+      return;
+    }
+    if (key === "grain") {
+      setEditingCellValue(row.grain ? "true" : "false");
+      return;
+    }
+    setEditingCellValue(String(row[key] ?? ""));
+  };
+
+  const cancelCellEdit = () => {
+    setEditingCell(null);
+    setEditingCellValue("");
+    setEditingClashLeft("");
+    setEditingClashRight("");
+    setEditingFixedShelf("");
+    setEditingAdjustableShelf("");
+    setEditingFixedShelfDrilling("No");
+    setEditingAdjustableShelfDrilling("No");
+    setEditingInfoFocusLine(null);
+  };
+
+  const commitCellEdit = async (overrideValue?: string) => {
+    if (!editingCell) return;
+    const target = editingCell;
+    const previousRow = cutlistRows.find((row) => row.id === target.rowId) ?? null;
+    const rawValue = overrideValue ?? editingCellValue;
+    const value = String(rawValue ?? "");
+    const next = cutlistRows.map((row) => {
+      if (row.id !== target.rowId) return row;
+      const updated: CutlistRow = { ...row };
+      switch (target.key) {
+        case "grain":
+          updated.grain = value === "true";
+          break;
+        case "clashing":
+          if (isCabinetryPartType(updated.partType)) {
+            updated.clashing = "";
+            updated.clashLeft = "";
+            updated.clashRight = "";
+            updated.fixedShelf = String(editingFixedShelf ?? "").trim();
+            updated.adjustableShelf = String(editingAdjustableShelf ?? "").trim();
+            updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrilling);
+            updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrilling);
+          } else {
+            updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
+            const split = splitClashing(updated.clashing);
+            updated.clashLeft = split.left;
+            updated.clashRight = split.right;
+            updated.fixedShelf = "";
+            updated.adjustableShelf = "";
+            updated.fixedShelfDrilling = "No";
+            updated.adjustableShelfDrilling = "No";
+          }
+          break;
+        case "room":
+          updated.room = value || "Project Cutlist";
+          break;
+        case "partType":
+          updated.partType = value;
+          if (isCabinetryPartType(value)) {
+            updated.clashing = "";
+            updated.clashLeft = "";
+            updated.clashRight = "";
+            updated.fixedShelfDrilling = normalizeDrillingValue(updated.fixedShelfDrilling);
+            updated.adjustableShelfDrilling = normalizeDrillingValue(updated.adjustableShelfDrilling);
+          } else {
+            updated.fixedShelf = "";
+            updated.adjustableShelf = "";
+            updated.fixedShelfDrilling = "No";
+            updated.adjustableShelfDrilling = "No";
+            updated.clashing = joinClashing(String(updated.clashLeft ?? ""), String(updated.clashRight ?? ""));
+          }
+          if (isDrawerPartType(value)) {
+            const tokens = parseDrawerHeightTokens(String(updated.height ?? ""));
+            updated.height = formatDrawerHeightTokens(tokens);
+            updated.quantity = String(Math.max(1, tokens.length));
+          }
+          break;
+        case "height":
+          if (isDrawerPartType(updated.partType)) {
+            const tokens = parseDrawerHeightTokens(value);
+            updated.height = formatDrawerHeightTokens(tokens);
+            updated.quantity = String(Math.max(1, tokens.length));
+          } else {
+            updated.height = value;
+          }
+          break;
+        default:
+          updated[target.key] = value;
+          break;
+      }
+      return updated;
+    });
+    const validationKeys = new Set<CutlistEditableField>(["partType", "board", "name", "height", "width", "depth", "quantity"]);
+    if (validationKeys.has(target.key)) {
+      const updatedRow = next.find((row) => row.id === target.rowId);
+      if (updatedRow) {
+        const issues = validateCutlistRowInput(updatedRow, String(updatedRow.partType || "").trim(), "Entry");
+        const targetIssue = issues.find((issue) => issue.field === target.key);
+        if (targetIssue) {
+          const warnings = { [target.rowId]: { [target.key]: targetIssue.message } };
+          setCutlistCellWarnings((prev) => ({
+            ...prev,
+            [target.rowId]: {
+              ...(prev[target.rowId] || {}),
+              [target.key]: targetIssue.message,
+            },
+          }));
+          flashCutlistWarningCells(warnings);
+          logCutlistValidationIssues([targetIssue], updatedRow.partType);
+          return;
+        }
+        clearWarningForCell(target.rowId, target.key);
+      }
+    }
+    const updatedRow = next.find((row) => row.id === target.rowId) ?? null;
+    if (previousRow && updatedRow && target.key === "partType" && previousRow.partType !== updatedRow.partType) {
+      const changedRowName = String(updatedRow.name || previousRow.name || "Unnamed Row").trim();
+      logCutlistActivity(`${changedRowName} | Part Type:`, {
+        partType: previousRow.partType,
+        partTypeTo: updatedRow.partType,
+      });
+    }
+    if (previousRow && updatedRow && target.key !== "partType") {
+      const trackedKeys = new Set<CutlistEditableField>(["board", "name", "height", "width", "depth", "quantity", "clashing"]);
+      if (trackedKeys.has(target.key)) {
+        const before = cutlistValueForActivity(previousRow, target.key);
+        const after = cutlistValueForActivity(updatedRow, target.key);
+        if (before !== after) {
+          const changedRowName = String(updatedRow.name || previousRow.name || "Unnamed Row").trim();
+          logCutlistActivity(`${changedRowName} | ${cutlistFieldLabel(target.key)}:`, {
+            partType: updatedRow.partType || previousRow.partType,
+            valueFrom: before,
+            valueTo: after,
+            dedupeKey: `change:${updatedRow.id}:${target.key}:${before}->${after}`,
+          });
+        }
+      }
+    }
+    setCutlistRows(next);
+    setEditingCell(null);
+    setEditingCellValue("");
+    setEditingClashLeft("");
+    setEditingClashRight("");
+    setEditingFixedShelf("");
+    setEditingAdjustableShelf("");
+    setEditingFixedShelfDrilling("No");
+    setEditingAdjustableShelfDrilling("No");
+    setEditingInfoFocusLine(null);
+    await persistCutlistRows(next);
+  };
+
+  const isEditing = (rowId: string, key: CutlistEditableField) =>
+    editingCell?.rowId === rowId && editingCell.key === key;
+
+  const onInformationInputBlur = () => {
+    window.setTimeout(() => {
+      const activeElement = document.activeElement as HTMLElement | null;
+      if (!editingCell || editingCell.key !== "information") return;
+      if (activeElement?.dataset?.cutlistInfoEditRow === editingCell.rowId) return;
+      void commitCellEdit();
+    }, 0);
+  };
+
   if (isLoading) {
     return (
       <ProtectedRoute>
         <AppShell>
           <Card>
-            <CardContent className="pt-5 text-sm text-slate-700">Loading project...</CardContent>
+            <CardContent className="pt-5 text-sm text-[#475467]">Loading project...</CardContent>
           </Card>
         </AppShell>
       </ProtectedRoute>
@@ -73,11 +3799,1364 @@ export default function ProjectDetailsPage() {
       <ProtectedRoute>
         <AppShell>
           <Card>
-            <CardContent className="pt-5 text-sm text-slate-700">
-              Project not found.
-            </CardContent>
+            <CardContent className="pt-5 text-sm text-[#475467]">Project not found.</CardContent>
           </Card>
         </AppShell>
+      </ProtectedRoute>
+    );
+  }
+
+  const roomTags = salesRoomRows.length ? salesRoomRows.map((row) => row.name) : ["Main Room"];
+  const permissionRows = [
+    {
+      uid: user?.uid ?? "current",
+      displayName: user?.displayName || project.createdByName || "Current User",
+      role: effectiveRole,
+    },
+    ...unlockMembers.map((member) => ({
+      uid: member.uid,
+      displayName: member.displayName,
+      role: member.role,
+    })),
+  ].slice(0, 8);
+
+  const isCutlistFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
+  const isNestingFullscreen =
+    resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
+
+  const onSaveAndBackFromCutlist = async () => {
+    await persistCutlistRows(cutlistRows);
+    setProductionNav("overview");
+    setNestingFullscreen(false);
+  };
+
+  const onSaveAndBackFromNesting = async () => {
+    await persistCutlistRows(cutlistRows);
+    setProductionNav("overview");
+    setNestingFullscreen(false);
+  };
+
+  if (isCutlistFullscreen) {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-[var(--bg-app)]">
+          <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+            <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
+              <Scissors size={14} />
+              Cutlist
+            </div>
+            <button
+              type="button"
+              onClick={() => void onSaveAndBackFromCutlist()}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+            >
+              <ArrowLeft size={14} />
+              Save & Back
+            </button>
+          </div>
+          <div className="overflow-hidden border-b border-[#DCE3EC] bg-white px-3 py-1">
+            <div
+              ref={cutlistActivityScrollRef}
+              className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
+              dir="ltr"
+              style={{ userSelect: "none", touchAction: "none" }}
+              onDragStart={(e) => e.preventDefault()}
+            >
+              <div
+                ref={cutlistActivityInnerRef}
+                className="inline-flex w-max cursor-grab items-center gap-[10px] pr-2"
+                dir="ltr"
+                style={{ userSelect: "none", touchAction: "none", transform: `translate3d(${cutlistActivityOffset}px, 0, 0)`, willChange: "transform" }}
+                onPointerDown={onCutlistActivityPointerDown}
+                onPointerUp={endCutlistActivityPointerDrag}
+                onPointerCancel={endCutlistActivityPointerDrag}
+              >
+                {cutlistActivityFeed.map((entry, idx) => {
+                  const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
+                  const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
+                  const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
+                  return (
+                    <div
+                      key={entry.id}
+                      className="inline-flex items-center gap-[10px] rounded-[9px] border px-2 py-[2px]"
+                      style={{
+                        backgroundColor: colors.chipBg,
+                        borderColor: colors.chipBorder,
+                        marginRight: idx < cutlistActivityFeed.length - 1 ? 10 : 0,
+                      }}
+                    >
+                      <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
+                        {entry.message}
+                      </span>
+                      {isPartTypeMove && !!entry.partType && (
+                        <>
+                          <span
+                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                            style={{
+                              backgroundColor: colors.pillBg,
+                              borderColor: colors.pillBorder,
+                              color: colors.pillText,
+                            }}
+                          >
+                            {entry.partType}
+                          </span>
+                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
+                            <img
+                              src="/arrow-right.png"
+                              alt="to"
+                              className="shrink-0 object-contain opacity-90"
+                              style={{ width: 20, height: 20 }}
+                            />
+                          </span>
+                        </>
+                      )}
+                      {isValueMove && !isPartTypeMove && (
+                        <>
+                          <span
+                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                            style={{
+                              backgroundColor: colors.pillBg,
+                              borderColor: colors.pillBorder,
+                              color: colors.pillText,
+                            }}
+                          >
+                            {entry.valueFrom || "-"}
+                          </span>
+                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
+                            <img
+                              src="/arrow-right.png"
+                              alt="to"
+                              className="shrink-0 object-contain opacity-90"
+                              style={{ width: 20, height: 20 }}
+                            />
+                          </span>
+                        </>
+                      )}
+                      {!!entry.partTypeTo && (
+                        <span
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: activityColorsForPart(entry.partTypeTo || "").pillBg,
+                            borderColor: activityColorsForPart(entry.partTypeTo || "").pillBorder,
+                            color: activityColorsForPart(entry.partTypeTo || "").pillText,
+                          }}
+                        >
+                          {entry.partTypeTo}
+                        </span>
+                      )}
+                      {isValueMove && !isPartTypeMove && (
+                        <span
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: colors.pillBg,
+                            borderColor: colors.pillBorder,
+                            color: colors.pillText,
+                          }}
+                        >
+                          {entry.valueTo || "-"}
+                        </span>
+                      )}
+                      {String(entry.actionKind || "") === "clear" && (
+                        <button
+                          type="button"
+                          onClick={() => removeCutlistActivity(entry.id)}
+                          data-cutlist-activity-control="true"
+                          className="inline-flex h-[18px] items-center rounded-[8px] border border-[#F2A7A7] bg-[#FFECEC] px-2 text-[10px] font-extrabold text-[#991B1B] hover:bg-[#FFDCDC]"
+                        >
+                          {entry.action || "Clear"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="grid min-h-[calc(100dvh-56px)] gap-0 xl:grid-cols-[190px_1fr]">
+            <aside className="border-r border-[#DCE3EC] bg-white">
+              <div className="p-2">
+                <p className="mb-2 px-2 text-[16px] font-extrabold text-[#111827]">Rooms</p>
+                <div className="space-y-1">
+                  {cutlistAddedRoomTabs.map((roomTab) => {
+                    const active = cutlistRoomFilter === roomTab.filter;
+                    return (
+                      <button
+                        key={`${roomTab.label}_${roomTab.filter}`}
+                        type="button"
+                        onClick={() => setCutlistRoomFilter(roomTab.filter)}
+                        className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                          active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                        }`}
+                      >
+                        {roomTab.label}
+                      </button>
+                    );
+                  })}
+                  <div className="my-2 h-px bg-[#DCE3EC]" />
+                  {cutlistRoomTabs
+                    .filter((tab) => tab.filter === "Project Cutlist")
+                    .map((roomTab) => {
+                      const active = cutlistRoomFilter === roomTab.filter;
+                      return (
+                        <button
+                          key={`${roomTab.label}_${roomTab.filter}`}
+                          type="button"
+                          onClick={() => setCutlistRoomFilter(roomTab.filter)}
+                          className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                            active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                          }`}
+                        >
+                          {roomTab.label}
+                        </button>
+                      );
+                    })}
+                  <button
+                    type="button"
+                    disabled={!salesAccess.edit || isSavingSalesRooms}
+                    onClick={() => void onAddCutlistRoom()}
+                    className="mt-2 w-full rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-2 py-2 text-left text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                  >
+                    + Add Room
+                  </button>
+                </div>
+              </div>
+            </aside>
+
+            <div className="flex min-h-full flex-col gap-4 p-4">
+              {cutlistRoomFilter !== "Project Cutlist" && (
+              <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-hidden">
+                <div className="flex h-[50px] items-center px-1">
+                  <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                </div>
+                <div className="space-y-3 px-0 pb-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {partTypeOptions.map((v) => {
+                      const color = partTypeColors[v] ?? "#CBD5E1";
+                      return (
+                        <button
+                          key={v}
+                          type="button"
+                          disabled={productionReadOnly}
+                          onClick={() => addDraftRowForPartType(v)}
+                          style={{
+                            backgroundColor: color,
+                            borderColor: color,
+                            color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                          }}
+                          className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                        >
+                          {v}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className={`${cutlistEntryGridClass} text-[11px] font-bold text-[#8A97A8]`}>
+                    <p></p>
+                    <p>Board</p>
+                    <p>Part Name</p>
+                    <p className="text-center">Height</p>
+                    <p className="text-center">Width</p>
+                    <p className="text-center">Depth</p>
+                    <p className="text-center">Quantity</p>
+                    <p className="col-span-2 text-center">{draftEntryShowsShelvesHeader ? "Shelves" : "Clashing"}</p>
+                    <p>Information</p>
+                    {showCutlistGrainColumn && <p className="text-center">Grain</p>}
+                  </div>
+                  <div className="space-y-1">
+                    {cutlistDraftRows.map((draft) => {
+                      const color = partTypeColors[draft.partType] ?? "#CBD5E1";
+                      const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
+                      const draftFieldBg = lightenHex(color, 0.12);
+                      const draftFieldBorder = darkenHex(color, 0.2);
+                      const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                      const boardWarn = warningForCell(draft.id, "board");
+                      const nameWarn = warningForCell(draft.id, "name");
+                      const heightWarn = warningForCell(draft.id, "height");
+                      const widthWarn = warningForCell(draft.id, "width");
+                      const depthWarn = warningForCell(draft.id, "depth");
+                      const quantityWarn = warningForCell(draft.id, "quantity");
+                      return (
+                        <div
+                          key={draft.id}
+                          className={`${cutlistEntryGridClass} items-center border-y px-1 py-1`}
+                          style={{ backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                        >
+                          <button
+                            type="button"
+                            disabled={productionReadOnly}
+                            onClick={() => removeDraftCutlistRow(draft.id)}
+                            className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                          >
+                            <X size={15} className="mx-auto" strokeWidth={2.8} />
+                          </button>
+                          <BoardPillDropdown
+                            value={draft.board}
+                            options={cutlistBoardOptions}
+                            disabled={productionReadOnly}
+                            title={boardWarn || undefined}
+                            className={warningClassForCell(draft.id, "board")}
+                            bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                            border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                            text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                            getSize={boardSizeFor}
+                            getLabel={boardDisplayLabel}
+                            onChange={(next) => onDraftBoardChange(draft.id, next)}
+                          />
+                          <input disabled={productionReadOnly} title={nameWarn || undefined} value={draft.name} onChange={(e) => updateDraftCutlistRow(draft.id, { name: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`} style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          {isDrawerPartType(draft.partType) ? (
+                            <DrawerHeightDropdown
+                              value={String(draft.height || "")}
+                              options={drawerHeightLetterOptions}
+                              disabled={productionReadOnly}
+                              title={heightWarn || undefined}
+                              className={warningClassForCell(draft.id, "height")}
+                              bg={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                              border={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                              text={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                              onAdd={(token) => addDraftDrawerHeightToken(draft.id, token)}
+                              onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
+                            />
+                          ) : (
+                            <input disabled={productionReadOnly} title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          )}
+                          <input disabled={productionReadOnly} title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          <input disabled={productionReadOnly} title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          {draftIsCabinetry ? (
+                            <div className="col-span-2 grid gap-[1px]">
+                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                <span className="text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
+                                <input
+                                  disabled={productionReadOnly}
+                                  value={draft.fixedShelf ?? ""}
+                                  onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: e.target.value })}
+                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                />
+                              </div>
+                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
+                                  <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                  Drilling
+                                </span>
+                                <select
+                                  disabled={productionReadOnly}
+                                  value={normalizeDrillingValue(draft.fixedShelfDrilling)}
+                                  onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(e.target.value) })}
+                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                >
+                                  {DRILLING_OPTIONS.map((opt) => (
+                                    <option key={opt} value={opt}>{opt}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                <span className="text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Adjustable Shelf</span>
+                                <input
+                                  disabled={productionReadOnly}
+                                  value={draft.adjustableShelf ?? ""}
+                                  onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: e.target.value })}
+                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                />
+                              </div>
+                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
+                                  <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                  Drilling
+                                </span>
+                                <select
+                                  disabled={productionReadOnly}
+                                  value={normalizeDrillingValue(draft.adjustableShelfDrilling)}
+                                  onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(e.target.value) })}
+                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                >
+                                  {DRILLING_OPTIONS.map((opt) => (
+                                    <option key={opt} value={opt}>{opt}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <select
+                                disabled={productionReadOnly}
+                                value={draft.clashLeft ?? ""}
+                                onChange={(e) => updateDraftCutlistRow(draft.id, { clashLeft: e.target.value })}
+                                className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
+                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                              >
+                                <option value=""></option>
+                                {CLASH_LEFT_OPTIONS.map((opt) => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                              <select
+                                disabled={productionReadOnly}
+                                value={draft.clashRight ?? ""}
+                                onChange={(e) => updateDraftCutlistRow(draft.id, { clashRight: e.target.value })}
+                                className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
+                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                              >
+                                <option value=""></option>
+                                {CLASH_RIGHT_OPTIONS.map((opt) => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                            </>
+                          )}
+                          <div className="grid gap-[2px]">
+                            {informationLinesFromValue(draft.information).map((line, idx) => (
+                              <div key={`${draft.id}_info_${idx}`} className="flex items-center gap-[3px]">
+                                <button
+                                  type="button"
+                                  disabled={productionReadOnly}
+                                  onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
+                                  className={
+                                    idx === 0
+                                      ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                                      : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                  }
+                                >
+                                  {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                </button>
+                                <input
+                                  disabled={productionReadOnly}
+                                  value={line}
+                                  onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
+                                  placeholder="Information"
+                                  className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          {showCutlistGrainColumn && (
+                            <label className="flex h-8 items-center justify-center">
+                              <input
+                                disabled={productionReadOnly}
+                                type="checkbox"
+                                checked={draft.grain}
+                                onChange={(e) => updateDraftCutlistRow(draft.id, { grain: e.target.checked })}
+                              />
+                            </label>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button
+                    disabled={productionReadOnly}
+                    onClick={() => void addDraftRowsToCutlist()}
+                    className="inline-flex h-[50px] w-full items-center justify-center border-y border-[#BFE8CF] bg-[#DDF2E7] text-[24px] font-extrabold text-[#14532D] disabled:opacity-55"
+                  >
+                    Add to Cutlist
+                  </button>
+                </div>
+              </section>
+              )}
+
+              <section className="relative z-10 -mx-4 min-h-0 w-[calc(100%+2rem)] flex-1 overflow-hidden">
+                <div className="flex h-[50px] items-center justify-between px-1">
+                  <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                  <div className="ml-auto flex items-center gap-2 pr-1">
+                    <input
+                      value={cutlistSearch}
+                      onChange={(e) => setCutlistSearch(e.target.value)}
+                      placeholder="Search part name or board"
+                      className="h-8 w-[280px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px]"
+                    />
+                    <select
+                      value={cutlistPartTypeFilter}
+                      onChange={(e) => setCutlistPartTypeFilter(e.target.value)}
+                      className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                    >
+                      <option value="All Part Types">All Part Types</option>
+                      {partTypeOptions.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex h-full min-h-0 flex-col space-y-2 px-0 pb-0">
+                  <div className="flex flex-wrap items-center gap-2 px-1">
+                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                      Parts: {visibleCutlistRows.length}
+                    </p>
+                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                      Total Qty: {visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0)}
+                    </p>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-auto bg-transparent">
+                    {groupedCutlistRows.length === 0 && (
+                      <div className="px-3 py-6 text-center text-[12px] text-[#7A8798]">No cutlist rows yet.</div>
+                    )}
+                    {groupedCutlistRows.map((group) => {
+                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const palette = groupColorPalette(color);
+                      const groupTextColor = palette.text;
+                      const collapsed = Boolean(collapsedCutlistGroups[group.partType]);
+                      const groupPartCount = group.rows.reduce((sum, row) => {
+                        const qty = Number(row.quantity);
+                        return sum + (Number.isFinite(qty) ? qty : 0);
+                      }, 0);
+                      return (
+                        <section
+                          key={group.partType}
+                          className="mb-2 w-full border-y last:mb-0"
+                          style={{ borderTopColor: color, borderBottomColor: color }}
+                        >
+                          <div
+                            className="flex h-[50px] items-center justify-between border-b pl-0"
+                            style={{
+                              backgroundColor: palette.titleBarBg,
+                              color: groupTextColor,
+                              borderBottomColor: color,
+                            }}
+                          >
+                            <div className="flex h-full items-center gap-3">
+                              <span
+                                className="inline-flex h-full items-center px-3 text-[24px] font-medium leading-none"
+                                style={{
+                                  backgroundColor: palette.titleChipBg,
+                                  color: groupTextColor,
+                                }}
+                              >
+                                {group.partType}
+                              </span>
+                              <span className="text-[12px] font-bold">{groupPartCount} parts</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleCutlistGroup(group.partType)}
+                              className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
+                              style={{
+                                borderLeftColor: palette.divider,
+                                backgroundColor: palette.titleBarBg,
+                              }}
+                            >
+                              {collapsed ? <Plus size={24} strokeWidth={2.6} /> : <Minus size={24} strokeWidth={2.6} />}
+                            </button>
+                          </div>
+                          {!collapsed && (
+                          <table className="w-full text-left text-[12px]">
+                            <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
+                              <tr>
+                                <th className="w-[34px] px-2 py-2"></th>
+                                {showRoomColumnInList && (
+                                  <th className="px-2 py-2" style={{ color: groupTextColor, width: 150, minWidth: 150 }}>Room</th>
+                                )}
+                                {cutlistListColumnDefs.map((col) => (
+                                  (() => {
+                                    const groupIsCabinetry = isCabinetryPartType(group.partType);
+                                    const headerLabel = col.key === "clashing" && groupIsCabinetry ? "Shelves" : col.label;
+                                    return (
+                                  <th
+                                    key={col.label}
+                                    className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`}
+                                    style={{ color: groupTextColor, ...cutlistListColumnStyle(col.key as CutlistEditableField) }}
+                                  >
+                                    {headerLabel}
+                                  </th>
+                                    );
+                                  })()
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.rows.map((row) => {
+                                const infoLines = informationLinesFromValue(String(row.information ?? ""));
+                                const rowIsCabinetry = isCabinetryPartType(row.partType);
+                                const rowIsDrawer = isDrawerPartType(row.partType);
+                                const cabinetryOpen = Boolean(expandedCabinetryRows[row.id]);
+                                const drawerOpen = Boolean(expandedDrawerRows[row.id]);
+                                const cabinetryPieces = rowIsCabinetry ? buildCabinetryDerivedPieces(row) : [];
+                                const drawerPieces = rowIsDrawer ? buildDrawerDerivedPieces(row) : [];
+                                const spillInfoToSubRows = rowIsCabinetry || rowIsDrawer;
+                                const visibleSubRowCount = rowIsCabinetry
+                                  ? (cabinetryOpen ? cabinetryPieces.length : 0)
+                                  : rowIsDrawer
+                                    ? (drawerOpen ? drawerPieces.length : 0)
+                                    : 0;
+                                const mainInfoCount = spillInfoToSubRows
+                                  ? Math.max(1, infoLines.length - visibleSubRowCount)
+                                  : infoLines.length;
+                                const mainInfoLines = spillInfoToSubRows
+                                  ? infoLines.slice(0, mainInfoCount)
+                                  : infoLines;
+                                const overflowInfoLines = spillInfoToSubRows
+                                  ? infoLines.slice(mainInfoCount, mainInfoCount + visibleSubRowCount)
+                                  : [];
+                                return (
+                                <Fragment key={row.id}>
+                                <tr className="border-t" style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}>
+                                  <td className="px-2 py-[3px] align-middle">
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        disabled={productionReadOnly}
+                                        onClick={() => void removeCutlistRow(row.id)}
+                                        className="flex h-6 w-6 items-center justify-center rounded-[7px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
+                                      >
+                                        <X size={11} strokeWidth={2.5} />
+                                      </button>
+                                      {(rowIsCabinetry || rowIsDrawer) && (
+                                        <button
+                                          type="button"
+                                          onClick={() => (rowIsCabinetry ? toggleCabinetryRowExpand(row.id) : toggleDrawerRowExpand(row.id))}
+                                          className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border"
+                                          style={{
+                                            backgroundColor: color,
+                                            borderColor: darkenHex(color, 0.18),
+                                          }}
+                                          title={(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "Collapse pieces" : "Expand pieces"}
+                                        >
+                                          <img
+                                            src="/Arrow.png"
+                                            alt="Expand"
+                                            className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
+                                            style={{ filter: groupTextColor === "#FFFFFF" ? "invert(1) brightness(2)" : "none" }}
+                                          />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                  {showRoomColumnInList && (
+                                    <td
+                                      className="px-2 py-[3px] align-middle"
+                                      onDoubleClick={() => startCellEdit(row, "room")}
+                                      style={{ width: 150, minWidth: 150, color: groupTextColor }}
+                                    >
+                                      {isEditing(row.id, "room") ? (
+                                        <select
+                                          autoFocus
+                                          title={warningForCell(row.id, "room") || undefined}
+                                          value={editingCellValue}
+                                          onChange={(e) => setEditingCellValue(e.target.value)}
+                                          onBlur={() => void commitCellEdit()}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Enter") {
+                                              e.preventDefault();
+                                              void commitCellEdit();
+                                            }
+                                            if (e.key === "Escape") cancelCellEdit();
+                                          }}
+                                          className={`h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${warningClassForCell(row.id, "room")}`}
+                                          style={warningStyleForCell(row.id, "room", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" })}
+                                        >
+                                          {cutlistEntryRoomOptions.map((opt) => (
+                                            <option key={opt} value={opt}>{opt}</option>
+                                          ))}
+                                        </select>
+                                      ) : (
+                                        row.room
+                                      )}
+                                    </td>
+                                  )}
+                                  {cutlistListColumnDefs.map((col) => {
+                                    const key = col.key as CutlistEditableField;
+                                    const editing = isEditing(row.id, key);
+                                    const alignClass = cutlistCellAlignClass(key);
+                                    const cellWarn = warningForCell(row.id, key);
+                                    const cellWarnClass = warningClassForCell(row.id, key);
+                                    if (col.key === "partType") {
+                                      const options = Array.from(new Set([row.partType, ...partTypeOptions].filter(Boolean)));
+                                      const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                                      const rowPartTextColor = isLightHex(rowPartColor) ? "#000000" : "#FFFFFF";
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, "partType")}
+                                          style={{ ...cutlistListColumnStyle("partType"), color: groupTextColor }}
+                                        >
+                                          {editing ? (
+                                            <select
+                                              autoFocus
+                                              value={editingCellValue}
+                                              onChange={(e) => setEditingCellValue(e.target.value)}
+                                              onBlur={() => void commitCellEdit()}
+                                              onKeyDown={(e) => {
+                                                if (e.key === "Enter") {
+                                                  e.preventDefault();
+                                                  void commitCellEdit();
+                                                }
+                                                if (e.key === "Escape") cancelCellEdit();
+                                              }}
+                                              className="h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                            >
+                                               <option value=""></option>
+                                               {options.map((opt) => (
+                                                 <option key={opt} value={opt}>{opt}</option>
+                                               ))}
+                                             </select>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                disabled={productionReadOnly}
+                                                onClick={() => startCellEdit(row, "partType")}
+                                                className="inline-flex rounded-[8px] border px-2 py-[2px] text-[11px] font-medium disabled:opacity-60"
+                                                style={{
+                                                  borderColor: rowPartColor,
+                                                  backgroundColor: rowPartColor,
+                                                  color: rowPartTextColor,
+                                                }}
+                                              >
+                                                {row.partType || "Unassigned"}
+                                              </button>
+                                            )}
+                                        </td>
+                                      );
+                                    }
+                                    if (col.key === "board") {
+                                      const options = Array.from(new Set([row.board, ...cutlistBoardOptions].filter(Boolean)));
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, "board")}
+                                          style={{ ...cutlistListColumnStyle("board"), color: groupTextColor }}
+                                        >
+                                          {editing ? (
+                                            <select
+                                              autoFocus
+                                              value={editingCellValue}
+                                              onChange={(e) => setEditingCellValue(e.target.value)}
+                                              onBlur={() => void commitCellEdit()}
+                                              onKeyDown={(e) => {
+                                                if (e.key === "Enter") {
+                                                  e.preventDefault();
+                                                  void commitCellEdit();
+                                                }
+                                                if (e.key === "Escape") cancelCellEdit();
+                                              }}
+                                              className="h-6 min-w-[170px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                            >
+                                              <option value=""></option>
+                                              {options.map((opt) => (
+                                                <option key={opt} value={opt}>{boardOptionLabel(opt)}</option>
+                                              ))}
+                                            </select>
+                                          ) : (
+                                            <div className="inline-flex items-center gap-2">
+                                              {boardSizeFor(row.board) && (
+                                                <span
+                                                  className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
+                                                  style={{ backgroundColor: darkenHex(color, 0.15), color: groupTextColor }}
+                                                >
+                                                  {boardSizeFor(row.board)}
+                                                </span>
+                                              )}
+                                              <span>{boardDisplayLabel(row.board)}</span>
+                                            </div>
+                                          )}
+                                        </td>
+                                      );
+                                    }
+                                    if (col.key === "grain") {
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, "grain")}
+                                          style={{ ...cutlistListColumnStyle("grain"), color: groupTextColor }}
+                                        >
+                                          {editing ? (
+                                            <select
+                                              autoFocus
+                                              value={editingCellValue}
+                                              onChange={(e) => {
+                                                const v = e.target.value;
+                                                setEditingCellValue(v);
+                                                void commitCellEdit(v);
+                                              }}
+                                              onBlur={() => void commitCellEdit()}
+                                              className="h-6 min-w-[72px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                            >
+                                              <option value="true">Yes</option>
+                                              <option value="false">No</option>
+                                            </select>
+                                          ) : (
+                                            row.grain ? "Yes" : "No"
+                                          )}
+                                        </td>
+                                      );
+                                    }
+                                    if (col.key === "height") {
+                                      const rowIsDrawer = isDrawerPartType(row.partType);
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, "height")}
+                                          style={{ ...cutlistListColumnStyle("height"), color: groupTextColor }}
+                                        >
+                                          {editing ? (
+                                            rowIsDrawer ? (
+                                              <DrawerHeightDropdown
+                                                value={String(editingCellValue || "")}
+                                                options={drawerHeightLetterOptions}
+                                                compact
+                                                title={cellWarn || undefined}
+                                                className={cellWarnClass}
+                                                bg={warningStyleForCell(row.id, key, { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).backgroundColor ?? "#FFFFFF"}
+                                                border={warningStyleForCell(row.id, key, { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).borderColor ?? "#94A3B8"}
+                                                text={warningStyleForCell(row.id, key, { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).color ?? "#0F172A"}
+                                                onAdd={(token) => addEditingDrawerHeightToken(token)}
+                                                onRemove={(token) => removeEditingDrawerHeightToken(token)}
+                                                onOpenChange={(isOpen) => {
+                                                  if (!isOpen) {
+                                                    void commitCellEdit(editingCellValue);
+                                                  }
+                                                }}
+                                              />
+                                            ) : (
+                                              <input
+                                                autoFocus
+                                                value={editingCellValue}
+                                                onChange={(e) => setEditingCellValue(e.target.value)}
+                                                onBlur={() => void commitCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelCellEdit();
+                                                }}
+                                                className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                              />
+                                            )
+                                          ) : (
+                                            String(row.height ?? "")
+                                          )}
+                                        </td>
+                                      );
+                                    }
+                                    if (col.key === "clashing") {
+                                      const rowIsCabinetry = isCabinetryPartType(row.partType);
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, "clashing")}
+                                          style={{ ...cutlistListColumnStyle("clashing"), color: groupTextColor }}
+                                        >
+                                          {editing ? (
+                                            rowIsCabinetry ? (
+                                              <div className="grid gap-[1px] text-left">
+                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                  <span className="text-[9px] font-bold leading-none">Fixed Shelf</span>
+                                                  <input
+                                                    autoFocus
+                                                    value={editingFixedShelf}
+                                                    onChange={(e) => setEditingFixedShelf(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                  />
+                                                </div>
+                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                  <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
+                                                    <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                    Drilling
+                                                  </span>
+                                                  <select
+                                                    value={editingFixedShelfDrilling}
+                                                    onChange={(e) => setEditingFixedShelfDrilling(normalizeDrillingValue(e.target.value))}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                  >
+                                                    {DRILLING_OPTIONS.map((opt) => (
+                                                      <option key={opt} value={opt}>{opt}</option>
+                                                    ))}
+                                                  </select>
+                                                </div>
+                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                  <span className="text-[9px] font-bold leading-none">Adjustable Shelf</span>
+                                                  <input
+                                                    value={editingAdjustableShelf}
+                                                    onChange={(e) => setEditingAdjustableShelf(e.target.value)}
+                                                    onBlur={() => void commitCellEdit()}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                  />
+                                                </div>
+                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                  <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
+                                                    <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                    Drilling
+                                                  </span>
+                                                  <select
+                                                    value={editingAdjustableShelfDrilling}
+                                                    onChange={(e) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(e.target.value))}
+                                                    onBlur={() => void commitCellEdit()}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                  >
+                                                    {DRILLING_OPTIONS.map((opt) => (
+                                                      <option key={opt} value={opt}>{opt}</option>
+                                                    ))}
+                                                  </select>
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <div className="grid grid-cols-2 gap-1">
+                                                <select
+                                                  autoFocus
+                                                  value={editingClashLeft}
+                                                  onChange={(e) => setEditingClashLeft(e.target.value)}
+                                                  onKeyDown={(e) => {
+                                                    if (e.key === "Enter") {
+                                                      e.preventDefault();
+                                                      void commitCellEdit();
+                                                    }
+                                                    if (e.key === "Escape") cancelCellEdit();
+                                                  }}
+                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                                >
+                                                  <option value=""></option>
+                                                  {CLASH_LEFT_OPTIONS.map((opt) => (
+                                                    <option key={opt} value={opt}>{opt}</option>
+                                                  ))}
+                                                </select>
+                                                <select
+                                                  value={editingClashRight}
+                                                  onChange={(e) => setEditingClashRight(e.target.value)}
+                                                  onBlur={() => void commitCellEdit()}
+                                                  onKeyDown={(e) => {
+                                                    if (e.key === "Enter") {
+                                                      e.preventDefault();
+                                                      void commitCellEdit();
+                                                    }
+                                                    if (e.key === "Escape") cancelCellEdit();
+                                                  }}
+                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                                >
+                                                  <option value=""></option>
+                                                  {CLASH_RIGHT_OPTIONS.map((opt) => (
+                                                    <option key={opt} value={opt}>{opt}</option>
+                                                  ))}
+                                                </select>
+                                              </div>
+                                            )
+                                          ) : (
+                                            rowIsCabinetry
+                                              ? (
+                                                <div className="grid min-h-[78px] grid-rows-4 gap-[2px] text-left text-[9px]">
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="font-bold">Fixed Shelf</span>
+                                                    <span>{row.fixedShelf || ""}</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="inline-flex items-center gap-[2px] font-bold">
+                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      Drilling
+                                                    </span>
+                                                    <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="font-bold">Adjustable Shelf</span>
+                                                    <span>{row.adjustableShelf || ""}</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="inline-flex items-center gap-[2px] font-bold">
+                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      Drilling
+                                                    </span>
+                                                    <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
+                                                  </div>
+                                                </div>
+                                              )
+                                              : row.clashing
+                                          )}
+                                        </td>
+                                      );
+                                    }
+                                    if (col.key === "information") {
+                                      const infoLines = informationLinesFromValue(String(row.information ?? ""));
+                                      const editingInfoLines = informationLinesFromValue(editingCellValue);
+                                      const mainEditingInfoLines = editingInfoLines;
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, key, 0)}
+                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                        >
+                                          {editing ? (
+                                            <div className="grid gap-[2px]">
+                                              {mainEditingInfoLines.map((line, idx) => (
+                                                <div key={`${row.id}_edit_info_${idx}`} className="flex items-center gap-[3px]">
+                                                  <button
+                                                    type="button"
+                                                    data-cutlist-info-edit-row={row.id}
+                                                    onClick={() => (idx === 0 ? onEditingAddInformationLine() : onEditingRemoveInformationLine(idx))}
+                                                    className={
+                                                      idx === 0
+                                                        ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                                                        : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                    }
+                                                  >
+                                                    {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                                  </button>
+                                                  <input
+                                                    autoFocus={
+                                                      editingInfoFocusLine?.rowId === row.id
+                                                        ? editingInfoFocusLine.lineIndex === idx
+                                                        : idx === 0
+                                                    }
+                                                    data-cutlist-info-edit-row={row.id}
+                                                    value={line}
+                                                    onChange={(e) => onEditingInformationLineChange(idx, e.target.value)}
+                                                    onBlur={onInformationInputBlur}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                    className="h-7 w-full rounded-[6px] border border-[#94A3B8] bg-white px-2 text-[11px] text-[#0F172A]"
+                                                  />
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : (
+                                            spillInfoToSubRows ? (
+                                              <div className="space-y-[2px]">
+                                                {mainInfoLines.map((line, idx) => (
+                                                  <div key={`${row.id}_main_info_${idx}`} className="leading-[1.2]">
+                                                    {line}
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            ) : (
+                                              <div className="space-y-[2px]">
+                                                {infoLines.map((line, idx) => (
+                                                  <div key={`${row.id}_info_inline_${idx}`} className="leading-[1.2]">
+                                                    {line}
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )
+                                          )}
+                                        </td>
+                                      );
+                                    }
+                                    const value = String(row[col.key] ?? "");
+                                    return (
+                                      <td
+                                        key={`${row.id}_${col.label}`}
+                                        className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                        onDoubleClick={() => startCellEdit(row, key)}
+                                        style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                      >
+                                        {editing ? (
+                                          <input
+                                            autoFocus
+                                            value={editingCellValue}
+                                            onChange={(e) => setEditingCellValue(e.target.value)}
+                                            onBlur={() => void commitCellEdit()}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") {
+                                                e.preventDefault();
+                                                void commitCellEdit();
+                                              }
+                                              if (e.key === "Escape") cancelCellEdit();
+                                            }}
+                                            className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                          />
+                                        ) : (
+                                          value
+                                        )}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                                {rowIsCabinetry && cabinetryOpen && cabinetryPieces.map((piece, pieceIdx) => (
+                                  <tr
+                                    key={`${row.id}_cab_${piece.key}`}
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold">
+                                      
+                                    </td>
+                                    {showRoomColumnInList && (
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                        {row.room}
+                                      </td>
+                                    )}
+                                    {cutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      const alignClass = cutlistCellAlignClass(key);
+                                      const infoLineIndex = mainInfoCount + pieceIdx;
+                                      const editingThisInfoCell = col.key === "information" && isEditing(row.id, "information");
+                                      let value = "";
+                                      if (col.key === "partType") value = "";
+                                      if (col.key === "board") value = "";
+                                      if (col.key === "name") value = piece.partName;
+                                      if (col.key === "height") value = piece.height;
+                                      if (col.key === "width") value = piece.width;
+                                      if (col.key === "depth") value = piece.depth;
+                                      if (col.key === "quantity") value = piece.quantity;
+                                      if (col.key === "clashing") value = joinClashing(piece.clashLeft, piece.clashRight);
+                                      if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
+                                      if (col.key === "grain") value = row.grain ? "Yes" : "";
+                                      return (
+                                        <td
+                                          key={`${row.id}_${piece.key}_${col.key}`}
+                                          className={`px-2 py-[3px] align-middle text-[11px] ${alignClass}`}
+                                          onDoubleClick={() => {
+                                            if (col.key !== "information") return;
+                                            startCellEdit(row, "information", infoLineIndex);
+                                          }}
+                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                        >
+                                          {editingThisInfoCell ? (
+                                            ""
+                                          ) : (
+                                            value
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                ))}
+                                {rowIsDrawer && drawerOpen && drawerPieces.map((piece, pieceIdx) => (
+                                  <tr
+                                    key={`${row.id}_${piece.key}`}
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold"></td>
+                                    {showRoomColumnInList && (
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                        {row.room}
+                                      </td>
+                                    )}
+                                    {cutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      const alignClass = cutlistCellAlignClass(key);
+                                      const infoLineIndex = mainInfoCount + pieceIdx;
+                                      const editingThisInfoCell = col.key === "information" && isEditing(row.id, "information");
+                                      let value = "";
+                                      if (col.key === "partType") value = "";
+                                      if (col.key === "board") value = "";
+                                      if (col.key === "name") value = piece.partName;
+                                      if (col.key === "height") value = piece.height;
+                                      if (col.key === "width") value = piece.width;
+                                      if (col.key === "depth") value = piece.depth;
+                                      if (col.key === "quantity") value = piece.quantity;
+                                      if (col.key === "clashing") value = joinClashing(piece.clashLeft, piece.clashRight);
+                                      if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
+                                      if (col.key === "grain") value = "";
+                                      return (
+                                        <td
+                                          key={`${row.id}_${piece.key}_${col.key}`}
+                                          className={`px-2 py-[3px] align-middle text-[11px] ${alignClass}`}
+                                          onDoubleClick={() => {
+                                            if (col.key !== "information") return;
+                                            startCellEdit(row, "information", infoLineIndex);
+                                          }}
+                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                        >
+                                          {editingThisInfoCell ? (
+                                            ""
+                                          ) : (
+                                            value
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                ))}
+                                </Fragment>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                          )}
+                        </section>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
+  if (isNestingFullscreen) {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-[var(--bg-app)]">
+          <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+            <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
+              <GitBranch size={14} />
+              Nesting
+            </div>
+            <button
+              type="button"
+              onClick={() => void onSaveAndBackFromNesting()}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+            >
+              <ArrowLeft size={14} />
+              Save & Back
+            </button>
+          </div>
+          <div
+            className="grid min-h-[calc(100dvh-56px)] items-start gap-3 p-3"
+            style={{ gridTemplateColumns: "minmax(0, 1fr) 360px" }}
+          >
+            <section className="min-h-0 overflow-auto">
+              <div className="space-y-3">
+                  {nestingBoardLayouts.length === 0 && (
+                    <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
+                      No visible nesting pieces. Toggle visibility on the right panel.
+                    </div>
+                  )}
+                  <div className="grid grid-cols-4 gap-3">
+                    {nestingBoardLayouts.map((group) => {
+                      const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
+                      return (
+                        <div key={group.boardLabel} className="overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F5F7FA]">
+                          <div className="border-b border-[#DCE3EC] bg-[#EEF2F6] px-[5px] py-1">
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                              <span className="shrink-0 rounded-[999px] bg-[#DEE6F3] px-2 py-[1px] text-[11px] font-bold text-[#45658A]">
+                                {group.sheetWidth}x{group.sheetHeight}
+                              </span>
+                              <span className="inline-flex shrink-0 min-w-[74px] justify-end rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
+                                {group.sheets.length} sheets
+                              </span>
+                            </div>
+                            <div className="flex items-start justify-between gap-2 px-2">
+                              <p className="min-w-0 flex-1 truncate leading-[1.1] text-[11px] font-bold text-[#1F2F46]">{group.boardLabel}</p>
+                              <span className="inline-flex shrink-0 min-w-[74px] justify-end leading-[1.1] text-right text-[11px] font-bold text-[#4A5D76]">
+                                {partsCount} parts
+                              </span>
+                            </div>
+                          </div>
+                            <div className="max-h-[calc(100dvh-280px)] space-y-2 overflow-auto p-2">
+                              {group.sheets.map((sheet) => (
+                                <div key={`${group.boardLabel}_sheet_${sheet.index}`} className="p-0">
+                                  <p className="mb-1 text-[11px] font-bold text-[#6B7D94]">Sheet {sheet.index}</p>
+                                <div
+                                  className="relative w-full overflow-hidden rounded-[4px] border border-[#D4DCE8] bg-white"
+                                  style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}`, minHeight: 120 }}
+                                >
+                                    {sheet.placements.map((placement) => {
+                                      const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+                                      const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
+                                      return (
+                                        <div
+                                          key={placement.piece.id}
+                                          title={`${placement.piece.name} • ${placement.piece.partType} • ${placement.piece.room}`}
+                                          className="absolute overflow-hidden border px-[2px] py-[1px] text-[10px] font-semibold leading-tight"
+                                          style={{
+                                            left: `${(placement.x / group.innerW) * 100}%`,
+                                            top: `${(placement.y / group.innerH) * 100}%`,
+                                            width: `${(placement.w / group.innerW) * 100}%`,
+                                            height: `${(placement.h / group.innerH) * 100}%`,
+                                            backgroundColor: lightenHex(c, 0.18),
+                                            borderColor: darkenHex(c, 0.22),
+                                            color: t,
+                                          }}
+                                        >
+                                          <span className="block truncate">{placement.piece.name}</span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                              {partsCount === 0 && (
+                                <div className="rounded-[8px] border border-dashed border-[#D8DEE8] bg-white px-2 py-4 text-center text-[11px] font-semibold text-[#7A8798]">
+                                  No parts for this board
+                                </div>
+                              )}
+                            </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+              </div>
+            </section>
+
+            <aside className="self-start min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white h-[calc(100dvh-80px)]">
+              <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
+                <p className="text-[13px] font-extrabold text-[#111827]">Part Rows</p>
+                <button
+                  type="button"
+                  disabled={productionReadOnly}
+                  onClick={() => void onShowAllNestingRows()}
+                  className="rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] disabled:opacity-55"
+                >
+                  Show All
+                </button>
+              </div>
+              <div className="p-3">
+                <input
+                  value={nestingSearch}
+                  onChange={(e) => setNestingSearch(e.target.value)}
+                  placeholder="Search pieces..."
+                  className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                />
+              </div>
+              <div className="h-[calc(100%-94px)] overflow-auto px-3 pb-3">
+                <div className="space-y-1">
+                  {cutlistRows
+                    .filter((row) => {
+                      const q = String(nestingSearch || "").trim().toLowerCase();
+                      if (!q) return true;
+                      return [row.name, row.board, row.partType, row.room, row.information]
+                        .some((v) => String(v || "").toLowerCase().includes(q));
+                    })
+                    .map((row) => {
+                      const checked = typeof nestingVisibilityMap[row.id] === "boolean"
+                        ? nestingVisibilityMap[row.id]
+                        : row.includeInNesting !== false;
+                      return (
+                        <label key={`nest_vis_${row.id}`} className="flex items-start gap-2 rounded-[8px] border border-[#E3E8F0] bg-[#F8FAFC] px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={productionReadOnly}
+                            onChange={(e) => void onToggleNestingVisibility(row.id, e.target.checked)}
+                            className="mt-[2px] h-4 w-4"
+                          />
+                          <span className="min-w-0 text-[11px] text-[#334155]">
+                            <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
+                            <span className="block truncate">{row.partType || "Unassigned"} • {boardDisplayLabel(row.board) || "No board"} • {row.room || "-"}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  {cutlistRows.length === 0 && (
+                    <p className="rounded-[10px] border border-dashed border-[#D8DEE8] px-3 py-4 text-center text-[12px] font-semibold text-[#64748B]">
+                      No cutlist rows yet.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
       </ProtectedRoute>
     );
   }
@@ -85,103 +5164,1563 @@ export default function ProjectDetailsPage() {
   return (
     <ProtectedRoute>
       <AppShell>
-        <div className="space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Project Details</p>
-              <h1 className="text-2xl font-semibold text-slate-900">{project.name}</h1>
+        <div className="space-y-4">
+          <div className="-mx-4 -mt-4 bg-white md:-mx-5">
+          <div className="border-b border-[#D7DEE8]">
+            <div className="px-4 pb-[10px] pt-4 md:px-5">
+            <Link href="/dashboard" className="mb-2 inline-flex items-center gap-1 text-[14px] font-semibold text-[#6E88AA]">
+              <ArrowLeft size={15} />
+              Back to Projects
+            </Link>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-[42px] font-medium text-[#1A1D23]">{project.name}</h1>
+                  {projectTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => void onDeleteTag(tag)}
+                      disabled={!canEditTags}
+                      className="inline-flex items-center gap-1 rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[2px] text-[12px] font-semibold text-[#7B8798] hover:bg-[#FDECEC] hover:text-[#B42318] disabled:cursor-not-allowed disabled:opacity-70"
+                      title="Delete tag"
+                    >
+                      <Tag size={11} />
+                      {tag}
+                    </button>
+                  ))}
+                  {projectTags.length < 5 && canEditTags && (
+                    <>
+                      <div className="relative">
+                        <input
+                          value={tagInput}
+                          onFocus={() => setShowTagSuggestions(true)}
+                          onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
+                          onChange={(e) => {
+                            setTagInput(e.target.value);
+                            setShowTagSuggestions(true);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void onAddTag();
+                            }
+                            if (e.key === "Escape") {
+                              setShowTagSuggestions(false);
+                            }
+                          }}
+                          placeholder="Tag"
+                          className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
+                        />
+                        {showTagSuggestions && filteredTagSuggestions.length > 0 && (
+                          <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                            {filteredTagSuggestions.map((tag) => (
+                              <button
+                                key={tag}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => void onAddTagValue(tag)}
+                                className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                              >
+                                {tag}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void onAddTag()}
+                        disabled={isSavingTags}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0] disabled:opacity-60"
+                      >
+                        <Plus size={14} />
+                      </button>
+                    </>
+                  )}
+                </div>
+                <p className="pt-2 text-[13px] text-[#8A97A8]">Client: {project.customer || "-"}</p>
+                <p className="text-[13px] text-[#8A97A8]">Created: {project.createdByName || "Unknown"}</p>
+              </div>
+
+              <div className="text-right">
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void onDeleteProject()}
+                    disabled={isDeleting || !canDeleteProject}
+                    className="h-8 rounded-[10px] border border-[#F7C9CC] bg-[#FDECEC] px-4 text-[12px] font-bold text-[#B42318] hover:bg-[#FADCE0] disabled:opacity-60"
+                  >
+                    {deleteArmed ? "Confirm Delete" : "Delete"}
+                  </button>
+                  <div className="relative">
+                    <select
+                      disabled={isSavingStatus || !canEditStatus}
+                      value={project.statusLabel || "New"}
+                      onChange={(e) => void onChangeStatus(e.target.value)}
+                      className="h-8 min-w-[90px] appearance-none rounded-[10px] border border-[#2F6BFF] bg-[#2F6BFF] px-3 pr-6 text-[12px] font-bold text-white outline-none"
+                    >
+                      {statusOptions.map((status) => (
+                        <option key={status} value={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-white">▾</span>
+                  </div>
+                </div>
+                <p className="pt-3 text-[13px] text-[#8A97A8]">Created: {shortDate(project.createdAt)}</p>
+                <p className="text-[13px] text-[#8A97A8]">Modified: {shortDate(project.updatedAt)}</p>
+              </div>
             </div>
-            <Badge variant="info">{project.status}</Badge>
+            </div>
           </div>
 
-          <Tabs value={tab} onChange={setTab} items={tabItems} />
+          <div className="border-b border-[#D7DEE8]">
+            <div className="px-4 md:px-5">
+              <div className="flex items-end gap-10 px-2">
+              {tabItemsWithAccess.map((item) => {
+                const active = resolvedTab === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    title={"title" in item ? item.title : undefined}
+                    disabled={"disabled" in item ? item.disabled : false}
+                    onClick={() => onChangeTab(item.value)}
+                    className={`border-b-2 pb-[10px] pt-[10px] text-[20px] font-semibold transition ${
+                      active
+                        ? "border-[#7395BD] text-[#1F3654]"
+                        : "border-transparent text-[#6D82A1] hover:text-[#45638A]"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+          </div>
+          </div>
 
-          {tab === "overview" && (
-            <div className="grid gap-4 lg:grid-cols-3">
-              <Card className="lg:col-span-2">
-                <CardHeader>
-                  <CardTitle>Summary</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm text-slate-700">
-                  <p>
-                    Customer: <strong>{project.customer}</strong>
-                  </p>
-                  <p>
-                    Assigned: <strong>{project.assignedTo}</strong>
-                  </p>
-                  <p>
-                    Due date: <strong>{project.dueDate}</strong>
-                  </p>
-                  <p>
-                    Estimated sheets: <strong>{project.estimatedSheets}</strong>
-                  </p>
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    {project.tags.map((tag) => (
-                      <Badge key={tag}>{tag}</Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Cutlists</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm">
-                  {cutlists.map((cutlist) => (
-                    <div key={cutlist.id} className="rounded-md border border-slate-200 p-3">
-                      <p className="font-medium capitalize">{cutlist.type} cutlist</p>
-                      <p className="text-slate-600">Revision {cutlist.revision}</p>
-                      <p className="text-slate-500">Generated {cutlist.generatedAt}</p>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
+          {!!lockMessage && (
+            <div className="rounded-[10px] border border-[#F7C9CC] bg-[#FDECEC] px-3 py-2 text-[12px] font-semibold text-[#B42318]">
+              {lockMessage}
             </div>
           )}
 
-          {tab === "settings" && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Project Settings</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm text-slate-700">
-                <p>Company ID: {project.companyId}</p>
-                <p>Priority: {project.priority}</p>
-                <p>Role-based access: owner/admin can edit; sales and production have scoped access.</p>
-                <p>Storage folder suggestion: companies/{project.companyId}/projects/{project.id}/files</p>
-              </CardContent>
-            </Card>
+          {productionUnlockRemainingSeconds > 0 && (
+            <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
+              Production unlocked for you: {formatUnlockTimer(productionUnlockRemainingSeconds)} remaining
+            </div>
           )}
 
-          {tab === "changelog" && (
-            <div className="grid gap-4 lg:grid-cols-2">
+          {!productionAccess.view && resolvedTab === "general" && (
+            <div className="rounded-[10px] border border-[#E4E6EC] bg-[#F7F8FC] px-3 py-3">
+              <p className="text-[12px] font-semibold text-[#334155]">Production is locked for your role on this project.</p>
+              {canGrantProductionUnlock && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <select
+                    value={unlockTargetUid}
+                    onChange={(e) => setUnlockTargetUid(e.target.value)}
+                    className="h-8 min-w-[200px] rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#334155]"
+                  >
+                    {unlockMembers.length === 0 && <option value="">No other staff found</option>}
+                    {unlockMembers.map((member) => (
+                      <option key={member.uid} value={member.uid}>
+                        {member.displayName} ({member.role})
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={String(unlockHours)}
+                    onChange={(e) => setUnlockHours(Number(e.target.value))}
+                    className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#334155]"
+                  >
+                    <option value="1">1 hour</option>
+                    <option value="6">6 hours</option>
+                    <option value="12">12 hours</option>
+                    <option value="24">24 hours</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void onGrantProductionUnlock()}
+                    disabled={isGrantingUnlock || !unlockTargetUid}
+                    className="h-8 rounded-[8px] border border-[#D8DEE8] bg-[#EAF0F8] px-3 text-[12px] font-bold text-[#2F5E8A] disabled:opacity-60"
+                  >
+                    {isGrantingUnlock ? "Unlocking..." : "Unlock Production"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {resolvedTab === "general" && (
+            <div className="space-y-4">
+              <div className="grid gap-4 xl:grid-cols-[300px_1fr]">
+                <Card>
+                  <CardHeader className="border-b border-[#D7DEE8] pb-2">
+                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Client Details</CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-1 text-[13px] text-[#1F2937]">
+                    {[
+                      { label: "Name", value: project.customer || "-" },
+                      { label: "Phone", value: project.clientPhone || "-" },
+                      { label: "Email", value: project.clientEmail || "-" },
+                      { label: "Address", value: project.clientAddress || "-" },
+                    ].map((row) => (
+                      <div key={row.label} className="grid grid-cols-[55px_1fr] border-b border-[#DCE3EC] py-[9px] last:border-none">
+                        <p className="font-bold text-[#1E2D42]">{row.label}</p>
+                        <p className="text-[#2F3F56]">{row.value}</p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="border-b border-[#D7DEE8] pb-2">
+                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Notes</CardTitle>
+                  </CardHeader>
+                  <CardContent className="min-h-[155px] pt-3 text-[13px] text-[#475467]">{project.notes || ""}</CardContent>
+                </Card>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card>
+                  <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
+                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Images</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] bg-[#7E9EBB] px-3 text-[11px] font-bold text-white">
+                        <Upload size={12} /> Upload
+                      </button>
+                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F3F4F6] px-3 text-[11px] font-bold text-[#9CA3AF]">
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex min-h-[280px] items-center justify-center pt-4 text-[13px] text-[#98A2B3]">
+                    No images uploaded.
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
+                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Files</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] bg-[#7E9EBB] px-3 text-[11px] font-bold text-white">
+                        <Upload size={12} /> Upload
+                      </button>
+                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F3F4F6] px-3 text-[11px] font-bold text-[#9CA3AF]">
+                        <FolderOpen size={12} /> Open
+                      </button>
+                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F3F4F6] px-3 text-[11px] font-bold text-[#9CA3AF]">
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex min-h-[280px] items-center justify-center pt-4 text-[13px] text-[#98A2B3]">
+                    No files uploaded.
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
+
+          {resolvedTab === "sales" && salesAccess.view && (
+            <div className="-mx-4 -mb-4 -mt-4 grid min-h-[calc(100dvh-220px)] gap-4 md:-mx-5 xl:grid-cols-[170px_1fr]">
+              <div className="border-r border-[#DCE3EC] pr-3">
+                {[
+                  { label: "Initial Measure", icon: Ruler },
+                  { label: "Items", icon: ListChecks },
+                  { label: "Quote", icon: Quote },
+                  { label: "Specifications", icon: ClipboardList },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      disabled={salesReadOnly}
+                      className="mb-2 inline-flex w-full items-center gap-2 rounded-[8px] px-2 py-2 text-left text-[13px] font-semibold text-[#243B58] hover:bg-[#EEF2F7] disabled:cursor-not-allowed disabled:opacity-55"
+                    >
+                      <Icon size={14} />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-4">
+              {salesReadOnly && (
+                <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
+                  Sales is in read-only mode for your account.
+                </div>
+              )}
+                <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
+                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-sm">
+                    <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
+                      <p className="text-[14px] font-extrabold tracking-[1px] text-[#0F2A4A]">ROOMS</p>
+                      <button disabled={salesReadOnly} className="text-[12px] font-bold text-[#7E9EBB]">
+                        + Add Room
+                      </button>
+                    </div>
+                    <div className="p-3">
+                      <div className="mb-2 grid grid-cols-[24px_1fr_100px_64px] gap-2 text-[11px] font-bold text-[#8A97A8]">
+                        <p></p><p>Room</p><p className="text-right">Price</p><p className="text-center">Included</p>
+                      </div>
+                      <div className="space-y-1">
+                        {(salesRoomRows.length ? salesRoomRows : [{ name: "Main Room", included: true, totalPrice: "0.00" }]).map((room) => (
+                          <div key={room.name} className="grid grid-cols-[24px_1fr_100px_64px] items-center gap-2 border-b border-[#DDE4EE] py-2">
+                            <button
+                              disabled={salesReadOnly}
+                              className="h-6 w-6 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              x
+                            </button>
+                            <p className="text-[12px] font-semibold text-[#0F172A]">{room.name}</p>
+                            <p className="text-right text-[12px] font-semibold italic text-[#0F172A]">${room.totalPrice}</p>
+                            <p className={`text-center text-[12px] font-bold ${room.included ? "text-[#7BCB90]" : "text-[#98A2B3]"}`}>
+                              {room.included ? "Yes" : "No"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex items-center justify-between">
+                        <button disabled={salesReadOnly} className="text-[12px] font-bold text-[#7E9EBB]">
+                          + Add Room
+                        </button>
+                        <p className="text-[36px] font-extrabold text-[#7E9EBB]">Total $0.00</p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-sm">
+                    <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
+                      <p className="text-[14px] font-extrabold tracking-[1px] text-[#0F2A4A]">PRODUCT</p>
+                    </div>
+                    <div className="space-y-2 p-4 text-[12px]">
+                      {["Melteca", "Woodgrain", "Lacquer (1 side)", "Lacquer (2 side)"].map((item) => (
+                        <label key={item} className="flex items-center gap-2 text-[#1F2937]">
+                          <input type="checkbox" disabled={salesReadOnly} className="h-[12px] w-[12px]" />
+                          <span className="font-semibold">{item}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-sm">
+                    <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
+                      <p className="text-[14px] font-extrabold tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
+                    </div>
+                    <div className="space-y-2 p-4 text-[12px]">
+                      {["Dear Client....", "Removal of small appliances", "Include Sundries", "Include Colour Consultation", "Include Promotional Discount", "Include GST"].map((item) => (
+                        <label key={item} className="flex items-center gap-2 text-[#1F2937]">
+                          <input type="checkbox" disabled={salesReadOnly} className="h-[12px] w-[12px]" />
+                          <span className="font-semibold">{item}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+
+              {quotes.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Saved Quotes</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-[12px]">
+                    {quotes.map((quote) => (
+                      <div key={quote.id} className="rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
+                        <p className="font-bold text-[#111827]">{quote.currency} {quote.value.toLocaleString()}</p>
+                        <p className="text-[#5B6472]">Stage: {quote.stage}</p>
+                        <p className="text-[#5B6472]">Updated: {shortDate(quote.updatedAt)}</p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+            </div>
+          )}
+
+          {resolvedTab === "production" && productionAccess.view && (
+            <div className="-mx-4 -mb-4 -mt-4 grid min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid-cols-[170px_1fr]">
+              <aside className="h-full overflow-hidden border-r border-[#DCE3EC]">
+                {[
+                  { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
+                  { label: "Nesting", icon: GitBranch, key: "nesting" as const },
+                  { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
+                  { label: "Order", icon: ShoppingCart, key: "order" as const },
+                  { label: "Unlock Production", icon: Lock, key: "unlock" as const },
+                ].map((item, idx, arr) => {
+                  const Icon = item.icon;
+                  const active = productionNav === item.key;
+                  return (
+                    <div key={item.label} className="w-full">
+                      <button
+                        type="button"
+                        disabled={productionReadOnly}
+                        onClick={() => {
+                          if (item.key === "nesting") {
+                            setProductionNav("nesting");
+                            setNestingFullscreen(true);
+                            return;
+                          }
+                          setNestingFullscreen(false);
+                          setProductionNav(item.key);
+                        }}
+                        className={`inline-flex w-full items-center gap-2 pl-0 pr-2 py-3 text-left text-[13px] font-semibold ${
+                          active ? "bg-[#EEF2F7] text-[#12345B]" : "text-[#243B58] hover:bg-[#EEF2F7]"
+                        } disabled:cursor-not-allowed disabled:opacity-55`}
+                      >
+                        <span className="pl-4">
+                          <Icon size={13} />
+                        </span>
+                        {item.label}
+                      </button>
+                      {idx < arr.length - 1 && <div className="-ml-px -mr-px h-px bg-[#DCE3EC]" />}
+                    </div>
+                  );
+                })}
+              </aside>
+
+              <div
+                className={
+                  productionNav === "cutlist"
+                    ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)]"
+                    : "isolate mt-4 w-full max-w-[1120px] space-y-4"
+                }
+              >
+                {productionReadOnly && (
+                  <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
+                    Production is in read-only mode for your account.
+                  </div>
+                )}
+
+                {productionNav === "cutlist" ? (
+                  <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
+                    <aside className="border-r border-[#DCE3EC]">
+                      <div className="p-2">
+                        <p className="mb-2 px-2 text-[16px] font-extrabold text-[#111827]">Rooms</p>
+                        <div className="space-y-1">
+                          {cutlistAddedRoomTabs.map((roomTab) => {
+                            const active = cutlistRoomFilter === roomTab.filter;
+                            return (
+                              <button
+                                key={`${roomTab.label}_${roomTab.filter}`}
+                                type="button"
+                                onClick={() => setCutlistRoomFilter(roomTab.filter)}
+                                className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                                  active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                                }`}
+                              >
+                                {roomTab.label}
+                              </button>
+                            );
+                          })}
+                          <div className="my-2 h-px bg-[#DCE3EC]" />
+                          {cutlistRoomTabs
+                            .filter((tab) => tab.filter === "Project Cutlist")
+                            .map((roomTab) => {
+                              const active = cutlistRoomFilter === roomTab.filter;
+                              return (
+                                <button
+                                  key={`${roomTab.label}_${roomTab.filter}`}
+                                  type="button"
+                                  onClick={() => setCutlistRoomFilter(roomTab.filter)}
+                                  className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                                    active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                                  }`}
+                                >
+                                  {roomTab.label}
+                                </button>
+                              );
+                            })}
+                          <button
+                            type="button"
+                            disabled={!salesAccess.edit || isSavingSalesRooms}
+                            onClick={() => void onAddCutlistRoom()}
+                            className="mt-2 w-full rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-2 py-2 text-left text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                          >
+                            + Add Room
+                          </button>
+                        </div>
+                      </div>
+                    </aside>
+
+                    <div className="flex min-h-full flex-col gap-4 pl-4">
+                      {cutlistRoomFilter !== "Project Cutlist" && (
+                      <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] flex-1 overflow-hidden">
+                        <div className="flex h-[50px] items-center px-1">
+                          <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                        </div>
+                        <div className="space-y-3 px-0 pb-0">
+                          <div className={`flex flex-wrap items-center gap-2 rounded-[8px] ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
+                            {partTypeOptions.map((v) => {
+                              const color = partTypeColors[v] ?? "#CBD5E1";
+                              return (
+                                <button
+                                  key={v}
+                                  type="button"
+                                  disabled={productionReadOnly}
+                                  onClick={() => onSelectCutlistEntryPartType(v)}
+                                  style={{
+                                    backgroundColor: color,
+                                    borderColor: color,
+                                    color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                  }}
+                                  className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                                >
+                                  {v}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className={`${cutlistEntryGridClass} text-[11px] font-bold text-[#8A97A8]`}>
+                            <p></p>
+                            <p>Board</p>
+                            <p>Part Name</p>
+                            <p className="text-center">Height</p>
+                            <p className="text-center">Width</p>
+                            <p className="text-center">Depth</p>
+                            <p className="text-center">Quantity</p>
+                    <p className="col-span-2 text-center">{singleEntryShowsShelvesHeader ? "Shelves" : "Clashing"}</p>
+                            <p>Information</p>
+                            {showCutlistGrainColumn && <p className="text-center">Grain</p>}
+                          </div>
+                          <div className={`${cutlistEntryGridClass} border-y px-1 py-1`} style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
+                            <p></p>
+                            <BoardPillDropdown
+                              value={cutlistEntry.board}
+                              options={cutlistBoardOptions}
+                              disabled={productionReadOnly}
+                              title={warningForCell("single", "board") || undefined}
+                              className={warningClassForCell("single", "board")}
+                              bg={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
+                              border={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
+                              text={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
+                              getSize={boardSizeFor}
+                              getLabel={boardDisplayLabel}
+                              onChange={onCutlistEntryBoardChange}
+                            />
+                            <input disabled={productionReadOnly} title={warningForCell("single", "name") || undefined} value={cutlistEntry.name} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`} style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                            {isDrawerPartType(cutlistEntry.partType) ? (
+                              <DrawerHeightDropdown
+                                value={String(cutlistEntry.height || "")}
+                                options={drawerHeightLetterOptions}
+                                disabled={productionReadOnly}
+                                title={warningForCell("single", "height") || undefined}
+                                className={warningClassForCell("single", "height")}
+                                bg={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
+                                border={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
+                                text={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
+                                onAdd={(token) => addCutlistEntryDrawerHeightToken(token)}
+                                onRemove={(token) => removeCutlistEntryDrawerHeightToken(token)}
+                              />
+                            ) : (
+                              <input disabled={productionReadOnly} title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, height: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                            )}
+                            <input disabled={productionReadOnly} title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                            <input disabled={productionReadOnly} title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                            <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                            <select
+                              disabled={productionReadOnly}
+                              value={cutlistEntry.clashLeft ?? ""}
+                              onChange={(e) => setCutlistEntry((prev) => ({ ...prev, clashLeft: e.target.value }))}
+                              className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
+                              style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                            >
+                              <option value=""></option>
+                              {CLASH_LEFT_OPTIONS.map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                            <select
+                              disabled={productionReadOnly}
+                              value={cutlistEntry.clashRight ?? ""}
+                              onChange={(e) => setCutlistEntry((prev) => ({ ...prev, clashRight: e.target.value }))}
+                              className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
+                              style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                            >
+                              <option value=""></option>
+                              {CLASH_RIGHT_OPTIONS.map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                            <div className="grid gap-[2px]">
+                              {informationLinesFromValue(cutlistEntry.information).map((line, idx) => (
+                                <div key={`entry_info_${idx}`} className="flex items-center gap-[3px]">
+                                  <button
+                                    type="button"
+                                    disabled={productionReadOnly}
+                                    onClick={() => (idx === 0 ? onCutlistEntryAddInformationLine() : onCutlistEntryRemoveInformationLine(idx))}
+                                    className={
+                                      idx === 0
+                                        ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                                        : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                    }
+                                  >
+                                    {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                  </button>
+                                  <input
+                                    disabled={productionReadOnly}
+                                    value={line}
+                                    onChange={(e) => onCutlistEntryInformationLineChange(idx, e.target.value)}
+                                    placeholder="Information"
+                                    className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                    style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            {showCutlistGrainColumn && (
+                              <label className="flex h-8 items-center justify-center">
+                                <input
+                                  disabled={productionReadOnly}
+                                  type="checkbox"
+                                  checked={cutlistEntry.grain}
+                                  onChange={(e) => setCutlistEntry((prev) => ({ ...prev, grain: e.target.checked }))}
+                                />
+                              </label>
+                            )}
+                          </div>
+                          <button
+                            disabled={productionReadOnly}
+                            onClick={() => void addCutlistRow()}
+                            className="inline-flex h-[50px] w-full items-center justify-center border-y border-[#BFE8CF] bg-[#DDF2E7] text-[24px] font-extrabold text-[#14532D] disabled:opacity-55"
+                          >
+                            Add to Cutlist
+                          </button>
+                        </div>
+                      </section>
+                      )}
+
+                      <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-hidden">
+                        <div className="flex h-[50px] items-center justify-between px-1">
+                          <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                          <div className="ml-auto flex items-center gap-2 pr-1">
+                            <input
+                              value={cutlistSearch}
+                              onChange={(e) => setCutlistSearch(e.target.value)}
+                              placeholder="Search part name or board"
+                              className="h-8 w-[280px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px]"
+                            />
+                            <select
+                              value={cutlistPartTypeFilter}
+                              onChange={(e) => setCutlistPartTypeFilter(e.target.value)}
+                              className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            >
+                              <option value="All Part Types">All Part Types</option>
+                              {partTypeOptions.map((v) => (
+                                <option key={v} value={v}>{v}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="flex h-full flex-col space-y-2 px-0 pb-0">
+                          <div className="flex flex-wrap items-center gap-2 px-1">
+                            <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                              Parts: {visibleCutlistRows.length}
+                            </p>
+                            <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                              Total Qty: {visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0)}
+                            </p>
+                            {productionCutlist && <span className="ml-auto text-[11px] font-semibold text-[#7B8796]">Synced</span>}
+                          </div>
+
+                          <div className="min-h-0 flex-1 overflow-auto bg-transparent">
+                            <table className="w-full text-left text-[12px]">
+                            <thead className="bg-[#F8FAFC] text-[#1F2937]">
+                              <tr>
+                                <th className="w-[34px] px-2 py-2"></th>
+                                {showRoomColumnInList && (
+                                  <th className="px-2 py-2" style={{ width: 150, minWidth: 150 }}>Room</th>
+                                )}
+                                {cutlistListColumnDefs.map((col) => (
+                                  (() => {
+                                    const headerLabel = col.key === "clashing" && flatListShowsShelvesHeader ? "Shelves" : col.label;
+                                    return (
+                                  <th
+                                    key={col.label}
+                                    className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`}
+                                    style={cutlistListColumnStyle(col.key as CutlistEditableField)}
+                                  >
+                                    {headerLabel}
+                                  </th>
+                                    );
+                                  })()
+                                ))}
+                              </tr>
+                            </thead>
+                              <tbody>
+                                {visibleCutlistRows.map((row) => {
+                                  const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                                  const rowPalette = groupColorPalette(rowPartColor);
+                                  const rowTextColor = rowPalette.text;
+                                  return (
+                                  <tr key={row.id} className="border-t" style={{ backgroundColor: rowPalette.rowBg, color: rowTextColor, borderTopColor: rowPartColor }}>
+                                    <td className="px-2 py-[3px] align-middle">
+                                      <button
+                                        disabled={productionReadOnly}
+                                        onClick={() => void removeCutlistRow(row.id)}
+                                        className="flex h-6 w-6 items-center justify-center rounded-[7px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
+                                      >
+                                        <X size={11} strokeWidth={2.5} />
+                                      </button>
+                                    </td>
+                                    {showRoomColumnInList && (
+                                      <td
+                                        className="px-2 py-[3px] align-middle"
+                                        onDoubleClick={() => startCellEdit(row, "room")}
+                                        style={{ width: 150, minWidth: 150, color: rowTextColor }}
+                                      >
+                                        {isEditing(row.id, "room") ? (
+                                          <select
+                                            autoFocus
+                                            value={editingCellValue}
+                                            onChange={(e) => setEditingCellValue(e.target.value)}
+                                            onBlur={() => void commitCellEdit()}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") {
+                                                e.preventDefault();
+                                                void commitCellEdit();
+                                              }
+                                              if (e.key === "Escape") cancelCellEdit();
+                                            }}
+                                            className="h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                          >
+                                            {cutlistEntryRoomOptions.map((opt) => (
+                                              <option key={opt} value={opt}>{opt}</option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          row.room
+                                        )}
+                                      </td>
+                                    )}
+                                    {cutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      const editing = isEditing(row.id, key);
+                                      const alignClass = cutlistCellAlignClass(key);
+                                      if (col.key === "partType") {
+                                        const options = Array.from(new Set([row.partType, ...partTypeOptions].filter(Boolean)));
+                                        const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                                        const rowPartTextColor = isLightHex(rowPartColor) ? "#000000" : "#FFFFFF";
+                                        return (
+                                          <td
+                                            key={`${row.id}_${col.label}`}
+                                            className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                            onDoubleClick={() => startCellEdit(row, "partType")}
+                                            style={{ ...cutlistListColumnStyle("partType"), color: rowTextColor }}
+                                          >
+                                            {editing ? (
+                                              <select
+                                                autoFocus
+                                                value={editingCellValue}
+                                                onChange={(e) => setEditingCellValue(e.target.value)}
+                                                onBlur={() => void commitCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelCellEdit();
+                                                }}
+                                                className="h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              >
+                                                <option value=""></option>
+                                                {options.map((opt) => (
+                                                  <option key={opt} value={opt}>{boardOptionLabel(opt)}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                disabled={productionReadOnly}
+                                                onClick={() => startCellEdit(row, "partType")}
+                                                className="inline-flex rounded-[8px] border px-2 py-[2px] text-[11px] font-medium disabled:opacity-60"
+                                                style={{
+                                                  borderColor: rowPartColor,
+                                                  backgroundColor: rowPartColor,
+                                                  color: rowPartTextColor,
+                                                }}
+                                              >
+                                                {row.partType || "Unassigned"}
+                                              </button>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      if (col.key === "board") {
+                                        const options = Array.from(new Set([row.board, ...cutlistBoardOptions].filter(Boolean)));
+                                        const rowPartTextColor = isLightHex(rowPartColor) ? "#000000" : "#FFFFFF";
+                                        return (
+                                          <td
+                                            key={`${row.id}_${col.label}`}
+                                            className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                            onDoubleClick={() => startCellEdit(row, "board")}
+                                            style={{ ...cutlistListColumnStyle("board"), color: rowTextColor }}
+                                          >
+                                            {editing ? (
+                                              <select
+                                                autoFocus
+                                                value={editingCellValue}
+                                                onChange={(e) => setEditingCellValue(e.target.value)}
+                                                onBlur={() => void commitCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelCellEdit();
+                                                }}
+                                                className="h-6 min-w-[170px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              >
+                                                <option value=""></option>
+                                                {options.map((opt) => (
+                                                  <option key={opt} value={opt}>{boardOptionLabel(opt)}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <div className="inline-flex items-center gap-2">
+                                                {boardSizeFor(row.board) && (
+                                                  <span
+                                                    className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
+                                                    style={{ backgroundColor: darkenHex(rowPartColor, 0.15), color: rowPartTextColor }}
+                                                  >
+                                                    {boardSizeFor(row.board)}
+                                                  </span>
+                                                )}
+                                                <span>{boardDisplayLabel(row.board)}</span>
+                                              </div>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      if (col.key === "grain") {
+                                        return (
+                                          <td
+                                            key={`${row.id}_${col.label}`}
+                                            className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                            onDoubleClick={() => startCellEdit(row, "grain")}
+                                            style={{ ...cutlistListColumnStyle("grain"), color: rowTextColor }}
+                                          >
+                                            {editing ? (
+                                              <select
+                                                autoFocus
+                                                value={editingCellValue}
+                                                onChange={(e) => {
+                                                  const v = e.target.value;
+                                                  setEditingCellValue(v);
+                                                  void commitCellEdit(v);
+                                                }}
+                                                onBlur={() => void commitCellEdit()}
+                                                className="h-6 min-w-[72px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              >
+                                                <option value="true">Yes</option>
+                                                <option value="false">No</option>
+                                              </select>
+                                            ) : (
+                                              row.grain ? "Yes" : "No"
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      if (col.key === "clashing") {
+                                        const rowIsCabinetry = isCabinetryPartType(row.partType);
+                                        return (
+                                          <td
+                                            key={`${row.id}_${col.label}`}
+                                            className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                            onDoubleClick={() => startCellEdit(row, "clashing")}
+                                            style={{ ...cutlistListColumnStyle("clashing"), color: rowTextColor }}
+                                          >
+                                            {editing ? (
+                                              rowIsCabinetry ? (
+                                                <div className="grid gap-[1px] text-left">
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="text-[9px] font-bold leading-none">Fixed Shelf</span>
+                                                    <input
+                                                      autoFocus
+                                                      value={editingFixedShelf}
+                                                      onChange={(e) => setEditingFixedShelf(e.target.value)}
+                                                      onKeyDown={(e) => {
+                                                        if (e.key === "Enter") {
+                                                          e.preventDefault();
+                                                          void commitCellEdit();
+                                                        }
+                                                        if (e.key === "Escape") cancelCellEdit();
+                                                      }}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    />
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
+                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      Drilling
+                                                    </span>
+                                                    <select
+                                                      value={editingFixedShelfDrilling}
+                                                      onChange={(e) => setEditingFixedShelfDrilling(normalizeDrillingValue(e.target.value))}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    >
+                                                      {DRILLING_OPTIONS.map((opt) => (
+                                                        <option key={opt} value={opt}>{opt}</option>
+                                                      ))}
+                                                    </select>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="text-[9px] font-bold leading-none">Adjustable Shelf</span>
+                                                    <input
+                                                      value={editingAdjustableShelf}
+                                                      onChange={(e) => setEditingAdjustableShelf(e.target.value)}
+                                                      onBlur={() => void commitCellEdit()}
+                                                      onKeyDown={(e) => {
+                                                        if (e.key === "Enter") {
+                                                          e.preventDefault();
+                                                          void commitCellEdit();
+                                                        }
+                                                        if (e.key === "Escape") cancelCellEdit();
+                                                      }}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    />
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
+                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      Drilling
+                                                    </span>
+                                                    <select
+                                                      value={editingAdjustableShelfDrilling}
+                                                      onChange={(e) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(e.target.value))}
+                                                      onBlur={() => void commitCellEdit()}
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    >
+                                                      {DRILLING_OPTIONS.map((opt) => (
+                                                        <option key={opt} value={opt}>{opt}</option>
+                                                      ))}
+                                                    </select>
+                                                  </div>
+                                                </div>
+                                              ) : (
+                                              <div className="grid grid-cols-2 gap-1">
+                                                  <select
+                                                    autoFocus
+                                                    value={editingClashLeft}
+                                                    onChange={(e) => setEditingClashLeft(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                                  >
+                                                    <option value=""></option>
+                                                    {CLASH_LEFT_OPTIONS.map((opt) => (
+                                                      <option key={opt} value={opt}>{opt}</option>
+                                                    ))}
+                                                  </select>
+                                                  <select
+                                                    value={editingClashRight}
+                                                    onChange={(e) => setEditingClashRight(e.target.value)}
+                                                    onBlur={() => void commitCellEdit()}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                                  >
+                                                    <option value=""></option>
+                                                    {CLASH_RIGHT_OPTIONS.map((opt) => (
+                                                      <option key={opt} value={opt}>{opt}</option>
+                                                    ))}
+                                                  </select>
+                                                </div>
+                                              )
+                                            ) : (
+                                              rowIsCabinetry ? (
+                                                <div className="grid min-h-[78px] grid-rows-4 gap-[2px] text-left text-[9px]">
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="font-bold">Fixed Shelf</span>
+                                                    <span>{row.fixedShelf || ""}</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="inline-flex items-center gap-[2px] font-bold">
+                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      Drilling
+                                                    </span>
+                                                    <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="font-bold">Adjustable Shelf</span>
+                                                    <span>{row.adjustableShelf || ""}</span>
+                                                  </div>
+                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
+                                                    <span className="inline-flex items-center gap-[2px] font-bold">
+                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      Drilling
+                                                    </span>
+                                                    <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
+                                                  </div>
+                                                </div>
+                                              ) : (
+                                                row.clashing
+                                              )
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      if (col.key === "information") {
+                                        const infoLines = informationLinesFromValue(String(row.information ?? ""));
+                                        return (
+                                          <td
+                                            key={`${row.id}_${col.label}`}
+                                            className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                            onDoubleClick={() => startCellEdit(row, key)}
+                                            style={{ ...cutlistListColumnStyle(key), color: rowTextColor }}
+                                          >
+                                            {editing ? (
+                                              <div className="grid gap-[2px]">
+                                                {informationLinesFromValue(editingCellValue).map((line, idx) => (
+                                                  <div key={`${row.id}_edit_info_small_${idx}`} className="flex items-center gap-[3px]">
+                                                    <button
+                                                      type="button"
+                                                      onClick={() => (idx === 0 ? onEditingAddInformationLine() : onEditingRemoveInformationLine(idx))}
+                                                      className={
+                                                        idx === 0
+                                                          ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                                                          : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                      }
+                                                    >
+                                                      {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                                    </button>
+                                                    <input
+                                                      autoFocus={idx === 0}
+                                                      value={line}
+                                                      onChange={(e) => onEditingInformationLineChange(idx, e.target.value)}
+                                                      onKeyDown={(e) => {
+                                                        if (e.key === "Enter") {
+                                                          e.preventDefault();
+                                                          void commitCellEdit();
+                                                        }
+                                                        if (e.key === "Escape") cancelCellEdit();
+                                                      }}
+                                                      className="h-7 w-full rounded-[6px] border border-[#94A3B8] bg-white px-2 text-[11px] text-[#0F172A]"
+                                                    />
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            ) : (
+                                              <div className="space-y-[2px]">
+                                                {infoLines.map((line, idx) => (
+                                                  <div key={`${row.id}_info_inline_small_${idx}`} className="leading-[1.2]">
+                                                    {line}
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      const value = String(row[col.key] ?? "");
+                                      return (
+                                        <td
+                                          key={`${row.id}_${col.label}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          onDoubleClick={() => startCellEdit(row, key)}
+                                          style={{ ...cutlistListColumnStyle(key), color: rowTextColor }}
+                                        >
+                                          {editing ? (
+                                            <input
+                                              autoFocus
+                                              value={editingCellValue}
+                                              onChange={(e) => setEditingCellValue(e.target.value)}
+                                              onBlur={() => void commitCellEdit()}
+                                              onKeyDown={(e) => {
+                                                if (e.key === "Enter") {
+                                                  e.preventDefault();
+                                                  void commitCellEdit();
+                                                }
+                                                if (e.key === "Escape") cancelCellEdit();
+                                              }}
+                                              className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                            />
+                                          ) : (
+                                            value
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                )})}
+                                {visibleCutlistRows.length === 0 && (
+                                  <tr>
+                                    <td colSpan={cutlistListColumnDefs.length + (showRoomColumnInList ? 2 : 1)} className="px-3 py-6 text-center text-[12px] text-[#7A8798]">
+                                      No cutlist rows yet.
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+                ) : productionNav === "nesting" && !isNestingFullscreen ? (
+                  <div className="grid h-full min-h-[calc(100dvh-235px)] gap-3 xl:grid-cols-[1fr_340px]">
+                    <section className="flex min-h-0 flex-col gap-3">
+                      <div className="flex h-[52px] items-center justify-between rounded-[14px] border border-[#D7DEE8] bg-white px-4">
+                        <div className="inline-flex items-center gap-2">
+                          <GitBranch size={16} className="text-[#12345B]" />
+                          <p className="text-[13px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Nesting</p>
+                          <span className="text-[12px] font-bold text-[#6B7280]">|</span>
+                          <p className="text-[13px] font-bold text-[#334155]">{project?.name || "Project"}</p>
+                        </div>
+                        <div className="inline-flex items-center gap-4 text-[12px] font-semibold text-[#475569]">
+                          <span>Sheets: {nestingSummary.sheets}</span>
+                          <span>Pieces: {nestingSummary.totalPieces}</span>
+                          {nestingSummary.hiddenPieces > 0 && <span>Hidden: {nestingSummary.hiddenPieces}</span>}
+                        </div>
+                      </div>
+
+                      <section className="min-h-0 overflow-auto rounded-[14px] border border-[#D7DEE8] bg-white">
+                        <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-4">
+                          <div className="inline-flex items-center gap-3 text-[12px] font-semibold text-[#475569]">
+                            <span>Sheet H: {formatMm(nestingSettings.sheetHeight)} mm</span>
+                            <span>Sheet W: {formatMm(nestingSettings.sheetWidth)} mm</span>
+                            <span>Kerf: {formatMm(nestingSettings.kerf)} mm</span>
+                            <span>Margin: {formatMm(nestingSettings.margin)} mm</span>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={productionReadOnly}
+                            onClick={() => {
+                              setProductionNav("cutlist");
+                              setCutlistRoomFilter("Project Cutlist");
+                            }}
+                            className="rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 py-1 text-[12px] font-bold text-[#44688F] disabled:opacity-55"
+                          >
+                            Edit In Cutlist
+                          </button>
+                        </div>
+                        <div className="space-y-3 p-3">
+                          {nestingRowsByBoard.length === 0 && (
+                            <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
+                              No visible nesting pieces. Toggle visibility on the right panel.
+                            </div>
+                          )}
+                          {nestingRowsByBoard.map((group) => {
+                            const collapsed = Boolean(nestingCollapsedGroups[group.boardLabel]);
+                            const qtySum = group.rows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
+                            return (
+                              <div key={group.boardLabel} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
+                                <div className="flex h-[40px] items-center justify-between bg-[#F8FAFC] pl-3">
+                                  <div className="inline-flex items-center gap-2">
+                                    <p className="text-[13px] font-extrabold text-[#12345B]">{group.boardLabel}</p>
+                                    <span className="rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
+                                      {qtySum} parts
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleNestingGroup(group.boardLabel)}
+                                    className="inline-flex h-[40px] w-[46px] items-center justify-center border-l border-[#DCE3EC] text-[#12345B] hover:bg-[#EEF2F7]"
+                                  >
+                                    {collapsed ? <Plus size={16} strokeWidth={2.5} /> : <Minus size={16} strokeWidth={2.5} />}
+                                  </button>
+                                </div>
+                                {!collapsed && (
+                                  <div className="overflow-auto">
+                                    <table className="w-full text-left text-[12px]">
+                                      <thead className="bg-[#FDF1C9] text-[#0F172A]">
+                                        <tr>
+                                          <th className="px-2 py-2">Room</th>
+                                          <th className="px-2 py-2">Part Type</th>
+                                          <th className="px-2 py-2">Part Name</th>
+                                          <th className="px-2 py-2 text-center">Height</th>
+                                          <th className="px-2 py-2 text-center">Width</th>
+                                          <th className="px-2 py-2 text-center">Depth</th>
+                                          <th className="px-2 py-2 text-center">Qty</th>
+                                          <th className="px-2 py-2">Information</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {group.rows.map((row) => (
+                                          <tr key={`${group.boardLabel}_${row.id}`} className="border-t border-[#E4E7EE]">
+                                            <td className="px-2 py-[6px] text-[#334155]">{row.room || "-"}</td>
+                                            <td className="px-2 py-[6px]">
+                                              <span
+                                                className="inline-flex rounded-[7px] px-2 py-[1px] text-[11px] font-semibold"
+                                                style={{
+                                                  backgroundColor: partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1",
+                                                  color: isLightHex(partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1") ? "#111827" : "#F8FAFC",
+                                                }}
+                                              >
+                                                {row.partType || "Unassigned"}
+                                              </span>
+                                            </td>
+                                            <td className="px-2 py-[6px] font-semibold text-[#111827]">{row.name || "-"}</td>
+                                            <td className="px-2 py-[6px] text-center text-[#334155]">{row.height || "-"}</td>
+                                            <td className="px-2 py-[6px] text-center text-[#334155]">{row.width || "-"}</td>
+                                            <td className="px-2 py-[6px] text-center text-[#334155]">{row.depth || "-"}</td>
+                                            <td className="px-2 py-[6px] text-center text-[#334155]">{row.quantity || "1"}</td>
+                                            <td className="px-2 py-[6px] text-[#475569]">{row.information || "-"}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    </section>
+
+                    <section className="min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white">
+                      <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
+                        <p className="text-[13px] font-extrabold text-[#111827]">Edit Visibility</p>
+                        <button
+                          type="button"
+                          disabled={productionReadOnly}
+                          onClick={() => void onShowAllNestingRows()}
+                          className="rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] disabled:opacity-55"
+                        >
+                          Show All
+                        </button>
+                      </div>
+                      <div className="p-3">
+                        <input
+                          value={nestingSearch}
+                          onChange={(e) => setNestingSearch(e.target.value)}
+                          placeholder="Search pieces..."
+                          className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                        />
+                      </div>
+                      <div className="h-[calc(100%-94px)] overflow-auto px-3 pb-3">
+                        <div className="space-y-1">
+                          {cutlistRows
+                            .filter((row) => {
+                              const q = String(nestingSearch || "").trim().toLowerCase();
+                              if (!q) return true;
+                              return [row.name, row.board, row.partType, row.room, row.information]
+                                .some((v) => String(v || "").toLowerCase().includes(q));
+                            })
+                            .map((row) => {
+                              const checked = typeof nestingVisibilityMap[row.id] === "boolean"
+                                ? nestingVisibilityMap[row.id]
+                                : row.includeInNesting !== false;
+                              return (
+                                <label key={`nest_vis_${row.id}`} className="flex items-start gap-2 rounded-[8px] border border-[#E3E8F0] bg-[#F8FAFC] px-2 py-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={productionReadOnly}
+                                    onChange={(e) => void onToggleNestingVisibility(row.id, e.target.checked)}
+                                    className="mt-[2px] h-4 w-4"
+                                  />
+                                  <span className="min-w-0 text-[11px] text-[#334155]">
+                                    <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
+                                    <span className="block truncate">{row.partType || "Unassigned"} • {boardDisplayLabel(row.board) || "No board"} • {row.room || "-"}</span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          {cutlistRows.length === 0 && (
+                            <p className="rounded-[10px] border border-dashed border-[#D8DEE8] px-3 py-4 text-center text-[12px] font-semibold text-[#64748B]">
+                              No cutlist rows yet.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                ) : (
+                  <>
+                <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
+                  <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                    <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
+                      <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Existing</p>
+                    </div>
+                    <div className="space-y-2 p-3 text-[12px]">
+                      {[
+                        { label: "Carcass Thickness", key: "carcassThickness" as const },
+                        { label: "Panel Thickness", key: "panelThickness" as const },
+                        { label: "Fronts Thickness", key: "frontsThickness" as const },
+                      ].map((item) => (
+                        <div key={item.key} className="grid grid-cols-[1fr_78px_26px] items-center gap-2">
+                          <p className="font-semibold text-[#334155]">{item.label}</p>
+                          <select
+                            disabled={productionReadOnly}
+                            value={productionForm.existing[item.key]}
+                            onChange={(e) => void onChangeExisting(item.key, e.target.value)}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#344054]"
+                          >
+                            <option value=""></option>
+                            {boardThicknessOptions.map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                          <p className="font-semibold text-[#8A97A8]">mm</p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                    <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
+                      <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cabinetry</p>
+                    </div>
+                    <div className="space-y-2 p-3 text-[12px]">
+                      {[
+                        { label: "Base Cab Height", key: "baseCabHeight" as const },
+                        { label: "Foot Distance Back", key: "footDistanceBack" as const },
+                        { label: "Tall Cab Height", key: "tallCabHeight" as const },
+                        { label: "Foot Height", key: "footHeight" as const },
+                      ].map((item) => (
+                        <div key={item.key} className="grid grid-cols-[1fr_58px_26px] items-center gap-2">
+                          <p className="font-semibold text-[#334155]">{item.label}</p>
+                          <input
+                            disabled={productionReadOnly}
+                            value={productionForm.cabinetry[item.key]}
+                            onChange={(e) => onCabinetryDraftChange(item.key, e.target.value)}
+                            onBlur={() => void onCabinetryBlurSave()}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                          <p className="font-semibold text-[#8A97A8]">mm</p>
+                        </div>
+                      ))}
+                      <div className="grid grid-cols-[1fr_58px_26px_58px] items-center gap-2">
+                        <p className="font-semibold text-[#334155]">Hob Centre</p>
+                        <input
+                          disabled={productionReadOnly}
+                          value={productionForm.cabinetry.hobCentre}
+                          onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
+                          onBlur={() => void onCabinetryBlurSave()}
+                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                        />
+                        <p className="font-semibold text-[#8A97A8]">mm</p>
+                        <select
+                          disabled={productionReadOnly}
+                          value={productionForm.cabinetry.hobSide}
+                          onChange={(e) => onCabinetryDraftChange("hobSide", e.target.value)}
+                          onBlur={() => void onCabinetryBlurSave()}
+                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-1 text-[11px] text-[#344054]"
+                        >
+                          <option value=""></option>
+                          <option value="RH">RH</option>
+                          <option value="LH">LH</option>
+                        </select>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                    <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
+                      <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Hardware</p>
+                    </div>
+                    <div className="space-y-3 p-3 text-[12px]">
+                      <div className="flex items-center gap-3">
+                        {hardwareRows.map((row) => (
+                          <label key={row.name} className="inline-flex items-center gap-1 font-semibold text-[#344054]">
+                            <input
+                              disabled={productionReadOnly}
+                              type="checkbox"
+                              checked={productionForm.hardware.hardwareCategory === row.name}
+                              onChange={() => void onHardwareCategoryChange(row.name)}
+                            />
+                            {row.name}
+                          </label>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-[92px_1fr] items-center gap-2">
+                        <p className="font-semibold text-[#334155]">New Drawer Type</p>
+                        <select
+                          disabled={productionReadOnly}
+                          value={productionForm.hardware.newDrawerType}
+                          onChange={(e) => void onChangeDrawerType(e.target.value)}
+                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#344054]"
+                        >
+                          <option value=""></option>
+                          {drawerOptionsForCategory(productionForm.hardware.hardwareCategory).map((row) => (
+                            <option key={row.name} value={row.name}>{row.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-[92px_1fr] items-center gap-2">
+                        <p className="font-semibold text-[#334155]">Hinge Type</p>
+                        <select
+                          disabled
+                          value={productionForm.hardware.hardwareCategory}
+                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFC] px-2 text-[12px] text-[#344054]"
+                        >
+                          <option value={productionForm.hardware.hardwareCategory}>{productionForm.hardware.hardwareCategory}</option>
+                        </select>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                  <div className="flex h-[50px] items-center justify-between border-b border-[#DCE3EC] bg-white px-4">
+                    <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Board Settings</p>
+                    <button disabled={productionReadOnly} onClick={() => void onAddBoardRow()} className="text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55">+ Add Board</button>
+                  </div>
+                  <div className="p-3 text-[12px]">
+                    <div className="grid grid-cols-[24px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2 text-[11px] font-bold text-[#8A97A8]">
+                      <p></p>
+                      <p>Colour</p>
+                      <p className="text-center">Thickness</p>
+                      <p className="text-center">Finish</p>
+                      <p className="text-center">Edging</p>
+                      <p className="text-center">Grain</p>
+                      <p className="text-center">Lacquer</p>
+                      <p className="text-center">Sheet Size</p>
+                      <p className="text-center">Sheets</p>
+                      <p className="text-center">Edgetape</p>
+                    </div>
+                    <datalist id="board-colour-suggestions">
+                      {boardColourSuggestions.map((colour) => (
+                        <option key={colour} value={colour} />
+                      ))}
+                    </datalist>
+                    <div className="mt-2 space-y-2">
+                      {productionForm.boardTypes.map((row) => (
+                        <div key={row.id} className="grid grid-cols-[24px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2">
+                          <button
+                            disabled={productionReadOnly}
+                            onClick={() => void onRemoveBoardRow(row.id)}
+                            className="h-6 w-6 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                          >
+                            x
+                          </button>
+                          <input
+                            disabled={productionReadOnly}
+                            value={row.colour}
+                            list="board-colour-suggestions"
+                            onFocus={() => {
+                              boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
+                            }}
+                            onChange={(e) => onBoardFieldDraftChange(row.id, { colour: e.target.value })}
+                            onBlur={(e) => {
+                              const previousColour = boardColourEditStartRef.current[row.id] ?? "";
+                              delete boardColourEditStartRef.current[row.id];
+                              void onBoardFieldCommit(row.id, { colour: e.target.value }, true, previousColour);
+                            }}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                          <select
+                            disabled={productionReadOnly}
+                            value={row.thickness}
+                            onChange={(e) => void onBoardFieldCommit(row.id, { thickness: e.target.value })}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          >
+                            <option value=""></option>
+                            {boardThicknessOptions.map((opt) => (
+                              <option key={opt} value={opt}>{opt} mm</option>
+                            ))}
+                          </select>
+                          <select
+                            disabled={productionReadOnly}
+                            value={row.finish}
+                            onChange={(e) => void onBoardFieldCommit(row.id, { finish: e.target.value })}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          >
+                            <option value=""></option>
+                            {boardFinishOptions.map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                          <input
+                            disabled={productionReadOnly}
+                            value={row.edging}
+                            onChange={(e) => onBoardFieldDraftChange(row.id, { edging: e.target.value })}
+                            onBlur={(e) => void onBoardFieldCommit(row.id, { edging: e.target.value || "Matching" })}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                          <input
+                            disabled={productionReadOnly}
+                            type="checkbox"
+                            checked={row.grain}
+                            onChange={(e) => void onBoardFieldCommit(row.id, { grain: e.target.checked })}
+                          />
+                          <input
+                            disabled={productionReadOnly}
+                            type="checkbox"
+                            checked={row.lacquer}
+                            onChange={(e) => void onBoardFieldCommit(row.id, { lacquer: e.target.checked })}
+                          />
+                          <select
+                            disabled={productionReadOnly}
+                            value={row.sheetSize}
+                            onChange={(e) => void onBoardFieldCommit(row.id, { sheetSize: e.target.value })}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          >
+                            <option value=""></option>
+                            {sheetSizeOptions.map((opt) => {
+                              const label = `${opt.h} x ${opt.w}`;
+                              return <option key={label} value={label}>{label}</option>;
+                            })}
+                          </select>
+                          <p className="text-center text-[12px] font-semibold text-[#344054]">{row.sheets}</p>
+                          <p className="text-center text-[12px] font-semibold text-[#344054]">{row.edgetape}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <button disabled={productionReadOnly} onClick={() => void onAddBoardRow()} className="mt-3 text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55">+ Add Board</button>
+                  </div>
+                </section>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {resolvedTab === "settings" && settingsAccess.view && (
+            <div className="grid gap-4 xl:grid-cols-2">
               <Card>
-                <CardHeader>
-                  <CardTitle>Project Changelog</CardTitle>
+                <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
+                  <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Project Permissions</CardTitle>
+                  <button className="rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 py-1 text-[12px] font-bold text-[#44688F]">
+                    Change Ownership
+                  </button>
                 </CardHeader>
-                <CardContent className="space-y-3 text-sm">
-                  {changes.map((change) => (
-                    <div key={change.id} className="rounded-md border border-slate-200 p-3">
-                      <p className="font-medium text-slate-800">{change.action}</p>
-                      <p className="text-slate-500">
-                        {change.actor} at {change.at}
-                      </p>
+                <CardContent className="pt-1 text-[12px]">
+                  {permissionRows.map((row) => (
+                    <div key={row.uid} className="grid grid-cols-[1fr_120px_120px] items-center gap-2 border-b border-[#DCE3EC] py-[8px]">
+                      <p className="font-semibold text-[#334155]">{row.displayName}</p>
+                      <select className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFC] px-2 text-[12px] font-semibold text-[#475467]">
+                        <option>{row.role === "owner" || row.role === "admin" ? "Edit" : "View"}</option>
+                        <option>View</option>
+                        <option>No Access</option>
+                      </select>
+                      <button className="rounded-[8px] border border-[#C8DAFF] bg-[#EAF0FF] px-2 py-1 text-[11px] font-bold text-[#2358A9]">
+                        Temp Prod Edit
+                      </button>
                     </div>
                   ))}
                 </CardContent>
               </Card>
 
               <Card>
-                <CardHeader>
-                  <CardTitle>Sales History</CardTitle>
+                <CardHeader className="border-b border-[#D7DEE8] pb-2">
+                  <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Changelog</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-3 text-sm">
-                  {quotes.map((quote) => (
-                    <div key={quote.id} className="rounded-md border border-slate-200 p-3">
-                      <p className="font-medium">{quote.currency} {quote.value.toLocaleString()}</p>
-                      <p className="text-slate-600">Stage: {quote.stage}</p>
-                      <p className="text-slate-500">Updated: {quote.updatedAt}</p>
+                <CardContent className="h-[560px] space-y-2 overflow-auto pt-2 text-[12px]">
+                  {changes.length === 0 && <p className="text-[#6B7280]">No changes recorded.</p>}
+                  {changes.map((change) => (
+                    <div key={change.id} className="rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
+                      <p className="font-bold text-[#1E3A62]">{change.action}</p>
+                      <p className="text-[#2F4563]">{change.actor}</p>
+                      <p className="text-[#5B6472]">{shortDate(change.at)}</p>
                     </div>
                   ))}
                 </CardContent>

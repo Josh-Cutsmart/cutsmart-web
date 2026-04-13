@@ -35,7 +35,7 @@ export default function InitialCutlistPage() {
       <AppShell>
         <div className="space-y-5">
           <div className="flex items-center justify-between gap-3">
-            <h1 className="text-2xl font-semibold">Initial Cutlist</h1>
+            <h1 className="text-[30px] font-medium text-[#1A1D23]">Initial Cutlist</h1>
             <Badge variant="warning">Early estimate mode</Badge>
           </div>
 
@@ -50,7 +50,7 @@ export default function InitialCutlistPage() {
               </p>
               <div className="overflow-auto">
                 <table className="w-full min-w-[680px] text-sm">
-                  <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
+                  <thead className="text-left text-xs uppercase tracking-wide">
                     <tr>
                       <th className="pb-3">Part</th>
                       <th className="pb-3">Material</th>
@@ -62,7 +62,7 @@ export default function InitialCutlistPage() {
                   </thead>
                   <tbody>
                     {cutlist?.parts.map((part) => (
-                      <tr key={part.id} className="border-t border-slate-100">
+                      <tr key={part.id} className="border-t border-[#E4E7EC]">
                         <td className="py-3">{part.label}</td>
                         <td className="py-3">{part.material}</td>
                         <td className="py-3">{part.qty}</td>

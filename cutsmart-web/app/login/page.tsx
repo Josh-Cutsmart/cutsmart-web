@@ -39,12 +39,12 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_bottom_right,_#cffafe_0%,_#f8fafc_45%,_#fde68a_100%)] px-4 py-10">
+    <div className="flex min-h-screen items-center justify-center bg-[var(--bg-app)] px-4 py-10">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Sign in to CutSmart Web</CardTitle>
+          <CardTitle>Sign in to CutSmart</CardTitle>
           <CardDescription>
-            Use Firebase email/password auth, or quick demo role mode while wiring backend.
+            Use your CutSmart account. Demo roles are available if Firebase is not configured.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -63,7 +63,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required={hasFirebaseConfig}
             />
-            {error && <p className="text-sm text-rose-700">{error}</p>}
+            {error && <p className="text-sm text-[#B42318]">{error}</p>}
             <Button className="w-full" type="submit" disabled={isSubmitting}>
               {isSubmitting ? "Signing in..." : hasFirebaseConfig ? "Sign In" : "Continue in Demo"}
             </Button>
@@ -71,7 +71,7 @@ export default function LoginPage() {
 
           {!hasFirebaseConfig && (
             <div className="mt-4">
-              <p className="mb-2 text-xs uppercase tracking-wider text-slate-500">Demo roles</p>
+              <p className="mb-2 text-xs uppercase tracking-wider text-[var(--text-muted)]">Demo roles</p>
               <div className="flex flex-wrap gap-2">
                 {roles.map((role) => (
                   <Button

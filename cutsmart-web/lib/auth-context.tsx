@@ -15,6 +15,7 @@ import {
   type User,
 } from "firebase/auth";
 import { auth, hasFirebaseConfig } from "@/lib/firebase";
+import { fetchPrimaryMembership, fetchUserProfileSummary } from "@/lib/membership";
 import type { AppUser, UserRole } from "@/lib/types";
 
 interface AuthContextValue {
@@ -30,13 +31,28 @@ const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function fromFirebaseUser(user: User): AppUser {
+function fromFirebaseUser(user: User, role: UserRole, companyId?: string, membershipDisplayName?: string): AppUser {
   return {
     uid: user.uid,
     email: user.email ?? "unknown@cutsmart.test",
-    displayName: user.displayName ?? "CutSmart User",
-    role: "admin",
+    displayName: membershipDisplayName ?? user.displayName ?? "CutSmart User",
+    role,
+    companyId,
+    permissions: [],
   };
+}
+
+function fallbackNameFromEmail(email: string): string {
+  const local = String(email || "").split("@")[0]?.trim();
+  if (!local) {
+    return "CutSmart User";
+  }
+  const words = local
+    .replace(/[._-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1));
+  return words.join(" ") || "CutSmart User";
 }
 
 function createDemoUser(role: UserRole): AppUser {
@@ -65,13 +81,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    let active = true;
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser ? fromFirebaseUser(firebaseUser) : null);
-      setIsLoading(false);
-      setIsDemoMode(false);
+      const loadMembership = async () => {
+        if (!firebaseUser) {
+          if (!active) {
+            return;
+          }
+          setUser(null);
+          setIsLoading(false);
+          setIsDemoMode(false);
+          return;
+        }
+
+        const [membership, profile] = await Promise.all([
+          fetchPrimaryMembership(firebaseUser.uid),
+          fetchUserProfileSummary(firebaseUser.uid),
+        ]);
+        if (!active) {
+          return;
+        }
+        const resolvedName =
+          membership?.displayName ||
+          profile?.displayName ||
+          firebaseUser.displayName ||
+          fallbackNameFromEmail(firebaseUser.email ?? profile?.email ?? "");
+
+        setUser(
+          {
+            ...fromFirebaseUser(
+              firebaseUser,
+              membership?.role ?? "viewer",
+              membership?.companyId,
+              resolvedName,
+            ),
+            permissions: membership?.permissionKeys ?? [],
+          },
+        );
+        setIsLoading(false);
+        setIsDemoMode(false);
+      };
+
+      void loadMembership();
     });
 
-    return unsubscribe;
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   const value = useMemo<AuthContextValue>(

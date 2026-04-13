@@ -14,7 +14,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>
+      <body className="cs-app">
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

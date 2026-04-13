@@ -15,7 +15,11 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }, [isLoading, router, user]);
 
   if (isLoading) {
-    return <div className="rounded-xl bg-white p-8 text-sm text-slate-600">Loading workspace...</div>;
+    return (
+      <div className="mx-4 my-4 rounded-[14px] border border-[var(--panel-border)] bg-white p-8 text-sm text-[var(--text-muted)]">
+        Loading workspace...
+      </div>
+    );
   }
 
   if (!user) {

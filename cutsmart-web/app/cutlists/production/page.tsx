@@ -38,13 +38,13 @@ export default function ProductionCutlistPage() {
       <AppShell>
         <div className="space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-2xl font-semibold">Production Cutlist</h1>
+            <h1 className="text-[30px] font-medium text-[#1A1D23]">Production Cutlist</h1>
             <Badge variant="info">Complex workflow</Badge>
           </div>
 
           {!allowed ? (
             <Card>
-              <CardContent className="pt-5 text-sm text-rose-700">
+              <CardContent className="pt-5 text-sm text-[#B42318]">
                 You do not have permission to edit production cutlists with your current role.
               </CardContent>
             </Card>

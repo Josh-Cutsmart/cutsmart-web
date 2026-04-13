@@ -31,6 +31,14 @@ export interface Project {
   estimatedSheets: number;
   assignedTo: string;
   tags: string[];
+  notes?: string;
+  clientPhone?: string;
+  clientEmail?: string;
+  clientAddress?: string;
+  region?: string;
+  projectFiles?: Array<Record<string, unknown>>;
+  projectImages?: string[];
+  projectSettings?: Record<string, unknown>;
 }
 
 export interface ProjectChange {
@@ -58,6 +66,16 @@ export interface CutPart {
   length: number;
   width: number;
   edgeBanding: boolean;
+  partType?: string;
+  room?: string;
+  depth?: number;
+  clashing?: string;
+  fixedShelf?: string;
+  adjustableShelf?: string;
+  fixedShelfDrilling?: string;
+  adjustableShelfDrilling?: string;
+  information?: string;
+  grain?: boolean;
 }
 
 export interface Cutlist {
@@ -74,4 +92,6 @@ export interface AppUser {
   email: string;
   displayName: string;
   role: UserRole;
+  companyId?: string;
+  permissions?: string[];
 }

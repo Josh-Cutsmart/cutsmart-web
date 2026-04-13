@@ -1,10 +1,16 @@
 @import "tailwindcss";
 
 :root {
-  --brand: #0f766e;
-  --brand-strong: #115e59;
-  --brand-soft: #99f6e4;
-  --ink: #0f172a;
+  --brand: #007aff;
+  --brand-strong: #0064d6;
+  --brand-soft: #d9ebff;
+  --ink: #111111;
+  --bg-app: #f5f5f7;
+  --panel-bg: #ffffff;
+  --panel-border: #e5e5ea;
+  --panel-muted: #fbfbfd;
+  --text-main: #111111;
+  --text-muted: #6e6e73;
 }
 
 * {
@@ -13,8 +19,9 @@
 
 body {
   margin: 0;
-  font-family: "Trebuchet MS", "Segoe UI", "Tahoma", sans-serif;
-  color: var(--ink);
+  font-family: "SF Pro Text", "SF Pro Display", "Segoe UI", "Trebuchet MS", "Tahoma", sans-serif;
+  color: var(--text-main);
+  background: var(--bg-app);
   min-height: 100vh;
 }
 
@@ -23,8 +30,43 @@ h2,
 h3,
 h4 {
   letter-spacing: -0.02em;
+  color: var(--text-main);
+}
+
+p {
+  color: var(--text-main);
 }
 
 .mono {
   font-family: "Consolas", "Lucida Console", monospace;
+}
+
+.cs-app button,
+.cs-app input,
+.cs-app select,
+.cs-app textarea {
+  font-family: inherit;
+}
+
+.cs-app button:not(:disabled),
+.cs-app [role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+.cs-app select,
+.cs-app textarea {
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1f2937;
+}
+
+.cs-app table th {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cs-app table td {
+  color: #1f2937;
 }
