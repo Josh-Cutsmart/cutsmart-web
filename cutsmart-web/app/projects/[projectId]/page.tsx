@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -228,6 +228,11 @@ function sanitizeDerivedValue(value: unknown): string {
   if (lower === "nan" || lower === "undefined" || lower === "null") return "";
   if (/nan/i.test(txt)) return "";
   return txt;
+}
+
+function formatPartCount(value: number): string {
+  const count = Math.max(0, Number.isFinite(value) ? Math.round(value) : 0);
+  return `${count} ${count === 1 ? "Part" : "Parts"}`;
 }
 
 function nestingPieceTooltip(mainName: string, subName: string, room: string, width: number, height: number): string {
@@ -552,6 +557,28 @@ function normalizeDrillingValue(value: unknown): "No" | "Even Spacing" | "Centre
     return "Centre";
   }
   return "No";
+}
+
+function DrillingArrowIcon({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block [transform:rotate(270deg)]"
+      style={{
+        width: 10,
+        height: 10,
+        backgroundColor: color || "#0F172A",
+        WebkitMaskImage: "url('/Arrow.png')",
+        WebkitMaskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskImage: "url('/Arrow.png')",
+        maskRepeat: "no-repeat",
+        maskPosition: "center",
+        maskSize: "contain",
+      }}
+    />
+  );
 }
 
 function parseDrawerHeightTokens(value: string): string[] {
@@ -5007,7 +5034,7 @@ export default function ProjectDetailsPage() {
                   <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
                 </div>
                 <div className="space-y-3 px-0 pb-0">
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 px-1">
                     {partTypeOptions.map((v) => {
                       const color = partTypeColors[v] ?? "#CBD5E1";
                       return (
@@ -5124,7 +5151,7 @@ export default function ProjectDetailsPage() {
                               </div>
                               <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                 <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
-                                  <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                  <DrillingArrowIcon color={draftTextColor} />
                                   Drilling
                                 </span>
                                 <select
@@ -5151,7 +5178,7 @@ export default function ProjectDetailsPage() {
                               </div>
                               <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                 <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
-                                  <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                  <DrillingArrowIcon color={draftTextColor} />
                                   Drilling
                                 </span>
                                 <select
@@ -5263,7 +5290,12 @@ export default function ProjectDetailsPage() {
 
               <section className="relative z-10 -mx-4 min-h-0 w-[calc(100%+2rem)] flex-1 overflow-hidden">
                 <div className="flex h-[50px] items-center justify-between px-1">
-                  <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                  <div className="inline-flex items-center gap-2">
+                    <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                      {formatPartCount(visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0))}
+                    </p>
+                  </div>
                   <div className="ml-auto flex items-center gap-2 pr-1">
                     <input
                       value={cutlistSearch}
@@ -5284,15 +5316,6 @@ export default function ProjectDetailsPage() {
                   </div>
                 </div>
                 <div className="flex h-full min-h-0 flex-col space-y-2 px-0 pb-0">
-                  <div className="flex flex-wrap items-center gap-2 px-1">
-                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
-                      Parts: {visibleCutlistRows.length}
-                    </p>
-                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
-                      Total Qty: {visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0)}
-                    </p>
-                  </div>
-
                   <div className="min-h-0 flex-1 overflow-auto bg-transparent">
                     {groupedCutlistRows.length === 0 && (
                       <div className="px-3 py-6 text-center text-[12px] text-[#7A8798]">No cutlist rows yet.</div>
@@ -5330,7 +5353,7 @@ export default function ProjectDetailsPage() {
                               >
                                 {group.partType}
                               </span>
-                              <span className="text-[12px] font-bold">{groupPartCount} parts</span>
+                              <span className="text-[12px] font-bold">{formatPartCount(groupPartCount)}</span>
                             </div>
                             <button
                               type="button"
@@ -5687,7 +5710,7 @@ export default function ProjectDetailsPage() {
                                                 </div>
                                                 <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                   <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                    <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                    <DrillingArrowIcon color={groupTextColor} />
                                                     Drilling
                                                   </span>
                                                   <select
@@ -5718,7 +5741,7 @@ export default function ProjectDetailsPage() {
                                                 </div>
                                                 <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                   <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                    <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                    <DrillingArrowIcon color={groupTextColor} />
                                                     Drilling
                                                   </span>
                                                   <select
@@ -5783,7 +5806,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                      <DrillingArrowIcon color={groupTextColor} />
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
@@ -5794,7 +5817,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                      <DrillingArrowIcon color={groupTextColor} />
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
@@ -6344,7 +6367,7 @@ export default function ProjectDetailsPage() {
                             <div className="flex items-start justify-between gap-2 px-2">
                               <p className="min-w-0 flex-1 truncate leading-[1.1] text-[11px] font-bold text-[#1F2F46]">{group.boardLabel}</p>
                               <span className="inline-flex shrink-0 min-w-[74px] justify-end leading-[1.1] text-right text-[11px] font-bold text-[#4A5D76]">
-                                {partsCount} parts
+                                {formatPartCount(partsCount)}
                               </span>
                             </div>
                           </div>
@@ -6933,7 +6956,7 @@ export default function ProjectDetailsPage() {
                         </option>
                       ))}
                     </select>
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-white">â–¾</span>
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-white">▾</span>
                   </div>
                 </div>
                 <p className="pt-3 text-[13px] text-[#8A97A8]">Created: {shortDate(project.createdAt)}</p>
@@ -7322,7 +7345,7 @@ export default function ProjectDetailsPage() {
                           <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
                         </div>
                         <div className="space-y-3 px-0 pb-0">
-                          <div className={`flex flex-wrap items-center gap-2 rounded-[8px] ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
+                          <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
                             {partTypeOptions.map((v) => {
                               const color = partTypeColors[v] ?? "#CBD5E1";
                               return (
@@ -7485,7 +7508,12 @@ export default function ProjectDetailsPage() {
 
                       <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-hidden">
                         <div className="flex h-[50px] items-center justify-between px-1">
-                          <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                          <div className="inline-flex items-center gap-2">
+                            <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                            <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                              {formatPartCount(visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0))}
+                            </p>
+                          </div>
                           <div className="ml-auto flex items-center gap-2 pr-1">
                             <input
                               value={cutlistSearch}
@@ -7506,16 +7534,6 @@ export default function ProjectDetailsPage() {
                           </div>
                         </div>
                         <div className="flex h-full flex-col space-y-2 px-0 pb-0">
-                          <div className="flex flex-wrap items-center gap-2 px-1">
-                            <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
-                              Parts: {visibleCutlistRows.length}
-                            </p>
-                            <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
-                              Total Qty: {visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0)}
-                            </p>
-                            {productionCutlist && <span className="ml-auto text-[11px] font-semibold text-[#7B8796]">Synced</span>}
-                          </div>
-
                           <div className="min-h-0 flex-1 overflow-auto bg-transparent">
                             <table className="w-full text-left text-[12px]">
                             <thead className="bg-[#F8FAFC] text-[#1F2937]">
@@ -7752,7 +7770,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                      <DrillingArrowIcon color={rowTextColor} />
                                                       Drilling
                                                     </span>
                                                     <select
@@ -7783,7 +7801,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                      <DrillingArrowIcon color={rowTextColor} />
                                                       Drilling
                                                     </span>
                                                     <select
@@ -7847,7 +7865,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                      <DrillingArrowIcon color={rowTextColor} />
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
@@ -7858,7 +7876,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
+                                                      <DrillingArrowIcon color={rowTextColor} />
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
@@ -8032,7 +8050,7 @@ export default function ProjectDetailsPage() {
                                   <div className="inline-flex items-center gap-2">
                                     <p className="text-[13px] font-extrabold text-[#12345B]">{group.boardLabel}</p>
                                     <span className="rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
-                                      {qtySum} parts
+                                      {formatPartCount(qtySum)}
                                     </span>
                                   </div>
                                   <button
@@ -8136,7 +8154,7 @@ export default function ProjectDetailsPage() {
                                   />
                                   <span className="min-w-0 text-[11px] text-[#334155]">
                                     <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
-                                    <span className="block truncate">{row.partType || "Unassigned"} â€¢ {boardDisplayLabel(row.board) || "No board"} â€¢ {row.room || "-"}</span>
+                                    <span className="block truncate">{row.partType || "Unassigned"} • {boardDisplayLabel(row.board) || "No board"} • {row.room || "-"}</span>
                                   </span>
                                 </label>
                               );
@@ -8456,5 +8474,10 @@ export default function ProjectDetailsPage() {
     </ProtectedRoute>
   );
 }
+
+
+
+
+
 
 
