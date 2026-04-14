@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -114,7 +114,9 @@ type CutlistRow = {
   adjustableShelfDrilling?: string;
   information: string;
   grain: boolean;
+  grainValue: string;
   includeInNesting?: boolean;
+  parentName?: string;
 };
 type CutlistDraftRow = CutlistRow;
 type CabinetryDerivedPiece = {
@@ -194,10 +196,80 @@ function parseSheetSizePair(value: string): [number, number] | null {
   return [a, b];
 }
 
+function normalizeCutlistDimensionValue(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (/nan/i.test(raw) || /undefined|null/i.test(raw)) return "";
+  if (/^0+(?:\.0+)?$/.test(raw)) return "";
+  return raw;
+}
+
+function parseCutlistGrainFields(rawGrain: unknown, rawBoolean?: unknown): { grain: boolean; grainValue: string } {
+  const raw = String(rawGrain ?? "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) {
+    return { grain: Boolean(rawBoolean), grainValue: "" };
+  }
+  if (lower === "yes" || lower === "true") return { grain: true, grainValue: "" };
+  if (lower === "no" || lower === "false" || lower === "0") return { grain: false, grainValue: "" };
+  return { grain: true, grainValue: raw };
+}
+
 function formatMm(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "";
   const rounded = Math.round(value * 100) / 100;
   return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace(/\.?0+$/, "");
+}
+
+function sanitizeDerivedValue(value: unknown): string {
+  const txt = String(value ?? "").trim();
+  if (!txt) return "";
+  const lower = txt.toLowerCase();
+  if (lower === "nan" || lower === "undefined" || lower === "null") return "";
+  if (/nan/i.test(txt)) return "";
+  return txt;
+}
+
+function nestingPieceTooltip(mainName: string, subName: string, room: string, width: number, height: number): string {
+  const hasSub = String(subName || "").trim() && String(mainName || "").trim() !== String(subName || "").trim();
+  const partTitle = "Part:";
+  const roomTitle = "Room:";
+  const sizeTitle = "Size:";
+  const main = String(mainName || subName || "Part").trim();
+  const sub = String(subName || "").trim();
+  const roomText = String(room || "-").trim() || "-";
+  const sizeText = `${Math.round(width)} x ${Math.round(height)}`;
+  const labelWidth = 6;
+  const line = (label: string, value: string) => `${label.padEnd(labelWidth, " ")} ${value}`;
+  const indent = " ".repeat(labelWidth + 1);
+  const partLine = hasSub
+    ? `${line(partTitle, main)}\n${indent}${sub}`
+    : line(partTitle, main);
+  const roomLine = line(roomTitle, roomText);
+  const sizeLine = line(sizeTitle, sizeText);
+  return `${partLine}\n${roomLine}\n${sizeLine}`;
+}
+
+function parseDerivedNestingRowId(rowId: string): { parentRowId: string; kind: "cab" | "drw" | null; subKey: string } {
+  const cabToken = "__cab__";
+  const drwToken = "__drw__";
+  const cabIdx = rowId.indexOf(cabToken);
+  if (cabIdx > 0) {
+    return {
+      parentRowId: rowId.slice(0, cabIdx),
+      kind: "cab",
+      subKey: rowId.slice(cabIdx + cabToken.length),
+    };
+  }
+  const drwIdx = rowId.indexOf(drwToken);
+  if (drwIdx > 0) {
+    return {
+      parentRowId: rowId.slice(0, drwIdx),
+      kind: "drw",
+      subKey: rowId.slice(drwIdx + drwToken.length),
+    };
+  }
+  return { parentRowId: rowId, kind: null, subKey: "" };
 }
 
 function autoClashByDominant(primary: number, secondary: number): { clashLeft: string; clashRight: string } {
@@ -488,6 +560,7 @@ function parseDrawerHeightTokens(value: string): string[] {
   return txt
     .split(/[,+/\\\s]+/)
     .map((t) => t.trim())
+    .map((t) => (["nan", "undefined", "null"].includes(t.toLowerCase()) ? "" : t))
     .filter(Boolean);
 }
 
@@ -762,6 +835,7 @@ function BoardPillDropdown({
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const refreshRect = () => {
     if (!buttonRef.current) return;
@@ -773,10 +847,11 @@ function BoardPillDropdown({
     if (!open) return;
     refreshRect();
     const onDocDown = (e: MouseEvent) => {
-      if (!hostRef.current) return;
-      if (!hostRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inHost = Boolean(hostRef.current?.contains(target));
+      const inMenu = Boolean(menuRef.current?.contains(target));
+      if (!inHost && !inMenu) setOpen(false);
     };
     const onWin = () => refreshRect();
     document.addEventListener("mousedown", onDocDown);
@@ -793,14 +868,14 @@ function BoardPillDropdown({
   const selectedLabel = getLabel(value);
 
   return (
-    <div ref={hostRef} className="relative">
+    <div ref={hostRef} className="relative z-[60] pointer-events-auto">
       <button
         ref={buttonRef}
         type="button"
         disabled={disabled}
         title={title}
         onClick={() => setOpen((v) => !v)}
-        className={`h-8 w-full rounded-[8px] border px-2 text-left text-[12px] disabled:opacity-70 ${className ?? ""}`}
+        className={`pointer-events-auto h-8 w-full rounded-[8px] border px-2 text-left text-[12px] disabled:opacity-70 ${className ?? ""}`}
         style={{ backgroundColor: bg, borderColor: border, color: text }}
       >
         <span className="inline-flex w-full items-center justify-between gap-2">
@@ -819,10 +894,13 @@ function BoardPillDropdown({
         </span>
       </button>
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
-        <div className="fixed inset-0 pointer-events-none" style={{ zIndex: 2147483647 }}>
+        <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
           <div
+            ref={menuRef}
             className="pointer-events-auto fixed max-h-[280px] overflow-auto rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
             style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
@@ -841,6 +919,10 @@ function BoardPillDropdown({
                 <button
                   key={opt}
                   type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
                   onClick={() => {
                     onChange(opt);
                     setOpen(false);
@@ -897,6 +979,7 @@ export default function ProjectDetailsPage() {
   const [isSavingStatus, setIsSavingStatus] = useState(false);
   const [projectTags, setProjectTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
+  const [isTagInputOpen, setIsTagInputOpen] = useState(false);
   const [isSavingTags, setIsSavingTags] = useState(false);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
@@ -918,7 +1001,22 @@ export default function ProjectDetailsPage() {
   const [cutlistSearch, setCutlistSearch] = useState("");
   const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
   const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
+  const [cncSearch, setCncSearch] = useState("");
+  const [cncPartTypeFilter, setCncPartTypeFilter] = useState("All Part Types");
+  const [cncVisibilitySearch, setCncVisibilitySearch] = useState("");
+  const [cncCollapsedGroups, setCncCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [cncVisibilityMap, setCncVisibilityMap] = useState<Record<string, boolean>>({});
   const [nestingSearch, setNestingSearch] = useState("");
+  const [nestingSheetPreview, setNestingSheetPreview] = useState<{ boardKey: string; sheetIndex: number } | null>(null);
+  const [nestingPreviewHoverPieceId, setNestingPreviewHoverPieceId] = useState<string | null>(null);
+  const [nestingTooltip, setNestingTooltip] = useState<null | {
+    text: string;
+    x: number;
+    y: number;
+    bg: string;
+    border: string;
+    textColor: string;
+  }>(null);
   const [nestingVisibilityMap, setNestingVisibilityMap] = useState<Record<string, boolean>>({});
   const [nestingCollapsedGroups, setNestingCollapsedGroups] = useState<Record<string, boolean>>({});
   const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
@@ -939,6 +1037,7 @@ export default function ProjectDetailsPage() {
     adjustableShelfDrilling: "No",
     information: "",
     grain: false,
+    grainValue: "",
   });
   const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
   const [cutlistDraftRows, setCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
@@ -972,6 +1071,11 @@ export default function ProjectDetailsPage() {
   const [editingInfoFocusLine, setEditingInfoFocusLine] = useState<{ rowId: string; lineIndex: number } | null>(null);
   const [expandedCabinetryRows, setExpandedCabinetryRows] = useState<Record<string, boolean>>({});
   const [expandedDrawerRows, setExpandedDrawerRows] = useState<Record<string, boolean>>({});
+  const [cutlistJumpTarget, setCutlistJumpTarget] = useState<{
+    parentRowId: string;
+    kind: "cab" | "drw" | null;
+    subKey: string;
+  } | null>(null);
   const [cutlistUiStateReady, setCutlistUiStateReady] = useState(false);
   const [productionForm, setProductionForm] = useState<ProductionFormState>({
     existing: { carcassThickness: "", panelThickness: "", frontsThickness: "" },
@@ -1096,7 +1200,7 @@ export default function ProjectDetailsPage() {
     return sheet ? `${label} @@ ${sheet}` : label;
   };
   const boardMetaByKey = useMemo(() => {
-    const out: Record<string, { label: string; sheet: string; size: string; lacquer: boolean; thickness: number }> = {};
+    const out: Record<string, { label: string; sheet: string; size: string; lacquer: boolean; thickness: number; grain: boolean }> = {};
     for (const row of productionForm.boardTypes) {
       const key = boardKeyFromRow(row);
       if (!key) continue;
@@ -1112,6 +1216,7 @@ export default function ProjectDetailsPage() {
         size,
         lacquer: Boolean(row.lacquer),
         thickness: toNum(row.thickness),
+        grain: Boolean(row.grain),
       };
     }
     return out;
@@ -1146,10 +1251,16 @@ export default function ProjectDetailsPage() {
     for (const [key, meta] of Object.entries(boardMetaByKey)) out[key] = meta.thickness;
     return out;
   }, [boardMetaByKey]);
+  const boardGrainByLabel = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    for (const [key, meta] of Object.entries(boardMetaByKey)) out[key] = Boolean(meta.grain);
+    return out;
+  }, [boardMetaByKey]);
   const boardSizeFor = (value: string) => boardSizeByLabel[resolveBoardKey(value)] ?? "";
   const boardSheetFor = (value: string) => boardSheetByLabel[resolveBoardKey(value)] ?? "";
   const boardLacquerFor = (value: string) => Boolean(boardLacquerByLabel[resolveBoardKey(value)]);
   const boardThicknessFor = (value: string) => boardThicknessByLabel[resolveBoardKey(value)] ?? 0;
+  const boardGrainFor = (value: string) => Boolean(boardGrainByLabel[resolveBoardKey(value)]);
   const boardDisplayLabel = (value: string) => {
     const key = resolveBoardKey(value);
     return boardMetaByKey[key]?.label ?? String(value || "").trim();
@@ -1164,9 +1275,25 @@ export default function ProjectDetailsPage() {
     () => productionForm.boardTypes.some((row) => Boolean(row.grain)),
     [productionForm.boardTypes],
   );
-  const cutlistEntryGridClass = showCutlistGrainColumn
-    ? "grid grid-cols-[28px_230px_230px_70px_70px_70px_70px_84px_84px_minmax(216px,1fr)_60px] gap-2"
-    : "grid grid-cols-[28px_230px_230px_70px_70px_70px_70px_84px_84px_minmax(216px,1fr)] gap-2";
+  const grainDimensionOptions = (height: string, width: string, depth: string) => {
+    const values = [height, width, depth]
+      .map((v) => String(v ?? "").trim())
+      .filter(Boolean);
+    return Array.from(new Set(values));
+  };
+  const matchesGrainDimension = (grainValue: string, dimensionValue: string) => {
+    const g = String(grainValue ?? "").trim();
+    const d = String(dimensionValue ?? "").trim();
+    if (!g || !d) return false;
+    const gNumMatch = g.match(/-?\d+(?:\.\d+)?/);
+    const dNumMatch = d.match(/-?\d+(?:\.\d+)?/);
+    const gn = gNumMatch ? Number.parseFloat(gNumMatch[0]) : Number.NaN;
+    const dn = dNumMatch ? Number.parseFloat(dNumMatch[0]) : Number.NaN;
+    if (Number.isFinite(gn) && Number.isFinite(dn)) {
+      return Math.abs(gn - dn) < 0.001;
+    }
+    return g.toLowerCase() === d.toLowerCase();
+  };
 
   const tabItemsWithAccess = useMemo(
     () =>
@@ -1380,6 +1507,74 @@ export default function ProjectDetailsPage() {
     }
     return out;
   }, [companyDoc?.partTypes]);
+
+  const partTypeIncludeInNestingMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const includeRaw =
+        item.includeInNesting ??
+        item.inNesting ??
+        item.inclInNesting ??
+        item.inclNesting ??
+        item["Incl in Nesting"] ??
+        item["InclInNesting"] ??
+        item["incl in nesting"];
+      const include =
+        includeRaw === undefined
+          ? true
+          : !(
+              includeRaw === false ||
+              String(includeRaw ?? "").trim().toLowerCase() === "false" ||
+              String(includeRaw ?? "").trim().toLowerCase() === "no" ||
+              String(includeRaw ?? "").trim() === "0"
+            );
+      out[name.trim().toLowerCase()] = include;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isPartTypeIncludedInNesting = (partType: string) =>
+    partTypeIncludeInNestingMap[String(partType || "").trim().toLowerCase()] !== false;
+
+  const partTypeIncludeInCncMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const includeRaw =
+        item.includeInCutlists ??
+        item.inCutlists ??
+        item.inclInCutlists ??
+        item.inclCutlists ??
+        item.includeInCnc ??
+        item.inCnc ??
+        item["Incl in Cutlists"] ??
+        item["InclInCutlists"] ??
+        item["incl in cutlists"];
+      const include =
+        includeRaw === undefined
+          ? true
+          : !(
+              includeRaw === false ||
+              String(includeRaw ?? "").trim().toLowerCase() === "false" ||
+              String(includeRaw ?? "").trim().toLowerCase() === "no" ||
+              String(includeRaw ?? "").trim() === "0"
+            );
+      out[name.trim().toLowerCase()] = include;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isPartTypeIncludedInCnc = (partType: string) =>
+    partTypeIncludeInCncMap[String(partType || "").trim().toLowerCase()] !== false;
 
   const partTypeColors = useMemo(() => {
     const defaults: Record<string, string> = {
@@ -1698,7 +1893,7 @@ export default function ProjectDetailsPage() {
         height: "",
         width: formatMm(widthMinus2T),
         depth: formatMm(depthMinusT),
-        quantity: "1",
+        quantity: String(mainQty),
         ...autoClashByDominant(widthMinus2T, depthMinusT),
       },
       {
@@ -1707,7 +1902,7 @@ export default function ProjectDetailsPage() {
         height: "",
         width: formatMm(widthMinus2T),
         depth: formatMm(depthMinusT),
-        quantity: "1",
+        quantity: String(mainQty),
         ...autoClashByDominant(widthMinus2T, depthMinusT),
       },
       {
@@ -1716,7 +1911,7 @@ export default function ProjectDetailsPage() {
         height: formatMm(height),
         width: "",
         depth: formatMm(depth),
-        quantity: "1",
+        quantity: String(mainQty),
         ...autoClashByDominant(height, depth),
       },
       {
@@ -1725,7 +1920,7 @@ export default function ProjectDetailsPage() {
         height: formatMm(height),
         width: "",
         depth: formatMm(depth),
-        quantity: "1",
+        quantity: String(mainQty),
         ...autoClashByDominant(height, depth),
       },
       {
@@ -1734,7 +1929,7 @@ export default function ProjectDetailsPage() {
         height: formatMm(height),
         width: "",
         depth: formatMm(depthMinusT),
-        quantity: "1",
+        quantity: String(mainQty),
         clashLeft: "",
         clashRight: "",
       },
@@ -1785,7 +1980,7 @@ export default function ProjectDetailsPage() {
       const token = String(opt.token || "").trim();
       if (!token) continue;
       const key = token.toLowerCase();
-      letterValueMap[key] = String(opt.value || "").trim() || token;
+      letterValueMap[key] = sanitizeDerivedValue(opt.value) || token;
     }
     return {
       bottomsWidthMinus: drawerRow?.bottomsWidthMinus ?? null,
@@ -1800,6 +1995,10 @@ export default function ProjectDetailsPage() {
     productionForm.hardware.hardwareCategory,
     productionForm.hardware.newDrawerType,
   ]);
+  const hasDrawerRowsInUse = useMemo(
+    () => cutlistRows.some((row) => isDrawerPartType(String(row.partType || ""))),
+    [cutlistRows, isDrawerPartType],
+  );
 
   const buildDrawerDerivedPieces = (row: CutlistRow): DrawerDerivedPiece[] => {
     const widthVal = toNum(row.width);
@@ -1846,8 +2045,8 @@ export default function ProjectDetailsPage() {
       key: "drawer_bottom",
       partName: "Bottom",
       height: "",
-      width: formatMm(bottomW ?? 0),
-      depth: formatMm(bottomD ?? 0),
+      width: bottomW != null ? formatMm(bottomW) : "",
+      depth: bottomD != null ? formatMm(bottomD) : "",
       quantity: String(bottomQty),
       clashLeft: "",
       clashRight: "",
@@ -1855,12 +2054,17 @@ export default function ProjectDetailsPage() {
 
     const grouped: Record<string, number> = {};
     for (const token of tokens) {
-      const key = String(token || "").trim();
+      const key = sanitizeDerivedValue(token);
+      if (!key) continue;
       grouped[key] = (grouped[key] ?? 0) + 1;
     }
     for (const [token, count] of Object.entries(grouped)) {
-      const mappedHeight = selectedDrawerBreakdown.letterValueMap[String(token || "").trim().toLowerCase()] || token;
-      const backHNum = toNum(mappedHeight);
+      const tokenClean = sanitizeDerivedValue(token);
+      const mappedFromSettings = sanitizeDerivedValue(
+        selectedDrawerBreakdown.letterValueMap[tokenClean.toLowerCase()],
+      );
+      const mappedHeight = mappedFromSettings || tokenClean;
+      const backHNum = toNum(mappedFromSettings || tokenClean);
       let clashLeft = "";
       let clashRight = "";
       if (backW != null && backW > 0 && backHNum > 0) {
@@ -1868,10 +2072,10 @@ export default function ProjectDetailsPage() {
         else clashLeft = "1L";
       }
       pieces.push({
-        key: `drawer_back_${token || "blank"}`,
-        partName: token ? `Back (${token})` : "Back",
+        key: `drawer_back_${tokenClean || "blank"}`,
+        partName: tokenClean ? `Back (${tokenClean})` : "Back",
         height: mappedHeight,
-        width: formatMm(backW ?? 0),
+        width: backW != null ? formatMm(backW) : "",
         depth: "",
         quantity: String(Math.max(1, count)),
         clashLeft,
@@ -1906,7 +2110,7 @@ export default function ProjectDetailsPage() {
       height: String(seed?.height ?? ""),
       width: String(seed?.width ?? ""),
       depth: String(seed?.depth ?? ""),
-      quantity: String(seed?.quantity ?? "1"),
+      quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
       clashLeft: left,
       clashRight: right,
@@ -1916,6 +2120,7 @@ export default function ProjectDetailsPage() {
       adjustableShelfDrilling: normalizeDrillingValue(seed?.adjustableShelfDrilling),
       information: String(seed?.information ?? ""),
       grain: Boolean(seed?.grain ?? false),
+      grainValue: String(seed?.grainValue ?? ""),
     };
   };
 
@@ -2088,6 +2293,7 @@ export default function ProjectDetailsPage() {
           const item = (row ?? {}) as Record<string, unknown>;
           const clashing = String(item.Clashing ?? item.clashing ?? "");
           const split = splitClashing(clashing);
+          const grainParsed = parseCutlistGrainFields(item.Grain ?? item.grain, item.grain);
           const includeInNestingRaw = item.includeInNesting ?? item.IncludeInNesting;
           const includeInNesting =
             includeInNestingRaw === false ||
@@ -2100,9 +2306,9 @@ export default function ProjectDetailsPage() {
             partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
             board: String(item.Board ?? item.board ?? ""),
             name: String(item.Name ?? item.name ?? ""),
-            height: String(item.Height ?? item.height ?? ""),
-            width: String(item.Width ?? item.width ?? ""),
-            depth: String(item.Depth ?? item.depth ?? ""),
+            height: normalizeCutlistDimensionValue(item.Height ?? item.height),
+            width: normalizeCutlistDimensionValue(item.Width ?? item.width),
+            depth: normalizeCutlistDimensionValue(item.Depth ?? item.depth),
             quantity: String(item.Quantity ?? item.quantity ?? 1),
             clashing,
             clashLeft: String(item.clashLeft ?? split.left ?? ""),
@@ -2112,7 +2318,8 @@ export default function ProjectDetailsPage() {
             fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item["Fixed Shelf Drilling"]),
             adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item["Adjustable Shelf Drilling"]),
             information: String(item.Information ?? item.information ?? ""),
-            grain: String(item.Grain ?? item.grain ?? "").toLowerCase() === "yes" || Boolean(item.grain),
+            grain: grainParsed.grain,
+            grainValue: grainParsed.grainValue,
             includeInNesting,
           };
         });
@@ -2126,27 +2333,35 @@ export default function ProjectDetailsPage() {
       const all = await fetchCutlists(project.id, user?.uid);
       const production = all.find((item) => item.type === "production") ?? all[0] ?? null;
       setProductionCutlist(production);
-      const mapped = (production?.parts ?? []).map((part, idx) => ({
-        id: String(part.id ?? `row_${idx + 1}`),
-        room: String(part.room ?? "Project Cutlist"),
-        partType: String(part.partType ?? ""),
-        board: String(part.material ?? ""),
-        name: String(part.label ?? ""),
-        height: String(part.length ?? ""),
-        width: String(part.width ?? ""),
-        depth: String(part.depth ?? ""),
-        quantity: String(part.qty ?? 1),
-        clashing: String(part.clashing ?? ""),
-        clashLeft: splitClashing(String(part.clashing ?? "")).left,
-        clashRight: splitClashing(String(part.clashing ?? "")).right,
-        fixedShelf: String((part as unknown as Record<string, unknown>).fixedShelf ?? ""),
-        adjustableShelf: String((part as unknown as Record<string, unknown>).adjustableShelf ?? ""),
-        fixedShelfDrilling: normalizeDrillingValue((part as unknown as Record<string, unknown>).fixedShelfDrilling),
-        adjustableShelfDrilling: normalizeDrillingValue((part as unknown as Record<string, unknown>).adjustableShelfDrilling),
-        information: String(part.information ?? ""),
-        grain: Boolean(part.grain ?? false),
-        includeInNesting: true,
-      }));
+      const mapped = (production?.parts ?? []).map((part, idx) => {
+        const legacy = part as unknown as Record<string, unknown>;
+        const grainParsed = parseCutlistGrainFields(
+          legacy.Grain ?? legacy.grain ?? part.grain,
+          legacy.grain ?? part.grain,
+        );
+        return {
+          id: String(part.id ?? `row_${idx + 1}`),
+          room: String(part.room ?? legacy.Room ?? "Project Cutlist"),
+          partType: String(part.partType ?? legacy["Part Type"] ?? ""),
+          board: String(part.material ?? legacy.Board ?? ""),
+          name: String(part.label ?? legacy.Name ?? ""),
+          height: normalizeCutlistDimensionValue(part.length ?? legacy.Height),
+          width: normalizeCutlistDimensionValue(part.width ?? legacy.Width),
+          depth: normalizeCutlistDimensionValue(part.depth ?? legacy.Depth),
+          quantity: String(part.qty ?? legacy.Quantity ?? 1),
+          clashing: String(part.clashing ?? legacy.Clashing ?? ""),
+          clashLeft: splitClashing(String(part.clashing ?? legacy.Clashing ?? "")).left,
+          clashRight: splitClashing(String(part.clashing ?? legacy.Clashing ?? "")).right,
+          fixedShelf: String(legacy.fixedShelf ?? legacy["Fixed Shelf"] ?? ""),
+          adjustableShelf: String(legacy.adjustableShelf ?? legacy["Adjustable Shelf"] ?? ""),
+          fixedShelfDrilling: normalizeDrillingValue(legacy.fixedShelfDrilling ?? legacy["Fixed Shelf Drilling"]),
+          adjustableShelfDrilling: normalizeDrillingValue(legacy.adjustableShelfDrilling ?? legacy["Adjustable Shelf Drilling"]),
+          information: String(part.information ?? legacy.Information ?? ""),
+          grain: grainParsed.grain,
+          grainValue: grainParsed.grainValue,
+          includeInNesting: true,
+        };
+      });
       setCutlistRows(mapped);
       setNestingVisibilityMap(
         Object.fromEntries(mapped.map((row) => [row.id, row.includeInNesting !== false])),
@@ -2382,11 +2597,13 @@ export default function ProjectDetailsPage() {
     if (exists) {
       setTagInput("");
       setShowTagSuggestions(false);
+      setIsTagInputOpen(false);
       return;
     }
     const nextTags = [...projectTags, next].slice(0, 5);
     setTagInput("");
     setShowTagSuggestions(false);
+    setIsTagInputOpen(false);
     await saveTags(nextTags);
   };
 
@@ -2666,6 +2883,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onHardwareCategoryChange = async (category: string) => {
+    if (hasDrawerRowsInUse) return;
     const drawer = defaultDrawerForCategory(category);
     const next = {
       ...productionForm,
@@ -2680,6 +2898,7 @@ export default function ProjectDetailsPage() {
   };
 
   const onChangeDrawerType = async (value: string) => {
+    if (hasDrawerRowsInUse) return;
     const next = {
       ...productionForm,
       hardware: { ...productionForm.hardware, newDrawerType: value },
@@ -2909,7 +3128,7 @@ export default function ProjectDetailsPage() {
         fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
         adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
         Information: row.information,
-        Grain: row.grain ? "Yes" : "",
+        Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
         includeInNesting: row.includeInNesting !== false,
       };
     });
@@ -2973,6 +3192,7 @@ export default function ProjectDetailsPage() {
       adjustableShelfDrilling: "No",
       information: "",
       grain: false,
+      grainValue: "",
     });
     await persistCutlistRows(next);
   };
@@ -2981,7 +3201,9 @@ export default function ProjectDetailsPage() {
     setActiveCutlistPartType(partType);
     setCutlistDraftRows((prev) => {
       const last = prev[prev.length - 1];
-      const seed = last ? { board: last.board, room: last.room } : { board: cutlistBoardOptions[0] ?? "" };
+      const seed = last
+        ? { board: last.board, room: last.room, quantity: "" }
+        : { board: cutlistBoardOptions[0] ?? "", quantity: "" };
       return [...prev, createDraftCutlistRow(partType, cutlistEntryRoom || defaultCutlistRoom, seed)];
     });
   };
@@ -3007,11 +3229,14 @@ export default function ProjectDetailsPage() {
       const currentLeft = String(prev.clashLeft ?? "").trim().toUpperCase();
       const currentRight = String(prev.clashRight ?? "").trim().toUpperCase();
       const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
+      const grainAllowed = !!(board && boardGrainFor(String(board).trim()));
       const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
       const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
       return {
         ...prev,
         board,
+        grainValue: grainAllowed ? String(prev.grainValue ?? "") : "",
+        grain: grainAllowed ? Boolean(String(prev.grainValue ?? "").trim()) : false,
         clashLeft,
         clashRight,
         clashing: joinClashing(clashLeft, clashRight),
@@ -3027,11 +3252,14 @@ export default function ProjectDetailsPage() {
         const currentLeft = String(row.clashLeft ?? "").trim().toUpperCase();
         const currentRight = String(row.clashRight ?? "").trim().toUpperCase();
         const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
+        const grainAllowed = !!(board && boardGrainFor(String(board).trim()));
         const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
         const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
         return {
           ...row,
           board,
+          grainValue: grainAllowed ? String(row.grainValue ?? "") : "",
+          grain: grainAllowed ? Boolean(String(row.grainValue ?? "").trim()) : false,
           clashLeft,
           clashRight,
           clashing: joinClashing(clashLeft, clashRight),
@@ -3310,6 +3538,18 @@ export default function ProjectDetailsPage() {
     () => isCabinetryPartType(cutlistEntry.partType),
     [cutlistEntry.partType],
   );
+  const singleEntryHeightGrainMatch = useMemo(
+    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.height),
+    [cutlistEntry.grainValue, cutlistEntry.height],
+  );
+  const singleEntryWidthGrainMatch = useMemo(
+    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.width),
+    [cutlistEntry.grainValue, cutlistEntry.width],
+  );
+  const singleEntryDepthGrainMatch = useMemo(
+    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.depth),
+    [cutlistEntry.grainValue, cutlistEntry.depth],
+  );
 
   useEffect(() => {
     if (!isDrawerPartType(cutlistEntry.partType)) return;
@@ -3334,6 +3574,159 @@ export default function ProjectDetailsPage() {
       .map(([partType, rows]) => ({ partType, rows }));
   }, [visibleCutlistRows, partTypeOptions]);
 
+  const cncSourceRows = useMemo(() => {
+    return cutlistRows.filter((row) => isPartTypeIncludedInCnc(row.partType));
+  }, [cutlistRows, isPartTypeIncludedInCnc]);
+
+  const cncExpandedRows = useMemo(() => {
+    const out: Array<CutlistRow & { sourceRowId: string }> = [];
+    for (const row of cncSourceRows) {
+      const visible = typeof cncVisibilityMap[row.id] === "boolean" ? cncVisibilityMap[row.id] : true;
+      if (!visible) continue;
+
+      if (isCabinetryPartType(row.partType)) {
+        const pieces = buildCabinetryDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          out.push({
+            ...row,
+            id: `${row.id}__cab__${piece.key}`,
+            sourceRowId: row.id,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      if (isDrawerPartType(row.partType)) {
+        const pieces = buildDrawerDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          out.push({
+            ...row,
+            id: `${row.id}__drw__${piece.key}`,
+            sourceRowId: row.id,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      out.push({ ...row, sourceRowId: row.id });
+    }
+    return out;
+  }, [
+    cncSourceRows,
+    cncVisibilityMap,
+    isCabinetryPartType,
+    isDrawerPartType,
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+  ]);
+
+  const filteredCncRows = useMemo(() => {
+    const q = String(cncSearch || "").trim().toLowerCase();
+    return cncExpandedRows.filter((row) => {
+      const typeOk = cncPartTypeFilter === "All Part Types" || row.partType === cncPartTypeFilter;
+      if (!typeOk) return false;
+      if (!q) return true;
+      return [row.room, row.partType, row.board, row.name, row.information]
+        .some((v) => String(v || "").toLowerCase().includes(q));
+    });
+  }, [cncExpandedRows, cncPartTypeFilter, cncSearch]);
+
+  const cncRowsByBoard = useMemo(() => {
+    const rank = new Map(partTypeOptions.map((name, idx) => [name, idx]));
+    const pieceKindRank = (name: string) => {
+      const txt = String(name || "").toLowerCase();
+      if (/\bbottom\b/.test(txt)) return 0;
+      if (/\bback\b/.test(txt)) return 1;
+      return 2;
+    };
+    const map = new Map<string, { boardKey: string; boardLabel: string; rows: (CutlistRow & { sourceRowId: string })[] }>();
+    for (const row of filteredCncRows) {
+      const boardKey = String(row.board || "").trim() || "Unknown Board";
+      const boardLabel = boardDisplayLabel(boardKey) || boardKey || "Unknown Board";
+      const hit = map.get(boardKey);
+      if (hit) {
+        hit.rows.push(row);
+      } else {
+        map.set(boardKey, { boardKey, boardLabel, rows: [row] });
+      }
+    }
+    return Array.from(map.values())
+      .sort((a, b) => a.boardLabel.localeCompare(b.boardLabel))
+      .map((group) => ({
+        ...group,
+        rows: [...group.rows].sort((a, b) => {
+          const ar = rank.has(a.partType) ? Number(rank.get(a.partType)) : 999;
+          const br = rank.has(b.partType) ? Number(rank.get(b.partType)) : 999;
+          return (
+            ar - br ||
+            pieceKindRank(a.name) - pieceKindRank(b.name) ||
+            String(a.name || "").localeCompare(String(b.name || "")) ||
+            String(a.id).localeCompare(String(b.id))
+          );
+        }),
+      }));
+  }, [filteredCncRows, partTypeOptions, boardDisplayLabel]);
+
+  const cncVisibilityRows = useMemo(() => {
+    const q = String(cncVisibilitySearch || "").trim().toLowerCase();
+    return cncSourceRows.filter((row) => {
+      if (!q) return true;
+      return [row.room, row.partType, row.board, row.name, row.information]
+        .some((v) => String(v || "").toLowerCase().includes(q));
+    });
+  }, [cncSourceRows, cncVisibilitySearch]);
+
+  const cncSidebarGroups = useMemo(() => {
+    const rank = new Map(partTypeOptions.map((name, idx) => [String(name || "").trim(), idx]));
+    const grouped = new Map<string, CutlistRow[]>();
+    for (const row of cncVisibilityRows) {
+      const key = String(row.partType || "Unassigned").trim() || "Unassigned";
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    return Array.from(grouped.entries())
+      .map(([partType, rows]) => ({
+        partType,
+        rows: [...rows].sort((a, b) => {
+          const byBoard = String(boardDisplayLabel(a.board) || "").localeCompare(String(boardDisplayLabel(b.board) || ""));
+          if (byBoard !== 0) return byBoard;
+          const byName = String(a.name || "").localeCompare(String(b.name || ""));
+          if (byName !== 0) return byName;
+          return String(a.room || "").localeCompare(String(b.room || ""));
+        }),
+      }))
+      .sort((a, b) => {
+        const ar = rank.has(a.partType) ? Number(rank.get(a.partType)) : 999;
+        const br = rank.has(b.partType) ? Number(rank.get(b.partType)) : 999;
+        return ar - br || a.partType.localeCompare(b.partType);
+      });
+  }, [boardDisplayLabel, cncVisibilityRows, partTypeOptions]);
+
   const nestingSettings = useMemo(() => {
     const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
     const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
@@ -3346,33 +3739,220 @@ export default function ProjectDetailsPage() {
 
   const nestingVisibleRows = useMemo(() => {
     const q = String(nestingSearch || "").trim().toLowerCase();
-    return cutlistRows.filter((row) => {
+    const expanded: CutlistRow[] = [];
+    for (const row of cutlistRows) {
+      if (!isPartTypeIncludedInNesting(row.partType)) continue;
       const visible = typeof nestingVisibilityMap[row.id] === "boolean" ? nestingVisibilityMap[row.id] : row.includeInNesting !== false;
-      if (!visible) return false;
-      if (!q) return true;
-      return [row.name, row.board, row.partType, row.room, row.information].some((v) =>
-        String(v || "").toLowerCase().includes(q),
-      );
-    });
-  }, [cutlistRows, nestingSearch, nestingVisibilityMap]);
+      if (!visible) continue;
+
+      if (isCabinetryPartType(row.partType)) {
+        const pieces = buildCabinetryDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          const nestedRow: CutlistRow = {
+            ...row,
+            id: `${row.id}__cab__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          };
+          if (
+            !q ||
+            [nestedRow.name, nestedRow.board, nestedRow.partType, nestedRow.room, nestedRow.information]
+              .some((v) => String(v || "").toLowerCase().includes(q))
+          ) {
+            expanded.push(nestedRow);
+          }
+        }
+        continue;
+      }
+
+      if (isDrawerPartType(row.partType)) {
+        const pieces = buildDrawerDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          const nestedRow: CutlistRow = {
+            ...row,
+            id: `${row.id}__drw__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          };
+          if (
+            !q ||
+            [nestedRow.name, nestedRow.board, nestedRow.partType, nestedRow.room, nestedRow.information]
+              .some((v) => String(v || "").toLowerCase().includes(q))
+          ) {
+            expanded.push(nestedRow);
+          }
+        }
+        continue;
+      }
+
+      if (
+        !q ||
+        [row.name, row.board, row.partType, row.room, row.information]
+          .some((v) => String(v || "").toLowerCase().includes(q))
+      ) {
+        expanded.push(row);
+      }
+    }
+    return expanded;
+  }, [
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+    cutlistRows,
+    isCabinetryPartType,
+    isDrawerPartType,
+    isPartTypeIncludedInNesting,
+    nestingSearch,
+    nestingVisibilityMap,
+  ]);
+
+  const nestingRowsForSheetCount = useMemo(() => {
+    const expanded: CutlistRow[] = [];
+    for (const row of cutlistRows) {
+      if (!isPartTypeIncludedInNesting(row.partType)) continue;
+
+      if (isCabinetryPartType(row.partType)) {
+        const pieces = buildCabinetryDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          expanded.push({
+            ...row,
+            id: `${row.id}__cab__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      if (isDrawerPartType(row.partType)) {
+        const pieces = buildDrawerDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          expanded.push({
+            ...row,
+            id: `${row.id}__drw__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      expanded.push(row);
+    }
+    return expanded;
+  }, [
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+    cutlistRows,
+    isCabinetryPartType,
+    isDrawerPartType,
+    isPartTypeIncludedInNesting,
+  ]);
 
   const nestingRowsByBoard = useMemo(() => {
     const grouped = new Map<string, CutlistRow[]>();
     for (const row of nestingVisibleRows) {
-      const key = boardDisplayLabel(row.board) || "Unassigned Board";
+      const key = resolveBoardKey(String(row.board || "")) || boardDisplayLabel(row.board) || "Unassigned Board";
       grouped.set(key, [...(grouped.get(key) ?? []), row]);
     }
     return Array.from(grouped.entries())
-      .map(([boardLabel, rows]) => ({
-        boardLabel,
+      .map(([boardKey, rows]) => ({
+        boardKey,
+        boardLabel: boardDisplayLabel(boardKey) || boardKey,
         rows: [...rows].sort((a, b) => {
           const byType = String(a.partType || "").localeCompare(String(b.partType || ""));
           if (byType !== 0) return byType;
           return String(a.name || "").localeCompare(String(b.name || ""));
         }),
       }))
-      .sort((a, b) => a.boardLabel.localeCompare(b.boardLabel));
-  }, [nestingVisibleRows]);
+      .sort((a, b) => a.boardLabel.localeCompare(b.boardLabel) || a.boardKey.localeCompare(b.boardKey));
+  }, [boardDisplayLabel, nestingVisibleRows, resolveBoardKey]);
+  const nestingRowsByBoardForSheetCount = useMemo(() => {
+    const grouped = new Map<string, CutlistRow[]>();
+    for (const row of nestingRowsForSheetCount) {
+      const key = resolveBoardKey(String(row.board || "")) || boardDisplayLabel(row.board) || "Unassigned Board";
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    return Array.from(grouped.entries())
+      .map(([boardKey, rows]) => ({
+        boardKey,
+        boardLabel: boardDisplayLabel(boardKey) || boardKey,
+        rows: [...rows].sort((a, b) => {
+          const byType = String(a.partType || "").localeCompare(String(b.partType || ""));
+          if (byType !== 0) return byType;
+          return String(a.name || "").localeCompare(String(b.name || ""));
+        }),
+      }))
+      .sort((a, b) => a.boardLabel.localeCompare(b.boardLabel) || a.boardKey.localeCompare(b.boardKey));
+  }, [boardDisplayLabel, nestingRowsForSheetCount, resolveBoardKey]);
+
+  const nestingSidebarGroups = useMemo(() => {
+    const q = String(nestingSearch || "").trim().toLowerCase();
+    const filtered = cutlistRows.filter((row) => {
+      if (!isPartTypeIncludedInNesting(row.partType)) return false;
+      if (!q) return true;
+      return [row.name, row.board, row.partType, row.room, row.information]
+        .some((v) => String(v || "").toLowerCase().includes(q));
+    });
+
+    const grouped = new Map<string, CutlistRow[]>();
+    for (const row of filtered) {
+      const key = String(row.partType || "Unassigned").trim() || "Unassigned";
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+
+    return Array.from(grouped.entries())
+      .map(([partType, rows]) => ({
+        partType,
+        rows: [...rows].sort((a, b) => {
+          const byName = String(a.name || "").localeCompare(String(b.name || ""));
+          if (byName !== 0) return byName;
+          const byBoard = String(boardDisplayLabel(a.board) || "").localeCompare(String(boardDisplayLabel(b.board) || ""));
+          if (byBoard !== 0) return byBoard;
+          return String(a.room || "").localeCompare(String(b.room || ""));
+        }),
+      }))
+      .sort((a, b) => a.partType.localeCompare(b.partType));
+  }, [boardDisplayLabel, cutlistRows, isPartTypeIncludedInNesting, nestingSearch]);
 
   const nestingBoardLayouts = useMemo(() => {
     type FlatPiece = {
@@ -3400,8 +3980,12 @@ export default function ProjectDetailsPage() {
       return Number.isFinite(n) && n > 0 ? n : 0;
     };
 
-    const parseBoardSize = (boardLabel: string, fallbackW: number, fallbackH: number) => {
-      const raw = String(boardSizeByLabel[resolveBoardKey(boardLabel)] ?? "");
+    const parseBoardSize = (boardKey: string, fallbackW: number, fallbackH: number) => {
+      const resolved = resolveBoardKey(boardKey);
+      const raw =
+        String(boardSheetByLabel[resolved] ?? "") ||
+        String(boardKey).split("@@")[1]?.trim() ||
+        "";
       const match = raw.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)/);
       if (!match) {
         return { width: fallbackW, height: fallbackH, pill: `${(fallbackW / 1000).toFixed(1)}` };
@@ -3417,7 +4001,7 @@ export default function ProjectDetailsPage() {
     };
 
     return nestingRowsByBoard.map((group) => {
-      const parsed = parseBoardSize(group.boardLabel, nestingSettings.sheetHeight, nestingSettings.sheetWidth);
+      const parsed = parseBoardSize(group.boardKey, nestingSettings.sheetHeight, nestingSettings.sheetWidth);
       const sheetWidth = Math.max(200, parsed.width);
       const sheetHeight = Math.max(150, parsed.height);
       const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
@@ -3427,8 +4011,23 @@ export default function ProjectDetailsPage() {
       const pieces: FlatPiece[] = [];
       for (const row of group.rows) {
         const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
-        const width = toPositiveNum(row.width) || toPositiveNum(row.depth) || 120;
-        const height = toPositiveNum(row.height) || toPositiveNum(row.depth) || 80;
+        const dimH = toPositiveNum(row.height);
+        const dimW = toPositiveNum(row.width);
+        const dimD = toPositiveNum(row.depth);
+        const grainDim = toPositiveNum(row.grainValue);
+        let width = dimW || dimD || 120;
+        let height = dimH || dimD || 80;
+
+        if (grainDim > 0) {
+          const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
+          const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
+          if (hasGrainMatch) {
+            const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
+            const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
+            width = grainDim;
+            height = cross;
+          }
+        }
         const partType = String(row.partType || "Unassigned");
         const room = String(row.room || "Unassigned");
         const name = String(row.name || "Part");
@@ -3463,8 +4062,34 @@ export default function ProjectDetailsPage() {
       };
 
       for (const piece of sorted) {
-        const w = Math.min(piece.width, innerW);
-        const h = Math.min(piece.height, innerH);
+        let w = piece.width;
+        let h = piece.height;
+        const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
+
+        if (!grainLocked) {
+          const canNormalFit = w <= innerW && h <= innerH;
+          const canRotatedFit = h <= innerW && w <= innerH;
+          const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
+
+          if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
+            const nextW = h;
+            const nextH = w;
+            w = nextW;
+            h = nextH;
+          } else if (!canNormalFit && !canRotatedFit) {
+            const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
+            const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
+            if (rotatedOverflow < normalOverflow) {
+              const nextW = h;
+              const nextH = w;
+              w = nextW;
+              h = nextH;
+            }
+          }
+        }
+
+        w = Math.min(w, innerW);
+        h = Math.min(h, innerH);
 
         if (x > 0 && x + w > innerW) {
           x = 0;
@@ -3493,6 +4118,7 @@ export default function ProjectDetailsPage() {
       }
 
       return {
+        boardKey: group.boardKey,
         boardLabel: group.boardLabel,
         boardPill: parsed.pill,
         sheetWidth,
@@ -3502,7 +4128,179 @@ export default function ProjectDetailsPage() {
         sheets,
       };
     });
-  }, [nestingRowsByBoard, nestingSettings.kerf, nestingSettings.margin, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSizeByLabel]);
+  }, [nestingRowsByBoard, nestingSettings.kerf, nestingSettings.margin, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSheetByLabel, resolveBoardKey]);
+  const nestingBoardLayoutsForSheetCount = useMemo(() => {
+    type FlatPiece = {
+      id: string;
+      rowId: string;
+      row: CutlistRow;
+      name: string;
+      partType: string;
+      room: string;
+      width: number;
+      height: number;
+      area: number;
+    };
+    type SheetPlacement = {
+      piece: FlatPiece;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
+    type SheetLayout = { index: number; placements: SheetPlacement[] };
+
+    const toPositiveNum = (v: unknown) => {
+      const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+
+    const parseBoardSize = (boardKey: string, fallbackW: number, fallbackH: number) => {
+      const resolved = resolveBoardKey(boardKey);
+      const raw =
+        String(boardSheetByLabel[resolved] ?? "") ||
+        String(boardKey).split("@@")[1]?.trim() ||
+        "";
+      const match = raw.match(/(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)/);
+      if (!match) {
+        return { width: fallbackW, height: fallbackH, pill: `${(fallbackW / 1000).toFixed(1)}` };
+      }
+      const a = Number.parseFloat(match[1]);
+      const b = Number.parseFloat(match[2]);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) {
+        return { width: fallbackW, height: fallbackH, pill: `${(fallbackW / 1000).toFixed(1)}` };
+      }
+      const width = Math.max(a, b);
+      const height = Math.min(a, b);
+      return { width, height, pill: `${(width / 1000).toFixed(1)}` };
+    };
+
+    return nestingRowsByBoardForSheetCount.map((group) => {
+      const parsed = parseBoardSize(group.boardKey, nestingSettings.sheetHeight, nestingSettings.sheetWidth);
+      const sheetWidth = Math.max(200, parsed.width);
+      const sheetHeight = Math.max(150, parsed.height);
+      const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
+      const innerH = Math.max(80, sheetHeight - nestingSettings.margin * 2);
+      const kerf = Math.max(0, nestingSettings.kerf);
+
+      const pieces: FlatPiece[] = [];
+      for (const row of group.rows) {
+        const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+        const dimH = toPositiveNum(row.height);
+        const dimW = toPositiveNum(row.width);
+        const dimD = toPositiveNum(row.depth);
+        const grainDim = toPositiveNum(row.grainValue);
+        let width = dimW || dimD || 120;
+        let height = dimH || dimD || 80;
+
+        if (grainDim > 0) {
+          const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
+          const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
+          if (hasGrainMatch) {
+            const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
+            const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
+            width = grainDim;
+            height = cross;
+          }
+        }
+        const partType = String(row.partType || "Unassigned");
+        const room = String(row.room || "Unassigned");
+        const name = String(row.name || "Part");
+        for (let i = 0; i < qty; i += 1) {
+          pieces.push({
+            id: `${row.id}_${i + 1}`,
+            rowId: row.id,
+            row,
+            name,
+            partType,
+            room,
+            width: Math.max(30, width),
+            height: Math.max(24, height),
+            area: Math.max(1, width * height),
+          });
+        }
+      }
+
+      const sorted = [...pieces].sort((a, b) => b.area - a.area);
+      const sheets: SheetLayout[] = [];
+      let current: SheetLayout = { index: 1, placements: [] };
+      let x = 0;
+      let y = 0;
+      let rowMax = 0;
+
+      const startNewSheet = () => {
+        if (current.placements.length > 0) sheets.push(current);
+        current = { index: sheets.length + 1, placements: [] };
+        x = 0;
+        y = 0;
+        rowMax = 0;
+      };
+
+      for (const piece of sorted) {
+        let w = piece.width;
+        let h = piece.height;
+        const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
+
+        if (!grainLocked) {
+          const canNormalFit = w <= innerW && h <= innerH;
+          const canRotatedFit = h <= innerW && w <= innerH;
+          const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
+          if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
+            const nextW = h;
+            const nextH = w;
+            w = nextW;
+            h = nextH;
+          } else if (!canNormalFit && !canRotatedFit) {
+            const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
+            const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
+            if (rotatedOverflow < normalOverflow) {
+              const nextW = h;
+              const nextH = w;
+              w = nextW;
+              h = nextH;
+            }
+          }
+        }
+
+        w = Math.min(w, innerW);
+        h = Math.min(h, innerH);
+
+        if (x > 0 && x + w > innerW) {
+          x = 0;
+          y += rowMax + kerf;
+          rowMax = 0;
+        }
+        if (y > 0 && y + h > innerH) {
+          startNewSheet();
+        }
+        if (x > 0 && x + w > innerW) {
+          x = 0;
+          y += rowMax + kerf;
+          rowMax = 0;
+        }
+        if (y > 0 && y + h > innerH) {
+          startNewSheet();
+        }
+
+        current.placements.push({ piece, x, y, w, h });
+        x += w + kerf;
+        rowMax = Math.max(rowMax, h);
+      }
+
+      if (current.placements.length > 0) sheets.push(current);
+
+      return {
+        boardKey: group.boardKey,
+        boardLabel: group.boardLabel,
+        boardPill: parsed.pill,
+        sheetWidth,
+        sheetHeight,
+        innerW,
+        innerH,
+        sheets,
+      };
+    });
+  }, [nestingRowsByBoardForSheetCount, nestingSettings.kerf, nestingSettings.margin, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSheetByLabel, resolveBoardKey]);
 
   const nestingSummary = useMemo(() => {
     const totalPieces = nestingVisibleRows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
@@ -3510,25 +4308,43 @@ export default function ProjectDetailsPage() {
     const sheets = Math.max(0, nestingBoardLayouts.reduce((sum, group) => sum + group.sheets.length, 0));
     return { totalPieces, hiddenPieces, sheets };
   }, [cutlistRows.length, nestingBoardLayouts, nestingVisibleRows]);
-
+  const requiredSheetCountByBoardKey = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const group of nestingBoardLayoutsForSheetCount) {
+      out[group.boardKey] = group.sheets.length;
+    }
+    return out;
+  }, [nestingBoardLayoutsForSheetCount]);
+  const requiredSheetCountByBoardRowId = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const boardRow of productionForm.boardTypes) {
+      const rowKey = resolveBoardKey(boardKeyFromRow(boardRow));
+      out[boardRow.id] = rowKey ? (requiredSheetCountByBoardKey[rowKey] ?? 0) : 0;
+    }
+    return out;
+  }, [productionForm.boardTypes, requiredSheetCountByBoardKey, resolveBoardKey]);
   const toggleNestingGroup = (key: string) => {
     setNestingCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const onToggleNestingVisibility = async (rowId: string, checked: boolean) => {
+  const onToggleNestingVisibility = (rowId: string, checked: boolean) => {
     setNestingVisibilityMap((prev) => ({ ...prev, [rowId]: checked }));
-    const nextRows = cutlistRows.map((row) =>
-      row.id === rowId ? { ...row, includeInNesting: checked } : row,
-    );
-    setCutlistRows(nextRows);
-    await persistCutlistRows(nextRows);
   };
 
-  const onShowAllNestingRows = async () => {
-    const nextRows = cutlistRows.map((row) => ({ ...row, includeInNesting: true }));
-    setNestingVisibilityMap(Object.fromEntries(nextRows.map((row) => [row.id, true])));
-    setCutlistRows(nextRows);
-    await persistCutlistRows(nextRows);
+  const onShowAllNestingRows = () => {
+    setNestingVisibilityMap(Object.fromEntries(cutlistRows.map((row) => [row.id, true])));
+  };
+
+  const toggleCncGroup = (groupKey: string) => {
+    setCncCollapsedGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
+  };
+
+  const onToggleCncVisibility = (rowId: string, checked: boolean) => {
+    setCncVisibilityMap((prev) => ({ ...prev, [rowId]: checked }));
+  };
+
+  const onShowAllCncRows = () => {
+    setCncVisibilityMap(Object.fromEntries(cncSourceRows.map((row) => [row.id, true])));
   };
 
   const toggleCutlistGroup = (groupKey: string) => {
@@ -3562,6 +4378,45 @@ export default function ProjectDetailsPage() {
     if (hasPartType) return cutlistColumnDefs;
     return [{ label: "Part", key: "partType" as const }, ...cutlistColumnDefs];
   }, [cutlistColumnDefs, showRoomColumnInList]);
+  const cutlistEntryColumnDefs = useMemo(
+    () => cutlistColumnDefs.filter((col) => col.key !== "partType"),
+    [cutlistColumnDefs],
+  );
+  const cutlistEntryOrderMap = useMemo(() => {
+    const map = new Map<CutlistEditableField, number>();
+    cutlistEntryColumnDefs.forEach((col, idx) => map.set(col.key, idx + 1));
+    return map;
+  }, [cutlistEntryColumnDefs]);
+  const cutlistEntryGridTemplate = useMemo(() => {
+    const cols = ["28px"];
+    cutlistEntryColumnDefs.forEach((col) => {
+      if (col.key === "board" || col.key === "name") {
+        cols.push("230px");
+      } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
+        cols.push("70px");
+      } else if (col.key === "clashing") {
+        cols.push("84px", "84px");
+      } else if (col.key === "information") {
+        cols.push("minmax(216px,1fr)");
+      } else if (col.key === "grain") {
+        cols.push("60px");
+      }
+    });
+    return cols.join(" ");
+  }, [cutlistEntryColumnDefs]);
+  const cutlistEntryCellStyle = (key: CutlistEditableField, span = 1) => {
+    const order = cutlistEntryOrderMap.get(key);
+    if (order == null) return { display: "none" };
+    return {
+      order: order * 10,
+      gridColumn: `span ${span} / span ${span}`,
+    };
+  };
+  const cutlistEntrySubCellStyle = (key: CutlistEditableField, offset: number) => {
+    const order = cutlistEntryOrderMap.get(key);
+    if (order == null) return { display: "none" };
+    return { order: order * 10 + offset };
+  };
 
   const cutlistListColumnStyle = (key: CutlistEditableField) => {
     switch (key) {
@@ -3621,7 +4476,8 @@ export default function ProjectDetailsPage() {
       return;
     }
     if (key === "grain") {
-      setEditingCellValue(row.grain ? "true" : "false");
+      if (!boardGrainFor(String(row.board ?? "").trim())) return;
+      setEditingCellValue(String(row.grainValue ?? "").trim());
       return;
     }
     setEditingCellValue(String(row[key] ?? ""));
@@ -3649,8 +4505,21 @@ export default function ProjectDetailsPage() {
       if (row.id !== target.rowId) return row;
       const updated: CutlistRow = { ...row };
       switch (target.key) {
+        case "board":
+          updated.board = value;
+          if (!boardGrainFor(String(updated.board ?? "").trim())) {
+            updated.grainValue = "";
+            updated.grain = false;
+          }
+          break;
         case "grain":
-          updated.grain = value === "true";
+          if (!boardGrainFor(String(updated.board ?? "").trim())) {
+            updated.grainValue = "";
+            updated.grain = false;
+            break;
+          }
+          updated.grainValue = String(value ?? "").trim();
+          updated.grain = Boolean(updated.grainValue);
           break;
         case "clashing":
           if (isCabinetryPartType(updated.partType)) {
@@ -3782,6 +4651,65 @@ export default function ProjectDetailsPage() {
     }, 0);
   };
 
+  const jumpToCutlistFromDerivedRowId = (rowId: string) => {
+    const parsed = parseDerivedNestingRowId(rowId);
+    const parent = cutlistRows.find((r) => r.id === parsed.parentRowId);
+    if (!parent) return;
+
+    setCutlistPartTypeFilter("All Part Types");
+    setCutlistRoomFilter("Project Cutlist");
+    setCollapsedCutlistGroups((prev) => ({ ...prev, [parent.partType]: false }));
+    if (parsed.kind === "cab") {
+      setExpandedCabinetryRows((prev) => ({ ...prev, [parent.id]: true }));
+    } else if (parsed.kind === "drw") {
+      setExpandedDrawerRows((prev) => ({ ...prev, [parent.id]: true }));
+    }
+    setCutlistJumpTarget(parsed);
+    setProductionNav("cutlist");
+    setNestingFullscreen(false);
+    setNestingSheetPreview(null);
+    setNestingPreviewHoverPieceId(null);
+    setNestingTooltip(null);
+  };
+
+  const cutlistFullscreenNow = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
+
+  useEffect(() => {
+    if (!cutlistJumpTarget || !cutlistFullscreenNow) return;
+    const { parentRowId, kind, subKey } = cutlistJumpTarget;
+
+    const run = () => {
+      const selector =
+        kind === "cab" || kind === "drw"
+          ? `[data-cutlist-subrow-parent="${parentRowId}"][data-cutlist-subrow-key="${subKey}"]`
+          : `[data-cutlist-row-id="${parentRowId}"]`;
+      const target =
+        (document.querySelector(selector) as HTMLElement | null) ??
+        (document.querySelector(`[data-cutlist-row-id="${parentRowId}"]`) as HTMLElement | null);
+      if (!target) return false;
+
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.classList.add("ring-2", "ring-[#3B82F6]");
+      window.setTimeout(() => target.classList.remove("ring-2", "ring-[#3B82F6]"), 1400);
+      return true;
+    };
+
+    const t0 = window.setTimeout(() => {
+      if (run()) setCutlistJumpTarget(null);
+    }, 40);
+    const t1 = window.setTimeout(() => {
+      if (run()) setCutlistJumpTarget(null);
+    }, 180);
+    const t2 = window.setTimeout(() => {
+      if (run()) setCutlistJumpTarget(null);
+    }, 360);
+    return () => {
+      window.clearTimeout(t0);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [cutlistJumpTarget, cutlistFullscreenNow]);
+
   if (isLoading) {
     return (
       <ProtectedRoute>
@@ -3821,8 +4749,47 @@ export default function ProjectDetailsPage() {
   ].slice(0, 8);
 
   const isCutlistFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
+  const isCncFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cnc";
   const isNestingFullscreen =
     resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
+  const showCncGrainColumn =
+    showCutlistGrainColumn || filteredCncRows.some((row) => String(row.grainValue ?? "").trim().length > 0);
+  const cncTotalQty = filteredCncRows.reduce((sum, row) => sum + (Number.parseInt(String(row.quantity || "0"), 10) || 0), 0);
+  const selectedNestingSheet = (() => {
+    if (!nestingSheetPreview) return null;
+    const group = nestingBoardLayouts.find((g) => g.boardKey === nestingSheetPreview.boardKey);
+    if (!group) return null;
+    const sheet = group.sheets.find((s) => s.index === nestingSheetPreview.sheetIndex);
+    if (!sheet) return null;
+    return { group, sheet };
+  })();
+  const selectedNestingSheetRatio = selectedNestingSheet
+    ? Math.max(0.1, selectedNestingSheet.group.sheetWidth / selectedNestingSheet.group.sheetHeight)
+    : 1;
+  const selectedNestingSheetViewportWidth = selectedNestingSheet
+    ? `min(calc(54vw - 80px), calc((100dvh - 440px) * ${selectedNestingSheetRatio}))`
+    : "min(54vw, 760px)";
+  const selectedNestingSheetViewportHeight = selectedNestingSheet
+    ? `min(calc((54vw - 80px) / ${selectedNestingSheetRatio}), calc(100dvh - 440px))`
+    : "min(48vh, 420px)";
+  const selectedNestingSheetStats = (() => {
+    if (!selectedNestingSheet) return null;
+    const sheetAreaMm2 = Math.max(1, selectedNestingSheet.group.sheetWidth * selectedNestingSheet.group.sheetHeight);
+    const usedAreaMm2 = selectedNestingSheet.sheet.placements.reduce((sum, p) => sum + Math.max(0, p.w * p.h), 0);
+    const usedPct = Math.max(0, Math.min(100, (usedAreaMm2 / sheetAreaMm2) * 100));
+    const wastagePct = Math.max(0, 100 - usedPct);
+    const largest = selectedNestingSheet.sheet.placements.reduce((best, p) => {
+      if (!best) return p;
+      return p.w * p.h > best.w * best.h ? p : best;
+    }, null as (typeof selectedNestingSheet.sheet.placements)[number] | null);
+    return {
+      usedPct,
+      wastagePct,
+      partCount: selectedNestingSheet.sheet.placements.length,
+      sheetAreaM2: sheetAreaMm2 / 1_000_000,
+      largest,
+    };
+  })();
 
   const onSaveAndBackFromCutlist = async () => {
     await persistCutlistRows(cutlistRows);
@@ -3831,6 +4798,15 @@ export default function ProjectDetailsPage() {
   };
 
   const onSaveAndBackFromNesting = async () => {
+    await persistCutlistRows(cutlistRows);
+    setProductionNav("overview");
+    setNestingFullscreen(false);
+    setNestingSheetPreview(null);
+    setNestingPreviewHoverPieceId(null);
+    setNestingTooltip(null);
+  };
+
+  const onSaveAndBackFromCnc = async () => {
     await persistCutlistRows(cutlistRows);
     setProductionNav("overview");
     setNestingFullscreen(false);
@@ -3843,7 +4819,9 @@ export default function ProjectDetailsPage() {
           <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
             <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
               <Scissors size={14} />
-              Cutlist
+              <span>Cutlist</span>
+              <span className="text-[#6B7280]">|</span>
+              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
@@ -4024,7 +5002,7 @@ export default function ProjectDetailsPage() {
 
             <div className="flex min-h-full flex-col gap-4 p-4">
               {cutlistRoomFilter !== "Project Cutlist" && (
-              <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-hidden">
+              <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible">
                 <div className="flex h-[50px] items-center px-1">
                   <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
                 </div>
@@ -4051,17 +5029,17 @@ export default function ProjectDetailsPage() {
                     })}
                   </div>
 
-                  <div className={`${cutlistEntryGridClass} text-[11px] font-bold text-[#8A97A8]`}>
+                  <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: cutlistEntryGridTemplate }}>
                     <p></p>
-                    <p>Board</p>
-                    <p>Part Name</p>
-                    <p className="text-center">Height</p>
-                    <p className="text-center">Width</p>
-                    <p className="text-center">Depth</p>
-                    <p className="text-center">Quantity</p>
-                    <p className="col-span-2 text-center">{draftEntryShowsShelvesHeader ? "Shelves" : "Clashing"}</p>
-                    <p>Information</p>
-                    {showCutlistGrainColumn && <p className="text-center">Grain</p>}
+                    {cutlistEntryColumnDefs.map((col) => (
+                      <p
+                        key={`draft_header_${col.key}`}
+                        className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                        style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                      >
+                        {col.key === "clashing" ? (draftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                      </p>
+                    ))}
                   </div>
                   <div className="space-y-1">
                     {cutlistDraftRows.map((draft) => {
@@ -4070,6 +5048,11 @@ export default function ProjectDetailsPage() {
                       const draftFieldBg = lightenHex(color, 0.12);
                       const draftFieldBorder = darkenHex(color, 0.2);
                       const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                      const draftBoardAllowsGrain = boardGrainFor(String(draft.board ?? "").trim());
+                      const draftGrainValue = String(draft.grainValue ?? "").trim();
+                      const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height);
+                      const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width);
+                      const draftDepthGrainMatch = matchesGrainDimension(draftGrainValue, draft.depth);
                       const boardWarn = warningForCell(draft.id, "board");
                       const nameWarn = warningForCell(draft.id, "name");
                       const heightWarn = warningForCell(draft.id, "height");
@@ -4079,8 +5062,8 @@ export default function ProjectDetailsPage() {
                       return (
                         <div
                           key={draft.id}
-                          className={`${cutlistEntryGridClass} items-center border-y px-1 py-1`}
-                          style={{ backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                          className="relative z-20 grid items-center gap-2 overflow-visible border-y px-1 py-1"
+                          style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
                         >
                           <button
                             type="button"
@@ -4090,21 +5073,24 @@ export default function ProjectDetailsPage() {
                           >
                             <X size={15} className="mx-auto" strokeWidth={2.8} />
                           </button>
-                          <BoardPillDropdown
-                            value={draft.board}
-                            options={cutlistBoardOptions}
-                            disabled={productionReadOnly}
-                            title={boardWarn || undefined}
-                            className={warningClassForCell(draft.id, "board")}
-                            bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                            border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                            text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                            getSize={boardSizeFor}
-                            getLabel={boardDisplayLabel}
-                            onChange={(next) => onDraftBoardChange(draft.id, next)}
-                          />
-                          <input disabled={productionReadOnly} title={nameWarn || undefined} value={draft.name} onChange={(e) => updateDraftCutlistRow(draft.id, { name: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`} style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          <div className="relative z-[120] pointer-events-auto" style={cutlistEntryCellStyle("board")}>
+                            <BoardPillDropdown
+                              value={draft.board}
+                              options={cutlistBoardOptions}
+                              disabled={productionReadOnly}
+                              title={boardWarn || undefined}
+                              className={warningClassForCell(draft.id, "board")}
+                              bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                              border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                              text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                              getSize={boardSizeFor}
+                              getLabel={boardDisplayLabel}
+                              onChange={(next) => onDraftBoardChange(draft.id, next)}
+                            />
+                          </div>
+                          <input disabled={productionReadOnly} title={nameWarn || undefined} value={draft.name} onChange={(e) => updateDraftCutlistRow(draft.id, { name: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`} style={{ ...warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("name") }} />
                           {isDrawerPartType(draft.partType) ? (
+                            <div style={cutlistEntryCellStyle("height")}>
                             <DrawerHeightDropdown
                               value={String(draft.height || "")}
                               options={drawerHeightLetterOptions}
@@ -4117,14 +5103,15 @@ export default function ProjectDetailsPage() {
                               onAdd={(token) => addDraftDrawerHeightToken(draft.id, token)}
                               onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
                             />
+                            </div>
                           ) : (
-                            <input disabled={productionReadOnly} title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                            <input disabled={productionReadOnly} title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                           )}
-                          <input disabled={productionReadOnly} title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
-                          <input disabled={productionReadOnly} title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
-                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                          <input disabled={productionReadOnly} title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                          <input disabled={productionReadOnly} title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                           {draftIsCabinetry ? (
-                            <div className="col-span-2 grid gap-[1px]">
+                            <div className="grid gap-[1px]" style={cutlistEntryCellStyle("clashing", 2)}>
                               <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                 <span className="text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
                                 <input
@@ -4137,7 +5124,7 @@ export default function ProjectDetailsPage() {
                               </div>
                               <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                 <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
-                                  <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                  <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                   Drilling
                                 </span>
                                 <select
@@ -4164,7 +5151,7 @@ export default function ProjectDetailsPage() {
                               </div>
                               <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                 <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
-                                  <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                  <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                   Drilling
                                 </span>
                                 <select
@@ -4187,7 +5174,7 @@ export default function ProjectDetailsPage() {
                                 value={draft.clashLeft ?? ""}
                                 onChange={(e) => updateDraftCutlistRow(draft.id, { clashLeft: e.target.value })}
                                 className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                style={{ ...cutlistEntrySubCellStyle("clashing", 0), backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                               >
                                 <option value=""></option>
                                 {CLASH_LEFT_OPTIONS.map((opt) => (
@@ -4199,7 +5186,7 @@ export default function ProjectDetailsPage() {
                                 value={draft.clashRight ?? ""}
                                 onChange={(e) => updateDraftCutlistRow(draft.id, { clashRight: e.target.value })}
                                 className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                style={{ ...cutlistEntrySubCellStyle("clashing", 1), backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                               >
                                 <option value=""></option>
                                 {CLASH_RIGHT_OPTIONS.map((opt) => (
@@ -4208,7 +5195,7 @@ export default function ProjectDetailsPage() {
                               </select>
                             </>
                           )}
-                          <div className="grid gap-[2px]">
+                          <div className="grid gap-[2px]" style={cutlistEntryCellStyle("information")}>
                             {informationLinesFromValue(draft.information).map((line, idx) => (
                               <div key={`${draft.id}_info_${idx}`} className="flex items-center gap-[3px]">
                                 <button
@@ -4235,14 +5222,29 @@ export default function ProjectDetailsPage() {
                             ))}
                           </div>
                           {showCutlistGrainColumn && (
-                            <label className="flex h-8 items-center justify-center">
-                              <input
+                            draftBoardAllowsGrain ? (
+                              <select
                                 disabled={productionReadOnly}
-                                type="checkbox"
-                                checked={draft.grain}
-                                onChange={(e) => updateDraftCutlistRow(draft.id, { grain: e.target.checked })}
-                              />
-                            </label>
+                                value={String(draft.grainValue ?? "")}
+                                onChange={(e) =>
+                                  updateDraftCutlistRow(draft.id, {
+                                    grainValue: e.target.value,
+                                    grain: Boolean(String(e.target.value).trim()),
+                                  })
+                                }
+                                className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
+                                style={{ ...cutlistEntryCellStyle("grain"), backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                              >
+                                <option value=""></option>
+                                {grainDimensionOptions(draft.height, draft.width, draft.depth).map((opt) => (
+                                  <option key={`${draft.id}_grain_${opt}`} value={opt}>
+                                    {opt}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div style={cutlistEntryCellStyle("grain")} />
+                            )
                           )}
                         </div>
                       );
@@ -4393,7 +5395,11 @@ export default function ProjectDetailsPage() {
                                   : [];
                                 return (
                                 <Fragment key={row.id}>
-                                <tr className="border-t" style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}>
+                                <tr
+                                  data-cutlist-row-id={row.id}
+                                  className="border-t"
+                                  style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                >
                                   <td className="px-2 py-[3px] align-middle">
                                     <div className="flex items-center gap-1">
                                       <button
@@ -4557,14 +5563,18 @@ export default function ProjectDetailsPage() {
                                       );
                                     }
                                     if (col.key === "grain") {
+                                      const rowBoardAllowsGrain = boardGrainFor(String(row.board ?? "").trim());
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
                                           className={`px-2 py-[3px] align-middle ${alignClass}`}
-                                          onDoubleClick={() => startCellEdit(row, "grain")}
+                                          onDoubleClick={() => {
+                                            if (!rowBoardAllowsGrain) return;
+                                            startCellEdit(row, "grain");
+                                          }}
                                           style={{ ...cutlistListColumnStyle("grain"), color: groupTextColor }}
                                         >
-                                          {editing ? (
+                                          {!rowBoardAllowsGrain ? "" : editing ? (
                                             <select
                                               autoFocus
                                               value={editingCellValue}
@@ -4576,23 +5586,35 @@ export default function ProjectDetailsPage() {
                                               onBlur={() => void commitCellEdit()}
                                               className="h-6 min-w-[72px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
                                             >
-                                              <option value="true">Yes</option>
-                                              <option value="false">No</option>
+                                              <option value=""></option>
+                                              {grainDimensionOptions(row.height, row.width, row.depth).map((opt) => (
+                                                <option key={`${row.id}_grain_edit_${opt}`} value={opt}>
+                                                  {opt}
+                                                </option>
+                                              ))}
                                             </select>
                                           ) : (
-                                            row.grain ? "Yes" : "No"
+                                            row.grainValue || (row.grain ? "Yes" : "")
                                           )}
                                         </td>
                                       );
                                     }
                                     if (col.key === "height") {
                                       const rowIsDrawer = isDrawerPartType(row.partType);
+                                      const isHeightGrainMatched = matchesGrainDimension(
+                                        String(row.grainValue ?? ""),
+                                        row.height,
+                                      );
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
                                           className={`px-2 py-[3px] align-middle ${alignClass}`}
                                           onDoubleClick={() => startCellEdit(row, "height")}
-                                          style={{ ...cutlistListColumnStyle("height"), color: groupTextColor }}
+                                          style={{
+                                            ...cutlistListColumnStyle("height"),
+                                            color: groupTextColor,
+                                            ...(isHeightGrainMatched ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                          }}
                                         >
                                           {editing ? (
                                             rowIsDrawer ? (
@@ -4665,7 +5687,7 @@ export default function ProjectDetailsPage() {
                                                 </div>
                                                 <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                   <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                    <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                    <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                     Drilling
                                                   </span>
                                                   <select
@@ -4696,7 +5718,7 @@ export default function ProjectDetailsPage() {
                                                 </div>
                                                 <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                   <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                    <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                    <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                     Drilling
                                                   </span>
                                                   <select
@@ -4761,7 +5783,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
@@ -4772,7 +5794,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
@@ -4856,12 +5878,20 @@ export default function ProjectDetailsPage() {
                                       );
                                     }
                                     const value = String(row[col.key] ?? "");
+                                    const isGrainMatchedDimension =
+                                      (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height)) ||
+                                      (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width)) ||
+                                      (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth));
                                     return (
                                       <td
                                         key={`${row.id}_${col.label}`}
                                         className={`px-2 py-[3px] align-middle ${alignClass}`}
                                         onDoubleClick={() => startCellEdit(row, key)}
-                                        style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                        style={{
+                                          ...cutlistListColumnStyle(key),
+                                          color: groupTextColor,
+                                          ...(isGrainMatchedDimension ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                        }}
                                       >
                                         {editing ? (
                                           <input
@@ -4879,7 +5909,11 @@ export default function ProjectDetailsPage() {
                                             className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
                                           />
                                         ) : (
-                                          value
+                                          isGrainMatchedDimension ? (
+                                            <span>{value}</span>
+                                          ) : (
+                                            value
+                                          )
                                         )}
                                       </td>
                                     );
@@ -4888,6 +5922,8 @@ export default function ProjectDetailsPage() {
                                 {rowIsCabinetry && cabinetryOpen && cabinetryPieces.map((piece, pieceIdx) => (
                                   <tr
                                     key={`${row.id}_cab_${piece.key}`}
+                                    data-cutlist-subrow-parent={row.id}
+                                    data-cutlist-subrow-key={piece.key}
                                     className="border-t"
                                     style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
@@ -4914,7 +5950,7 @@ export default function ProjectDetailsPage() {
                                       if (col.key === "quantity") value = piece.quantity;
                                       if (col.key === "clashing") value = joinClashing(piece.clashLeft, piece.clashRight);
                                       if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
-                                      if (col.key === "grain") value = row.grain ? "Yes" : "";
+                                      if (col.key === "grain") value = row.grainValue || (row.grain ? "Yes" : "");
                                       return (
                                         <td
                                           key={`${row.id}_${piece.key}_${col.key}`}
@@ -4938,6 +5974,8 @@ export default function ProjectDetailsPage() {
                                 {rowIsDrawer && drawerOpen && drawerPieces.map((piece, pieceIdx) => (
                                   <tr
                                     key={`${row.id}_${piece.key}`}
+                                    data-cutlist-subrow-parent={row.id}
+                                    data-cutlist-subrow-key={piece.key}
                                     className="border-t"
                                     style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
@@ -5002,6 +6040,253 @@ export default function ProjectDetailsPage() {
     );
   }
 
+  if (isCncFullscreen) {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-[var(--bg-app)]">
+          <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+            <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
+              <Cpu size={14} />
+              <span>CNC Cutlist</span>
+              <span className="text-[#6B7280]">|</span>
+              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void onSaveAndBackFromCnc()}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+            >
+              <ArrowLeft size={14} />
+              Save & Back
+            </button>
+          </div>
+          <div
+            className="grid min-h-[calc(100dvh-56px)] items-start gap-3 p-3"
+            style={{ gridTemplateColumns: "minmax(0, 1fr) 360px" }}
+          >
+            <section className="min-h-0 overflow-auto rounded-[12px] border border-[#D7DEE8] bg-white">
+              <div className="flex min-h-[46px] flex-wrap items-center gap-2 border-b border-[#DCE3EC] px-3 py-2">
+                <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                  Rows: {filteredCncRows.length}
+                </p>
+                <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                  Total Qty: {cncTotalQty}
+                </p>
+                <div className="ml-auto flex items-center gap-2">
+                  <input
+                    value={cncSearch}
+                    onChange={(e) => setCncSearch(e.target.value)}
+                    placeholder="Search pieces..."
+                    className="h-8 w-[260px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px]"
+                  />
+                  <select
+                    value={cncPartTypeFilter}
+                    onChange={(e) => setCncPartTypeFilter(e.target.value)}
+                    className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                  >
+                    <option value="All Part Types">All Part Types</option>
+                    {partTypeOptions.map((v) => (
+                      <option key={`cnc_${v}`} value={v}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-3 p-3">
+                {cncRowsByBoard.length === 0 && (
+                  <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
+                    No visible CNC rows.
+                  </div>
+                )}
+                {cncRowsByBoard.map((group) => (
+                  <section key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
+                    <div className="flex h-[40px] items-center border-b border-[#DCE3EC] bg-[#F8FAFC] px-3">
+                      <p className="text-[13px] font-extrabold text-[#12345B]">{group.boardLabel}</p>
+                    </div>
+                    <div className="overflow-auto">
+                      <table className="w-full text-left text-[12px]">
+                        <thead className="bg-[#E9EEF5] text-[#0F172A]">
+                          <tr>
+                            <th className="w-[56px] px-2 py-2 text-center">ID</th>
+                            <th className="px-2 py-2">Room</th>
+                            <th className="px-2 py-2">Part Type</th>
+                            <th className="px-2 py-2">Part Name</th>
+                            <th className="px-2 py-2 text-center">Height</th>
+                            <th className="px-2 py-2 text-center">Width</th>
+                            <th className="px-2 py-2 text-center">Depth</th>
+                            <th className="px-2 py-2 text-center">Qty</th>
+                            <th className="px-2 py-2 text-center">Clashing</th>
+                            {showCncGrainColumn && <th className="px-2 py-2 text-center">Grain</th>}
+                            <th className="px-2 py-2">Information</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.rows.map((row, idx) => {
+                            const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                            const partText = isLightHex(partColor) ? "#111827" : "#F8FAFC";
+                            return (
+                              <tr key={`${group.boardKey}_${row.id}_${idx}`} className="border-t border-[#E4E7EE]">
+                                <td className="px-2 py-[5px] text-center text-[#334155]">{idx + 1}</td>
+                                <td className="px-2 py-[5px] text-[#334155]">{row.room || "-"}</td>
+                                <td className="px-2 py-[5px]">
+                                  <span
+                                    className="inline-flex rounded-[7px] px-2 py-[1px] text-[11px] font-semibold"
+                                    style={{ backgroundColor: partColor, color: partText }}
+                                  >
+                                    {row.partType || "Unassigned"}
+                                  </span>
+                                </td>
+                                <td className="px-2 py-[5px] font-semibold text-[#0F172A]">{row.name || "-"}</td>
+                                <td className="px-2 py-[5px] text-center text-[#334155]">{row.height || "-"}</td>
+                                <td className="px-2 py-[5px] text-center text-[#334155]">{row.width || "-"}</td>
+                                <td className="px-2 py-[5px] text-center text-[#334155]">{row.depth || "-"}</td>
+                                <td className="px-2 py-[5px] text-center font-bold text-[#0F172A]">{row.quantity || "-"}</td>
+                                <td className="px-2 py-[5px] text-center text-[#334155]">{joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-"}</td>
+                                {showCncGrainColumn && (
+                                  <td className="px-2 py-[5px] text-center text-[#334155]">{row.grainValue || (row.grain ? "Yes" : "")}</td>
+                                )}
+                                <td className="px-2 py-[5px] text-[#334155]">{row.information || "-"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </section>
+            <section className="self-start min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white h-[calc(100dvh-80px)]">
+              <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
+                <p className="text-[13px] font-extrabold text-[#111827]">Edit Visibility</p>
+                <button
+                  type="button"
+                  disabled={productionReadOnly}
+                  onClick={() => void onShowAllCncRows()}
+                  className="rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] disabled:opacity-55"
+                >
+                  Show All
+                </button>
+              </div>
+              <div className="p-3">
+                <input
+                  value={cncVisibilitySearch}
+                  onChange={(e) => setCncVisibilitySearch(e.target.value)}
+                  placeholder="Search pieces..."
+                  className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                />
+              </div>
+              <div className="h-[calc(100%-94px)] overflow-auto px-3 pb-3">
+                <div className="space-y-1">
+                  {cncSidebarGroups.map((group) => {
+                    const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                    const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
+                    const partTypeCollapseKey = `cnc:pt:${group.partType}`;
+                    const collapsed = Boolean(cncCollapsedGroups[partTypeCollapseKey]);
+                    const totalQty = group.rows.reduce(
+                      (sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1),
+                      0,
+                    );
+                    const visibleCount = group.rows.reduce((sum, row) => {
+                      const checked = typeof cncVisibilityMap[row.id] === "boolean"
+                        ? cncVisibilityMap[row.id]
+                        : true;
+                      return sum + (checked ? 1 : 0);
+                    }, 0);
+                    const allChecked = group.rows.length > 0 && visibleCount === group.rows.length;
+                    const someChecked = visibleCount > 0 && !allChecked;
+                    return (
+                      <div key={`cnc_group_${group.partType}`} className="space-y-1">
+                        <div
+                          className="flex items-center justify-between rounded-[8px] pl-[5px] text-[11px] font-extrabold"
+                          style={{ backgroundColor: color, color: textColor }}
+                        >
+                          <span style={{ paddingLeft: 5 }}>{group.partType} ({totalQty})</span>
+                          <div className="ml-auto inline-flex items-center">
+                            <span className="inline-flex h-7 items-center self-center pr-2">
+                              <input
+                                type="checkbox"
+                                checked={allChecked}
+                                ref={(el) => {
+                                  if (el) el.indeterminate = someChecked;
+                                }}
+                                disabled={productionReadOnly || group.rows.length === 0}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  group.rows.forEach((row) => {
+                                    void onToggleCncVisibility(row.id, checked);
+                                  });
+                                }}
+                                className="h-4 w-4 accent-[#12345B]"
+                                title={allChecked ? "Untick all in part type" : "Tick all in part type"}
+                              />
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleCncGroup(partTypeCollapseKey)}
+                              className="inline-flex h-7 w-8 items-center justify-center rounded-r-[8px] border-l border-black/15 hover:bg-black/10"
+                              style={{ color: textColor }}
+                              title={collapsed ? "Expand part type" : "Collapse part type"}
+                            >
+                              {collapsed ? <Plus size={14} strokeWidth={2.6} /> : <Minus size={14} strokeWidth={2.6} />}
+                            </button>
+                          </div>
+                        </div>
+                        {!collapsed && group.rows.map((row) => {
+                          const checked = typeof cncVisibilityMap[row.id] === "boolean"
+                            ? cncVisibilityMap[row.id]
+                            : true;
+                          const rowColor = partTypeColors[row.partType] ?? "#CBD5E1";
+                          const rowBg = lightenHex(rowColor, 0.72);
+                          return (
+                            <label
+                              key={`cnc_vis_${row.id}`}
+                              className="flex items-start gap-2 rounded-[8px] border px-2 py-2"
+                              style={{
+                                backgroundColor: rowBg,
+                                borderColor: darkenHex(rowColor, 0.12),
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={productionReadOnly}
+                                onChange={(e) => void onToggleCncVisibility(row.id, e.target.checked)}
+                                className="mt-[2px] h-4 w-4"
+                              />
+                              <span className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[11px] text-[#334155]">
+                                <span className="min-w-0">
+                                  <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
+                                  <span className="mt-[1px] block truncate text-[10px]">{row.room || "-"}</span>
+                                </span>
+                                <span className="shrink-0 text-right">
+                                  <span className="block pt-[1px] font-bold text-[#0F172A]">
+                                    {Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1)}
+                                  </span>
+                                  <span className="mt-[1px] block text-[10px] text-[#475569]">
+                                    {boardDisplayLabel(row.board) || "No board"}
+                                  </span>
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  {cncSourceRows.length === 0 && (
+                    <p className="rounded-[10px] border border-dashed border-[#D8DEE8] px-3 py-4 text-center text-[12px] font-semibold text-[#64748B]">
+                      No cutlist rows yet.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
   if (isNestingFullscreen) {
     return (
       <ProtectedRoute>
@@ -5009,7 +6294,9 @@ export default function ProjectDetailsPage() {
           <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
             <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
               <GitBranch size={14} />
-              Nesting
+              <span>Nesting</span>
+              <span className="text-[#6B7280]">|</span>
+              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
@@ -5034,8 +6321,17 @@ export default function ProjectDetailsPage() {
                   <div className="grid grid-cols-4 gap-3">
                     {nestingBoardLayouts.map((group) => {
                       const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
+                      const boardHasGrain = boardGrainFor(group.boardKey);
+                      const grainArrowRotation = group.sheetWidth >= group.sheetHeight ? 0 : 90;
+                      const grainArrowPoints: Array<[number, number]> = [
+                        [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
+                        [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
+                        [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
+                        [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
+                        [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
+                      ];
                       return (
-                        <div key={group.boardLabel} className="overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F5F7FA]">
+                        <div key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F5F7FA]">
                           <div className="border-b border-[#DCE3EC] bg-[#EEF2F6] px-[5px] py-1">
                             <div className="mb-1 flex items-center justify-between gap-2">
                               <span className="shrink-0 rounded-[999px] bg-[#DEE6F3] px-2 py-[1px] text-[11px] font-bold text-[#45658A]">
@@ -5054,34 +6350,89 @@ export default function ProjectDetailsPage() {
                           </div>
                             <div className="max-h-[calc(100dvh-280px)] space-y-2 overflow-auto p-2">
                               {group.sheets.map((sheet) => (
-                                <div key={`${group.boardLabel}_sheet_${sheet.index}`} className="p-0">
+                                <div key={`${group.boardKey}_sheet_${sheet.index}`} className="p-0">
                                   <p className="mb-1 text-[11px] font-bold text-[#6B7D94]">Sheet {sheet.index}</p>
                                 <div
-                                  className="relative w-full overflow-hidden rounded-[4px] border border-[#D4DCE8] bg-white"
+                                  className="relative z-0 isolate w-full cursor-pointer overflow-hidden rounded-[4px] border border-[#D4DCE8] bg-white"
                                   style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}`, minHeight: 120 }}
+                                  onClick={() => setNestingSheetPreview({ boardKey: group.boardKey, sheetIndex: sheet.index })}
                                 >
                                     {sheet.placements.map((placement) => {
                                       const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
                                       const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
+                                      const marginX = (group.sheetWidth - group.innerW) / 2;
+                                      const marginY = (group.sheetHeight - group.innerH) / 2;
                                       return (
                                         <div
                                           key={placement.piece.id}
-                                          title={`${placement.piece.name} • ${placement.piece.partType} • ${placement.piece.room}`}
-                                          className="absolute overflow-hidden border px-[2px] py-[1px] text-[10px] font-semibold leading-tight"
+                                          className="absolute z-[10] cursor-pointer border px-[6px] py-[1px] text-[10px] font-semibold leading-tight"
+                                          onMouseEnter={(e) => {
+                                            const base = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+                                            setNestingTooltip({
+                                              text: nestingPieceTooltip(
+                                                String(placement.piece.row.parentName || placement.piece.name || "Part"),
+                                                String(placement.piece.name || "Part"),
+                                                String(placement.piece.room || placement.piece.row.room || "-"),
+                                                placement.w,
+                                                placement.h,
+                                              ),
+                                              x: e.clientX + 14,
+                                              y: e.clientY + 14,
+                                              bg: lightenHex(base, 0.72),
+                                              border: darkenHex(base, 0.18),
+                                              textColor: isLightHex(base) ? "#0F172A" : "#F8FAFC",
+                                            });
+                                          }}
+                                          onMouseMove={(e) => {
+                                            setNestingTooltip((prev) =>
+                                              prev
+                                                ? { ...prev, x: e.clientX + 14, y: e.clientY + 14 }
+                                                : prev,
+                                            );
+                                          }}
+                                          onMouseLeave={() => setNestingTooltip(null)}
                                           style={{
-                                            left: `${(placement.x / group.innerW) * 100}%`,
-                                            top: `${(placement.y / group.innerH) * 100}%`,
-                                            width: `${(placement.w / group.innerW) * 100}%`,
-                                            height: `${(placement.h / group.innerH) * 100}%`,
+                                            left: `${((marginX + placement.x) / group.sheetWidth) * 100}%`,
+                                            top: `${((marginY + placement.y) / group.sheetHeight) * 100}%`,
+                                            width: `${(placement.w / group.sheetWidth) * 100}%`,
+                                            height: `${(placement.h / group.sheetHeight) * 100}%`,
                                             backgroundColor: lightenHex(c, 0.18),
                                             borderColor: darkenHex(c, 0.22),
                                             color: t,
                                           }}
                                         >
-                                          <span className="block truncate">{placement.piece.name}</span>
+                                          {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
+                                            <>
+                                              <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
+                                              <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                                            </>
+                                          ) : (
+                                            <span className="block truncate" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                                          )}
                                         </div>
                                       );
                                     })}
+                                    {boardHasGrain && (
+                                      <div className="pointer-events-none absolute inset-0 z-[30]">
+                                        {grainArrowPoints.map(([x, y], idx) => (
+                                          <img
+                                            key={`${group.boardKey}_sheet_${sheet.index}_grain_${idx}`}
+                                            src="/arrow-right.png"
+                                            alt=""
+                                            aria-hidden="true"
+                                            className="absolute opacity-55"
+                                            style={{
+                                              left: `${x}%`,
+                                              top: `${y}%`,
+                                              width: "15px",
+                                              height: "15px",
+                                              transform: `translate(-50%, -50%) rotate(${grainArrowRotation}deg)`,
+                                              filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
+                                            }}
+                                          />
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               ))}
@@ -5120,33 +6471,102 @@ export default function ProjectDetailsPage() {
               </div>
               <div className="h-[calc(100%-94px)] overflow-auto px-3 pb-3">
                 <div className="space-y-1">
-                  {cutlistRows
-                    .filter((row) => {
-                      const q = String(nestingSearch || "").trim().toLowerCase();
-                      if (!q) return true;
-                      return [row.name, row.board, row.partType, row.room, row.information]
-                        .some((v) => String(v || "").toLowerCase().includes(q));
-                    })
-                    .map((row) => {
+                  {nestingSidebarGroups.map((group) => {
+                    const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                    const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
+                    const partTypeCollapseKey = `pt:${group.partType}`;
+                    const collapsed = Boolean(nestingCollapsedGroups[partTypeCollapseKey]);
+                    const totalQty = group.rows.reduce(
+                      (sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1),
+                      0,
+                    );
+                    const visibleCount = group.rows.reduce((sum, row) => {
                       const checked = typeof nestingVisibilityMap[row.id] === "boolean"
                         ? nestingVisibilityMap[row.id]
                         : row.includeInNesting !== false;
-                      return (
-                        <label key={`nest_vis_${row.id}`} className="flex items-start gap-2 rounded-[8px] border border-[#E3E8F0] bg-[#F8FAFC] px-2 py-2">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={productionReadOnly}
-                            onChange={(e) => void onToggleNestingVisibility(row.id, e.target.checked)}
-                            className="mt-[2px] h-4 w-4"
-                          />
-                          <span className="min-w-0 text-[11px] text-[#334155]">
-                            <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
-                            <span className="block truncate">{row.partType || "Unassigned"} • {boardDisplayLabel(row.board) || "No board"} • {row.room || "-"}</span>
-                          </span>
-                        </label>
-                      );
-                    })}
+                      return sum + (checked ? 1 : 0);
+                    }, 0);
+                    const allChecked = group.rows.length > 0 && visibleCount === group.rows.length;
+                    const someChecked = visibleCount > 0 && !allChecked;
+                    return (
+                      <div key={`nest_group_${group.partType}`} className="space-y-1">
+                        <div
+                          className="flex items-center justify-between rounded-[8px] pl-[5px] text-[11px] font-extrabold"
+                          style={{ backgroundColor: color, color: textColor }}
+                        >
+                          <span style={{ paddingLeft: 5 }}>{group.partType} ({totalQty})</span>
+                          <div className="ml-auto inline-flex items-center">
+                            <span className="inline-flex h-7 items-center self-center pr-2">
+                              <input
+                                type="checkbox"
+                                checked={allChecked}
+                                ref={(el) => {
+                                  if (el) el.indeterminate = someChecked;
+                                }}
+                                disabled={productionReadOnly || group.rows.length === 0}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  group.rows.forEach((row) => {
+                                    void onToggleNestingVisibility(row.id, checked);
+                                  });
+                                }}
+                                className="h-4 w-4 accent-[#12345B]"
+                                title={allChecked ? "Untick all in part type" : "Tick all in part type"}
+                              />
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleNestingGroup(partTypeCollapseKey)}
+                              className="inline-flex h-7 w-8 items-center justify-center rounded-r-[8px] border-l border-black/15 hover:bg-black/10"
+                              style={{ color: textColor }}
+                              title={collapsed ? "Expand part type" : "Collapse part type"}
+                            >
+                              {collapsed ? <Plus size={14} strokeWidth={2.6} /> : <Minus size={14} strokeWidth={2.6} />}
+                            </button>
+                          </div>
+                        </div>
+                        {!collapsed && group.rows.map((row) => {
+                          const checked = typeof nestingVisibilityMap[row.id] === "boolean"
+                            ? nestingVisibilityMap[row.id]
+                            : row.includeInNesting !== false;
+                          const rowColor = partTypeColors[row.partType] ?? "#CBD5E1";
+                          const rowBg = lightenHex(rowColor, 0.72);
+                          return (
+                            <label
+                              key={`nest_vis_${row.id}`}
+                              className="flex items-start gap-2 rounded-[8px] border px-2 py-2"
+                              style={{
+                                backgroundColor: rowBg,
+                                borderColor: darkenHex(rowColor, 0.12),
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={productionReadOnly}
+                                onChange={(e) => void onToggleNestingVisibility(row.id, e.target.checked)}
+                                className="mt-[2px] h-4 w-4"
+                              />
+                              <span className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[11px] text-[#334155]">
+                                <span className="min-w-0">
+                                  <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
+                                  <span className="mt-[1px] block truncate text-[10px]">{row.room || "-"}</span>
+                                </span>
+                                <span className="shrink-0 text-right">
+                                  <span className="block pt-[1px] font-bold text-[#0F172A]">
+                                    {Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1)}
+                                  </span>
+                                  <span className="mt-[1px] block text-[10px] text-[#475569]">
+                                    {boardDisplayLabel(row.board) || "No board"}
+                                  </span>
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                   {cutlistRows.length === 0 && (
                     <p className="rounded-[10px] border border-dashed border-[#D8DEE8] px-3 py-4 text-center text-[12px] font-semibold text-[#64748B]">
                       No cutlist rows yet.
@@ -5156,6 +6576,241 @@ export default function ProjectDetailsPage() {
               </div>
             </aside>
           </div>
+          {selectedNestingSheet && (
+            <div
+              className="fixed inset-0 z-[200] p-8"
+              style={{
+                backgroundColor: "rgba(2, 6, 23, 0.32)",
+                backdropFilter: "blur(6px)",
+                WebkitBackdropFilter: "blur(6px)",
+              }}
+              onClick={() => {
+                setNestingSheetPreview(null);
+                setNestingPreviewHoverPieceId(null);
+                setNestingTooltip(null);
+              }}
+            >
+              <div
+                className="mx-auto mt-[6vh] flex flex-col overflow-hidden rounded-[14px] border border-[#CFD8E6] bg-white shadow-[0_24px_65px_rgba(15,23,42,0.42)]"
+                style={{
+                  width: "fit-content",
+                  maxWidth: "88vw",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F7FAFF] px-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-extrabold text-[#12345B]">{selectedNestingSheet.group.boardLabel}</p>
+                    <p className="text-[11px] font-semibold text-[#64748B]">Sheet {selectedNestingSheet.sheet.index}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNestingSheetPreview(null);
+                      setNestingPreviewHoverPieceId(null);
+                      setNestingTooltip(null);
+                    }}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D7DEE8] bg-white text-[#334155] hover:bg-[#F1F5F9]"
+                    title="Close preview"
+                  >
+                    <X size={16} strokeWidth={2.4} />
+                  </button>
+                </div>
+                <div className="overflow-hidden p-3">
+                  <div
+                    className="relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white"
+                    style={{
+                      width: selectedNestingSheetViewportWidth,
+                      height: selectedNestingSheetViewportHeight,
+                    }}
+                  >
+                    {selectedNestingSheet.sheet.placements.map((placement) => {
+                      const hoverPlacementKey = `${placement.piece.id}__${placement.x}__${placement.y}__${placement.w}__${placement.h}`;
+                      const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+                      const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
+                      const showWidthDimension = placement.w >= 120;
+                      const showHeightDimension = placement.h >= 120;
+                      const marginX = (selectedNestingSheet.group.sheetWidth - selectedNestingSheet.group.innerW) / 2;
+                      const marginY = (selectedNestingSheet.group.sheetHeight - selectedNestingSheet.group.innerH) / 2;
+                      return (
+                        <div
+                          key={`preview_${placement.piece.id}_${placement.x}_${placement.y}`}
+                          className="group absolute z-[10] border px-[7px] py-[2px] text-[11px] font-semibold leading-tight"
+                          onMouseEnter={(e) => {
+                            setNestingPreviewHoverPieceId(hoverPlacementKey);
+                            const base = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+                            setNestingTooltip({
+                              text: nestingPieceTooltip(
+                                String(placement.piece.row.parentName || placement.piece.name || "Part"),
+                                String(placement.piece.name || "Part"),
+                                String(placement.piece.room || placement.piece.row.room || "-"),
+                                placement.w,
+                                placement.h,
+                              ),
+                              x: e.clientX + 14,
+                              y: e.clientY + 14,
+                              bg: lightenHex(base, 0.72),
+                              border: darkenHex(base, 0.18),
+                              textColor: isLightHex(base) ? "#0F172A" : "#F8FAFC",
+                            });
+                          }}
+                          onMouseMove={(e) => {
+                            setNestingTooltip((prev) =>
+                              prev
+                                ? { ...prev, x: e.clientX + 14, y: e.clientY + 14 }
+                                : prev,
+                            );
+                          }}
+                          onMouseLeave={() => {
+                            setNestingPreviewHoverPieceId(null);
+                            setNestingTooltip(null);
+                          }}
+                          style={{
+                            left: `${((marginX + placement.x) / selectedNestingSheet.group.sheetWidth) * 100}%`,
+                            top: `${((marginY + placement.y) / selectedNestingSheet.group.sheetHeight) * 100}%`,
+                            width: `${(placement.w / selectedNestingSheet.group.sheetWidth) * 100}%`,
+                            height: `${(placement.h / selectedNestingSheet.group.sheetHeight) * 100}%`,
+                            backgroundColor: lightenHex(c, 0.18),
+                            borderColor: darkenHex(c, 0.22),
+                            color: t,
+                            zIndex: nestingPreviewHoverPieceId === hoverPlacementKey ? 20 : 10,
+                            boxShadow:
+                              nestingPreviewHoverPieceId === hoverPlacementKey
+                                ? "0 0 0 2px rgba(15,23,42,0.55), 0 0 0 3px rgba(255,255,255,0.9)"
+                                : "none",
+                          }}
+                        >
+                          <div
+                            className="absolute inset-0 z-[120] items-center justify-center"
+                            style={{ display: nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
+                          >
+                            <button
+                              type="button"
+                              onMouseEnter={() => setNestingPreviewHoverPieceId(hoverPlacementKey)}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                jumpToCutlistFromDerivedRowId(String(placement.piece.row.id || ""));
+                              }}
+                              className="inline-flex h-6 min-w-[48px] px-2 items-center justify-center rounded-[6px] text-[10px] font-bold shadow-sm backdrop-blur-[1px]"
+                              style={{
+                                backgroundColor: lightenHex(c, 0.52),
+                                border: `1px solid ${darkenHex(c, 0.2)}`,
+                                color: "#000000",
+                              }}
+                              title="Edit in cutlist"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                          {showWidthDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                            <span
+                              className="pointer-events-none absolute"
+                              style={{ left: "50%", top: "2px", transform: "translateX(-50%)", zIndex: 40 }}
+                            >
+                              <span
+                                className="inline-block rounded-[4px] px-1 text-[10px] font-bold"
+                                style={{ color: t, backgroundColor: "rgba(15,23,42,0.18)" }}
+                              >
+                                {Math.round(placement.w)}
+                              </span>
+                            </span>
+                          )}
+                          {showHeightDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                            <span
+                              className="pointer-events-none absolute top-1/2 rounded-[4px] px-1 text-[10px] font-bold"
+                              style={{
+                                color: t,
+                                backgroundColor: "rgba(15,23,42,0.18)",
+                                left: "-2px",
+                                transform: "translateY(-50%) rotate(270deg)",
+                                transformOrigin: "center",
+                              }}
+                            >
+                              {Math.round(placement.h)}
+                            </span>
+                          )}
+                          {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
+                            <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0 }}>
+                              <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
+                              <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                            </span>
+                          ) : (
+                            <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0, paddingLeft: 4 }}>
+                              {placement.piece.name}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {boardGrainFor(selectedNestingSheet.group.boardKey) && (
+                      <div className="pointer-events-none absolute inset-0 z-[30]" style={{ zIndex: 999 }}>
+                        {[
+                          [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
+                          [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
+                          [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
+                          [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
+                          [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
+                        ].map(([x, y], idx) => (
+                          <img
+                            key={`preview_grain_${idx}`}
+                            src="/arrow-right.png"
+                            alt=""
+                            aria-hidden="true"
+                            className="absolute opacity-55"
+                            style={{
+                              left: `${x}%`,
+                              top: `${y}%`,
+                              width: "15px",
+                              height: "15px",
+                              transform: `translate(-50%, -50%) rotate(${selectedNestingSheet.group.sheetWidth >= selectedNestingSheet.group.sheetHeight ? 0 : 90}deg)`,
+                              zIndex: 1000,
+                              filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {selectedNestingSheetStats && (
+                    <div className="mt-3 mx-auto rounded-[10px] border border-[#DCE3EC] bg-[#F8FAFC] p-3 text-[12px]" style={{ width: selectedNestingSheetViewportWidth }}>
+                      <p className="mb-2 text-[12px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Sheet Stats</p>
+                      <div
+                        className="items-stretch text-[#334155]"
+                        style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 24px minmax(0,1fr)" }}
+                      >
+                        <div className="min-w-0 space-y-1.5 pr-[10px]">
+                          <div className="flex items-center justify-between"><span>Used:</span><span className="font-bold">{selectedNestingSheetStats.usedPct.toFixed(1)}%</span></div>
+                          <div className="flex items-center justify-between"><span>Parts on sheet:</span><span className="font-bold">{selectedNestingSheetStats.partCount}</span></div>
+                          <div className="flex items-center justify-between gap-2"><span>Largest Part:</span><span className="truncate font-bold">{selectedNestingSheetStats.largest ? `${selectedNestingSheetStats.largest.piece.name} (${Math.round(selectedNestingSheetStats.largest.w)} x ${Math.round(selectedNestingSheetStats.largest.h)})` : "-"}</span></div>
+                        </div>
+                        <div aria-hidden="true" className="self-stretch border-l-2 border-[#64748B]" />
+                        <div className="min-w-0 space-y-1.5 pl-[10px]">
+                          <div className="flex items-center justify-between"><span>Wastage:</span><span className="font-bold">{selectedNestingSheetStats.wastagePct.toFixed(1)}%</span></div>
+                          <div className="flex items-center justify-between"><span>Sheet Area:</span><span className="font-bold">{selectedNestingSheetStats.sheetAreaM2.toFixed(3)} m2</span></div>
+                          <div className="flex items-center justify-between"><span>Board Size:</span><span className="font-bold">{Math.round(selectedNestingSheet.group.sheetWidth)} x {Math.round(selectedNestingSheet.group.sheetHeight)}</span></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          {nestingTooltip && (
+            <div
+              className="pointer-events-none fixed z-[5000] max-w-[320px] rounded-[6px] border px-2 py-1 text-[10px] font-medium shadow-lg"
+              style={{
+                left: nestingTooltip.x,
+                top: nestingTooltip.y,
+                backgroundColor: nestingTooltip.bg,
+                borderColor: nestingTooltip.border,
+                color: "#000000",
+              }}
+            >
+              <pre className="m-0 whitespace-pre font-mono leading-[1.35]">{nestingTooltip.text}</pre>
+            </div>
+          )}
         </div>
       </ProtectedRoute>
     );
@@ -5191,46 +6846,58 @@ export default function ProjectDetailsPage() {
                   ))}
                   {projectTags.length < 5 && canEditTags && (
                     <>
-                      <div className="relative">
-                        <input
-                          value={tagInput}
-                          onFocus={() => setShowTagSuggestions(true)}
-                          onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
-                          onChange={(e) => {
-                            setTagInput(e.target.value);
-                            setShowTagSuggestions(true);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              void onAddTag();
-                            }
-                            if (e.key === "Escape") {
-                              setShowTagSuggestions(false);
-                            }
-                          }}
-                          placeholder="Tag"
-                          className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
-                        />
-                        {showTagSuggestions && filteredTagSuggestions.length > 0 && (
-                          <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
-                            {filteredTagSuggestions.map((tag) => (
-                              <button
-                                key={tag}
-                                type="button"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => void onAddTagValue(tag)}
-                                className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
-                              >
-                                {tag}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      {isTagInputOpen && (
+                        <div className="relative">
+                          <input
+                            autoFocus
+                            value={tagInput}
+                            onFocus={() => setShowTagSuggestions(true)}
+                            onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
+                            onChange={(e) => {
+                              setTagInput(e.target.value);
+                              setShowTagSuggestions(true);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void onAddTag();
+                              }
+                              if (e.key === "Escape") {
+                                setTagInput("");
+                                setShowTagSuggestions(false);
+                                setIsTagInputOpen(false);
+                              }
+                            }}
+                            placeholder="Tag"
+                            className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
+                          />
+                          {showTagSuggestions && filteredTagSuggestions.length > 0 && (
+                            <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                              {filteredTagSuggestions.map((tag) => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => void onAddTagValue(tag)}
+                                  className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                                >
+                                  {tag}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       <button
                         type="button"
-                        onClick={() => void onAddTag()}
+                        onClick={() => {
+                          if (!isTagInputOpen) {
+                            setIsTagInputOpen(true);
+                            setShowTagSuggestions(true);
+                            return;
+                          }
+                          void onAddTag();
+                        }}
                         disabled={isSavingTags}
                         className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0] disabled:opacity-60"
                       >
@@ -5266,7 +6933,7 @@ export default function ProjectDetailsPage() {
                         </option>
                       ))}
                     </select>
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-white">▾</span>
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-white">â–¾</span>
                   </div>
                 </div>
                 <p className="pt-3 text-[13px] text-[#8A97A8]">Created: {shortDate(project.createdAt)}</p>
@@ -5677,59 +7344,63 @@ export default function ProjectDetailsPage() {
                             })}
                           </div>
 
-                          <div className={`${cutlistEntryGridClass} text-[11px] font-bold text-[#8A97A8]`}>
+                          <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: cutlistEntryGridTemplate }}>
                             <p></p>
-                            <p>Board</p>
-                            <p>Part Name</p>
-                            <p className="text-center">Height</p>
-                            <p className="text-center">Width</p>
-                            <p className="text-center">Depth</p>
-                            <p className="text-center">Quantity</p>
-                    <p className="col-span-2 text-center">{singleEntryShowsShelvesHeader ? "Shelves" : "Clashing"}</p>
-                            <p>Information</p>
-                            {showCutlistGrainColumn && <p className="text-center">Grain</p>}
+                            {cutlistEntryColumnDefs.map((col) => (
+                              <p
+                                key={`single_header_${col.key}`}
+                                className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                                style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                              >
+                                {col.key === "clashing" ? (singleEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                              </p>
+                            ))}
                           </div>
-                          <div className={`${cutlistEntryGridClass} border-y px-1 py-1`} style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
+                          <div className="grid gap-2 border-y px-1 py-1" style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                             <p></p>
-                            <BoardPillDropdown
-                              value={cutlistEntry.board}
-                              options={cutlistBoardOptions}
-                              disabled={productionReadOnly}
-                              title={warningForCell("single", "board") || undefined}
-                              className={warningClassForCell("single", "board")}
-                              bg={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
-                              border={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
-                              text={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
-                              getSize={boardSizeFor}
-                              getLabel={boardDisplayLabel}
-                              onChange={onCutlistEntryBoardChange}
-                            />
-                            <input disabled={productionReadOnly} title={warningForCell("single", "name") || undefined} value={cutlistEntry.name} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`} style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
-                            {isDrawerPartType(cutlistEntry.partType) ? (
-                              <DrawerHeightDropdown
-                                value={String(cutlistEntry.height || "")}
-                                options={drawerHeightLetterOptions}
+                            <div style={cutlistEntryCellStyle("board")}>
+                              <BoardPillDropdown
+                                value={cutlistEntry.board}
+                                options={cutlistBoardOptions}
                                 disabled={productionReadOnly}
-                                title={warningForCell("single", "height") || undefined}
-                                className={warningClassForCell("single", "height")}
-                                bg={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
-                                border={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
-                                text={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
-                                onAdd={(token) => addCutlistEntryDrawerHeightToken(token)}
-                                onRemove={(token) => removeCutlistEntryDrawerHeightToken(token)}
+                                title={warningForCell("single", "board") || undefined}
+                                className={warningClassForCell("single", "board")}
+                                bg={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
+                                border={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
+                                text={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
+                                getSize={boardSizeFor}
+                                getLabel={boardDisplayLabel}
+                                onChange={onCutlistEntryBoardChange}
                               />
+                            </div>
+                            <input disabled={productionReadOnly} title={warningForCell("single", "name") || undefined} value={cutlistEntry.name} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`} style={{ ...warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("name") }} />
+                            {isDrawerPartType(cutlistEntry.partType) ? (
+                              <div style={cutlistEntryCellStyle("height")}>
+                                <DrawerHeightDropdown
+                                  value={String(cutlistEntry.height || "")}
+                                  options={drawerHeightLetterOptions}
+                                  disabled={productionReadOnly}
+                                  title={warningForCell("single", "height") || undefined}
+                                  className={warningClassForCell("single", "height")}
+                                  bg={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
+                                  border={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
+                                  text={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
+                                  onAdd={(token) => addCutlistEntryDrawerHeightToken(token)}
+                                  onRemove={(token) => removeCutlistEntryDrawerHeightToken(token)}
+                                />
+                              </div>
                             ) : (
-                              <input disabled={productionReadOnly} title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, height: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                              <input disabled={productionReadOnly} title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, height: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={{ ...warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                             )}
-                            <input disabled={productionReadOnly} title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
-                            <input disabled={productionReadOnly} title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
-                            <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })} />
+                            <input disabled={productionReadOnly} title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                            <input disabled={productionReadOnly} title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                            <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <select
                               disabled={productionReadOnly}
                               value={cutlistEntry.clashLeft ?? ""}
                               onChange={(e) => setCutlistEntry((prev) => ({ ...prev, clashLeft: e.target.value }))}
                               className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                              style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                              style={{ ...cutlistEntrySubCellStyle("clashing", 0), backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
                             >
                               <option value=""></option>
                               {CLASH_LEFT_OPTIONS.map((opt) => (
@@ -5741,14 +7412,14 @@ export default function ProjectDetailsPage() {
                               value={cutlistEntry.clashRight ?? ""}
                               onChange={(e) => setCutlistEntry((prev) => ({ ...prev, clashRight: e.target.value }))}
                               className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                              style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                              style={{ ...cutlistEntrySubCellStyle("clashing", 1), backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
                             >
                               <option value=""></option>
                               {CLASH_RIGHT_OPTIONS.map((opt) => (
                                 <option key={opt} value={opt}>{opt}</option>
                               ))}
                             </select>
-                            <div className="grid gap-[2px]">
+                            <div className="grid gap-[2px]" style={cutlistEntryCellStyle("information")}>
                               {informationLinesFromValue(cutlistEntry.information).map((line, idx) => (
                                 <div key={`entry_info_${idx}`} className="flex items-center gap-[3px]">
                                   <button
@@ -5775,14 +7446,30 @@ export default function ProjectDetailsPage() {
                               ))}
                             </div>
                             {showCutlistGrainColumn && (
-                              <label className="flex h-8 items-center justify-center">
-                                <input
+                              boardGrainFor(String(cutlistEntry.board ?? "").trim()) ? (
+                                <select
                                   disabled={productionReadOnly}
-                                  type="checkbox"
-                                  checked={cutlistEntry.grain}
-                                  onChange={(e) => setCutlistEntry((prev) => ({ ...prev, grain: e.target.checked }))}
-                                />
-                              </label>
+                                  value={String(cutlistEntry.grainValue ?? "")}
+                                  onChange={(e) =>
+                                    setCutlistEntry((prev) => ({
+                                      ...prev,
+                                      grainValue: e.target.value,
+                                      grain: Boolean(String(e.target.value).trim()),
+                                    }))
+                                  }
+                                  className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
+                                  style={{ ...cutlistEntryCellStyle("grain"), backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                                >
+                                  <option value=""></option>
+                                  {grainDimensionOptions(cutlistEntry.height, cutlistEntry.width, cutlistEntry.depth).map((opt) => (
+                                    <option key={`entry_grain_${opt}`} value={opt}>
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <div style={cutlistEntryCellStyle("grain")} />
+                              )
                             )}
                           </div>
                           <button
@@ -5998,15 +7685,19 @@ export default function ProjectDetailsPage() {
                                           </td>
                                         );
                                       }
-                                      if (col.key === "grain") {
+                                    if (col.key === "grain") {
+                                        const rowBoardAllowsGrain = boardGrainFor(String(row.board ?? "").trim());
                                         return (
                                           <td
                                             key={`${row.id}_${col.label}`}
                                             className={`px-2 py-[3px] align-middle ${alignClass}`}
-                                            onDoubleClick={() => startCellEdit(row, "grain")}
+                                            onDoubleClick={() => {
+                                              if (!rowBoardAllowsGrain) return;
+                                              startCellEdit(row, "grain");
+                                            }}
                                             style={{ ...cutlistListColumnStyle("grain"), color: rowTextColor }}
                                           >
-                                            {editing ? (
+                                            {!rowBoardAllowsGrain ? "" : editing ? (
                                               <select
                                                 autoFocus
                                                 value={editingCellValue}
@@ -6018,11 +7709,15 @@ export default function ProjectDetailsPage() {
                                                 onBlur={() => void commitCellEdit()}
                                                 className="h-6 min-w-[72px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
                                               >
-                                                <option value="true">Yes</option>
-                                                <option value="false">No</option>
+                                                <option value=""></option>
+                                                {grainDimensionOptions(row.height, row.width, row.depth).map((opt) => (
+                                                  <option key={`${row.id}_grain_edit_${opt}`} value={opt}>
+                                                    {opt}
+                                                  </option>
+                                                ))}
                                               </select>
                                             ) : (
-                                              row.grain ? "Yes" : "No"
+                                              row.grainValue || (row.grain ? "Yes" : "")
                                             )}
                                           </td>
                                         );
@@ -6057,7 +7752,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                       Drilling
                                                     </span>
                                                     <select
@@ -6088,7 +7783,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                       Drilling
                                                     </span>
                                                     <select
@@ -6152,7 +7847,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
@@ -6163,7 +7858,7 @@ export default function ProjectDetailsPage() {
                                                   </div>
                                                   <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
                                                     <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <span className="inline-block [transform:rotate(90deg)]">⤴</span>
+                                                      <span className="inline-block [transform:rotate(90deg)]">â¤´</span>
                                                       Drilling
                                                     </span>
                                                     <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
@@ -6229,12 +7924,20 @@ export default function ProjectDetailsPage() {
                                         );
                                       }
                                       const value = String(row[col.key] ?? "");
+                                      const isGrainMatchedDimension =
+                                        (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height)) ||
+                                        (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width)) ||
+                                        (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth));
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
                                           className={`px-2 py-[3px] align-middle ${alignClass}`}
                                           onDoubleClick={() => startCellEdit(row, key)}
-                                          style={{ ...cutlistListColumnStyle(key), color: rowTextColor }}
+                                          style={{
+                                            ...cutlistListColumnStyle(key),
+                                            color: rowTextColor,
+                                            ...(isGrainMatchedDimension ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                          }}
                                         >
                                           {editing ? (
                                             <input
@@ -6252,7 +7955,11 @@ export default function ProjectDetailsPage() {
                                               className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
                                             />
                                           ) : (
-                                            value
+                                            isGrainMatchedDimension ? (
+                                              <span>{value}</span>
+                                            ) : (
+                                              value
+                                            )
                                           )}
                                         </td>
                                       );
@@ -6317,10 +8024,10 @@ export default function ProjectDetailsPage() {
                             </div>
                           )}
                           {nestingRowsByBoard.map((group) => {
-                            const collapsed = Boolean(nestingCollapsedGroups[group.boardLabel]);
+                            const collapsed = Boolean(nestingCollapsedGroups[group.boardKey]);
                             const qtySum = group.rows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
                             return (
-                              <div key={group.boardLabel} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
+                              <div key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
                                 <div className="flex h-[40px] items-center justify-between bg-[#F8FAFC] pl-3">
                                   <div className="inline-flex items-center gap-2">
                                     <p className="text-[13px] font-extrabold text-[#12345B]">{group.boardLabel}</p>
@@ -6330,7 +8037,7 @@ export default function ProjectDetailsPage() {
                                   </div>
                                   <button
                                     type="button"
-                                    onClick={() => toggleNestingGroup(group.boardLabel)}
+                                    onClick={() => toggleNestingGroup(group.boardKey)}
                                     className="inline-flex h-[40px] w-[46px] items-center justify-center border-l border-[#DCE3EC] text-[#12345B] hover:bg-[#EEF2F7]"
                                   >
                                     {collapsed ? <Plus size={16} strokeWidth={2.5} /> : <Minus size={16} strokeWidth={2.5} />}
@@ -6353,7 +8060,7 @@ export default function ProjectDetailsPage() {
                                       </thead>
                                       <tbody>
                                         {group.rows.map((row) => (
-                                          <tr key={`${group.boardLabel}_${row.id}`} className="border-t border-[#E4E7EE]">
+                                          <tr key={`${group.boardKey}_${row.id}`} className="border-t border-[#E4E7EE]">
                                             <td className="px-2 py-[6px] text-[#334155]">{row.room || "-"}</td>
                                             <td className="px-2 py-[6px]">
                                               <span
@@ -6429,7 +8136,7 @@ export default function ProjectDetailsPage() {
                                   />
                                   <span className="min-w-0 text-[11px] text-[#334155]">
                                     <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
-                                    <span className="block truncate">{row.partType || "Unassigned"} • {boardDisplayLabel(row.board) || "No board"} • {row.room || "-"}</span>
+                                    <span className="block truncate">{row.partType || "Unassigned"} â€¢ {boardDisplayLabel(row.board) || "No board"} â€¢ {row.room || "-"}</span>
                                   </span>
                                 </label>
                               );
@@ -6530,9 +8237,13 @@ export default function ProjectDetailsPage() {
                     <div className="space-y-3 p-3 text-[12px]">
                       <div className="flex items-center gap-3">
                         {hardwareRows.map((row) => (
-                          <label key={row.name} className="inline-flex items-center gap-1 font-semibold text-[#344054]">
+                          <label
+                            key={row.name}
+                            className="inline-flex items-center gap-1 font-semibold text-[#344054]"
+                            title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
+                          >
                             <input
-                              disabled={productionReadOnly}
+                              disabled={productionReadOnly || hasDrawerRowsInUse}
                               type="checkbox"
                               checked={productionForm.hardware.hardwareCategory === row.name}
                               onChange={() => void onHardwareCategoryChange(row.name)}
@@ -6544,9 +8255,10 @@ export default function ProjectDetailsPage() {
                       <div className="grid grid-cols-[92px_1fr] items-center gap-2">
                         <p className="font-semibold text-[#334155]">New Drawer Type</p>
                         <select
-                          disabled={productionReadOnly}
+                          disabled={productionReadOnly || hasDrawerRowsInUse}
                           value={productionForm.hardware.newDrawerType}
                           onChange={(e) => void onChangeDrawerType(e.target.value)}
+                          title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
                           className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#344054]"
                         >
                           <option value=""></option>
@@ -6555,6 +8267,11 @@ export default function ProjectDetailsPage() {
                           ))}
                         </select>
                       </div>
+                      {hasDrawerRowsInUse && (
+                        <p className="text-[11px] font-semibold text-[#B42318]">
+                          Hardware and drawer type are locked while drawer rows exist in cutlist.
+                        </p>
+                      )}
                       <div className="grid grid-cols-[92px_1fr] items-center gap-2">
                         <p className="font-semibold text-[#334155]">Hinge Type</p>
                         <select
@@ -6595,6 +8312,10 @@ export default function ProjectDetailsPage() {
                     <div className="mt-2 space-y-2">
                       {productionForm.boardTypes.map((row) => (
                         <div key={row.id} className="grid grid-cols-[24px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2">
+                          {(() => {
+                            const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
+                            return (
+                              <>
                           <button
                             disabled={productionReadOnly}
                             onClick={() => void onRemoveBoardRow(row.id)}
@@ -6670,8 +8391,11 @@ export default function ProjectDetailsPage() {
                               return <option key={label} value={label}>{label}</option>;
                             })}
                           </select>
-                          <p className="text-center text-[12px] font-semibold text-[#344054]">{row.sheets}</p>
+                          <p className="text-center text-[12px] font-semibold text-[#344054]">{requiredSheets}</p>
                           <p className="text-center text-[12px] font-semibold text-[#344054]">{row.edgetape}</p>
+                              </>
+                            );
+                          })()}
                         </div>
                       ))}
                     </div>
@@ -6732,3 +8456,5 @@ export default function ProjectDetailsPage() {
     </ProtectedRoute>
   );
 }
+
+

@@ -178,6 +178,37 @@ function normalizeStringList(raw: unknown, fallback: string[]): string[] {
   return rows.length ? rows : [...fallback];
 }
 
+function mergeCutlistColumnOrder(baseOrder: unknown, production: string[], initial: string[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (value: unknown) => {
+    const col = toStr(value);
+    if (!col || seen.has(col)) return;
+    seen.add(col);
+    merged.push(col);
+  };
+  if (Array.isArray(baseOrder)) {
+    for (const col of baseOrder) pushUnique(col);
+  }
+  for (const col of cutlistColumnDefaults) pushUnique(col);
+  for (const col of production) pushUnique(col);
+  for (const col of initial) pushUnique(col);
+  return merged;
+}
+
+function sortCutlistSelectionsByOrder(selected: string[], order: string[]): string[] {
+  const ranked = order.map((v, idx) => [v, idx] as const);
+  const rankMap = new Map<string, number>(ranked);
+  return [...new Set(selected.map((v) => toStr(v)).filter(Boolean))].sort((a, b) => {
+    const ai = rankMap.get(a);
+    const bi = rankMap.get(b);
+    if (ai == null && bi == null) return a.localeCompare(b);
+    if (ai == null) return 1;
+    if (bi == null) return -1;
+    return ai - bi;
+  });
+}
+
 function normalizeSheetSizes(raw: unknown): SheetSizeRow[] {
   if (!Array.isArray(raw)) return [{ h: "2440", w: "1220", isDefault: true }];
   const rows = raw
@@ -652,6 +683,9 @@ export default function CompanySettingsPage() {
   const [nesting, setNesting] = useState({ sheetHeight: "2440", sheetWidth: "1220", kerf: "5", margin: "10" });
   const [cutlistProduction, setCutlistProduction] = useState<string[]>([]);
   const [cutlistInitial, setCutlistInitial] = useState<string[]>([]);
+  const [cutlistColumnOrder, setCutlistColumnOrder] = useState<string[]>([...cutlistColumnDefaults]);
+  const [cutlistColumnDragIndex, setCutlistColumnDragIndex] = useState<number | null>(null);
+  const [cutlistColumnDragOverIndex, setCutlistColumnDragOverIndex] = useState<number | null>(null);
   const [edgebandingRules, setEdgebandingRules] = useState<EdgebandingRuleRow[]>([]);
   const [edgebandingExcessPerEndMm, setEdgebandingExcessPerEndMm] = useState("");
   const [unlockSuffix, setUnlockSuffix] = useState("");
@@ -759,8 +793,15 @@ export default function CompanySettingsPage() {
           kerf: toStr(nestingRaw.kerf, "5"),
           margin: toStr(nestingRaw.margin, "10"),
         });
-        setCutlistProduction(normalizeStringList(cutCols.production, []));
-        setCutlistInitial(normalizeStringList(cutCols.initialMeasure, []));
+        const nextCutlistProduction = normalizeStringList(cutCols.production, []);
+        const nextCutlistInitial = normalizeStringList(cutCols.initialMeasure, []);
+        setCutlistProduction(nextCutlistProduction);
+        setCutlistInitial(nextCutlistInitial);
+        const orderRaw =
+          Array.isArray(doc.cutlistColumnOrder)
+            ? doc.cutlistColumnOrder
+            : (cutCols.order as unknown);
+        setCutlistColumnOrder(mergeCutlistColumnOrder(orderRaw, nextCutlistProduction, nextCutlistInitial));
         const edgeSettings = normalizeEdgebandingSettings(doc.edgebandingSettings);
         setEdgebandingRules(edgeSettings.rules);
         setEdgebandingExcessPerEndMm(edgeSettings.excessPerEndMm);
@@ -799,20 +840,10 @@ export default function CompanySettingsPage() {
     return sections.filter((s) => s.label.toLowerCase().includes(q));
   }, [search]);
 
-  const cutlistColumnRows = useMemo(() => {
-    const source = [...cutlistProduction, ...cutlistInitial].map((v) => toStr(v)).filter(Boolean);
-    const rows: string[] = [...cutlistColumnDefaults];
-    const seen = new Set<string>();
-
-    for (const col of cutlistColumnDefaults) seen.add(col);
-    for (const col of source) {
-      if (!seen.has(col)) {
-        seen.add(col);
-        rows.push(col);
-      }
-    }
-    return rows;
-  }, [cutlistProduction, cutlistInitial]);
+  const cutlistColumnRows = useMemo(
+    () => mergeCutlistColumnOrder(cutlistColumnOrder, cutlistProduction, cutlistInitial),
+    [cutlistColumnOrder, cutlistProduction, cutlistInitial],
+  );
 
   const moveRow = <T,>(items: T[], index: number, dir: -1 | 1): T[] => {
     const next = [...items];
@@ -1012,6 +1043,7 @@ export default function CompanySettingsPage() {
           production: cutlistProduction,
           initialMeasure: cutlistInitial,
         },
+        cutlistColumnOrder,
         productionUnlockPasswordSuffix: unlockSuffix,
         productionUnlockDurationHours: unlockHours,
       },
@@ -1158,7 +1190,9 @@ export default function CompanySettingsPage() {
       cutlistColumnsByContext: {
         production: cutlistProduction.filter(Boolean),
         initialMeasure: cutlistInitial.filter(Boolean),
+        order: cutlistColumnRows,
       },
+      cutlistColumnOrder: cutlistColumnRows,
       cutlistColumns: cutlistProduction.filter(Boolean),
       edgebandingSettings: {
         addToTotalRules: edgebandingRules
@@ -1285,7 +1319,8 @@ export default function CompanySettingsPage() {
         sheetSizes,
         partTypes,
         nestingSettings: nesting,
-        cutlistColumnsByContext: { production: cutlistProduction, initialMeasure: cutlistInitial },
+        cutlistColumnsByContext: { production: cutlistProduction, initialMeasure: cutlistInitial, order: cutlistColumnRows },
+        cutlistColumnOrder: cutlistColumnRows,
         cutlistColumns: cutlistProduction,
         edgebandingSettings: {
           addToTotalRules: edgebandingRules,
@@ -1347,6 +1382,11 @@ export default function CompanySettingsPage() {
     }, 120);
   };
 
+  const triggerAutosaveAfterRowDrop = () => {
+    hasPendingBlurSaveRef.current = true;
+    triggerBlurAutoSave();
+  };
+
   useEffect(() => {
     if (!isHydrated || isLoading || !activeCompanyId) return;
     if (skipFirstDirtyEffectRef.current) {
@@ -1381,6 +1421,7 @@ export default function CompanySettingsPage() {
     nesting,
     cutlistProduction,
     cutlistInitial,
+    cutlistColumnOrder,
     edgebandingRules,
     edgebandingExcessPerEndMm,
     unlockSuffix,
@@ -1706,37 +1747,95 @@ export default function CompanySettingsPage() {
                 <div className="grid gap-3 xl:grid-cols-2">
                   <Panel title="Cutlist Columns">
                     <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[1fr_120px_120px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                        <p>Column</p>
-                        <p className="text-center">Production</p>
-                        <p className="text-center">Initial Measure</p>
+                      <div className="flex items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                        <p className="w-7 shrink-0"></p>
+                        <p className="min-w-0 flex-1">Column</p>
+                        <p className="w-[120px] shrink-0 text-center">Production</p>
+                        <p className="w-[120px] shrink-0 text-center">Initial Measure</p>
                       </div>
                       {cutlistColumnRows.map((columnName) => {
                         const prodChecked = cutlistProduction.includes(columnName);
                         const initialChecked = cutlistInitial.includes(columnName);
+                        const idx = cutlistColumnRows.findIndex((v) => v === columnName);
                         return (
-                          <div key={columnName} className="grid grid-cols-[1fr_120px_120px] items-center gap-2">
-                            <div className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] leading-[28px] text-[#334155]">
+                          <div
+                            key={columnName}
+                            className={`flex items-center gap-2 rounded-[8px] ${
+                              cutlistColumnDragIndex === idx
+                                ? "bg-[#EEF3FA]"
+                                : cutlistColumnDragOverIndex === idx
+                                  ? "bg-[#F7FAFF]"
+                                  : ""
+                            }`}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDragEnter={(e) => {
+                              e.preventDefault();
+                              if (cutlistColumnDragIndex == null || cutlistColumnDragIndex === idx) return;
+                              const nextRows = moveRowTo(cutlistColumnRows, cutlistColumnDragIndex, idx);
+                              setCutlistColumnOrder(nextRows);
+                              setCutlistProduction((prev) => sortCutlistSelectionsByOrder(prev, nextRows));
+                              setCutlistInitial((prev) => sortCutlistSelectionsByOrder(prev, nextRows));
+                              setCutlistColumnDragIndex(idx);
+                              setCutlistColumnDragOverIndex(idx);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              setCutlistColumnDragIndex(null);
+                              setCutlistColumnDragOverIndex(null);
+                              triggerAutosaveAfterRowDrop();
+                            }}
+                          >
+                            <button
+                              type="button"
+                              draggable
+                              onDragStart={(e) => {
+                                setCutlistColumnDragIndex(idx);
+                                setCutlistColumnDragOverIndex(idx);
+                                e.dataTransfer.effectAllowed = "move";
+                              }}
+                              onDragEnd={() => {
+                                setCutlistColumnDragIndex(null);
+                                setCutlistColumnDragOverIndex(null);
+                              }}
+                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#98A2B3]"
+                              title="Drag to reorder"
+                            >
+                              <GripVertical size={14} />
+                            </button>
+                            <div className="h-7 min-w-0 flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] leading-[28px] text-[#334155]">
                               {columnName}
                             </div>
-                            <label className="inline-flex items-center justify-center">
+                            <label className="inline-flex w-[120px] shrink-0 items-center justify-center">
                               <input
                                 type="checkbox"
                                 checked={prodChecked}
                                 onChange={(e) =>
                                   setCutlistProduction((prev) =>
-                                    e.target.checked ? (prev.includes(columnName) ? prev : [...prev, columnName]) : prev.filter((v) => v !== columnName),
+                                    e.target.checked
+                                      ? sortCutlistSelectionsByOrder(
+                                          prev.includes(columnName) ? prev : [...prev, columnName],
+                                          cutlistColumnRows,
+                                        )
+                                      : prev.filter((v) => v !== columnName),
                                   )
                                 }
                               />
                             </label>
-                            <label className="inline-flex items-center justify-center">
+                            <label className="inline-flex w-[120px] shrink-0 items-center justify-center">
                               <input
                                 type="checkbox"
                                 checked={initialChecked}
                                 onChange={(e) =>
                                   setCutlistInitial((prev) =>
-                                    e.target.checked ? (prev.includes(columnName) ? prev : [...prev, columnName]) : prev.filter((v) => v !== columnName),
+                                    e.target.checked
+                                      ? sortCutlistSelectionsByOrder(
+                                          prev.includes(columnName) ? prev : [...prev, columnName],
+                                          cutlistColumnRows,
+                                        )
+                                      : prev.filter((v) => v !== columnName),
                                   )
                                 }
                               />
@@ -1948,6 +2047,7 @@ export default function CompanySettingsPage() {
                             e.preventDefault();
                             setLegendDragIndex(null);
                             setLegendDragOverIndex(null);
+                            triggerAutosaveAfterRowDrop();
                           }}
                         >
                           <button
@@ -2055,6 +2155,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setItemCategoryDragIndex(null);
                               setItemCategoryDragOverIndex(null);
+                              triggerAutosaveAfterRowDrop();
                             }}
                           >
                             <button
@@ -2234,6 +2335,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setJobTypeDragIndex(null);
                               setJobTypeDragOverIndex(null);
+                              triggerAutosaveAfterRowDrop();
                             }}
                           >
                             <button
@@ -2365,6 +2467,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setQuoteExtraDragIndex(null);
                               setQuoteExtraDragOverIndex(null);
+                              triggerAutosaveAfterRowDrop();
                             }}
                           >
                             <button
@@ -2431,6 +2534,7 @@ export default function CompanySettingsPage() {
                               e.preventDefault();
                               setDiscountTierDragIndex(null);
                               setDiscountTierDragOverIndex(null);
+                              triggerAutosaveAfterRowDrop();
                             }}
                           >
                             <button
@@ -2513,6 +2617,7 @@ export default function CompanySettingsPage() {
                           e.preventDefault();
                           setHardwareDragIndex(null);
                           setHardwareDragOverIndex(null);
+                          triggerAutosaveAfterRowDrop();
                         }}
                       >
                         <div
@@ -2696,6 +2801,7 @@ export default function CompanySettingsPage() {
                                       setDrawerDragHardwareIndex(null);
                                       setDrawerDragIndex(null);
                                       setDrawerDragOverIndex(null);
+                                      triggerAutosaveAfterRowDrop();
                                     }}
                                   >
                                     <div className="grid grid-cols-[26px_26px_26px_1fr_84px] items-center gap-2">
