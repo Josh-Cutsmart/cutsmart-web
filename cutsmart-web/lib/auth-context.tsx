@@ -25,17 +25,25 @@ interface AuthContextValue {
   signIn: (email: string, password: string) => Promise<void>;
   signInDemo: (role: UserRole) => void;
   logout: () => Promise<void>;
+  setUserColorLocal: (color: string) => void;
 }
 
 const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function fromFirebaseUser(user: User, role: UserRole, companyId?: string, membershipDisplayName?: string): AppUser {
+function fromFirebaseUser(
+  user: User,
+  role: UserRole,
+  companyId?: string,
+  membershipDisplayName?: string,
+  userColor?: string,
+): AppUser {
   return {
     uid: user.uid,
     email: user.email ?? "unknown@cutsmart.test",
     displayName: membershipDisplayName ?? user.displayName ?? "CutSmart User",
+    userColor,
     role,
     companyId,
     permissions: [],
@@ -114,6 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               membership?.role ?? "viewer",
               membership?.companyId,
               resolvedName,
+              profile?.userColor,
             ),
             permissions: membership?.permissionKeys ?? [],
           },
@@ -158,6 +167,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           window.localStorage.removeItem(DEMO_STORAGE_KEY);
         }
         setUser(createDemoUser("owner"));
+      },
+      setUserColorLocal: (color) => {
+        setUser((prev) => {
+          if (!prev) return prev;
+          return { ...prev, userColor: String(color || "").trim() || undefined };
+        });
       },
     }),
     [isDemoMode, isLoading, user],

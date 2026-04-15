@@ -114,6 +114,8 @@ const sections: Array<{ key: SettingsSection; label: string; icon: React.Compone
   { key: "integrations", label: "Integrations", icon: Link2 },
   { key: "backup", label: "Backup Data", icon: DatabaseBackup },
 ];
+const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
 
 function toStr(v: unknown, fallback = "") {
   const t = String(v ?? "").trim();
@@ -635,6 +637,11 @@ export default function CompanySettingsPage() {
   const [search, setSearch] = useState("");
   const [company, setCompany] = useState<Record<string, unknown> | null>(null);
   const [activeCompanyId, setActiveCompanyId] = useState("");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!activeCompanyId) return;
+    window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, activeCompanyId);
+  }, [activeCompanyId]);
   const [staff, setStaff] = useState<CompanyMemberOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -714,6 +721,11 @@ export default function CompanySettingsPage() {
     themeColor: "#2F6BFF",
     logoPath: "",
   });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!form?.themeColor) return;
+    window.localStorage.setItem(ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY, String(form.themeColor));
+  }, [form.themeColor]);
 
   useEffect(() => {
     const run = async () => {
@@ -1540,7 +1552,22 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <Panel title="Theme">
                     <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[95px_1fr] items-center gap-2"><p className="font-bold text-[#334155]">Theme Color</p><input value={form.themeColor} onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" /></div>
+                      <div className="grid grid-cols-[95px_1fr] items-center gap-2">
+                        <p className="font-bold text-[#334155]">Theme Color</p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : "#2F6BFF"}
+                            onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))}
+                            className="h-7 w-9 cursor-pointer rounded-[8px] border border-[#D8DEE8] bg-white p-1"
+                          />
+                          <input
+                            value={form.themeColor}
+                            onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))}
+                            className="h-7 flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                        </div>
+                      </div>
                       <div className="grid grid-cols-[95px_1fr] items-center gap-2"><p className="font-bold text-[#334155]">Company Logo</p><input value={form.logoPath} onChange={(e) => setForm((prev) => ({ ...prev, logoPath: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" /></div>
                     </div>
                   </Panel>

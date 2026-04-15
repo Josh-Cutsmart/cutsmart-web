@@ -22,11 +22,13 @@ export interface Project {
   name: string;
   customer: string;
   createdAt: string;
+  createdByUid?: string;
   createdByName: string;
   status: "draft" | "quoted" | "approved" | "in-production" | "complete";
   statusLabel: string;
   priority: "low" | "medium" | "high";
   updatedAt: string;
+  deletedAt?: string;
   dueDate: string;
   estimatedSheets: number;
   assignedTo: string;
@@ -91,6 +93,7 @@ export interface AppUser {
   uid: string;
   email: string;
   displayName: string;
+  userColor?: string;
   role: UserRole;
   companyId?: string;
   permissions?: string[];

@@ -1,6 +1,7 @@
 import {
   collection,
   collectionGroup,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -111,11 +112,13 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     name: String(data.name ?? "Untitled Project"),
     customer: String(data.customer ?? data.clientName ?? data.client ?? "Unknown Customer"),
     createdAt: toIsoString(data.createdAtIso ?? data.createdAt, new Date().toISOString()),
+    createdByUid: String(data.createdByUid ?? data.ownerUid ?? ""),
     createdByName: String(data.createdByName ?? "Unknown"),
     status: toProjectStatus(data.status),
     statusLabel: String(data.status ?? "New"),
     priority: (String(data.priority ?? "medium") as Project["priority"]),
     updatedAt: toIsoString(data.updatedAtIso ?? data.updatedAt, new Date().toISOString()),
+    deletedAt: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
     dueDate: String(data.dueDate ?? data.due ?? ""),
     estimatedSheets: Number(data.estimatedSheets ?? rows.length ?? 0),
     assignedTo: String(data.assignedTo ?? data.createdByName ?? "Unassigned"),
@@ -356,7 +359,7 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
   }
 }
 
-async function fetchProjectsFromCompanyJobs(uid: string): Promise<Project[]> {
+async function fetchProjectsFromCompanyJobs(uid: string, includeDeleted = false): Promise<Project[]> {
   if (!db || !uid) {
     return [];
   }
@@ -376,7 +379,7 @@ async function fetchProjectsFromCompanyJobs(uid: string): Promise<Project[]> {
       const jobsSnap = await getDocs(collection(db, "companies", companyId, "jobs"));
       for (const item of jobsSnap.docs) {
         const data = (item.data() ?? {}) as Record<string, unknown>;
-        if (Boolean(data.isDeleted)) {
+        if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
           continue;
         }
         all.push(normalizeJobProject(companyId, item));
@@ -390,7 +393,7 @@ async function fetchProjectsFromCompanyJobs(uid: string): Promise<Project[]> {
   return all;
 }
 
-async function fetchProjectsFromLegacyUserPaths(uid: string): Promise<Project[]> {
+async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = false): Promise<Project[]> {
   if (!db || !uid) {
     return [];
   }
@@ -402,7 +405,7 @@ async function fetchProjectsFromLegacyUserPaths(uid: string): Promise<Project[]>
     const userProjects = await getDocs(collection(db, "users", uid, "projects"));
     for (const item of userProjects.docs) {
       const data = (item.data() ?? {}) as Record<string, unknown>;
-      if (Boolean(data.isDeleted)) {
+      if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
         continue;
       }
       const id = String(data.id ?? item.id);
@@ -422,7 +425,7 @@ async function fetchProjectsFromLegacyUserPaths(uid: string): Promise<Project[]>
         );
         for (const item of nested.docs) {
           const data = (item.data() ?? {}) as Record<string, unknown>;
-          if (Boolean(data.isDeleted)) {
+          if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
             continue;
           }
           const id = String(data.id ?? item.id);
@@ -485,6 +488,38 @@ export async function fetchProjectById(projectId: string, uid?: string): Promise
 
   const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""));
   return nested.find((project) => project.id === projectId) ?? null;
+}
+
+export async function fetchDeletedProjects(uid?: string): Promise<Project[]> {
+  if (!db) {
+    return [];
+  }
+
+  try {
+    const topLevel = await getDocs(collection(db, "projects"));
+    if (!topLevel.empty) {
+      return topLevel.docs
+        .filter((item) => {
+          const data = (item.data() ?? {}) as Record<string, unknown>;
+          return Boolean(data.isDeleted);
+        })
+        .map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
+    }
+  } catch {
+    // continue into nested company/jobs fallback
+  }
+
+  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), true);
+  if (nested.length > 0) {
+    return nested;
+  }
+
+  const legacy = await fetchProjectsFromLegacyUserPaths(String(uid ?? ""), true);
+  if (legacy.length > 0) {
+    return legacy;
+  }
+
+  return [];
 }
 
 export async function fetchQuotes(): Promise<SalesQuote[]> {
@@ -851,6 +886,135 @@ export async function softDeleteProject(project: Project): Promise<boolean> {
   }
 }
 
+export async function restoreDeletedProject(project: Project): Promise<boolean> {
+  if (!db || !project) {
+    return false;
+  }
+
+  const patch = {
+    isDeleted: false,
+    deletedAtIso: "",
+    updatedAtIso: new Date().toISOString(),
+  };
+
+  try {
+    const topLevelRef = doc(db, "projects", project.id);
+    const topLevelSnap = await getDoc(topLevelRef);
+    if (topLevelSnap.exists()) {
+      await updateDoc(topLevelRef, patch);
+      return true;
+    }
+  } catch {
+    // continue into nested company/jobs fallback
+  }
+
+  if (!project.companyId) {
+    return false;
+  }
+
+  try {
+    const jobsQ = query(
+      collection(db, "companies", project.companyId, "jobs"),
+      where("id", "==", project.id),
+      limit(1),
+    );
+    const jobsSnap = await getDocs(jobsQ);
+    if (jobsSnap.empty) {
+      return false;
+    }
+
+    await updateDoc(jobsSnap.docs[0].ref, patch);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function permanentlyDeleteProject(project: Project): Promise<boolean> {
+  if (!db || !project) {
+    return false;
+  }
+
+  try {
+    const topLevelRef = doc(db, "projects", project.id);
+    const topLevelSnap = await getDoc(topLevelRef);
+    if (topLevelSnap.exists()) {
+      await deleteDoc(topLevelRef);
+      return true;
+    }
+  } catch {
+    // continue into nested company/jobs fallback
+  }
+
+  if (project.companyId) {
+    try {
+      const jobsQ = query(
+        collection(db, "companies", project.companyId, "jobs"),
+        where("id", "==", project.id),
+        limit(1),
+      );
+      const jobsSnap = await getDocs(jobsQ);
+      if (!jobsSnap.empty) {
+        await deleteDoc(jobsSnap.docs[0].ref);
+        return true;
+      }
+    } catch {
+      // continue into legacy fallback
+    }
+  }
+
+  try {
+    const userProjectsSnap = await getDocs(query(collectionGroup(db, "projects"), where("id", "==", project.id)));
+    for (const projectSnap of userProjectsSnap.docs) {
+      await deleteDoc(projectSnap.ref);
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+
+  return false;
+}
+
+export async function purgeExpiredDeletedProjects(uid?: string): Promise<void> {
+  if (!db) {
+    return;
+  }
+
+  const rows = await fetchDeletedProjects(uid);
+  if (!rows.length) {
+    return;
+  }
+
+  const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
+  const retentionByCompany: Record<string, number> = {};
+
+  await Promise.all(
+    companyIds.map(async (companyId) => {
+      const companyDoc = await fetchCompanyDoc(companyId);
+      const rawDays = Number((companyDoc as Record<string, unknown> | null)?.deletedRetentionDays ?? 90);
+      retentionByCompany[companyId] = Number.isFinite(rawDays) && rawDays > 0 ? rawDays : 90;
+    }),
+  );
+
+  const nowMs = Date.now();
+  for (const project of rows) {
+    const deletedAtIso = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
+    if (!deletedAtIso) {
+      continue;
+    }
+    const deletedAtMs = new Date(deletedAtIso).getTime();
+    if (!Number.isFinite(deletedAtMs)) {
+      continue;
+    }
+    const retentionDays = retentionByCompany[String(project.companyId || "").trim()] ?? 90;
+    const expiresAtMs = deletedAtMs + retentionDays * 24 * 60 * 60 * 1000;
+    if (nowMs >= expiresAtMs) {
+      await permanentlyDeleteProject(project);
+    }
+  }
+}
+
 export async function grantTempProductionAccess(
   project: Project,
   targetUid: string,
@@ -1076,4 +1240,172 @@ export async function setAllUserNotificationsRead(uid: string, read: boolean): P
   } catch {
     return false;
   }
+}
+
+export async function saveUserProfilePatch(
+  uid: string,
+  companyId: string,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const result = await saveUserProfilePatchDetailed(uid, companyId, patch);
+  return result.ok;
+}
+
+export async function saveUserProfilePatchDetailed(
+  uid: string,
+  companyId: string,
+  patch: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  const userId = String(uid || "").trim();
+  const cid = String(companyId || "").trim();
+  if (!db || !userId) return { ok: false, error: "missing-firebase-or-user-id" };
+  let lastError = "unknown-save-error";
+  try {
+    await setDoc(
+      doc(db, "users", userId),
+      {
+        ...patch,
+        updatedAt: serverTimestamp(),
+        updatedAtIso: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+    return { ok: true };
+  } catch {
+    lastError = "users-write-failed";
+  }
+
+  const targetCompanyIds = cid ? [cid] : await fetchCompanyIdsForUser(userId);
+  for (const targetCompanyId of targetCompanyIds) {
+    try {
+      await setDoc(
+        doc(db, "companies", targetCompanyId, "memberships", userId),
+        {
+          ...patch,
+          updatedAt: serverTimestamp(),
+          updatedAtIso: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+      return { ok: true };
+    } catch (error) {
+      lastError =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "membership-write-failed")
+          : String((error as { message?: unknown } | null)?.message ?? "membership-write-failed");
+    }
+
+    try {
+      const membershipSnap = await getDocs(
+        query(
+          collection(db, "companies", targetCompanyId, "memberships"),
+          where("uid", "==", userId),
+          limit(1),
+        ),
+      );
+      if (!membershipSnap.empty) {
+        await setDoc(
+          membershipSnap.docs[0].ref,
+          {
+            ...patch,
+            updatedAt: serverTimestamp(),
+            updatedAtIso: new Date().toISOString(),
+          },
+          { merge: true },
+        );
+        return { ok: true };
+      }
+    } catch (error) {
+      lastError =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "membership-query-write-failed")
+          : String((error as { message?: unknown } | null)?.message ?? "membership-query-write-failed");
+    }
+  }
+
+  try {
+    const membershipByUid = await getDocs(
+      query(collectionGroup(db, "memberships"), where("uid", "==", userId), limit(5)),
+    );
+    if (!membershipByUid.empty) {
+      for (const membershipDoc of membershipByUid.docs) {
+        try {
+          await setDoc(
+            membershipDoc.ref,
+            {
+              ...patch,
+              updatedAt: serverTimestamp(),
+              updatedAtIso: new Date().toISOString(),
+            },
+            { merge: true },
+          );
+          return { ok: true };
+        } catch (error) {
+          lastError =
+            error && typeof error === "object" && "code" in error
+              ? String((error as { code?: unknown }).code ?? "membership-cg-write-failed")
+              : String((error as { message?: unknown } | null)?.message ?? "membership-cg-write-failed");
+        }
+      }
+    }
+  } catch (error) {
+    lastError =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "membership-cg-query-failed")
+        : String((error as { message?: unknown } | null)?.message ?? "membership-cg-query-failed");
+  }
+
+  try {
+    const allMemberships = await getDocs(query(collectionGroup(db, "memberships"), limit(500)));
+    for (const membershipDoc of allMemberships.docs) {
+      if (String(membershipDoc.id || "").trim() !== userId) continue;
+      try {
+        await setDoc(
+          membershipDoc.ref,
+          {
+            ...patch,
+            updatedAt: serverTimestamp(),
+            updatedAtIso: new Date().toISOString(),
+          },
+          { merge: true },
+        );
+        return { ok: true };
+      } catch (error) {
+        lastError =
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code?: unknown }).code ?? "membership-docid-write-failed")
+            : String((error as { message?: unknown } | null)?.message ?? "membership-docid-write-failed");
+      }
+    }
+  } catch (error) {
+    lastError =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "membership-docid-query-failed")
+        : String((error as { message?: unknown } | null)?.message ?? "membership-docid-query-failed");
+  }
+
+  return { ok: false, error: lastError || "membership-write-failed" };
+}
+
+export async function fetchUserColorMapByUids(uids: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const cleanUids = Array.from(new Set((uids || []).map((uid) => String(uid || "").trim()).filter(Boolean)));
+  if (!db || !cleanUids.length) return out;
+  const firestore = db;
+
+  await Promise.all(
+    cleanUids.map(async (uid) => {
+      try {
+        const snap = await getDoc(doc(firestore, "users", uid));
+        if (!snap.exists()) return;
+        const data = (snap.data() ?? {}) as Record<string, unknown>;
+        const color = String(data.userColor ?? data.avatarColor ?? "").trim();
+        if (color) out[uid] = color;
+      } catch {
+        // ignore missing user docs
+      }
+    }),
+  );
+
+  return out;
 }

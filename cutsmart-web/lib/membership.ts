@@ -21,6 +21,7 @@ export interface MembershipInfo {
 export interface UserProfileSummary {
   displayName: string;
   email: string;
+  userColor?: string;
 }
 
 export interface CompanyAccessInfo {
@@ -195,9 +196,11 @@ export async function fetchUserProfileSummary(uid: string): Promise<UserProfileS
     const data = (snap.data() ?? {}) as Record<string, unknown>;
     const email = String(data.email ?? "").trim();
     const displayName = String(data.displayName ?? "").trim();
+    const userColor = String(data.userColor ?? data.avatarColor ?? "").trim();
     return {
       displayName,
       email,
+      userColor: userColor || undefined,
     };
   } catch {
     return null;
