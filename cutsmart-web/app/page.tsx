@@ -252,7 +252,7 @@ export default function HomePage() {
         <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
           {!loginFormMounted ? (
             <span
-              className="whitespace-nowrap text-center uppercase text-[#0F274A] transition-all"
+              className="whitespace-nowrap text-center uppercase text-[#000000] transition-all"
               style={{
                 fontSize: "clamp(26px, 3.2vw, 46px)",
                 lineHeight: 0.95,
@@ -277,7 +277,7 @@ export default function HomePage() {
               style={{ width: "min(550px, calc(100vw - 120px))" }}
             >
               <p
-                className="whitespace-nowrap text-center uppercase text-[#0F274A] transition-all"
+                className="whitespace-nowrap text-center uppercase text-[#000000] transition-all"
                 style={{
                   fontSize: "clamp(26px, 3.2vw, 46px)",
                   lineHeight: 0.95,
@@ -358,7 +358,7 @@ export default function HomePage() {
         <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
           {!registerFormMounted ? (
             <span
-              className="text-center uppercase text-[#111827] transition-all"
+              className="text-center uppercase text-[#000000] transition-all"
               style={{
                 fontSize: "clamp(26px, 3.2vw, 46px)",
                 lineHeight: 0.95,
@@ -383,7 +383,7 @@ export default function HomePage() {
               style={{ width: "min(550px, calc(100vw - 120px))" }}
             >
               <p
-                className="text-center uppercase text-[#111827] transition-all"
+                className="text-center uppercase text-[#000000] transition-all"
                 style={{
                   fontSize: "clamp(26px, 3.2vw, 46px)",
                   lineHeight: 0.95,

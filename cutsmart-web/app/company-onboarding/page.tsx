@@ -528,7 +528,7 @@ export default function CompanyOnboardingPage() {
             <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
               {!createFormMounted ? (
                 <span
-                  className="text-center uppercase text-[#0F274A] transition-all"
+                  className="text-center uppercase text-[#000000] transition-all"
                   style={{
                     fontSize: "clamp(26px, 3.2vw, 46px)",
                     lineHeight: 1.02,
@@ -564,7 +564,7 @@ export default function CompanyOnboardingPage() {
                   style={{ width: "min(550px, calc(100vw - 120px))" }}
                 >
                   <p
-                    className="mx-auto w-full whitespace-normal text-center uppercase text-[#0F274A] transition-all"
+                    className="mx-auto w-full whitespace-normal text-center uppercase text-[#000000] transition-all"
                     style={{
                       fontSize: "clamp(26px, 3.2vw, 46px)",
                       lineHeight: 1.02,
@@ -670,7 +670,7 @@ export default function CompanyOnboardingPage() {
               <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
               {!joinFormMounted ? (
                 <span
-                    className="text-center uppercase text-[#0F274A] transition-all"
+                    className="text-center uppercase text-[#000000] transition-all"
                   style={{
                     fontSize: "clamp(26px, 3.2vw, 46px)",
                     lineHeight: 1.02,
@@ -706,7 +706,7 @@ export default function CompanyOnboardingPage() {
                   style={{ width: "min(550px, calc(100vw - 120px))" }}
                 >
                   <p
-                    className="mx-auto w-full whitespace-normal text-center uppercase text-[#0F274A] transition-all"
+                    className="mx-auto w-full whitespace-normal text-center uppercase text-[#000000] transition-all"
                     style={{
                       fontSize: "clamp(26px, 3.2vw, 46px)",
                       lineHeight: 1.02,
