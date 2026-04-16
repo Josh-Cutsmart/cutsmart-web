@@ -7,6 +7,7 @@ import {
   collectionGroup,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   limit,
   query,
@@ -47,6 +48,13 @@ function companyIdFromName(name: string) {
 
 function toLower(v: string) {
   return String(v || "").trim().toLowerCase();
+}
+
+function joinCodeKeyFromInput(v: string) {
+  return String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
 }
 
 function describeInviteLookupError(error: unknown, label: string): string {
@@ -290,6 +298,22 @@ export default function CompanyOnboardingPage() {
         updatedAtIso: new Date().toISOString(),
       }, { merge: true });
 
+      const joinCodeKey = joinCodeKeyFromInput(code);
+      await setDoc(
+        doc(db, "companyJoinCodes", joinCodeKey),
+        {
+          id: joinCodeKey,
+          companyId,
+          companyName,
+          active: true,
+          updatedAt: serverTimestamp(),
+          updatedAtIso: new Date().toISOString(),
+          createdAt: serverTimestamp(),
+          createdAtIso: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+
       await setDoc(doc(db, "companies", companyId, "memberships", user.uid), {
         uid: user.uid,
         email: user.email || "",
@@ -329,27 +353,16 @@ export default function CompanyOnboardingPage() {
     setError("");
     setIsSaving(true);
     try {
-      const companiesSnap = await getDocs(query(collection(db, "companies"), limit(500)));
-      const wanted = toLower(code);
-      let selectedId = "";
-      let selectedName = "";
-
-      for (const row of companiesSnap.docs) {
-        const data = (row.data() ?? {}) as Record<string, unknown>;
-        const candidates = [
-          String(data.companyCode ?? "").trim(),
-          String(data.companyPassword ?? "").trim(),
-          String(data.joinCode ?? "").trim(),
-          String(data.joinPassword ?? "").trim(),
-        ]
-          .map(toLower)
-          .filter(Boolean);
-        if (!candidates.includes(wanted)) continue;
-        selectedId = row.id;
-        selectedName = String(data.companyName ?? data.name ?? row.id).trim();
-        break;
+      const joinCodeKey = joinCodeKeyFromInput(code);
+      const joinCodeSnap = await getDoc(doc(db, "companyJoinCodes", joinCodeKey));
+      if (!joinCodeSnap.exists()) {
+        setError("No company found for that Company Code / Password.");
+        setIsSaving(false);
+        return;
       }
-
+      const joinCodeData = (joinCodeSnap.data() ?? {}) as Record<string, unknown>;
+      const selectedId = String(joinCodeData.companyId ?? "").trim();
+      const selectedName = String(joinCodeData.companyName ?? selectedId).trim();
       if (!selectedId) {
         setError("No company found for that Company Code / Password.");
         setIsSaving(false);
@@ -363,6 +376,7 @@ export default function CompanyOnboardingPage() {
         displayName: memberName,
         role: "viewer",
         roleId: "viewer",
+        joinCodeKey,
         companyName: selectedName,
         createdAt: serverTimestamp(),
         createdAtIso: new Date().toISOString(),
@@ -387,12 +401,13 @@ export default function CompanyOnboardingPage() {
     }
   };
 
-  const joinSpecificCompany = async (companyId: string, companyName?: string) => {
+  const joinSpecificCompany = async (companyId: string, companyName?: string, codeFromInvite?: string) => {
     if (!db || !user?.uid) return false;
     const selectedId = String(companyId || "").trim();
     if (!selectedId) return false;
     const selectedName = String(companyName || "").trim() || selectedId;
     const memberName = String(user.displayName || user.email || "User").trim();
+    const inviteJoinCodeKey = joinCodeKeyFromInput(String(codeFromInvite || ""));
     await setDoc(
       doc(db, "companies", selectedId, "memberships", user.uid),
       {
@@ -401,6 +416,7 @@ export default function CompanyOnboardingPage() {
         displayName: memberName,
         role: "viewer",
         roleId: "viewer",
+        ...(inviteJoinCodeKey ? { joinCodeKey: inviteJoinCodeKey } : {}),
         companyName: selectedName,
         createdAt: serverTimestamp(),
         createdAtIso: new Date().toISOString(),
@@ -431,7 +447,7 @@ export default function CompanyOnboardingPage() {
     setInviteBusyId(invite.id);
     setError("");
     try {
-      const ok = await joinSpecificCompany(invite.companyId, invite.companyName);
+      const ok = await joinSpecificCompany(invite.companyId, invite.companyName, invite.code);
       if (!ok) {
         setError("Could not accept invite.");
         return;
