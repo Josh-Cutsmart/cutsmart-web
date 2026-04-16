@@ -175,27 +175,6 @@ export default function CompanyOnboardingPage() {
         }
       }
 
-      if (!rows.length) {
-        try {
-          const byEmail = await getDocs(
-            query(collectionGroup(db, "invites"), where("email", "==", user.email), limit(100)),
-          );
-          for (const snap of byEmail.docs) {
-            const data = (snap.data() ?? {}) as Record<string, unknown>;
-            const parentCompanyId = String(snap.ref.parent.parent?.id ?? "").trim();
-            if (!parentCompanyId) continue;
-            rows.push({
-              id: snap.id,
-              companyId: parentCompanyId,
-              companyName: String(data.companyName ?? "").trim() || parentCompanyId,
-              code: String(data.companyCode ?? data.joinCode ?? data.code ?? "").trim(),
-            });
-          }
-        } catch (error) {
-          if (!firstError) firstError = describeInviteLookupError(error, "email");
-        }
-      }
-
       const deduped = Array.from(
         new Map(rows.map((row) => [`${row.companyId}:${row.id}`, row])).values(),
       );
