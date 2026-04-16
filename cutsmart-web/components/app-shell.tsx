@@ -84,6 +84,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     void load();
   }, [user?.companyId, user?.uid]);
 
+  useEffect(() => {
+    const openNewProject = () => setShowNewProject(true);
+    window.addEventListener("cutsmart:new-project", openNewProject as EventListener);
+    return () => {
+      window.removeEventListener("cutsmart:new-project", openNewProject as EventListener);
+    };
+  }, []);
+
   const onCreateProject = async () => {
     if (creatingProject) return;
     const name = String(projectName || "").trim() || "Untitled Project";

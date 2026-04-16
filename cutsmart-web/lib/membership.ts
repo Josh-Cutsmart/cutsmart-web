@@ -1,6 +1,14 @@
-import { collectionGroup, doc, getDoc, getDocs, limit, query, where } from "firebase/firestore";
+import { collectionGroup, doc, documentId, getDoc, getDocs, limit, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type { UserRole } from "@/lib/types";
+const COMPANY_ID_HINTS = Array.from(
+  new Set(
+    [
+      String(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID ?? "").trim(),
+      "cmp_mykm_91647c",
+    ].filter(Boolean),
+  ),
+);
 
 const rolePriority: Record<UserRole, number> = {
   owner: 5,
@@ -21,7 +29,9 @@ export interface MembershipInfo {
 export interface UserProfileSummary {
   displayName: string;
   email: string;
+  mobile?: string;
   userColor?: string;
+  companyId?: string;
 }
 
 export interface CompanyAccessInfo {
@@ -196,11 +206,25 @@ export async function fetchUserProfileSummary(uid: string): Promise<UserProfileS
     const data = (snap.data() ?? {}) as Record<string, unknown>;
     const email = String(data.email ?? "").trim();
     const displayName = String(data.displayName ?? "").trim();
+    const mobile = String(data.mobile ?? data.phone ?? "").trim();
     const userColor = String(data.userColor ?? data.avatarColor ?? "").trim();
+    const nestedCompany =
+      typeof data.company === "object" && data.company !== null
+        ? (data.company as Record<string, unknown>)
+        : null;
+    const companyId = String(
+      data.companyId ??
+        data.activeCompanyId ??
+        nestedCompany?.id ??
+        nestedCompany?.companyId ??
+        "",
+    ).trim();
     return {
       displayName,
       email,
+      mobile: mobile || undefined,
       userColor: userColor || undefined,
+      companyId: companyId || undefined,
     };
   } catch {
     return null;
@@ -214,6 +238,96 @@ export async function fetchPrimaryMembership(uid: string): Promise<MembershipInf
 
   const found: MembershipInfo[] = [];
   const companyRolePermissionsCache = new Map<string, string[]>();
+
+  // Rules-friendly path for schemas where membership doc id == auth uid.
+  try {
+    const byDocId = await getDocs(
+      query(
+        collectionGroup(db, "memberships"),
+        where(documentId(), "==", uid),
+        limit(50),
+      ),
+    );
+
+    for (const docSnap of byDocId.docs) {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const companyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
+      if (!companyId) {
+        continue;
+      }
+
+      const roleId = normalizeRoleId(data.roleId ?? data.role);
+      let permissionKeys = collectPermissionKeys(data);
+      if (!permissionKeys.length && roleId) {
+        const cacheKey = `${companyId}::${roleId}`;
+        if (!companyRolePermissionsCache.has(cacheKey)) {
+          const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
+          companyRolePermissionsCache.set(cacheKey, rolePerms);
+        }
+        permissionKeys = [...(companyRolePermissionsCache.get(cacheKey) ?? [])];
+      }
+
+      const role = normalizeRole(data.roleId ?? data.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "viewer";
+      found.push({
+        role,
+        companyId,
+        displayName: String(data.displayName ?? "").trim() || undefined,
+        permissionKeys,
+        roleId: roleId || undefined,
+      });
+    }
+  } catch {
+    // continue fallbacks
+  }
+
+  if (found.length) {
+    return bestMembership(found);
+  }
+
+  // Alternate legacy path: companies/{companyId}/members/{uid}
+  try {
+    const byMembersDocId = await getDocs(
+      query(
+        collectionGroup(db, "members"),
+        where(documentId(), "==", uid),
+        limit(50),
+      ),
+    );
+
+    for (const docSnap of byMembersDocId.docs) {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const companyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
+      if (!companyId) {
+        continue;
+      }
+
+      const roleId = normalizeRoleId(data.roleId ?? data.role);
+      let permissionKeys = collectPermissionKeys(data);
+      if (!permissionKeys.length && roleId) {
+        const cacheKey = `${companyId}::${roleId}`;
+        if (!companyRolePermissionsCache.has(cacheKey)) {
+          const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
+          companyRolePermissionsCache.set(cacheKey, rolePerms);
+        }
+        permissionKeys = [...(companyRolePermissionsCache.get(cacheKey) ?? [])];
+      }
+
+      const role = normalizeRole(data.roleId ?? data.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "viewer";
+      found.push({
+        role,
+        companyId,
+        displayName: String(data.displayName ?? data.name ?? "").trim() || undefined,
+        permissionKeys,
+        roleId: roleId || undefined,
+      });
+    }
+  } catch {
+    // continue fallbacks
+  }
+
+  if (found.length) {
+    return bestMembership(found);
+  }
 
   try {
     const snap = await getDocs(
@@ -360,4 +474,48 @@ export async function fetchCompanyAccess(companyId: string, uid: string): Promis
   }
 
   return null;
+}
+
+export async function resolveCompanyIdForUid(
+  uid: string,
+  preferredCompanyIds?: string[],
+): Promise<string> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) {
+    return "";
+  }
+
+  const membership = await fetchPrimaryMembership(userId);
+  if (membership?.companyId) {
+    return String(membership.companyId).trim();
+  }
+
+  const profile = await fetchUserProfileSummary(userId);
+  if (profile?.companyId) {
+    return String(profile.companyId).trim();
+  }
+
+  const candidates = Array.from(
+    new Set(
+      [
+        ...(preferredCompanyIds ?? []),
+        ...COMPANY_ID_HINTS,
+      ]
+        .map((v) => String(v || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  for (const companyId of candidates) {
+    try {
+      const membershipSnap = await getDoc(doc(db, "companies", companyId, "memberships", userId));
+      if (membershipSnap.exists()) {
+        return companyId;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return "";
 }

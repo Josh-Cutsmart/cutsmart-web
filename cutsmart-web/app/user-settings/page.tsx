@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
@@ -10,17 +10,53 @@ const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
 
 export default function UserSettingsPage() {
-  const { user, setUserColorLocal } = useAuth();
+  const { user, setUserColorLocal, setUserProfileLocal } = useAuth();
   const [companyColor, setCompanyColor] = useState("#2F6BFF");
+  const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [userColor, setUserColor] = useState(user?.userColor || "");
+  const [mobile, setMobile] = useState(user?.mobile || "");
   const [isSaving, setIsSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
   const [themeSource, setThemeSource] = useState("unknown");
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const pendingSaveRef = useRef(false);
+  const isSavingRef = useRef(false);
+  const lastSavedSnapshotRef = useRef("");
+
+  const profileSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        displayName: String(displayName || "").trim(),
+        userColor: String(userColor || "").trim(),
+        mobile: String(mobile || "").trim(),
+      }),
+    [displayName, mobile, userColor],
+  );
+
+  useEffect(() => {
+    setDisplayName(user?.displayName || "");
+  }, [user?.displayName]);
 
   useEffect(() => {
     setUserColor(user?.userColor || "");
   }, [user?.userColor]);
+
+  useEffect(() => {
+    setMobile(user?.mobile || "");
+  }, [user?.mobile]);
+
+  useEffect(() => {
+    isSavingRef.current = isSaving;
+  }, [isSaving]);
+
+  useEffect(() => {
+    lastSavedSnapshotRef.current = JSON.stringify({
+      displayName: String(user?.displayName || "").trim(),
+      userColor: String(user?.userColor || "").trim(),
+      mobile: String(user?.mobile || "").trim(),
+    });
+  }, [user?.displayName, user?.mobile, user?.userColor]);
 
   useEffect(() => {
     const load = async () => {
@@ -80,6 +116,62 @@ export default function UserSettingsPage() {
 
   const effectiveColor = useMemo(() => String(userColor || "").trim() || companyColor, [userColor, companyColor]);
 
+  const saveProfile = async (mode: "manual" | "auto" = "manual") => {
+    const uid = String(user?.uid || "").trim();
+    const companyId = String(resolvedCompanyId || user?.companyId || "").trim();
+    if (!uid) return;
+    if (isSavingRef.current) {
+      pendingSaveRef.current = true;
+      return;
+    }
+
+    const normalized = {
+      displayName: String(displayName || "").trim(),
+      userColor: String(userColor || "").trim(),
+      mobile: String(mobile || "").trim(),
+    };
+    const nextSnapshot = JSON.stringify(normalized);
+    if (nextSnapshot === lastSavedSnapshotRef.current) {
+      if (mode === "manual") {
+        setSaveMsg("Saved");
+      }
+      return;
+    }
+
+    setIsSaving(true);
+    const result = await saveUserProfilePatchDetailed(uid, companyId, normalized);
+    if (result.ok) {
+      setUserColorLocal(normalized.userColor);
+      setUserProfileLocal(normalized);
+      lastSavedSnapshotRef.current = nextSnapshot;
+    }
+    setSaveMsg(result.ok ? "Saved" : `Save failed${result.error ? ` (${result.error})` : ""}`);
+    setIsSaving(false);
+
+    if (pendingSaveRef.current) {
+      pendingSaveRef.current = false;
+      void saveProfile("auto");
+    }
+  };
+
+  const queueAutoSave = () => {
+    if (autoSaveTimerRef.current) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void saveProfile("auto");
+    }, 180);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, []);
+
   const applyCompanyDefault = async () => {
     const storedThemeColor =
       typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY) || "").trim() : "";
@@ -87,6 +179,7 @@ export default function UserSettingsPage() {
       setCompanyColor(storedThemeColor);
       setUserColor("");
       setUserColorLocal("");
+      queueAutoSave();
       return;
     }
     const storedCompanyId =
@@ -101,19 +194,7 @@ export default function UserSettingsPage() {
     }
     setUserColor("");
     setUserColorLocal("");
-  };
-
-  const saveColor = async () => {
-    const uid = String(user?.uid || "").trim();
-    const companyId = String(resolvedCompanyId || user?.companyId || "").trim();
-    if (!uid || isSaving) return;
-    setIsSaving(true);
-    const result = await saveUserProfilePatchDetailed(uid, companyId, { userColor: String(userColor || "").trim() });
-    if (result.ok) {
-      setUserColorLocal(String(userColor || "").trim());
-    }
-    setSaveMsg(result.ok ? "Saved" : `Save failed${result.error ? ` (${result.error})` : ""}`);
-    setIsSaving(false);
+    queueAutoSave();
   };
 
   return (
@@ -122,9 +203,28 @@ export default function UserSettingsPage() {
         <section className="rounded-[14px] border border-[#D7DEE8] bg-white p-4">
           <p className="text-[15px] font-extrabold uppercase tracking-[1px] text-[#12345B]">User Settings</p>
           <div className="mt-3 grid gap-2 text-[13px] text-[#334155]">
-            <p><span className="font-bold">Name:</span> {user?.displayName || "CutSmart User"}</p>
+            <label className="flex items-center gap-2">
+              <span className="font-bold">Name:</span>
+              <input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                onBlur={() => queueAutoSave()}
+                placeholder="Enter your name"
+                className="h-8 w-[240px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+              />
+            </label>
             <p><span className="font-bold">Email:</span> {user?.email || "-"}</p>
             <p><span className="font-bold">Role:</span> {user?.role || "-"}</p>
+            <label className="flex items-center gap-2">
+              <span className="font-bold">Mobile Number:</span>
+              <input
+                value={mobile}
+                onChange={(e) => setMobile(e.target.value)}
+                onBlur={() => queueAutoSave()}
+                placeholder="Enter mobile number"
+                className="h-8 w-[240px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+              />
+            </label>
           </div>
           <div className="mt-4 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] p-3">
             <p className="text-[12px] font-bold text-[#334155]">User Emblem Color</p>
@@ -135,12 +235,16 @@ export default function UserSettingsPage() {
               <input
                 type="color"
                 value={/^#[0-9A-Fa-f]{6}$/.test(userColor) ? userColor : effectiveColor}
-                onChange={(e) => setUserColor(e.target.value)}
+                onChange={(e) => {
+                  setUserColor(e.target.value);
+                  queueAutoSave();
+                }}
                 className="h-8 w-10 cursor-pointer rounded-[8px] border border-[#D8DEE8] bg-white p-1"
               />
               <input
                 value={userColor}
                 onChange={(e) => setUserColor(e.target.value)}
+                onBlur={() => queueAutoSave()}
                 placeholder="Leave blank to use company color"
                 className="h-8 w-[260px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
               />
@@ -153,7 +257,7 @@ export default function UserSettingsPage() {
               </button>
               <button
                 type="button"
-                onClick={() => void saveColor()}
+                onClick={() => void saveProfile("manual")}
                 disabled={isSaving}
                 className="h-8 rounded-[8px] border border-[#BFD4F6] bg-[#EAF2FF] px-3 text-[11px] font-bold text-[#1E3A8A] disabled:opacity-55"
               >
@@ -166,14 +270,14 @@ export default function UserSettingsPage() {
                 className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
                 style={{ backgroundColor: effectiveColor }}
               >
-                {(user?.displayName || "CU")
+                {(displayName || user?.displayName || "CU")
                   .split(/\s+/)
                   .filter(Boolean)
                   .slice(0, 2)
                   .map((p) => p[0]?.toUpperCase() ?? "")
                   .join("") || "CU"}
               </div>
-              <span className="truncate text-[12px] font-semibold text-[#0F172A]">{user?.displayName || "CutSmart User"}</span>
+              <span className="truncate text-[12px] font-semibold text-[#0F172A]">{displayName || user?.displayName || "CutSmart User"}</span>
             </div>
           </div>
         </section>

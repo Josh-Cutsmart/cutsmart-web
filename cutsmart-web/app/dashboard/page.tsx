@@ -8,11 +8,9 @@ import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import {
-  debugProjectSources,
   fetchCompanyDoc,
   fetchProjects,
   updateProjectStatus,
-  type ProjectSourceDiagnostics,
 } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -122,7 +120,6 @@ export default function DashboardPage() {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [diag, setDiag] = useState<ProjectSourceDiagnostics | null>(null);
   const [statusMenuProjectId, setStatusMenuProjectId] = useState("");
   const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [statusUpdatingProjectId, setStatusUpdatingProjectId] = useState("");
@@ -130,17 +127,14 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const load = async () => {
-      const [items, diagnostics] = await Promise.all([
-        fetchProjects(user?.uid),
-        debugProjectSources(user?.uid),
-      ]);
-      setAllProjects(items);
-      setDiag(diagnostics);
-
       const storedCompanyId =
         typeof window !== "undefined"
           ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
           : "";
+      const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
+      const items = await fetchProjects(user?.uid, preferredCompanyIds);
+      setAllProjects(items);
+
       const fallbackCompanyId = String(items[0]?.companyId || "").trim();
       const companyId = storedCompanyId || fallbackCompanyId;
       if (companyId) {
@@ -153,6 +147,10 @@ export default function DashboardPage() {
     };
     void load();
   }, [user?.uid]);
+
+  const openNewProjectModal = () => {
+    window.dispatchEvent(new Event("cutsmart:new-project"));
+  };
 
   const statusColorByName = useMemo(() => {
     const map = new Map<string, string>();
@@ -428,8 +426,17 @@ export default function DashboardPage() {
                   )}
                   {!isLoading && filtered.length === 0 && (
                     <tr>
-                      <td className="py-3 text-[#6B7280]" colSpan={6}>
-                        No projects found. Check Firestore membership/rules for `companies/*/memberships` and `companies/*/jobs`.
+                      <td className="py-10 text-center" colSpan={6}>
+                        <div className="flex flex-col items-center gap-3">
+                          <p className="text-[14px] font-bold text-[#334155]">No Projects Yet</p>
+                          <button
+                            type="button"
+                            onClick={openNewProjectModal}
+                            className="rounded-[10px] border border-[#86EFAC] bg-[#22C55E] px-4 py-2 text-[12px] font-bold text-white hover:bg-[#16A34A]"
+                          >
+                            Create First Project
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )}
@@ -548,14 +555,6 @@ export default function DashboardPage() {
                   document.body,
                 )}
 
-              {!isLoading && filtered.length === 0 && diag && (
-                <div className="mt-4 rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
-                  <p className="mb-2 text-[12px] font-bold text-[#111827]">Debug: Firestore Project Sources</p>
-                  <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap text-[11px] text-[#334155]">
-{JSON.stringify(diag, null, 2)}
-                  </pre>
-                </div>
-              )}
             </div>
       </AppShell>
     </ProtectedRoute>

@@ -41,6 +41,7 @@ export interface Project {
   projectFiles?: Array<Record<string, unknown>>;
   projectImages?: string[];
   projectSettings?: Record<string, unknown>;
+  cutlist?: Record<string, unknown>;
 }
 
 export interface ProjectChange {
@@ -93,6 +94,7 @@ export interface AppUser {
   uid: string;
   email: string;
   displayName: string;
+  mobile?: string;
   userColor?: string;
   role: UserRole;
   companyId?: string;

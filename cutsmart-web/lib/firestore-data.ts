@@ -3,6 +3,7 @@ import {
   collectionGroup,
   deleteDoc,
   doc,
+  documentId,
   getDoc,
   getDocs,
   limit,
@@ -18,16 +19,6 @@ import {
 import { db, hasFirebaseConfig } from "@/lib/firebase";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
-
-const DEFAULT_COMPANY_FALLBACK = "cmp_mykm_91647c";
-const COMPANY_FALLBACK_IDS = Array.from(
-  new Set(
-    [
-      String(process.env.NEXT_PUBLIC_DEFAULT_COMPANY_ID ?? "").trim(),
-      DEFAULT_COMPANY_FALLBACK,
-    ].filter(Boolean),
-  ),
-);
 
 function toIsoString(value: unknown, fallback = "") {
   if (!value) {
@@ -63,16 +54,74 @@ function toProjectStatus(raw: unknown): Project["status"] {
   return "draft";
 }
 
+function parseCutlistContainer(data: Record<string, unknown>): Record<string, unknown> | null {
+  const rawCutlist = data.cutlist;
+  const cutlistObj = rawCutlist && typeof rawCutlist === "object" ? { ...(rawCutlist as Record<string, unknown>) } : null;
+  const cutlistRows = Array.isArray(cutlistObj?.rows) ? (cutlistObj?.rows as unknown[]) : [];
+
+  const rawCutlistJson = data.cutlistJson;
+  const cutlistJsonObj =
+    rawCutlistJson && typeof rawCutlistJson === "object" ? { ...(rawCutlistJson as Record<string, unknown>) } : null;
+  const cutlistJsonRows = Array.isArray(cutlistJsonObj?.rows) ? (cutlistJsonObj?.rows as unknown[]) : [];
+
+  // Prefer non-empty row source. Legacy docs often keep stale empty `cutlist`
+  // while live data is in `cutlistJson`.
+  if (cutlistRows.length > 0) {
+    return cutlistObj;
+  }
+  if (cutlistJsonRows.length > 0) {
+    return cutlistJsonObj;
+  }
+
+  if (cutlistObj) {
+    return cutlistObj;
+  }
+  if (cutlistJsonObj) {
+    return cutlistJsonObj;
+  }
+
+  if (typeof rawCutlistJson === "string" && rawCutlistJson.trim()) {
+    try {
+      const parsed = JSON.parse(rawCutlistJson);
+      if (Array.isArray(parsed)) {
+        return { rows: parsed as unknown[] };
+      }
+      if (parsed && typeof parsed === "object") {
+        return { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      // ignore invalid legacy cutlist json payload
+    }
+  }
+
+  return null;
+}
+
+function parseCutlistRows(data: Record<string, unknown>): unknown[] {
+  const container = parseCutlistContainer(data);
+  if (!container) {
+    return [];
+  }
+  return Array.isArray(container.rows) ? (container.rows as unknown[]) : [];
+}
+
 function normalizeProject(id: string, data: Record<string, unknown>): Project {
-  const rows =
-    typeof data.cutlist === "object" && data.cutlist !== null && Array.isArray((data.cutlist as { rows?: unknown[] }).rows)
-      ? ((data.cutlist as { rows: unknown[] }).rows ?? [])
-      : [];
+  const rows = parseCutlistRows(data);
 
   const settings =
     typeof data.projectSettings === "object" && data.projectSettings !== null
       ? ({ ...(data.projectSettings as Record<string, unknown>) } as Record<string, unknown>)
       : ({} as Record<string, unknown>);
+  if (!Object.keys(settings).length && typeof data.projectSettingsJson === "string" && data.projectSettingsJson.trim()) {
+    try {
+      const parsed = JSON.parse(data.projectSettingsJson);
+      if (parsed && typeof parsed === "object") {
+        Object.assign(settings, parsed as Record<string, unknown>);
+      }
+    } catch {
+      // ignore legacy invalid json payload
+    }
+  }
 
   let salesPayload: Record<string, unknown> | null = null;
   const salesRaw = data.sales;
@@ -131,6 +180,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     projectFiles: Array.isArray(data.projectFiles) ? (data.projectFiles as Array<Record<string, unknown>>) : [],
     projectImages: Array.isArray(data.projectImages) ? data.projectImages.map(String) : [],
     projectSettings: settings,
+    cutlist: parseCutlistContainer(data) ?? undefined,
   };
 }
 
@@ -319,56 +369,85 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
     return [];
   }
 
+  const ids = new Set<string>();
+
+  // Primary desktop-compatible path: memberships doc id == uid.
   try {
-    const snap = await getDocs(query(collectionGroup(db, "memberships"), where("uid", "==", uid)));
-    const ids = new Set<string>();
-
-    for (const docSnap of snap.docs) {
+    const byDocId = await getDocs(
+      query(collectionGroup(db, "memberships"), where(documentId(), "==", uid), limit(100)),
+    );
+    for (const docSnap of byDocId.docs) {
       const parent = docSnap.ref.parent.parent;
-      if (parent) {
-        ids.add(parent.id);
-      }
+      if (parent) ids.add(parent.id);
     }
-
-    return Array.from(ids);
   } catch {
-    // fall through to legacy scan mode
+    // continue
   }
 
-  // Legacy fallback: some memberships docs use doc ID as uid and omit `uid` field.
+  // Alternate shape: uid stored as field on membership doc.
   try {
-    const snap = await getDocs(collectionGroup(db, "memberships"));
-    const ids = new Set<string>();
-
+    const snap = await getDocs(query(collectionGroup(db, "memberships"), where("uid", "==", uid), limit(100)));
     for (const docSnap of snap.docs) {
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      const uidField = String(data.uid ?? "");
-      const docId = String(docSnap.id ?? "");
-      if (uidField !== uid && docId !== uid) {
-        continue;
-      }
       const parent = docSnap.ref.parent.parent;
-      if (parent) {
-        ids.add(parent.id);
-      }
+      if (parent) ids.add(parent.id);
     }
-
-    return Array.from(ids);
   } catch {
-    return [];
+    // continue
   }
+
+  // Alternate collection path: companies/{companyId}/members/{uid}
+  try {
+    const membersByDocId = await getDocs(
+      query(collectionGroup(db, "members"), where(documentId(), "==", uid), limit(100)),
+    );
+    for (const docSnap of membersByDocId.docs) {
+      const parent = docSnap.ref.parent.parent;
+      if (parent) ids.add(parent.id);
+    }
+  } catch {
+    // continue
+  }
+
+  // Profile fallback: users/{uid}.companyId / activeCompanyId
+  try {
+    const userSnap = await getDoc(doc(db, "users", uid));
+    if (userSnap.exists()) {
+      const data = (userSnap.data() ?? {}) as Record<string, unknown>;
+      const nestedCompany =
+        typeof data.company === "object" && data.company !== null
+          ? (data.company as Record<string, unknown>)
+          : null;
+      const companyId = String(
+        data.companyId ??
+          data.activeCompanyId ??
+          nestedCompany?.id ??
+          nestedCompany?.companyId ??
+          "",
+      ).trim();
+      if (companyId) ids.add(companyId);
+    }
+  } catch {
+    // ignore
+  }
+
+  return Array.from(ids);
 }
 
-async function fetchProjectsFromCompanyJobs(uid: string, includeDeleted = false): Promise<Project[]> {
+async function fetchProjectsFromCompanyJobs(
+  uid: string,
+  includeDeleted = false,
+  preferredCompanyIds?: string[],
+): Promise<Project[]> {
   if (!db || !uid) {
     return [];
   }
 
-  let companyIds = await fetchCompanyIdsForUser(uid);
-  if (!companyIds.length) {
-    companyIds = [...COMPANY_FALLBACK_IDS];
-  }
-
+  const companyIds = Array.from(
+    new Set([
+      ...(await fetchCompanyIdsForUser(uid)),
+      ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
+    ]),
+  );
   if (!companyIds.length) {
     return [];
   }
@@ -444,7 +523,7 @@ async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = fa
   return all;
 }
 
-export async function fetchProjects(uid?: string): Promise<Project[]> {
+export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]): Promise<Project[]> {
   if (!db) {
     return mockProjects;
   }
@@ -458,7 +537,7 @@ export async function fetchProjects(uid?: string): Promise<Project[]> {
     // continue into company/jobs fallback
   }
 
-  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""));
+  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), false, preferredCompanyIds);
   if (nested.length > 0) {
     return nested;
   }
@@ -471,11 +550,44 @@ export async function fetchProjects(uid?: string): Promise<Project[]> {
   return hasFirebaseConfig ? [] : mockProjects;
 }
 
-export async function fetchProjectById(projectId: string, uid?: string): Promise<Project | null> {
+export async function fetchProjectById(
+  projectId: string,
+  uid?: string,
+  preferredCompanyIds?: string[],
+): Promise<Project | null> {
   if (!db) {
     return mockProjects.find((project) => project.id === projectId) ?? null;
   }
 
+  const userId = String(uid ?? "").trim();
+  const companyIds = Array.from(
+    new Set([
+      ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
+      ...(userId ? await fetchCompanyIdsForUser(userId) : []),
+    ]),
+  );
+
+  // Prefer company-scoped jobs first (source of truth for web/desktop parity).
+  for (const companyId of companyIds) {
+    try {
+      const direct = await getDoc(doc(db, "companies", companyId, "jobs", projectId));
+      if (direct.exists()) {
+        const normalized = normalizeProject(projectId, direct.data() as Record<string, unknown>);
+        normalized.companyId = companyId;
+        return normalized;
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  const nested = await fetchProjectsFromCompanyJobs(userId, false, companyIds);
+  const nestedHit = nested.find((project) => project.id === projectId) ?? null;
+  if (nestedHit) {
+    return nestedHit;
+  }
+
+  // Fallback to legacy top-level only if not found in company jobs.
   try {
     const ref = doc(db, "projects", projectId);
     const snap = await getDoc(ref);
@@ -483,14 +595,13 @@ export async function fetchProjectById(projectId: string, uid?: string): Promise
       return normalizeProject(snap.id, snap.data() as Record<string, unknown>);
     }
   } catch {
-    // continue into company/jobs fallback
+    // continue
   }
 
-  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""));
-  return nested.find((project) => project.id === projectId) ?? null;
+  return null;
 }
 
-export async function fetchDeletedProjects(uid?: string): Promise<Project[]> {
+export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: string[]): Promise<Project[]> {
   if (!db) {
     return [];
   }
@@ -509,7 +620,7 @@ export async function fetchDeletedProjects(uid?: string): Promise<Project[]> {
     // continue into nested company/jobs fallback
   }
 
-  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), true);
+  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), true, preferredCompanyIds);
   if (nested.length > 0) {
     return nested;
   }
@@ -557,7 +668,11 @@ export async function fetchChanges(projectId: string): Promise<ProjectChange[]> 
   }
 }
 
-export async function fetchCutlists(projectId?: string, uid?: string): Promise<Cutlist[]> {
+export async function fetchCutlists(
+  projectId?: string,
+  uid?: string,
+  preferredCompanyIds?: string[],
+): Promise<Cutlist[]> {
   if (!db) {
     return projectId ? mockCutlists.filter((item) => item.projectId === projectId) : mockCutlists;
   }
@@ -576,7 +691,7 @@ export async function fetchCutlists(projectId?: string, uid?: string): Promise<C
     return hasFirebaseConfig ? [] : mockCutlists;
   }
 
-  const project = await fetchProjectById(projectId, uid);
+  const project = await fetchProjectById(projectId, uid, preferredCompanyIds);
   if (!project || !project.companyId) {
     return hasFirebaseConfig ? [] : mockCutlists.filter((item) => item.projectId === projectId);
   }
@@ -590,26 +705,27 @@ export async function fetchCutlists(projectId?: string, uid?: string): Promise<C
         continue;
       }
 
-      const rawRows =
-        typeof data.cutlist === "object" && data.cutlist !== null && Array.isArray((data.cutlist as { rows?: unknown[] }).rows)
-          ? ((data.cutlist as { rows: unknown[] }).rows ?? [])
-          : [];
+      const rawRows = parseCutlistRows(data);
 
       const parts = rawRows.map((row, index) => {
         const item = (row ?? {}) as Record<string, unknown>;
+        const clLong = String(item.clLong ?? item.clashLong ?? item.clash_left ?? "").trim();
+        const clShort = String(item.clShort ?? item.clashShort ?? item.clash_right ?? "").trim();
+        const clashing = String(item.Clashing ?? item.clashing ?? "").trim();
+        const combinedClashing = clashing || [clLong, clShort].filter(Boolean).join(" ");
         return {
           id: String(item.id ?? `row_${index + 1}`),
-          label: String(item.Name ?? item.name ?? `Part ${index + 1}`),
-          material: String(item.Board ?? item.material ?? "Unknown"),
+          label: String(item.Name ?? item.name ?? item.partName ?? `Part ${index + 1}`),
+          material: String(item.Board ?? item.board ?? item.material ?? "Unknown"),
           qty: Number(item.Quantity ?? item.qty ?? 1),
-          length: Number(item.Height ?? item.length ?? 0),
+          length: Number(item.Height ?? item.height ?? item.length ?? 0),
           width: Number(item.Width ?? item.width ?? 0),
           edgeBanding: false,
           partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
           room: String(item.room ?? item.Room ?? ""),
           depth: Number(item.depth ?? item.Depth ?? 0),
-          clashing: String(item.clashing ?? item.Clashing ?? ""),
-          information: String(item.information ?? item.Information ?? ""),
+          clashing: combinedClashing,
+          information: String(item.information ?? item.Information ?? item.info ?? ""),
           grain: String(item.grain ?? item.Grain ?? "").toLowerCase() === "yes" || Boolean(item.grain),
         };
       });
@@ -661,6 +777,9 @@ export interface CompanyMemberOption {
   role: string;
   email?: string;
   mobile?: string;
+  userColor?: string;
+  badgeColor?: string;
+  membershipDisplayName?: string;
 }
 
 export interface UserNotificationRow {
@@ -670,6 +789,37 @@ export interface UserNotificationRow {
   type: string;
   read: boolean;
   createdAtIso: string;
+}
+
+function normalizeNameKey(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function titleCaseHandle(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  return raw
+    .replace(/[._-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function isLikelyUneditedMembershipDisplayName(
+  membershipDisplayName: string,
+  email: string,
+  uid: string,
+  profileDisplayName: string,
+): boolean {
+  const current = normalizeNameKey(membershipDisplayName);
+  if (!current) return true;
+  if (profileDisplayName && current === normalizeNameKey(profileDisplayName)) {
+    return true;
+  }
+  const emailLocal = String(email || "").trim().split("@")[0]?.trim() || "";
+  const defaults = [emailLocal, titleCaseHandle(emailLocal), uid, titleCaseHandle(uid)];
+  return defaults.some((candidate) => normalizeNameKey(candidate) === current);
 }
 
 export async function debugProjectSources(uid?: string): Promise<ProjectSourceDiagnostics> {
@@ -700,14 +850,9 @@ export async function debugProjectSources(uid?: string): Promise<ProjectSourceDi
   let companyIds: string[] = [];
   try {
     companyIds = await fetchCompanyIdsForUser(userId);
-  out.membershipCompanyIds = [...companyIds];
+    out.membershipCompanyIds = [...companyIds];
   } catch (e) {
     out.errors.push(`memberships lookup: ${String(e)}`);
-  }
-
-  if (!companyIds.length && COMPANY_FALLBACK_IDS.length) {
-    companyIds = [...COMPANY_FALLBACK_IDS];
-    out.membershipCompanyIds = [...companyIds];
   }
 
   for (const companyId of companyIds) {
@@ -1132,12 +1277,58 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
       if (!uid) {
         continue;
       }
-      const displayName = String(data.displayName ?? data.name ?? data.email ?? uid).trim() || uid;
+      const membershipDisplayName = String(data.displayName ?? data.name ?? "").trim();
       const role = String(data.roleId ?? data.role ?? "viewer").trim() || "viewer";
       const email = String(data.email ?? "").trim();
       const mobile = String(data.mobile ?? data.phone ?? "").trim();
-      out.push({ uid, displayName, role, email, mobile });
+      const userColor = String(data.userColor ?? data.avatarColor ?? "").trim();
+      const badgeColor = String(data.badgeColor ?? "").trim();
+      out.push({
+        uid,
+        displayName: membershipDisplayName || email || uid,
+        membershipDisplayName: membershipDisplayName || undefined,
+        role,
+        email,
+        mobile,
+        userColor: userColor || undefined,
+        badgeColor: badgeColor || undefined,
+      });
     }
+
+    // Desktop parity: prefer primary user profile values when available.
+    await Promise.all(
+      out.map(async (member) => {
+        const uid = String(member.uid || "").trim();
+        if (!uid) return;
+        try {
+          const userSnap = await getDoc(doc(db, "users", uid));
+          if (!userSnap.exists()) return;
+          const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
+          const profileDisplayName = String(userData.displayName ?? userData.name ?? "").trim();
+          const profileEmail = String(userData.email ?? "").trim();
+          const profileMobile = String(userData.mobile ?? userData.phone ?? "").trim();
+          const profileUserColor = String(userData.userColor ?? userData.avatarColor ?? "").trim();
+          const profileBadgeColor = String(userData.badgeColor ?? "").trim();
+          if (profileDisplayName) {
+            const shouldMirrorProfile = isLikelyUneditedMembershipDisplayName(
+              String(member.membershipDisplayName || ""),
+              String(member.email || ""),
+              String(member.uid || ""),
+              profileDisplayName,
+            );
+            if (shouldMirrorProfile) {
+              member.displayName = profileDisplayName;
+            }
+          }
+          if (!member.email && profileEmail) member.email = profileEmail;
+          if (!member.mobile && profileMobile) member.mobile = profileMobile;
+          if (!member.userColor && profileUserColor) member.userColor = profileUserColor;
+          if (!member.badgeColor && profileBadgeColor) member.badgeColor = profileBadgeColor;
+        } catch {
+          // ignore per-user profile lookup errors
+        }
+      }),
+    );
 
     out.sort((a, b) => a.displayName.localeCompare(b.displayName));
     return out;
@@ -1159,6 +1350,50 @@ export async function fetchCompanyDoc(companyId: string): Promise<Record<string,
     return (snap.data() ?? {}) as Record<string, unknown>;
   } catch {
     return null;
+  }
+}
+
+export async function createCompanyInviteDetailed(
+  companyId: string,
+  email: string,
+  meta?: { companyName?: string; companyCode?: string; invitedByUid?: string; invitedByName?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const cid = String(companyId || "").trim();
+  const emailRaw = String(email || "").trim();
+  const emailLower = emailRaw.toLowerCase();
+  if (!db || !cid || !emailRaw || !emailLower.includes("@")) {
+    return { ok: false, error: "invalid-invite-input" };
+  }
+
+  const inviteId = emailLower.replace(/[^a-z0-9@._-]+/g, "_");
+  try {
+    await setDoc(
+      doc(db, "companies", cid, "invites", inviteId),
+      {
+        id: inviteId,
+        companyId: cid,
+        companyName: String(meta?.companyName || "").trim(),
+        companyCode: String(meta?.companyCode || "").trim(),
+        email: emailRaw,
+        emailLower,
+        status: "pending",
+        invitedByUid: String(meta?.invitedByUid || "").trim(),
+        invitedByName: String(meta?.invitedByName || "").trim(),
+        createdAt: serverTimestamp(),
+        createdAtIso: new Date().toISOString(),
+        updatedAt: serverTimestamp(),
+        updatedAtIso: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+    return { ok: true };
+  } catch (error) {
+    const fallback = "invite-write-failed";
+    const msg =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? fallback)
+        : String((error as { message?: unknown } | null)?.message ?? fallback);
+    return { ok: false, error: msg };
   }
 }
 
@@ -1260,39 +1495,82 @@ export async function saveUserProfilePatchDetailed(
   const cid = String(companyId || "").trim();
   if (!db || !userId) return { ok: false, error: "missing-firebase-or-user-id" };
   let lastError = "unknown-save-error";
+  let userWriteOk = false;
+  const hasUserColor = Object.prototype.hasOwnProperty.call(patch, "userColor");
+  const userColorValue = String(patch.userColor ?? "").trim();
+  const withMeta = (data: Record<string, unknown>) => ({
+    ...data,
+    updatedAt: serverTimestamp(),
+    updatedAtIso: new Date().toISOString(),
+  });
+  const fullPatch = withMeta({ ...patch });
+  const colorPatch = withMeta(
+    hasUserColor
+      ? {
+          userColor: userColorValue,
+          badgeColor: userColorValue,
+        }
+      : {},
+  );
+  const colorPatchRulesSafe = withMeta(
+    hasUserColor
+      ? {
+          userColor: userColorValue,
+        }
+      : {},
+  );
+
   try {
-    await setDoc(
-      doc(db, "users", userId),
-      {
-        ...patch,
-        updatedAt: serverTimestamp(),
-        updatedAtIso: new Date().toISOString(),
-      },
-      { merge: true },
-    );
-    return { ok: true };
+    await setDoc(doc(db, "users", userId), fullPatch, { merge: true });
+    userWriteOk = true;
   } catch {
     lastError = "users-write-failed";
   }
 
   const targetCompanyIds = cid ? [cid] : await fetchCompanyIdsForUser(userId);
-  for (const targetCompanyId of targetCompanyIds) {
+
+  const writeMembershipRef = async (ref: ReturnType<typeof doc>) => {
     try {
-      await setDoc(
-        doc(db, "companies", targetCompanyId, "memberships", userId),
-        {
-          ...patch,
-          updatedAt: serverTimestamp(),
-          updatedAtIso: new Date().toISOString(),
-        },
-        { merge: true },
-      );
-      return { ok: true };
+      // Try full patch first.
+      await setDoc(ref, fullPatch, { merge: true });
+      return true;
     } catch (error) {
       lastError =
         error && typeof error === "object" && "code" in error
           ? String((error as { code?: unknown }).code ?? "membership-write-failed")
           : String((error as { message?: unknown } | null)?.message ?? "membership-write-failed");
+    }
+    if (!hasUserColor) {
+      return false;
+    }
+    try {
+      // Try desktop-style color fields.
+      await setDoc(ref, colorPatch, { merge: true });
+      return true;
+    } catch {
+      // keep going
+    }
+    try {
+      // Rules-safe fallback that only touches userColor.
+      await setDoc(ref, colorPatchRulesSafe, { merge: true });
+      return true;
+    } catch (error) {
+      lastError =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "membership-color-write-failed")
+          : String((error as { message?: unknown } | null)?.message ?? "membership-color-write-failed");
+    }
+    return false;
+  };
+
+  for (const targetCompanyId of targetCompanyIds) {
+    try {
+      const ok = await writeMembershipRef(doc(db, "companies", targetCompanyId, "memberships", userId));
+      if (ok) {
+        return { ok: true };
+      }
+    } catch {
+      // continue fallback paths
     }
 
     try {
@@ -1304,16 +1582,10 @@ export async function saveUserProfilePatchDetailed(
         ),
       );
       if (!membershipSnap.empty) {
-        await setDoc(
-          membershipSnap.docs[0].ref,
-          {
-            ...patch,
-            updatedAt: serverTimestamp(),
-            updatedAtIso: new Date().toISOString(),
-          },
-          { merge: true },
-        );
-        return { ok: true };
+        const ok = await writeMembershipRef(membershipSnap.docs[0].ref);
+        if (ok) {
+          return { ok: true };
+        }
       }
     } catch (error) {
       lastError =
@@ -1329,22 +1601,9 @@ export async function saveUserProfilePatchDetailed(
     );
     if (!membershipByUid.empty) {
       for (const membershipDoc of membershipByUid.docs) {
-        try {
-          await setDoc(
-            membershipDoc.ref,
-            {
-              ...patch,
-              updatedAt: serverTimestamp(),
-              updatedAtIso: new Date().toISOString(),
-            },
-            { merge: true },
-          );
+        const ok = await writeMembershipRef(membershipDoc.ref);
+        if (ok) {
           return { ok: true };
-        } catch (error) {
-          lastError =
-            error && typeof error === "object" && "code" in error
-              ? String((error as { code?: unknown }).code ?? "membership-cg-write-failed")
-              : String((error as { message?: unknown } | null)?.message ?? "membership-cg-write-failed");
         }
       }
     }
@@ -1359,22 +1618,9 @@ export async function saveUserProfilePatchDetailed(
     const allMemberships = await getDocs(query(collectionGroup(db, "memberships"), limit(500)));
     for (const membershipDoc of allMemberships.docs) {
       if (String(membershipDoc.id || "").trim() !== userId) continue;
-      try {
-        await setDoc(
-          membershipDoc.ref,
-          {
-            ...patch,
-            updatedAt: serverTimestamp(),
-            updatedAtIso: new Date().toISOString(),
-          },
-          { merge: true },
-        );
+      const ok = await writeMembershipRef(membershipDoc.ref);
+      if (ok) {
         return { ok: true };
-      } catch (error) {
-        lastError =
-          error && typeof error === "object" && "code" in error
-            ? String((error as { code?: unknown }).code ?? "membership-docid-write-failed")
-            : String((error as { message?: unknown } | null)?.message ?? "membership-docid-write-failed");
       }
     }
   } catch (error) {
@@ -1382,6 +1628,11 @@ export async function saveUserProfilePatchDetailed(
       error && typeof error === "object" && "code" in error
         ? String((error as { code?: unknown }).code ?? "membership-docid-query-failed")
         : String((error as { message?: unknown } | null)?.message ?? "membership-docid-query-failed");
+  }
+
+  if (userWriteOk) {
+    // User doc save succeeded; membership sync may be blocked by rules.
+    return { ok: true };
   }
 
   return { ok: false, error: lastError || "membership-write-failed" };
@@ -1399,7 +1650,7 @@ export async function fetchUserColorMapByUids(uids: string[]): Promise<Record<st
         const snap = await getDoc(doc(firestore, "users", uid));
         if (!snap.exists()) return;
         const data = (snap.data() ?? {}) as Record<string, unknown>;
-        const color = String(data.userColor ?? data.avatarColor ?? "").trim();
+        const color = String(data.userColor ?? data.badgeColor ?? data.avatarColor ?? "").trim();
         if (color) out[uid] = color;
       } catch {
         // ignore missing user docs

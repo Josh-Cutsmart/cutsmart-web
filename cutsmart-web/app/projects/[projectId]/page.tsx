@@ -28,6 +28,8 @@ import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/per
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
 
+const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+
 const tabItems = [
   { value: "general", label: "General" },
   { value: "sales", label: "Sales" },
@@ -463,8 +465,8 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
     .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
 }
 
-function normalizeHexColor(input: string): string | null {
-  const value = input.trim();
+function normalizeHexColor(input: unknown): string | null {
+  const value = typeof input === "string" ? input.trim() : "";
   if (!value.startsWith("#")) return null;
   if (value.length === 4) {
     const r = value[1];
@@ -2179,19 +2181,25 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     const projectId = params.projectId;
     const load = async () => {
-      if (!projectId) {
-        setProject(null);
-        setChanges([]);
-        setQuotes([]);
-        setIsLoading(false);
-        return;
-      }
+        if (!projectId) {
+          setProject(null);
+          setChanges([]);
+          setQuotes([]);
+          setIsLoading(false);
+          return;
+        }
 
-      const [projectItem, changeItems, quoteItems] = await Promise.all([
-        fetchProjectById(projectId, user?.uid),
-        fetchChanges(projectId),
-        fetchQuotes(),
-      ]);
+        const storedCompanyId =
+          typeof window !== "undefined"
+            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+            : "";
+        const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
+
+        const [projectItem, changeItems, quoteItems] = await Promise.all([
+          fetchProjectById(projectId, user?.uid, preferredCompanyIds),
+          fetchChanges(projectId),
+          fetchQuotes(),
+        ]);
 
       setProject(projectItem);
       setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
@@ -2318,7 +2326,9 @@ export default function ProjectDetailsPage() {
       if (directRowsRaw.length) {
         const mapped = directRowsRaw.map((row, idx) => {
           const item = (row ?? {}) as Record<string, unknown>;
-          const clashing = String(item.Clashing ?? item.clashing ?? "");
+          const clLong = String(item.clLong ?? item.clashLong ?? item.clash_left ?? "").trim();
+          const clShort = String(item.clShort ?? item.clashShort ?? item.clash_right ?? "").trim();
+          const clashing = String(item.Clashing ?? item.clashing ?? "").trim() || [clLong, clShort].filter(Boolean).join(" ");
           const split = splitClashing(clashing);
           const grainParsed = parseCutlistGrainFields(item.Grain ?? item.grain, item.grain);
           const includeInNestingRaw = item.includeInNesting ?? item.IncludeInNesting;
@@ -2332,11 +2342,11 @@ export default function ProjectDetailsPage() {
             room: String(item.Room ?? item.room ?? "Project Cutlist"),
             partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
             board: String(item.Board ?? item.board ?? ""),
-            name: String(item.Name ?? item.name ?? ""),
+            name: String(item.Name ?? item.name ?? item.partName ?? ""),
             height: normalizeCutlistDimensionValue(item.Height ?? item.height),
             width: normalizeCutlistDimensionValue(item.Width ?? item.width),
             depth: normalizeCutlistDimensionValue(item.Depth ?? item.depth),
-            quantity: String(item.Quantity ?? item.quantity ?? 1),
+            quantity: String(item.Quantity ?? item.quantity ?? item.qty ?? 1),
             clashing,
             clashLeft: String(item.clashLeft ?? split.left ?? ""),
             clashRight: String(item.clashRight ?? split.right ?? ""),
@@ -2344,7 +2354,7 @@ export default function ProjectDetailsPage() {
             adjustableShelf: String(item.adjustableShelf ?? item["Adjustable Shelf"] ?? ""),
             fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item["Fixed Shelf Drilling"]),
             adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item["Adjustable Shelf Drilling"]),
-            information: String(item.Information ?? item.information ?? ""),
+            information: String(item.Information ?? item.information ?? item.info ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
             includeInNesting,
@@ -2357,7 +2367,12 @@ export default function ProjectDetailsPage() {
         setProductionCutlist(null);
         return;
       }
-      const all = await fetchCutlists(project.id, user?.uid);
+      const storedCompanyId =
+        typeof window !== "undefined"
+          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+          : "";
+      const preferredCompanyIds = [storedCompanyId, String(project.companyId || "").trim(), String(user?.companyId || "").trim()].filter(Boolean);
+      const all = await fetchCutlists(project.id, user?.uid, preferredCompanyIds);
       const production = all.find((item) => item.type === "production") ?? all[0] ?? null;
       setProductionCutlist(production);
       const mapped = (production?.parts ?? []).map((part, idx) => {

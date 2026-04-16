@@ -4,103 +4,78 @@ import { createUserWithEmailAndPassword } from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { auth, hasFirebaseConfig } from "@/lib/firebase";
+import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
+import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
+
+const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 
 export default function HomePage() {
   const router = useRouter();
-  const { signIn, signInDemo } = useAuth();
+  const { signIn, signInDemo, setUserColorLocal } = useAuth();
   const [hoveredSide, setHoveredSide] = useState<"login" | "register" | null>(null);
-  const [activePanel, setActivePanel] = useState<"login" | "register" | null>(null);
-  const [isClosingLogin, setIsClosingLogin] = useState(false);
-  const [isClosingRegister, setIsClosingRegister] = useState(false);
+  const [lockedPreview, setLockedPreview] = useState<"login" | "register" | null>(null);
   const [loginFieldsVisible, setLoginFieldsVisible] = useState(false);
   const [registerFieldsVisible, setRegisterFieldsVisible] = useState(false);
+  const [loginFormMounted, setLoginFormMounted] = useState(false);
+  const [registerFormMounted, setRegisterFormMounted] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [registerEmail, setRegisterEmail] = useState("");
+  const [registerMobile, setRegisterMobile] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState("");
+  const [registerUserColor, setRegisterUserColor] = useState("#2F6BFF");
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRegisterSubmitting, setIsRegisterSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
-  const closeTransitionTimerRef = useRef<number | null>(null);
+  const [registerColorInputEl, setRegisterColorInputEl] = useState<HTMLInputElement | null>(null);
+  const registerPasswordTimerRef = useRef<number | null>(null);
+  const loginHideTimerRef = useRef<number | null>(null);
+  const registerHideTimerRef = useRef<number | null>(null);
+  const [loginFormFocused, setLoginFormFocused] = useState(false);
+  const [registerFormFocused, setRegisterFormFocused] = useState(false);
+  const loginFormRef = useRef<HTMLFormElement | null>(null);
+  const registerFormRef = useRef<HTMLFormElement | null>(null);
 
-  const loginTransition = activePanel === "login";
-  const registerTransition = activePanel === "register";
-
-  const loginBasis = loginTransition
-    ? "100%"
-    : registerTransition
-      ? "0%"
-    : hoveredSide === "login"
-      ? "60%"
-      : hoveredSide === "register"
-        ? "40%"
-        : "50%";
-
-  const registerBasis = registerTransition
-    ? "100%"
-    : loginTransition
-      ? "0%"
-    : hoveredSide === "register"
-      ? "60%"
-      : hoveredSide === "login"
-        ? "40%"
-        : "50%";
-
-  const onOpenLogin = () => {
-    setHoveredSide(null);
-    setIsClosingLogin(false);
-    setIsClosingRegister(false);
-    if (closeTransitionTimerRef.current) {
-      window.clearTimeout(closeTransitionTimerRef.current);
-      closeTransitionTimerRef.current = null;
-    }
-    window.setTimeout(() => setActivePanel("login"), 0);
-  };
+  const loginBasis = hoveredSide === "login" ? "60%" : hoveredSide === "register" ? "40%" : "50%";
+  const registerBasis = hoveredSide === "register" ? "60%" : hoveredSide === "login" ? "40%" : "50%";
+  const showLoginForm = hoveredSide === "login" && lockedPreview !== "login";
+  const showRegisterForm = hoveredSide === "register" && lockedPreview !== "register";
 
   const onCloseLogin = () => {
-    setIsClosingLogin(true);
-    setLoginFieldsVisible(false);
-    setActivePanel(null);
+    setLockedPreview("login");
     setHoveredSide(null);
+    setLoginFormFocused(false);
+    setLoginFieldsVisible(false);
     setError(null);
     setIsSubmitting(false);
-    if (closeTransitionTimerRef.current) {
-      window.clearTimeout(closeTransitionTimerRef.current);
-    }
-    closeTransitionTimerRef.current = window.setTimeout(() => {
-      setIsClosingLogin(false);
-      closeTransitionTimerRef.current = null;
-    }, 430);
-  };
-
-  const onOpenRegister = () => {
-    setHoveredSide(null);
-    setIsClosingRegister(false);
-    setIsClosingLogin(false);
-    if (closeTransitionTimerRef.current) {
-      window.clearTimeout(closeTransitionTimerRef.current);
-      closeTransitionTimerRef.current = null;
-    }
-    window.setTimeout(() => setActivePanel("register"), 0);
   };
 
   const onCloseRegister = () => {
-    setIsClosingRegister(true);
-    setRegisterFieldsVisible(false);
-    setActivePanel(null);
+    setLockedPreview("register");
     setHoveredSide(null);
+    setRegisterFormFocused(false);
+    setRegisterFieldsVisible(false);
+    setShowRegisterPassword(false);
     setRegisterError(null);
     setIsRegisterSubmitting(false);
-    if (closeTransitionTimerRef.current) {
-      window.clearTimeout(closeTransitionTimerRef.current);
+  };
+
+  const toggleRegisterPasswordFor10s = () => {
+    if (showRegisterPassword) {
+      setShowRegisterPassword(false);
+      if (registerPasswordTimerRef.current) {
+        window.clearTimeout(registerPasswordTimerRef.current);
+        registerPasswordTimerRef.current = null;
+      }
+      return;
     }
-    closeTransitionTimerRef.current = window.setTimeout(() => {
-      setIsClosingRegister(false);
-      closeTransitionTimerRef.current = null;
-    }, 430);
+    setShowRegisterPassword(true);
+    if (registerPasswordTimerRef.current) window.clearTimeout(registerPasswordTimerRef.current);
+    registerPasswordTimerRef.current = window.setTimeout(() => setShowRegisterPassword(false), 10000);
   };
 
   const onSubmit = async (event: React.FormEvent) => {
@@ -110,6 +85,24 @@ export default function HomePage() {
     try {
       if (hasFirebaseConfig) {
         await signIn(email, password);
+        const currentUid = String(auth?.currentUser?.uid || "").trim();
+        if (currentUid) {
+          const preferredCompanyId =
+            typeof window !== "undefined"
+              ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+              : "";
+          const companyId = await resolveCompanyIdForUid(
+            currentUid,
+            preferredCompanyId ? [preferredCompanyId] : [],
+          );
+          if (!companyId) {
+            router.push("/company-onboarding");
+            return;
+          }
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
+          }
+        }
       } else {
         signInDemo("owner");
       }
@@ -131,9 +124,37 @@ export default function HomePage() {
     setIsRegisterSubmitting(true);
     try {
       if (hasFirebaseConfig && auth) {
-        await createUserWithEmailAndPassword(auth, registerEmail, registerPassword);
+        const created = await createUserWithEmailAndPassword(auth, registerEmail, registerPassword);
+        const uid = String(created.user?.uid || "").trim();
+        if (uid) {
+          const fallbackName = String(registerEmail || "")
+            .split("@")[0]
+            ?.replace(/[._-]+/g, " ")
+            .trim();
+          await saveUserProfilePatchDetailed(uid, "", {
+            email: String(registerEmail || "").trim(),
+            mobile: String(registerMobile || "").trim(),
+            userColor: String(registerUserColor || "").trim(),
+            displayName: fallbackName || "CutSmart User",
+          });
+        }
+        const preferredCompanyId =
+          typeof window !== "undefined"
+            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+            : "";
+        const companyId = uid
+          ? await resolveCompanyIdForUid(uid, preferredCompanyId ? [preferredCompanyId] : [])
+          : "";
+        if (!companyId) {
+          router.push("/company-onboarding");
+          return;
+        }
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
+        }
       } else {
         signInDemo("owner");
+        setUserColorLocal(String(registerUserColor || "").trim());
       }
       router.push("/dashboard");
     } catch {
@@ -143,34 +164,64 @@ export default function HomePage() {
     }
   };
 
-  useEffect(() => {
-    if (!loginTransition) {
-      setLoginFieldsVisible(false);
-      return;
-    }
-    const timeout = window.setTimeout(() => setLoginFieldsVisible(true), 30);
-    return () => window.clearTimeout(timeout);
-  }, [loginTransition]);
+  const formatMobile = (raw: string): string => {
+    const digits = String(raw || "").replace(/\D+/g, "");
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+    return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  };
 
   useEffect(() => {
-    if (!registerTransition) {
-      setRegisterFieldsVisible(false);
+    if (loginHideTimerRef.current) {
+      window.clearTimeout(loginHideTimerRef.current);
+      loginHideTimerRef.current = null;
+    }
+    if (!showLoginForm) {
+      setLoginFieldsVisible(false);
+      loginHideTimerRef.current = window.setTimeout(() => {
+        setLoginFormMounted(false);
+        loginHideTimerRef.current = null;
+      }, 430);
       return;
     }
+    setLoginFormMounted(true);
+    const timeout = window.setTimeout(() => setLoginFieldsVisible(true), 30);
+    return () => window.clearTimeout(timeout);
+  }, [showLoginForm]);
+
+  useEffect(() => {
+    if (registerHideTimerRef.current) {
+      window.clearTimeout(registerHideTimerRef.current);
+      registerHideTimerRef.current = null;
+    }
+    if (!showRegisterForm) {
+      setRegisterFieldsVisible(false);
+      registerHideTimerRef.current = window.setTimeout(() => {
+        setRegisterFormMounted(false);
+        registerHideTimerRef.current = null;
+      }, 430);
+      return;
+    }
+    setRegisterFormMounted(true);
     const timeout = window.setTimeout(() => setRegisterFieldsVisible(true), 30);
     return () => window.clearTimeout(timeout);
-  }, [registerTransition]);
+  }, [showRegisterForm]);
 
   useEffect(() => {
     return () => {
-      if (closeTransitionTimerRef.current) {
-        window.clearTimeout(closeTransitionTimerRef.current);
-      }
+      if (registerPasswordTimerRef.current) window.clearTimeout(registerPasswordTimerRef.current);
+      if (loginHideTimerRef.current) window.clearTimeout(loginHideTimerRef.current);
+      if (registerHideTimerRef.current) window.clearTimeout(registerHideTimerRef.current);
     };
   }, []);
-
-  const showLoginForm = loginTransition || isClosingLogin;
-  const showRegisterForm = registerTransition || isClosingRegister;
+  const safeRegisterColor = /^#[0-9A-Fa-f]{6}$/.test(registerUserColor) ? registerUserColor : "#2F6BFF";
+  const registerColorText =
+    parseInt(safeRegisterColor.slice(1, 3), 16) * 0.299 +
+      parseInt(safeRegisterColor.slice(3, 5), 16) * 0.587 +
+      parseInt(safeRegisterColor.slice(5, 7), 16) * 0.114 >
+    160
+      ? "#111827"
+      : "#FFFFFF";
 
   return (
     <div
@@ -185,27 +236,21 @@ export default function HomePage() {
       <div
         role="button"
         tabIndex={0}
-        onClick={() => {
-          if (!activePanel) onOpenLogin();
-        }}
-        onKeyDown={(e) => {
-          if ((e.key === "Enter" || e.key === " ") && !activePanel) {
-            e.preventDefault();
-            onOpenLogin();
-          }
-        }}
         onMouseEnter={() => setHoveredSide("login")}
-        onMouseLeave={() => setHoveredSide(null)}
+        onMouseLeave={() => {
+          if (showLoginForm && loginFormFocused) return;
+          setHoveredSide(null);
+          setLockedPreview(null);
+        }}
         className="group relative z-10 flex min-h-screen shrink-0 overflow-hidden border-r border-[rgba(215,222,232,0.55)] hover:bg-[rgba(47,107,255,0.50)]"
         style={{
           backgroundColor: "rgba(47,107,255,0.30)",
           flex: `0 0 ${loginBasis}`,
-          borderRightWidth: registerTransition ? 0 : 1,
           transition: "flex-basis 900ms cubic-bezier(0.22,1,0.36,1), background-color 300ms ease",
         }}
       >
         <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
-          {!showLoginForm ? (
+          {!loginFormMounted ? (
             <span
               className="whitespace-nowrap text-center uppercase text-[#0F274A] transition-all"
               style={{
@@ -218,7 +263,15 @@ export default function HomePage() {
             </span>
           ) : (
             <form
+              ref={loginFormRef}
               onClick={(e) => e.stopPropagation()}
+              onFocusCapture={() => setLoginFormFocused(true)}
+              onBlurCapture={() => {
+                window.setTimeout(() => {
+                  const active = document.activeElement as Node | null;
+                  setLoginFormFocused(!!(active && loginFormRef.current?.contains(active)));
+                }, 0);
+              }}
               onSubmit={onSubmit}
               className="max-w-none"
               style={{ width: "min(550px, calc(100vw - 120px))" }}
@@ -275,7 +328,7 @@ export default function HomePage() {
                   <button
                     type="button"
                     onClick={onCloseLogin}
-                    className="h-[50px] w-full rounded-[12px] border border-[#D7DEE8] bg-[rgba(255,255,255,0.92)] text-[14px] font-bold text-[#334155]"
+                    className="h-[50px] w-full rounded-[12px] border border-[#D7DEE8] bg-white text-[14px] font-bold text-[#334155]"
                   >
                     Back
                   </button>
@@ -289,30 +342,23 @@ export default function HomePage() {
       <div
         role="button"
         tabIndex={0}
-        onClick={() => {
-          if (!activePanel) onOpenRegister();
-        }}
-        onKeyDown={(e) => {
-          if ((e.key === "Enter" || e.key === " ") && !activePanel) {
-            e.preventDefault();
-            onOpenRegister();
-          }
-        }}
         onMouseEnter={() => setHoveredSide("register")}
-        onMouseLeave={() => setHoveredSide(null)}
+        onMouseLeave={() => {
+          if (showRegisterForm && registerFormFocused) return;
+          setHoveredSide(null);
+          setLockedPreview(null);
+        }}
         className="group relative z-10 flex min-h-screen shrink-0 items-center justify-center overflow-hidden hover:bg-[rgba(255,255,255,0.50)]"
         style={{
           backgroundColor: "rgba(255,255,255,0.42)",
           flex: `0 0 ${registerBasis}`,
-          opacity: registerTransition ? 1 : 1,
-          pointerEvents: activePanel === "login" ? "none" : "auto",
           transition: "flex-basis 900ms cubic-bezier(0.22,1,0.36,1), background-color 300ms ease, opacity 220ms ease",
         }}
       >
         <div className="absolute inset-0 z-20 flex items-center justify-center px-8">
-          {!showRegisterForm ? (
+          {!registerFormMounted ? (
             <span
-              className="text-center uppercase text-[#1F2937] transition-all group-hover:text-[#111827]"
+              className="text-center uppercase text-[#111827] transition-all"
               style={{
                 fontSize: "clamp(26px, 3.2vw, 46px)",
                 lineHeight: 0.95,
@@ -323,13 +369,21 @@ export default function HomePage() {
             </span>
           ) : (
             <form
+              ref={registerFormRef}
               onClick={(e) => e.stopPropagation()}
+              onFocusCapture={() => setRegisterFormFocused(true)}
+              onBlurCapture={() => {
+                window.setTimeout(() => {
+                  const active = document.activeElement as Node | null;
+                  setRegisterFormFocused(!!(active && registerFormRef.current?.contains(active)));
+                }, 0);
+              }}
               onSubmit={onRegisterSubmit}
               className="max-w-none"
               style={{ width: "min(550px, calc(100vw - 120px))" }}
             >
               <p
-                className="text-center uppercase text-[#1F2937] transition-all"
+                className="text-center uppercase text-[#111827] transition-all"
                 style={{
                   fontSize: "clamp(26px, 3.2vw, 46px)",
                   lineHeight: 0.95,
@@ -361,13 +415,29 @@ export default function HomePage() {
                   className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                 />
                 <input
-                  type="password"
-                  placeholder="Password"
-                  value={registerPassword}
-                  onChange={(e) => setRegisterPassword(e.target.value)}
-                  required={hasFirebaseConfig}
+                  type="text"
+                  placeholder="Mobile"
+                  value={registerMobile}
+                  onChange={(e) => setRegisterMobile(formatMobile(e.target.value))}
                   className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                 />
+                <div className="relative">
+                  <input
+                    type={showRegisterPassword ? "text" : "password"}
+                    placeholder="Password"
+                    value={registerPassword}
+                    onChange={(e) => setRegisterPassword(e.target.value)}
+                    required={hasFirebaseConfig}
+                    className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 pr-16 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
+                  />
+                  <button
+                    type="button"
+                    onClick={toggleRegisterPasswordFor10s}
+                    className="absolute right-2 top-1/2 z-20 h-7 min-w-[52px] -translate-y-1/2 cursor-pointer rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[11px] font-bold uppercase tracking-[0.04em] text-[#6B7280] shadow-sm"
+                  >
+                    {showRegisterPassword ? "HIDE" : "SHOW"}
+                  </button>
+                </div>
                 <input
                   type="password"
                   placeholder="Confirm Password"
@@ -376,6 +446,23 @@ export default function HomePage() {
                   required={hasFirebaseConfig}
                   className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                 />
+                <div
+                  className="flex h-[50px] items-center justify-between gap-3 rounded-[12px] border border-[#D7DEE8] px-5"
+                  style={{ backgroundColor: safeRegisterColor }}
+                  onClick={() => registerColorInputEl?.click()}
+                >
+                  <p className="whitespace-nowrap text-[15px] font-semibold" style={{ color: registerColorText }}>
+                    Icon Colour Picker
+                  </p>
+                  <input
+                    ref={setRegisterColorInputEl}
+                    type="color"
+                    value={safeRegisterColor}
+                    onChange={(e) => setRegisterUserColor(e.target.value)}
+                    className="pointer-events-none absolute h-0 w-0 opacity-0"
+                    title="Choose Icon Colour"
+                  />
+                </div>
                 {registerError && <p className="text-[12px] font-semibold text-[#D32F2F]">{registerError}</p>}
                 <div className="grid grid-cols-1 gap-2 pt-1">
                   <button
@@ -388,7 +475,7 @@ export default function HomePage() {
                   <button
                     type="button"
                     onClick={onCloseRegister}
-                    className="h-[50px] w-full rounded-[12px] border border-[#D7DEE8] bg-[rgba(255,255,255,0.92)] text-[14px] font-bold text-[#334155]"
+                    className="h-[50px] w-full rounded-[12px] border border-[#D7DEE8] bg-white text-[14px] font-bold text-[#334155]"
                   >
                     Back
                   </button>
@@ -401,3 +488,4 @@ export default function HomePage() {
     </div>
   );
 }
+

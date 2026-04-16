@@ -6,9 +6,11 @@ import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import {
+  createCompanyInviteDetailed,
   fetchCompanyDoc,
   fetchCompanyMembers,
   fetchProjects,
+  fetchUserColorMapByUids,
   fetchUserNotifications,
   saveCompanyDocPatchDetailed,
   setAllUserNotificationsRead,
@@ -122,6 +124,17 @@ function toStr(v: unknown, fallback = "") {
   return t || fallback;
 }
 
+function autoCapStaffName(v: unknown): string {
+  const raw = toStr(v);
+  if (!raw) return "";
+  return raw
+    .replace(/[._-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function tintHex(hex: string, mixWithWhite = 0.86): string {
   const clean = String(hex || "").trim().replace("#", "");
   if (!/^[0-9a-fA-F]{6}$/.test(clean)) return "#F8FAFC";
@@ -145,11 +158,12 @@ function textColorForHex(hex: string): string {
   return luminance > 0.62 ? "#0F172A" : "#FFFFFF";
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function Panel({ title, headerRight, children }: { title: string; headerRight?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD] shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
-      <div className="border-b border-[#DCE3EC] bg-white px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-[#DCE3EC] bg-white px-3 py-2">
         <p className="text-[13px] font-extrabold uppercase tracking-[1px] text-[#1E3A62]">{title}</p>
+        {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
       </div>
       <div className="bg-[#F8FAFD] p-3">{children}</div>
     </section>
@@ -643,6 +657,7 @@ export default function CompanySettingsPage() {
     window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, activeCompanyId);
   }, [activeCompanyId]);
   const [staff, setStaff] = useState<CompanyMemberOption[]>([]);
+  const [staffIconColorByUid, setStaffIconColorByUid] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Desktop parity data mode");
@@ -708,6 +723,7 @@ export default function CompanySettingsPage() {
   });
   const [notificationsRows, setNotificationsRows] = useState<UserNotificationRow[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [isInvitingStaff, setIsInvitingStaff] = useState(false);
   const [showJoinKey, setShowJoinKey] = useState(false);
   const [quotePresetEditorOpen, setQuotePresetEditorOpen] = useState(false);
   const [quotePresetDraft, setQuotePresetDraft] = useState("");
@@ -772,9 +788,10 @@ export default function CompanySettingsPage() {
       setStaff(members);
       if (doc) {
         const nestingRaw = (doc.nestingSettings ?? {}) as Record<string, unknown>;
+        const appPrefsRaw = (doc.applicationPreferences ?? {}) as Record<string, unknown>;
         const cutCols = (doc.cutlistColumnsByContext ?? {}) as Record<string, unknown>;
         setForm({
-          name: toStr(doc.name),
+          name: toStr(doc.name ?? doc.companyName ?? appPrefsRaw.companyName),
           defaultCurrency: toStr(doc.defaultCurrency, "NZD - New Zealand Dollar"),
           measurementUnit: toStr(doc.measurementUnit, "mm"),
           dateFormat: toStr(doc.dateFormat, "DD/MM/YYYY"),
@@ -840,6 +857,19 @@ export default function CompanySettingsPage() {
   }, [user?.uid, user?.companyId]);
 
   useEffect(() => {
+    const run = async () => {
+      const uids = Array.from(new Set(staff.map((row) => toStr(row.uid)).filter(Boolean)));
+      if (!uids.length) {
+        setStaffIconColorByUid({});
+        return;
+      }
+      const colorMap = await fetchUserColorMapByUids(uids);
+      setStaffIconColorByUid(colorMap);
+    };
+    void run();
+  }, [staff]);
+
+  useEffect(() => {
     if (active !== "hardware") return;
     setHardwareExpanded({});
     setDrawerRowExpanded({});
@@ -851,6 +881,48 @@ export default function CompanySettingsPage() {
     if (!q) return sections;
     return sections.filter((s) => s.label.toLowerCase().includes(q));
   }, [search]);
+
+  const currentMemberRole = useMemo(() => {
+    const fromMembership = staff.find((m) => m.uid === user?.uid)?.role;
+    const fromUser = (user as { role?: string } | null)?.role;
+    return String(fromMembership ?? fromUser ?? "").trim().toLowerCase();
+  }, [staff, user]);
+
+  const canAddStaff = useMemo(() => {
+    if (currentMemberRole === "owner" || currentMemberRole === "admin") {
+      return true;
+    }
+    const perms = Array.isArray(user?.permissions) ? user.permissions : [];
+    return perms.some((p) => String(p).trim().toLowerCase() === "staff.add");
+  }, [currentMemberRole, user?.permissions]);
+
+  const inviteStaffFromTopBar = async () => {
+    if (!activeCompanyId || !canAddStaff || isInvitingStaff) {
+      return;
+    }
+    const email = window.prompt("Invite staff by email");
+    const cleanEmail = String(email || "").trim();
+    if (!cleanEmail) return;
+    if (!cleanEmail.includes("@")) {
+      setSaveLabel("Invite failed (invalid email)");
+      return;
+    }
+
+    setIsInvitingStaff(true);
+    const companyCode = toStr(company?.joinCode ?? company?.companyCode ?? company?.joinPassword ?? company?.companyPassword);
+    const result = await createCompanyInviteDetailed(activeCompanyId, cleanEmail, {
+      companyName: toStr(form.name || company?.name || company?.companyName || activeCompanyId),
+      companyCode,
+      invitedByUid: String(user?.uid || ""),
+      invitedByName: String(user?.displayName || user?.email || ""),
+    });
+    if (result.ok) {
+      setSaveLabel(`Invite sent: ${cleanEmail}`);
+    } else {
+      setSaveLabel(`Invite failed (${result.error || "unknown"})`);
+    }
+    setIsInvitingStaff(false);
+  };
 
   const cutlistColumnRows = useMemo(
     () => mergeCutlistColumnOrder(cutlistColumnOrder, cutlistProduction, cutlistInitial),
@@ -1130,6 +1202,11 @@ export default function CompanySettingsPage() {
     const hardwareForSave = sanitizeHardwareRows(hardware);
     const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
       name: form.name,
+      companyName: form.name,
+      applicationPreferences: {
+        ...((company?.applicationPreferences as Record<string, unknown> | undefined) ?? {}),
+        companyName: form.name,
+      },
       defaultCurrency: form.defaultCurrency,
       measurementUnit: form.measurementUnit,
       dateFormat: form.dateFormat,
@@ -1989,17 +2066,76 @@ export default function CompanySettingsPage() {
 
               {active === "staff" && (
                 <div className="grid gap-3 xl:grid-cols-[1fr_380px]">
-                  <Panel title="Staff">
+                  <Panel
+                    title="Staff"
+                    headerRight={
+                      canAddStaff ? (
+                        <button
+                          type="button"
+                          onClick={() => void inviteStaffFromTopBar()}
+                          disabled={isInvitingStaff || isLoading || !activeCompanyId}
+                          className="h-7 rounded-[8px] border border-[#BFD4FF] bg-[#EAF1FF] px-3 text-[11px] font-bold text-[#244A9A] disabled:opacity-60"
+                        >
+                          {isInvitingStaff ? "Inviting..." : "Add Staff"}
+                        </button>
+                      ) : null
+                    }
+                  >
                     <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[1fr_1fr_140px] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                        <p>Staff Name</p>
+                      <div
+                        className="grid gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]"
+                        style={{ gridTemplateColumns: "74px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
+                      >
+                        <p className="text-center">Icon</p>
+                        <p>Name</p>
+                        <p>Display Name</p>
                         <p>Staff Email</p>
+                        <p>Mobile</p>
                         <p>Staff Role</p>
                       </div>
                       {staff.map((row) => (
-                        <div key={row.uid} className="grid grid-cols-[1fr_1fr_140px] gap-2">
-                          <input readOnly value={row.displayName} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                          <input readOnly value={toStr(row.email)} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                        <div
+                          key={row.uid}
+                          className="grid items-center gap-2"
+                          style={{ gridTemplateColumns: "74px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
+                        >
+                          <div className="inline-flex h-7 w-full items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white">
+                            {(() => {
+                              const name = toStr(row.displayName, "CU");
+                              const parts = name.split(/\s+/).filter(Boolean);
+                              const initials =
+                                parts.length >= 2
+                                  ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase()
+                                  : `${parts[0]?.[0] ?? name[0] ?? ""}`.toUpperCase();
+                              const iconColor =
+                                toStr(staffIconColorByUid[row.uid]) ||
+                                toStr(row.badgeColor) ||
+                                toStr(row.userColor) ||
+                                toStr(form.themeColor) ||
+                                "#7D99B3";
+                              return (
+                            <div
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-extrabold text-white"
+                              style={{ backgroundColor: iconColor }}
+                              title="User icon"
+                            >
+                              {initials || "CU"}
+                            </div>
+                              );
+                            })()}
+                          </div>
+                          <input readOnly value={toStr(row.displayName)} className="h-7 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                          <input
+                            readOnly
+                            value={autoCapStaffName(toStr(row.email).split("@")[0] || toStr(row.uid))}
+                            className="h-7 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                          <input readOnly value={toStr(row.email)} className="h-7 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                          <input
+                            readOnly
+                            value={toStr(row.mobile)}
+                            className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
                           <input readOnly value={row.role} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
                         </div>
                       ))}

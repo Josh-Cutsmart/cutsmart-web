@@ -26,6 +26,7 @@ interface AuthContextValue {
   signInDemo: (role: UserRole) => void;
   logout: () => Promise<void>;
   setUserColorLocal: (color: string) => void;
+  setUserProfileLocal: (patch: Partial<Pick<AppUser, "displayName" | "mobile" | "userColor">>) => void;
 }
 
 const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
@@ -38,11 +39,13 @@ function fromFirebaseUser(
   companyId?: string,
   membershipDisplayName?: string,
   userColor?: string,
+  mobile?: string,
 ): AppUser {
   return {
     uid: user.uid,
     email: user.email ?? "unknown@cutsmart.test",
     displayName: membershipDisplayName ?? user.displayName ?? "CutSmart User",
+    mobile,
     userColor,
     role,
     companyId,
@@ -120,9 +123,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             ...fromFirebaseUser(
               firebaseUser,
               membership?.role ?? "viewer",
-              membership?.companyId,
+              membership?.companyId || profile?.companyId,
               resolvedName,
               profile?.userColor,
+              profile?.mobile,
             ),
             permissions: membership?.permissionKeys ?? [],
           },
@@ -172,6 +176,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser((prev) => {
           if (!prev) return prev;
           return { ...prev, userColor: String(color || "").trim() || undefined };
+        });
+      },
+      setUserProfileLocal: (patch) => {
+        setUser((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev };
+          if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
+            next.displayName = String(patch.displayName ?? "").trim() || prev.displayName;
+          }
+          if (Object.prototype.hasOwnProperty.call(patch, "mobile")) {
+            next.mobile = String(patch.mobile ?? "").trim() || undefined;
+          }
+          if (Object.prototype.hasOwnProperty.call(patch, "userColor")) {
+            next.userColor = String(patch.userColor ?? "").trim() || undefined;
+          }
+          return next;
         });
       },
     }),

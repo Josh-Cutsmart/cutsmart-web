@@ -178,6 +178,28 @@ export default function RecentlyDeletedPage() {
     setCreatorColorByUid(userColorMap);
 
     const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
+
+    const storedCompanyId =
+      typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
+    const selectedCompanyId = storedCompanyId || companyIds[0] || "";
+    if (selectedCompanyId) {
+      const selectedCompanyDoc = await fetchCompanyDoc(selectedCompanyId);
+      const selectedDoc = (selectedCompanyDoc as Record<string, unknown> | null) ?? null;
+      const appPrefs =
+        selectedDoc && typeof selectedDoc.applicationPreferences === "object" && selectedDoc.applicationPreferences !== null
+          ? (selectedDoc.applicationPreferences as Record<string, unknown>)
+          : null;
+      const selectedName = String(
+        selectedDoc?.name ??
+          selectedDoc?.companyName ??
+          appPrefs?.companyName ??
+          "",
+      ).trim();
+      if (selectedName) setCompanyName(selectedName);
+      const selectedThemeColor = String(selectedDoc?.themeColor ?? "").trim();
+      if (selectedThemeColor) setCompanyThemeColor(selectedThemeColor);
+    }
+
     if (!companyIds.length) {
       setRetentionDaysByCompany({});
       setIsLoading(false);
@@ -195,18 +217,6 @@ export default function RecentlyDeletedPage() {
       }),
     );
     setRetentionDaysByCompany(Object.fromEntries(entries));
-
-    const storedCompanyId =
-      typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
-    const selectedCompanyId =
-      (storedCompanyId && companyIds.includes(storedCompanyId) ? storedCompanyId : companyIds[0]) || "";
-    if (selectedCompanyId) {
-      const selectedCompanyDoc = await fetchCompanyDoc(selectedCompanyId);
-      const selectedName = String((selectedCompanyDoc as Record<string, unknown> | null)?.name ?? "").trim();
-      if (selectedName) setCompanyName(selectedName);
-      const selectedThemeColor = String((selectedCompanyDoc as Record<string, unknown> | null)?.themeColor ?? "").trim();
-      if (selectedThemeColor) setCompanyThemeColor(selectedThemeColor);
-    }
     setIsLoading(false);
   }, [user?.uid]);
 
