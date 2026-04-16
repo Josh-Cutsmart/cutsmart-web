@@ -1266,9 +1266,10 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
   if (!db || !cid) {
     return [];
   }
+  const firestore = db;
 
   try {
-    const snap = await getDocs(collection(db, "companies", cid, "memberships"));
+    const snap = await getDocs(collection(firestore, "companies", cid, "memberships"));
     const out: CompanyMemberOption[] = [];
 
     for (const docSnap of snap.docs) {
@@ -1301,7 +1302,7 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
         const uid = String(member.uid || "").trim();
         if (!uid) return;
         try {
-          const userSnap = await getDoc(doc(db, "users", uid));
+          const userSnap = await getDoc(doc(firestore, "users", uid));
           if (!userSnap.exists()) return;
           const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
           const profileDisplayName = String(userData.displayName ?? userData.name ?? "").trim();
