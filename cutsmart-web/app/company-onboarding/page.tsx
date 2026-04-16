@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   collection,
   collectionGroup,
-  documentId,
   deleteDoc,
   doc,
   getDocs,
@@ -48,10 +47,6 @@ function companyIdFromName(name: string) {
 
 function toLower(v: string) {
   return String(v || "").trim().toLowerCase();
-}
-
-function inviteIdFromEmail(v: string) {
-  return toLower(v).replace(/[^a-z0-9@._-]+/g, "_");
 }
 
 function describeInviteLookupError(error: unknown, label: string): string {
@@ -156,32 +151,8 @@ export default function CompanyOnboardingPage() {
         return;
       }
       const email = toLower(user.email);
-      const inviteId = inviteIdFromEmail(user.email);
       const rows: InviteRow[] = [];
       let firstError = "";
-
-      // Fast path: invites are written with doc id derived from email.
-      // This avoids waiting on emailLower collection-group index readiness.
-      if (inviteId) {
-        try {
-          const byInviteId = await getDocs(
-            query(collectionGroup(db, "invites"), where(documentId(), "==", inviteId), limit(50)),
-          );
-          for (const snap of byInviteId.docs) {
-            const data = (snap.data() ?? {}) as Record<string, unknown>;
-            const parentCompanyId = String(snap.ref.parent.parent?.id ?? "").trim();
-            if (!parentCompanyId) continue;
-            rows.push({
-              id: snap.id,
-              companyId: parentCompanyId,
-              companyName: String(data.companyName ?? "").trim() || parentCompanyId,
-              code: String(data.companyCode ?? data.joinCode ?? data.code ?? "").trim(),
-            });
-          }
-        } catch (error) {
-          firstError = describeInviteLookupError(error, "invite id");
-        }
-      }
 
       if (!rows.length) {
         try {
