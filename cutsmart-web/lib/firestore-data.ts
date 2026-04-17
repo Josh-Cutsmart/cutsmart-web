@@ -54,6 +54,24 @@ function toProjectStatus(raw: unknown): Project["status"] {
   return "draft";
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function readStringCandidate(value: unknown): string {
+  if (value == null) return "";
+  const text = String(value).trim();
+  return text;
+}
+
+function pickFirstString(data: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = readStringCandidate(data[key]);
+    if (value) return value;
+  }
+  return "";
+}
+
 function parseCutlistContainer(data: Record<string, unknown>): Record<string, unknown> | null {
   const rawCutlist = data.cutlist;
   const cutlistObj = rawCutlist && typeof rawCutlist === "object" ? { ...(rawCutlist as Record<string, unknown>) } : null;
@@ -107,6 +125,12 @@ function parseCutlistRows(data: Record<string, unknown>): unknown[] {
 
 function normalizeProject(id: string, data: Record<string, unknown>): Project {
   const rows = parseCutlistRows(data);
+  const clientBlock =
+    asRecord(data.clientDetails) ??
+    asRecord(data.client) ??
+    asRecord(data.general) ??
+    asRecord(data.projectDetails) ??
+    {};
 
   const settings =
     typeof data.projectSettings === "object" && data.projectSettings !== null
@@ -155,14 +179,32 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     settings.productionTempEdit = data.productionTempEdit as Record<string, unknown>;
   }
 
+  const customer = pickFirstString(data, ["customer", "clientName", "client", "client_name"]) ||
+    pickFirstString(clientBlock, ["name", "clientName", "client", "customer"]);
+  const clientPhone = pickFirstString(data, ["clientPhone", "clientNumber", "clientMobile", "phone"]) ||
+    pickFirstString(clientBlock, ["phone", "mobile", "clientPhone", "clientNumber"]);
+  const clientEmail = pickFirstString(data, ["clientEmail", "email"]) ||
+    pickFirstString(clientBlock, ["email", "clientEmail"]);
+  const clientAddress = pickFirstString(data, ["clientAddress", "projectAddress", "address"]) ||
+    pickFirstString(clientBlock, ["address", "clientAddress", "projectAddress"]);
+  const notes = pickFirstString(data, ["notes", "projectNotes", "description"]) ||
+    pickFirstString(clientBlock, ["notes", "projectNotes", "description"]);
+  const createdByName = pickFirstString(data, [
+    "createdByName",
+    "creatorName",
+    "createdBy",
+    "ownerName",
+    "createdByDisplayName",
+  ]);
+
   return {
     id,
     companyId: String(data.companyId ?? ""),
     name: String(data.name ?? "Untitled Project"),
-    customer: String(data.customer ?? data.clientName ?? data.client ?? "Unknown Customer"),
+    customer: customer || "Unknown Customer",
     createdAt: toIsoString(data.createdAtIso ?? data.createdAt, new Date().toISOString()),
     createdByUid: String(data.createdByUid ?? data.ownerUid ?? ""),
-    createdByName: String(data.createdByName ?? "Unknown"),
+    createdByName: createdByName || "Unknown",
     status: toProjectStatus(data.status),
     statusLabel: String(data.status ?? "New"),
     priority: (String(data.priority ?? "medium") as Project["priority"]),
@@ -170,12 +212,12 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     deletedAt: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
     dueDate: String(data.dueDate ?? data.due ?? ""),
     estimatedSheets: Number(data.estimatedSheets ?? rows.length ?? 0),
-    assignedTo: String(data.assignedTo ?? data.createdByName ?? "Unassigned"),
+    assignedTo: String(data.assignedTo ?? createdByName ?? "Unassigned"),
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
-    notes: String(data.notes ?? ""),
-    clientPhone: String(data.clientPhone ?? data.clientNumber ?? ""),
-    clientEmail: String(data.clientEmail ?? ""),
-    clientAddress: String(data.clientAddress ?? ""),
+    notes,
+    clientPhone,
+    clientEmail,
+    clientAddress,
     region: String(data.region ?? ""),
     projectFiles: Array.isArray(data.projectFiles) ? (data.projectFiles as Array<Record<string, unknown>>) : [],
     projectImages: Array.isArray(data.projectImages) ? data.projectImages.map(String) : [],

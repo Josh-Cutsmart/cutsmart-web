@@ -70,3 +70,8 @@ p {
 .cs-app table td {
   color: #1f2937;
 }
+
+body.new-project-open .project-image-nav-arrow {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

@@ -5,6 +5,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as Re
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ChevronDown, ClipboardList, Cpu, FolderOpen, GitBranch, ListChecks, Lock, Minus, Plus, Quote, Ruler, Scissors, ShoppingCart, Tag, Trash2, Upload, X } from "lucide-react";
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,6 +28,7 @@ import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
+import { storage } from "@/lib/firebase";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 
@@ -174,6 +176,35 @@ type CutlistValidationIssue = {
 function toStr(value: unknown, fallback = "") {
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function collectProjectImageRefs(project: Project | null): string[] {
+  if (!project) return [];
+  const direct = Array.isArray(project.projectImages) ? project.projectImages : [];
+  const fromFiles = Array.isArray(project.projectFiles)
+    ? project.projectFiles
+        .map((row) => (row && typeof row === "object" ? String((row as Record<string, unknown>).path ?? "").trim() : ""))
+        .filter(Boolean)
+    : [];
+  return Array.from(new Set([...direct.map((v) => String(v || "").trim()), ...fromFiles])).filter(Boolean);
+}
+
+async function resolveProjectImageUrl(raw: string): Promise<string> {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  const storageClient = storage;
+  if (!storageClient) return "";
+  const normalized = value.replace(/^\/+/, "");
+  try {
+    return await getDownloadURL(storageRef(storageClient, normalized));
+  } catch {
+    try {
+      return await getDownloadURL(storageRef(storageClient, value));
+    } catch {
+      return "";
+    }
+  }
 }
 
 function toNum(value: unknown): number {
@@ -1004,6 +1035,11 @@ export default function ProjectDetailsPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [changes, setChanges] = useState<ProjectChange[]>([]);
   const [quotes, setQuotes] = useState<SalesQuote[]>([]);
+  const [projectImageUrls, setProjectImageUrls] = useState<string[]>([]);
+  const [selectedProjectImageIndex, setSelectedProjectImageIndex] = useState(0);
+  const [isUploadingProjectImages, setIsUploadingProjectImages] = useState(false);
+  const [projectImageUploadProgress, setProjectImageUploadProgress] = useState(0);
+  const [isDeletingProjectImage, setIsDeletingProjectImage] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingStatus, setIsSavingStatus] = useState(false);
   const [projectTags, setProjectTags] = useState<string[]>([]);
@@ -1112,6 +1148,29 @@ export default function ProjectDetailsPage() {
     hardware: { hardwareCategory: "", newDrawerType: "", hingeType: "" },
     boardTypes: [],
   });
+  const projectImagesInputRef = useRef<HTMLInputElement | null>(null);
+  const projectImageThumbsRef = useRef<HTMLDivElement | null>(null);
+  const projectImageViewportRef = useRef<HTMLDivElement | null>(null);
+  const projectImagePreviewRef = useRef<HTMLImageElement | null>(null);
+  const projectImageDragRef = useRef<{
+    active: boolean;
+    pointerId: number | null;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  }>({
+    active: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+  });
+  const [projectImageMeasuredHeight, setProjectImageMeasuredHeight] = useState(0);
+  const [projectImageZoom, setProjectImageZoom] = useState(1);
+  const [projectImagePan, setProjectImagePan] = useState({ x: 0, y: 0 });
+  const [projectImageDragging, setProjectImageDragging] = useState(false);
 
   const tab = useMemo(() => {
     const requestedTab = searchParams.get("tab");
@@ -2234,6 +2293,307 @@ export default function ProjectDetailsPage() {
     };
     void loadCompanyDoc();
   }, [project?.companyId]);
+
+  useEffect(() => {
+    const loadImages = async () => {
+      const refs = collectProjectImageRefs(project);
+      if (!refs.length) {
+        setProjectImageUrls([]);
+        return;
+      }
+      const resolved = await Promise.all(refs.map((item) => resolveProjectImageUrl(item)));
+      setProjectImageUrls(Array.from(new Set(resolved.filter(Boolean))));
+    };
+    void loadImages();
+  }, [project?.id, project?.projectImages, project?.projectFiles]);
+
+  useEffect(() => {
+    setSelectedProjectImageIndex((prev) => {
+      if (projectImageUrls.length === 0) return 0;
+      if (prev < 0) return 0;
+      if (prev >= projectImageUrls.length) return projectImageUrls.length - 1;
+      return prev;
+    });
+  }, [projectImageUrls]);
+
+  const onUploadProjectImages = async (files: FileList | null) => {
+    if (!files || !project) return;
+    const storageClient = storage;
+    if (!storageClient || !project.companyId) {
+      setLockMessage("Image upload is unavailable.");
+      return;
+    }
+    if (isUploadingProjectImages) return;
+
+    const existing = collectProjectImageRefs(project);
+    const room = Math.max(0, 5 - existing.length);
+    if (room <= 0) {
+      setLockMessage("Maximum 5 images allowed.");
+      return;
+    }
+
+    const incoming = Array.from(files).filter((file) => String(file.type || "").toLowerCase().startsWith("image/"));
+    const picked = incoming.slice(0, room);
+    if (!picked.length) return;
+
+    setIsUploadingProjectImages(true);
+    setProjectImageUploadProgress(0);
+    try {
+      const perFileProgress = new Array(picked.length).fill(0);
+      const pushAggregateProgress = () => {
+        const total = perFileProgress.reduce((sum, v) => sum + v, 0);
+        const avg = picked.length > 0 ? total / picked.length : 0;
+        setProjectImageUploadProgress(Math.max(0, Math.min(100, Math.round(avg))));
+      };
+      const uploaded = await Promise.all(
+        picked.map(async (file, idx) => {
+          try {
+            const extRaw = file.name.includes(".") ? String(file.name.split(".").pop() || "jpg").trim() : "jpg";
+            const ext = extRaw.replace(/[^a-zA-Z0-9]/g, "") || "jpg";
+            const path = `companies/${project.companyId}/jobs/${project.id}/images/${Date.now()}_${idx + 1}.${ext}`;
+            const ref = storageRef(storageClient, path);
+            const task = uploadBytesResumable(ref, file, { contentType: file.type || "image/jpeg" });
+            await new Promise<void>((resolve, reject) => {
+              task.on(
+                "state_changed",
+                (snapshot) => {
+                  const fraction = snapshot.totalBytes > 0 ? snapshot.bytesTransferred / snapshot.totalBytes : 0;
+                  perFileProgress[idx] = Math.round(fraction * 100);
+                  pushAggregateProgress();
+                },
+                () => reject(new Error("upload-failed")),
+                () => resolve(),
+              );
+            });
+            perFileProgress[idx] = 100;
+            pushAggregateProgress();
+            return await getDownloadURL(task.snapshot.ref);
+          } catch {
+            return "";
+          }
+        }),
+      );
+      const next = [...existing, ...uploaded.filter(Boolean)].slice(0, 5);
+      const ok = await updateProjectPatch(project, { projectImages: next });
+      if (!ok) {
+        setLockMessage("Could not save uploaded image references.");
+        return;
+      }
+      setProject((prev) => (prev ? { ...prev, projectImages: next } : prev));
+      setProjectImageUrls(Array.from(new Set(next.filter(Boolean))));
+      setSelectedProjectImageIndex(Math.max(0, next.length - 1));
+      setLockMessage("");
+    } catch {
+      setLockMessage("Could not upload images.");
+    } finally {
+      setIsUploadingProjectImages(false);
+      setProjectImageUploadProgress(0);
+    }
+  };
+
+  const projectImageAreaHeight = Math.max(420, projectImageMeasuredHeight || 0);
+
+  const clampProjectImagePan = (x: number, y: number, zoomLevel = projectImageZoom) => {
+    const viewport = projectImageViewportRef.current;
+    const image = projectImagePreviewRef.current;
+    if (!viewport || !image || zoomLevel <= 1) return { x: 0, y: 0 };
+    const viewportW = viewport.clientWidth;
+    const viewportH = viewport.clientHeight;
+    const imageW = image.clientWidth;
+    const imageH = image.clientHeight;
+    const maxX = Math.max(0, (imageW * zoomLevel - viewportW) / 2);
+    const maxY = Math.max(0, (imageH * zoomLevel - viewportH) / 2);
+    return {
+      x: Math.max(-maxX, Math.min(maxX, x)),
+      y: Math.max(-maxY, Math.min(maxY, y)),
+    };
+  };
+
+  const onProjectImagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (projectImageZoom <= 1 || e.button !== 0) return;
+    const next = projectImageDragRef.current;
+    next.active = true;
+    next.pointerId = e.pointerId;
+    next.startX = e.clientX;
+    next.startY = e.clientY;
+    next.originX = projectImagePan.x;
+    next.originY = projectImagePan.y;
+    setProjectImageDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onProjectImagePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = projectImageDragRef.current;
+    if (!drag.active || drag.pointerId !== e.pointerId || projectImageZoom <= 1) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    const clamped = clampProjectImagePan(drag.originX + dx, drag.originY + dy, projectImageZoom);
+    setProjectImagePan(clamped);
+  };
+
+  const onProjectImagePointerEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = projectImageDragRef.current;
+    if (drag.pointerId !== e.pointerId) return;
+    drag.active = false;
+    drag.pointerId = null;
+    setProjectImageDragging(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // no-op
+    }
+  };
+
+  const onProjectImageWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    // Only Alt+wheel should control image zoom.
+    // All other wheel input should pass through and scroll the page normally.
+    if (!e.altKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.nativeEvent.stopImmediatePropagation === "function") {
+      e.nativeEvent.stopImmediatePropagation();
+    }
+    const delta = e.deltaY < 0 ? 0.2 : -0.2;
+    const nextZoom = Math.max(1, Math.min(5, Number((projectImageZoom + delta).toFixed(2))));
+    setProjectImageZoom(nextZoom);
+    if (nextZoom <= 1) {
+      setProjectImagePan({ x: 0, y: 0 });
+    } else {
+      const clamped = clampProjectImagePan(projectImagePan.x, projectImagePan.y, nextZoom);
+      setProjectImagePan(clamped);
+    }
+  };
+
+  useEffect(() => {
+    const el = projectImageThumbsRef.current;
+    if (!el) return;
+    const update = () => {
+      const h = Math.ceil(el.scrollHeight || el.getBoundingClientRect().height);
+      setProjectImageMeasuredHeight(h > 0 ? h : 0);
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => update());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [projectImageUrls.length]);
+
+  useEffect(() => {
+    const onGlobalWheel = (e: WheelEvent) => {
+      if (!e.altKey) return;
+      // Lock page scrolling whenever Alt is held.
+      e.preventDefault();
+    };
+    window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
+    return () => window.removeEventListener("wheel", onGlobalWheel, { capture: true } as EventListenerOptions);
+  }, []);
+
+  useEffect(() => {
+    setProjectImageZoom(1);
+    setProjectImagePan({ x: 0, y: 0 });
+    setProjectImageDragging(false);
+    projectImageDragRef.current.active = false;
+    projectImageDragRef.current.pointerId = null;
+  }, [selectedProjectImageIndex]);
+
+  useEffect(() => {
+    if (projectImageZoom <= 1) return;
+    const clamped = clampProjectImagePan(projectImagePan.x, projectImagePan.y, projectImageZoom);
+    if (clamped.x !== projectImagePan.x || clamped.y !== projectImagePan.y) {
+      setProjectImagePan(clamped);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectImageAreaHeight, projectImageZoom]);
+
+  const onDeleteSelectedProjectImage = async () => {
+    if (!project || !generalAccess.edit || isUploadingProjectImages || isDeletingProjectImage) return;
+    if (projectImageUrls.length === 0) {
+      setLockMessage("Select an image first.");
+      return;
+    }
+    const selectedUrl = projectImageUrls[selectedProjectImageIndex] || "";
+    if (!selectedUrl) return;
+    setIsDeletingProjectImage(true);
+    try {
+      const existingRefs = collectProjectImageRefs(project);
+      let removeIdx = -1;
+      for (let i = 0; i < existingRefs.length; i += 1) {
+        const src = String(existingRefs[i] || "").trim();
+        if (!src) continue;
+        if (src === selectedUrl) {
+          removeIdx = i;
+          break;
+        }
+        const resolved = await resolveProjectImageUrl(src);
+        if (resolved === selectedUrl) {
+          removeIdx = i;
+          break;
+        }
+      }
+      if (removeIdx < 0) {
+        setLockMessage("Could not find selected image source.");
+        return;
+      }
+
+      const sourceToDelete = String(existingRefs[removeIdx] || "").trim();
+      if (storage && sourceToDelete) {
+        try {
+          const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
+          await deleteObject(storageRef(storage, normalized));
+        } catch {
+          // Deleting the storage object can fail for legacy/URL-only refs; continue removing reference.
+        }
+      }
+
+      const nextRefs = existingRefs.filter((_, i) => i !== removeIdx);
+      const ok = await updateProjectPatch(project, { projectImages: nextRefs });
+      if (!ok) {
+        setLockMessage("Could not delete selected image.");
+        return;
+      }
+
+      const nextResolved = (
+        await Promise.all(
+          nextRefs.map(async (raw) => {
+            try {
+              return await resolveProjectImageUrl(raw);
+            } catch {
+              return "";
+            }
+          }),
+        )
+      ).filter(Boolean);
+      setProject((prev) => (prev ? { ...prev, projectImages: nextRefs } : prev));
+      setProjectImageUrls(Array.from(new Set(nextResolved)));
+      setSelectedProjectImageIndex((prev) => {
+        if (nextResolved.length === 0) return 0;
+        return Math.max(0, Math.min(prev, nextResolved.length - 1));
+      });
+      setLockMessage("");
+    } catch {
+      setLockMessage("Could not delete selected image.");
+    } finally {
+      setIsDeletingProjectImage(false);
+    }
+  };
+
+  const showPrevProjectImage = () => {
+    if (projectImageUrls.length <= 1) return;
+    setSelectedProjectImageIndex((prev) => {
+      const total = projectImageUrls.length;
+      if (total <= 0) return 0;
+      return (prev - 1 + total) % total;
+    });
+  };
+
+  const showNextProjectImage = () => {
+    if (projectImageUrls.length <= 1) return;
+    setSelectedProjectImageIndex((prev) => {
+      const total = projectImageUrls.length;
+      if (total <= 0) return 0;
+      return (prev + 1) % total;
+    });
+  };
 
   useEffect(() => {
     if (!project) return;
@@ -7063,7 +7423,7 @@ export default function ProjectDetailsPage() {
           {resolvedTab === "general" && (
             <div className="space-y-4">
               <div className="grid gap-4 xl:grid-cols-[300px_1fr]">
-                <Card>
+                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                   <CardHeader className="border-b border-[#D7DEE8] pb-2">
                     <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Client Details</CardTitle>
                   </CardHeader>
@@ -7082,7 +7442,7 @@ export default function ProjectDetailsPage() {
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                   <CardHeader className="border-b border-[#D7DEE8] pb-2">
                     <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Notes</CardTitle>
                   </CardHeader>
@@ -7090,25 +7450,201 @@ export default function ProjectDetailsPage() {
                 </Card>
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-2">
-                <Card>
-                  <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
-                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Images</CardTitle>
-                    <div className="flex items-center gap-2">
-                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] bg-[#7E9EBB] px-3 text-[11px] font-bold text-white">
-                        <Upload size={12} /> Upload
-                      </button>
-                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F3F4F6] px-3 text-[11px] font-bold text-[#9CA3AF]">
-                        <Trash2 size={12} /> Delete
+              <div className="grid items-start gap-4 xl:grid-cols-2">
+                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                  <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
+                    <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Images</p>
+                    <div className="ml-auto flex items-center gap-2">
+                      <input
+                        ref={projectImagesInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        style={{ display: "none" }}
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={(e) => {
+                          void onUploadProjectImages(e.target.files);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      {isUploadingProjectImages && (
+                        <div className="mr-1 flex items-center gap-2">
+                          <div className="h-[8px] w-[160px] overflow-hidden rounded-full border border-[#C9D5E5] bg-white">
+                            <div
+                              className="h-full rounded-full bg-[#2F6BFF] transition-[width] duration-150"
+                              style={{ width: `${projectImageUploadProgress}%` }}
+                            />
+                          </div>
+                          <span className="w-[40px] text-right text-[11px] font-bold text-[#12345B]">
+                            {projectImageUploadProgress}%
+                          </span>
+                        </div>
+                      )}
+                      {projectImageUrls.length < 5 && (
+                        <button
+                          type="button"
+                          disabled={!generalAccess.edit || isUploadingProjectImages || isDeletingProjectImage}
+                          onClick={() => projectImagesInputRef.current?.click()}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border bg-[#7E9EBB] hover:brightness-95 disabled:opacity-60"
+                          style={{ borderColor: "#2F4E68" }}
+                          title={isUploadingProjectImages ? "Uploading..." : "Add image"}
+                        >
+                          <img
+                            src="/add-image.png"
+                            alt="Add image"
+                            className="block object-contain"
+                            style={{
+                              width: 17,
+                              height: 17,
+                              filter: "brightness(0) invert(1)",
+                              transform: "translate(1px, 1px)",
+                            }}
+                            onError={(e) => {
+                              e.currentTarget.src = "/file.svg";
+                            }}
+                          />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!generalAccess.edit || isUploadingProjectImages || isDeletingProjectImage}
+                        onClick={() => void onDeleteSelectedProjectImage()}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-70"
+                        style={{
+                          backgroundColor: "#EF4444",
+                          borderColor: "#7F1D1D",
+                        }}
+                        title={isDeletingProjectImage ? "Deleting..." : "Delete image"}
+                      >
+                        <img
+                          src="/trash.png"
+                          alt="Delete"
+                          className="block object-contain"
+                          style={{
+                            width: 17,
+                            height: 17,
+                            filter: "brightness(0) invert(1)",
+                            transform: "translateX(0px)",
+                          }}
+                          onError={(e) => {
+                            e.currentTarget.src = "/file.svg";
+                          }}
+                        />
                       </button>
                     </div>
-                  </CardHeader>
-                  <CardContent className="flex min-h-[280px] items-center justify-center pt-4 text-[13px] text-[#98A2B3]">
-                    No images uploaded.
+                  </div>
+                  <CardContent className="pt-4 pb-3" style={{ minHeight: projectImageAreaHeight + 28 }}>
+                    {projectImageUrls.length > 0 ? (
+                      <div className="flex items-start gap-3">
+                        <div className="w-[88px] flex-none">
+                          <div ref={projectImageThumbsRef} className="flex flex-col gap-[6px] pr-1">
+                          {projectImageUrls.map((url, idx) => {
+                            const selected = idx === selectedProjectImageIndex;
+                            return (
+                              <button
+                                key={`${url}_${idx}`}
+                                type="button"
+                                onClick={() => setSelectedProjectImageIndex(idx)}
+                                className={`box-border flex w-full items-center justify-center overflow-hidden rounded-[8px] border bg-[#F8FAFC] transition ${
+                                  selected ? "border-[#2F6BFF]" : "border-[#D8DEE8] hover:border-[#94A3B8]"
+                                }`}
+                                title={`Image ${idx + 1}`}
+                              >
+                                <img
+                                  src={url}
+                                  alt={`Project image ${idx + 1}`}
+                                  className="block h-full w-full object-cover"
+                                  onLoad={() => {
+                                    const el = projectImageThumbsRef.current;
+                                    if (!el) return;
+                                    const h = Math.ceil(el.scrollHeight || el.getBoundingClientRect().height);
+                                    if (h > 0) setProjectImageMeasuredHeight(h);
+                                  }}
+                                />
+                              </button>
+                            );
+                          })}
+                          </div>
+                        </div>
+                        <div
+                          className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden"
+                          style={{ height: projectImageAreaHeight, maxHeight: projectImageAreaHeight }}
+                        >
+                          <button
+                            type="button"
+                            onClick={showPrevProjectImage}
+                            disabled={projectImageUrls.length <= 1}
+                            className="project-image-nav-arrow absolute left-2 top-1/2 z-10 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#000000] p-0 shadow-[0_2px_6px_rgba(0,0,0,0.2)] backdrop-blur-[1px] transition duration-150 hover:translate-y-[-45%] hover:shadow-[0_1px_3px_rgba(0,0,0,0.16)] active:translate-y-[-40%] active:shadow-[0_0px_2px_rgba(0,0,0,0.14)] disabled:opacity-40"
+                            style={{ backgroundColor: "rgba(255,255,255,0.2)" }}
+                            title="Previous image"
+                          >
+                            <img
+                              src="/angle-left.png"
+                              alt="Previous"
+                              className="h-5 w-5 object-contain brightness-0"
+                              onError={(e) => {
+                                e.currentTarget.src = "/arrow-right.png";
+                                e.currentTarget.classList.add("-scale-x-100");
+                              }}
+                            />
+                          </button>
+                          <div
+                            ref={projectImageViewportRef}
+                            className="flex h-full w-full items-center justify-center overflow-hidden"
+                            title="Alt + scroll to zoom, drag to pan"
+                            onWheelCapture={onProjectImageWheel}
+                            onWheel={onProjectImageWheel}
+                            onPointerDown={onProjectImagePointerDown}
+                            onPointerMove={onProjectImagePointerMove}
+                            onPointerUp={onProjectImagePointerEnd}
+                            onPointerCancel={onProjectImagePointerEnd}
+                            style={{
+                              cursor: projectImageZoom > 1 ? (projectImageDragging ? "grabbing" : "grab") : "default",
+                            }}
+                          >
+                            <img
+                              ref={projectImagePreviewRef}
+                              src={projectImageUrls[selectedProjectImageIndex] || projectImageUrls[0]}
+                              alt="Selected project image"
+                              className="block h-full w-auto object-contain"
+                              style={{
+                                maxHeight: projectImageAreaHeight,
+                                transform: `translate(${projectImagePan.x}px, ${projectImagePan.y}px) scale(${projectImageZoom})`,
+                                transformOrigin: "center center",
+                              }}
+                              draggable={false}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={showNextProjectImage}
+                            disabled={projectImageUrls.length <= 1}
+                            className="project-image-nav-arrow absolute right-2 top-1/2 z-10 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#000000] p-0 shadow-[0_2px_6px_rgba(0,0,0,0.2)] backdrop-blur-[1px] transition duration-150 hover:translate-y-[-45%] hover:shadow-[0_1px_3px_rgba(0,0,0,0.16)] active:translate-y-[-40%] active:shadow-[0_0px_2px_rgba(0,0,0,0.14)] disabled:opacity-40"
+                            style={{ backgroundColor: "rgba(255,255,255,0.2)" }}
+                            title="Next image"
+                          >
+                            <img
+                              src="/angle-right.png"
+                              alt="Next"
+                              className="h-5 w-5 object-contain brightness-0"
+                              onError={(e) => {
+                                e.currentTarget.src = "/arrow-right.png";
+                              }}
+                            />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex min-h-[240px] items-center justify-center text-[13px] text-[#98A2B3]">
+                        No images uploaded.
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                   <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
                     <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Files</CardTitle>
                     <div className="flex items-center gap-2">
