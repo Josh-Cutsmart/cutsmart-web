@@ -75,3 +75,23 @@ body.new-project-open .project-image-nav-arrow {
   opacity: 0 !important;
   pointer-events: none !important;
 }
+
+.notes-rich ul {
+  list-style: disc;
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.notes-rich ol {
+  list-style: decimal;
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.notes-rich li {
+  margin: 2px 0;
+}
+
+.notes-rich .notes-paragraph-line {
+  margin-left: 28px;
+}

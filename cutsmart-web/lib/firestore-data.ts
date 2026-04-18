@@ -648,31 +648,36 @@ export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: s
     return [];
   }
 
+  const merged = new Map<string, Project>();
+  const upsert = (items: Project[]) => {
+    for (const item of items) {
+      const key = `${String(item.companyId || "")}::${item.id}`;
+      merged.set(key, item);
+    }
+  };
+
   try {
     const topLevel = await getDocs(collection(db, "projects"));
     if (!topLevel.empty) {
-      return topLevel.docs
+      const topDeleted = topLevel.docs
         .filter((item) => {
           const data = (item.data() ?? {}) as Record<string, unknown>;
           return Boolean(data.isDeleted);
         })
         .map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
+      upsert(topDeleted);
     }
   } catch {
     // continue into nested company/jobs fallback
   }
 
   const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), true, preferredCompanyIds);
-  if (nested.length > 0) {
-    return nested;
-  }
+  upsert(nested);
 
   const legacy = await fetchProjectsFromLegacyUserPaths(String(uid ?? ""), true);
-  if (legacy.length > 0) {
-    return legacy;
-  }
+  upsert(legacy);
 
-  return [];
+  return Array.from(merged.values()).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
 export async function fetchQuotes(): Promise<SalesQuote[]> {
@@ -1163,12 +1168,12 @@ export async function permanentlyDeleteProject(project: Project): Promise<boolea
   return false;
 }
 
-export async function purgeExpiredDeletedProjects(uid?: string): Promise<void> {
+export async function purgeExpiredDeletedProjects(uid?: string, preferredCompanyIds?: string[]): Promise<void> {
   if (!db) {
     return;
   }
 
-  const rows = await fetchDeletedProjects(uid);
+  const rows = await fetchDeletedProjects(uid, preferredCompanyIds);
   if (!rows.length) {
     return;
   }

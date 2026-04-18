@@ -170,8 +170,12 @@ export default function RecentlyDeletedPage() {
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    await purgeExpiredDeletedProjects(user?.uid);
-    const rows = await fetchDeletedProjects(user?.uid);
+    const storedCompanyId =
+      typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
+    const directCompanyId = String(user?.companyId || "").trim();
+    const preferredCompanyIds = Array.from(new Set([storedCompanyId, directCompanyId].filter(Boolean)));
+    await purgeExpiredDeletedProjects(user?.uid, preferredCompanyIds);
+    const rows = await fetchDeletedProjects(user?.uid, preferredCompanyIds);
     setDeletedProjects(rows);
     const creatorUids = rows.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
     const userColorMap = await fetchUserColorMapByUids(creatorUids);
@@ -179,8 +183,6 @@ export default function RecentlyDeletedPage() {
 
     const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
 
-    const storedCompanyId =
-      typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
     const selectedCompanyId = storedCompanyId || companyIds[0] || "";
     if (selectedCompanyId) {
       const selectedCompanyDoc = await fetchCompanyDoc(selectedCompanyId);

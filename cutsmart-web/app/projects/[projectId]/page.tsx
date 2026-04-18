@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronDown, ClipboardList, Cpu, FolderOpen, GitBranch, ListChecks, Lock, Minus, Plus, Quote, Ruler, Scissors, ShoppingCart, Tag, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ClipboardList, Cpu, GitBranch, ListChecks, Lock, Minus, Plus, Quote, Ruler, Scissors, ShoppingCart, Tag, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
@@ -39,7 +39,55 @@ const tabItems = [
   { value: "settings", label: "Settings" },
 ];
 
+type ProjectStatusRow = { name: string; color: string };
 const statusDefaults = ["New", "Quoting", "Drafting", "Ready for CNC", "Running", "In Production", "Paused", "Completed"];
+
+function fallbackStatusPillColors(status: string) {
+  const key = String(status || "").trim().toLowerCase();
+  const defaults: Record<string, string> = {
+    new: "#3060D0",
+    running: "#2A7A3B",
+    "in production": "#2A7A3B",
+    drafting: "#6B4FB3",
+    quoting: "#C77700",
+    "ready for cnc": "#3060D0",
+    completed: "#2A7A3B",
+    paused: "#A05A00",
+    complete: "#2A7A3B",
+    "on hold": "#C77700",
+  };
+  const bg = defaults[key] ?? "#64748B";
+  return { backgroundColor: bg, color: "#FFFFFF" };
+}
+
+function normalizeProjectStatuses(raw: unknown): ProjectStatusRow[] {
+  if (!Array.isArray(raw)) {
+    return [
+      { name: "New", color: "#3060D0" },
+      { name: "In Production", color: "#2A7A3B" },
+      { name: "On Hold", color: "#C77700" },
+      { name: "Complete", color: "#2A7A3B" },
+    ];
+  }
+  const rows = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return {
+        name: String(row.name ?? "").trim(),
+        color: String(row.color ?? "").trim() || "#64748B",
+      };
+    })
+    .filter((row) => row.name);
+  return rows.length
+    ? rows
+    : [
+        { name: "New", color: "#3060D0" },
+        { name: "In Production", color: "#2A7A3B" },
+        { name: "On Hold", color: "#C77700" },
+        { name: "Complete", color: "#2A7A3B" },
+      ];
+}
 
 function shortDate(value: string) {
   const d = new Date(value);
@@ -47,6 +95,27 @@ function shortDate(value: string) {
     return "-";
   }
   return d.toLocaleString();
+}
+
+function dashboardStyleDate(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return "-";
+  }
+  const date = new Intl.DateTimeFormat("en-NZ", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+  const time = new Intl.DateTimeFormat("en-NZ", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })
+    .format(d)
+    .toLowerCase()
+    .replace(" ", "");
+  return `${date} | ${time}`;
 }
 
 type DrawerHeightOption = { token: string; value: string };
@@ -178,12 +247,133 @@ function toStr(value: unknown, fallback = "") {
   return text || fallback;
 }
 
+type ProjectFileEntry = {
+  id: string;
+  name: string;
+  path: string;
+  url: string;
+  size: number;
+  contentType: string;
+  uploadedAtIso: string;
+};
+
+const PROJECT_FILE_TOTAL_LIMIT_BYTES = 10 * 1024 * 1024;
+const PROJECT_FILE_ACCEPT_EXTENSIONS = [
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "csv",
+  "txt",
+  "rtf",
+  "dwg",
+  "dxf",
+  "zip",
+];
+
+function extensionFromPathLike(value: string): string {
+  const clean = String(value || "").split("?")[0].split("#")[0];
+  const idx = clean.lastIndexOf(".");
+  if (idx < 0) return "";
+  return clean.slice(idx + 1).trim().toLowerCase();
+}
+
+function isProjectFileImageLike(row: Record<string, unknown>): boolean {
+  const contentType = String(row.contentType ?? row.mimeType ?? row.type ?? "").trim().toLowerCase();
+  if (contentType.startsWith("image/")) return true;
+  const candidates = [
+    String(row.name ?? "").trim(),
+    String(row.path ?? "").trim(),
+    String(row.url ?? "").trim(),
+  ];
+  for (const item of candidates) {
+    const ext = extensionFromPathLike(item);
+    if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "heif"].includes(ext)) return true;
+  }
+  return false;
+}
+
+function normalizeProjectFileEntries(project: Project | null): ProjectFileEntry[] {
+  if (!project) return [];
+  const rows = Array.isArray(project.projectFiles) ? project.projectFiles : [];
+  const out: ProjectFileEntry[] = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const raw = rows[i];
+    if (raw && typeof raw === "object") {
+      const item = raw as Record<string, unknown>;
+      const name = String(item.name ?? "").trim() || `File ${i + 1}`;
+      const path = String(item.path ?? "").trim();
+      const url = String(item.url ?? "").trim();
+      const id = String(item.id ?? "").trim() || `${path || url || name}_${i}`;
+      out.push({
+        id,
+        name,
+        path,
+        url,
+        size: Math.max(0, Number(item.size ?? 0) || 0),
+        contentType: String(item.contentType ?? item.mimeType ?? item.type ?? "").trim(),
+        uploadedAtIso: String(item.uploadedAtIso ?? item.uploadedAt ?? "").trim(),
+      });
+      continue;
+    }
+    const asText = String(raw ?? "").trim();
+    if (!asText) continue;
+    out.push({
+      id: `${asText}_${i}`,
+      name: asText.split("/").pop() || `File ${i + 1}`,
+      path: asText,
+      url: "",
+      size: 0,
+      contentType: "",
+      uploadedAtIso: "",
+    });
+  }
+  return out;
+}
+
+function formatBytes(bytes: number): string {
+  const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatProjectFileTotal(bytes: number): string {
+  const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (value <= 0) return "0 / 10mb";
+  const mb = value / (1024 * 1024);
+  return `${mb.toFixed(1)} / 10mb`;
+}
+
+async function resolveProjectFileUrl(entry: ProjectFileEntry): Promise<string> {
+  if (entry.url) return entry.url;
+  const path = String(entry.path || "").trim();
+  if (!path) return "";
+  if (/^https?:\/\//i.test(path)) return path;
+  if (!storage) return "";
+  try {
+    return await getDownloadURL(storageRef(storage, path.replace(/^\/+/, "")));
+  } catch {
+    try {
+      return await getDownloadURL(storageRef(storage, path));
+    } catch {
+      return "";
+    }
+  }
+}
+
 function collectProjectImageRefs(project: Project | null): string[] {
   if (!project) return [];
   const direct = Array.isArray(project.projectImages) ? project.projectImages : [];
   const fromFiles = Array.isArray(project.projectFiles)
     ? project.projectFiles
-        .map((row) => (row && typeof row === "object" ? String((row as Record<string, unknown>).path ?? "").trim() : ""))
+        .map((row) => {
+          if (!row || typeof row !== "object") return "";
+          const item = row as Record<string, unknown>;
+          if (!isProjectFileImageLike(item)) return "";
+          return String(item.path ?? item.url ?? "").trim();
+        })
         .filter(Boolean)
     : [];
   return Array.from(new Set([...direct.map((v) => String(v || "").trim()), ...fromFiles])).filter(Boolean);
@@ -261,6 +451,23 @@ function sanitizeDerivedValue(value: unknown): string {
   if (lower === "nan" || lower === "undefined" || lower === "null") return "";
   if (/nan/i.test(txt)) return "";
   return txt;
+}
+
+function escapeHtml(value: string): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function notesToDisplayHtml(value: unknown): string {
+  const raw = String(value ?? "");
+  if (!raw.trim()) return "";
+  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
+  if (looksLikeHtml) return raw;
+  return escapeHtml(raw).replace(/\n/g, "<br />");
 }
 
 function formatPartCount(value: number): string {
@@ -1040,8 +1247,31 @@ export default function ProjectDetailsPage() {
   const [isUploadingProjectImages, setIsUploadingProjectImages] = useState(false);
   const [projectImageUploadProgress, setProjectImageUploadProgress] = useState(0);
   const [isDeletingProjectImage, setIsDeletingProjectImage] = useState(false);
+  const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
+  const [selectedProjectFileIndex, setSelectedProjectFileIndex] = useState(0);
+  const [selectedProjectFileIds, setSelectedProjectFileIds] = useState<string[]>([]);
+  const [openProjectFilePreviewId, setOpenProjectFilePreviewId] = useState("");
+  const [isUploadingProjectFiles, setIsUploadingProjectFiles] = useState(false);
+  const [projectFileUploadProgress, setProjectFileUploadProgress] = useState(0);
+  const [isDeletingProjectFile, setIsDeletingProjectFile] = useState(false);
+  const [isEditingClientDetails, setIsEditingClientDetails] = useState(false);
+  const [isEditingNotes, setIsEditingNotes] = useState(false);
+  const [notesParagraphMode, setNotesParagraphMode] = useState(false);
+  const [notesBulletMode, setNotesBulletMode] = useState(false);
+  const [notesBoldActive, setNotesBoldActive] = useState(false);
+  const [notesItalicActive, setNotesItalicActive] = useState(false);
+  const [notesStrikeActive, setNotesStrikeActive] = useState(false);
+  const [isSavingGeneralDetails, setIsSavingGeneralDetails] = useState(false);
+  const [generalDetailsDraft, setGeneralDetailsDraft] = useState({
+    customer: "",
+    clientPhone: "",
+    clientEmail: "",
+    clientAddress: "",
+    notes: "",
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingStatus, setIsSavingStatus] = useState(false);
+  const [projectStatusMenuPos, setProjectStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [projectTags, setProjectTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [isTagInputOpen, setIsTagInputOpen] = useState(false);
@@ -1149,6 +1379,7 @@ export default function ProjectDetailsPage() {
     boardTypes: [],
   });
   const projectImagesInputRef = useRef<HTMLInputElement | null>(null);
+  const projectFilesInputRef = useRef<HTMLInputElement | null>(null);
   const projectImageThumbsRef = useRef<HTMLDivElement | null>(null);
   const projectImageViewportRef = useRef<HTMLDivElement | null>(null);
   const projectImagePreviewRef = useRef<HTMLImageElement | null>(null);
@@ -1171,6 +1402,18 @@ export default function ProjectDetailsPage() {
   const [projectImageZoom, setProjectImageZoom] = useState(1);
   const [projectImagePan, setProjectImagePan] = useState({ x: 0, y: 0 });
   const [projectImageDragging, setProjectImageDragging] = useState(false);
+  const clientDetailsContainerRef = useRef<HTMLDivElement | null>(null);
+  const notesContainerRef = useRef<HTMLDivElement | null>(null);
+  const notesEditorRef = useRef<HTMLDivElement | null>(null);
+  const notesLastEnterAtRef = useRef(0);
+  const projectFilesTotalBytes = useMemo(
+    () => projectFiles.reduce((sum, row) => sum + Math.max(0, Number(row.size) || 0), 0),
+    [projectFiles],
+  );
+  const openProjectFilePreview = useMemo(
+    () => projectFiles.find((row) => row.id === openProjectFilePreviewId) ?? null,
+    [projectFiles, openProjectFilePreviewId],
+  );
 
   const tab = useMemo(() => {
     const requestedTab = searchParams.get("tab");
@@ -2261,6 +2504,13 @@ export default function ProjectDetailsPage() {
         ]);
 
       setProject(projectItem);
+      setGeneralDetailsDraft({
+        customer: String(projectItem?.customer ?? ""),
+        clientPhone: String(projectItem?.clientPhone ?? ""),
+        clientEmail: String(projectItem?.clientEmail ?? ""),
+        clientAddress: String(projectItem?.clientAddress ?? ""),
+        notes: String(projectItem?.notes ?? ""),
+      });
       setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
       setChanges(changeItems);
       setQuotes(quoteItems.filter((item) => item.projectId === projectId));
@@ -2281,6 +2531,26 @@ export default function ProjectDetailsPage() {
     };
     void loadAccess();
   }, [project?.companyId, user?.uid]);
+
+  useEffect(() => {
+    if (!project) return;
+    setGeneralDetailsDraft((prev) => ({
+      customer: isEditingClientDetails ? prev.customer : String(project.customer ?? ""),
+      clientPhone: isEditingClientDetails ? prev.clientPhone : String(project.clientPhone ?? ""),
+      clientEmail: isEditingClientDetails ? prev.clientEmail : String(project.clientEmail ?? ""),
+      clientAddress: isEditingClientDetails ? prev.clientAddress : String(project.clientAddress ?? ""),
+      notes: isEditingNotes ? prev.notes : String(project.notes ?? ""),
+    }));
+  }, [
+    project?.customer,
+    project?.clientPhone,
+    project?.clientEmail,
+    project?.clientAddress,
+    project?.notes,
+    isEditingClientDetails,
+    isEditingNotes,
+  ]);
+
 
   useEffect(() => {
     const loadCompanyDoc = async () => {
@@ -2308,6 +2578,29 @@ export default function ProjectDetailsPage() {
   }, [project?.id, project?.projectImages, project?.projectFiles]);
 
   useEffect(() => {
+    const loadFiles = async () => {
+      const entries = normalizeProjectFileEntries(project).filter((row) => !isProjectFileImageLike({
+        name: row.name,
+        path: row.path,
+        url: row.url,
+        contentType: row.contentType,
+      }));
+      if (!entries.length) {
+        setProjectFiles([]);
+        return;
+      }
+      const resolved = await Promise.all(
+        entries.map(async (row) => {
+          const url = await resolveProjectFileUrl(row);
+          return { ...row, url: row.url || url };
+        }),
+      );
+      setProjectFiles(resolved);
+    };
+    void loadFiles();
+  }, [project?.id, project?.projectFiles]);
+
+  useEffect(() => {
     setSelectedProjectImageIndex((prev) => {
       if (projectImageUrls.length === 0) return 0;
       if (prev < 0) return 0;
@@ -2315,6 +2608,20 @@ export default function ProjectDetailsPage() {
       return prev;
     });
   }, [projectImageUrls]);
+
+  useEffect(() => {
+    setSelectedProjectFileIndex((prev) => {
+      if (projectFiles.length === 0) return 0;
+      if (prev < 0) return 0;
+      if (prev >= projectFiles.length) return projectFiles.length - 1;
+      return prev;
+    });
+  }, [projectFiles]);
+
+  useEffect(() => {
+    const allowed = new Set(projectFiles.map((row) => row.id));
+    setSelectedProjectFileIds((prev) => prev.filter((id) => allowed.has(id)));
+  }, [projectFiles]);
 
   const onUploadProjectImages = async (files: FileList | null) => {
     if (!files || !project) return;
@@ -2388,6 +2695,147 @@ export default function ProjectDetailsPage() {
     } finally {
       setIsUploadingProjectImages(false);
       setProjectImageUploadProgress(0);
+    }
+  };
+
+  const onUploadProjectFiles = async (files: FileList | null) => {
+    if (!files || !project) return;
+    const storageClient = storage;
+    if (!storageClient || !project.companyId) {
+      setLockMessage("File upload is unavailable.");
+      return;
+    }
+    if (isUploadingProjectFiles) return;
+
+    const existing = normalizeProjectFileEntries(project).filter((row) => !isProjectFileImageLike({
+      name: row.name,
+      path: row.path,
+      url: row.url,
+      contentType: row.contentType,
+    }));
+    const existingTotal = existing.reduce((sum, row) => sum + Math.max(0, Number(row.size) || 0), 0);
+    const maxTotal = PROJECT_FILE_TOTAL_LIMIT_BYTES;
+    if (existingTotal >= maxTotal) {
+      setLockMessage("Maximum total file size reached (10MB).");
+      return;
+    }
+
+    const incoming = Array.from(files).filter((file) => {
+      const type = String(file.type || "").toLowerCase();
+      if (type.startsWith("image/")) return false;
+      const ext = extensionFromPathLike(file.name);
+      return PROJECT_FILE_ACCEPT_EXTENSIONS.includes(ext);
+    });
+    if (!incoming.length) {
+      setLockMessage("Select supported non-image files (PDF, DOCX, XLSX, TXT, etc).");
+      return;
+    }
+
+    const allowed: File[] = [];
+    let used = existingTotal;
+    for (const file of incoming) {
+      if (used + file.size > maxTotal) break;
+      allowed.push(file);
+      used += file.size;
+    }
+    if (!allowed.length) {
+      const remaining = Math.max(0, maxTotal - existingTotal);
+      setLockMessage(`No upload room left. Remaining: ${formatBytes(remaining)}.`);
+      return;
+    }
+
+    setIsUploadingProjectFiles(true);
+    setProjectFileUploadProgress(0);
+    try {
+      const perFileProgress = new Array(allowed.length).fill(0);
+      const pushAggregateProgress = () => {
+        const total = perFileProgress.reduce((sum, v) => sum + v, 0);
+        const avg = allowed.length > 0 ? total / allowed.length : 0;
+        setProjectFileUploadProgress(Math.max(0, Math.min(100, Math.round(avg))));
+      };
+
+      const uploaded = await Promise.all(
+        allowed.map(async (file, idx) => {
+          try {
+            const ext = extensionFromPathLike(file.name) || "bin";
+            const baseName = String(file.name || `file_${idx + 1}`)
+              .replace(/\.[^/.]+$/, "")
+              .replace(/[^a-zA-Z0-9_-]/g, "_")
+              .slice(0, 80);
+            const safeName = `${baseName || `file_${idx + 1}`}.${ext}`;
+            const path = `companies/${project.companyId}/jobs/${project.id}/files/${Date.now()}_${idx + 1}_${safeName}`;
+            const ref = storageRef(storageClient, path);
+            const task = uploadBytesResumable(ref, file, { contentType: file.type || "application/octet-stream" });
+            await new Promise<void>((resolve, reject) => {
+              task.on(
+                "state_changed",
+                (snapshot) => {
+                  const fraction = snapshot.totalBytes > 0 ? snapshot.bytesTransferred / snapshot.totalBytes : 0;
+                  perFileProgress[idx] = Math.round(fraction * 100);
+                  pushAggregateProgress();
+                },
+                () => reject(new Error("upload-failed")),
+                () => resolve(),
+              );
+            });
+            perFileProgress[idx] = 100;
+            pushAggregateProgress();
+            const url = await getDownloadURL(task.snapshot.ref);
+            return {
+              id: `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              name: file.name,
+              path,
+              url,
+              size: file.size,
+              contentType: file.type || "application/octet-stream",
+              uploadedAtIso: new Date().toISOString(),
+            } as ProjectFileEntry;
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      const nextFiles = [...existing, ...uploaded.filter(Boolean) as ProjectFileEntry[]];
+      const ok = await updateProjectPatch(project, {
+        projectFiles: nextFiles.map((row) => ({
+          id: row.id,
+          name: row.name,
+          path: row.path,
+          url: row.url,
+          size: row.size,
+          contentType: row.contentType,
+          uploadedAtIso: row.uploadedAtIso,
+        })),
+      });
+      if (!ok) {
+        setLockMessage("Could not save uploaded files.");
+        return;
+      }
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              projectFiles: nextFiles.map((row) => ({
+                id: row.id,
+                name: row.name,
+                path: row.path,
+                url: row.url,
+                size: row.size,
+                contentType: row.contentType,
+                uploadedAtIso: row.uploadedAtIso,
+              })),
+            }
+          : prev,
+      );
+      setProjectFiles(nextFiles);
+      setSelectedProjectFileIndex(Math.max(0, nextFiles.length - 1));
+      setLockMessage("");
+    } catch {
+      setLockMessage("Could not upload files.");
+    } finally {
+      setIsUploadingProjectFiles(false);
+      setProjectFileUploadProgress(0);
     }
   };
 
@@ -2574,6 +3022,107 @@ export default function ProjectDetailsPage() {
       setLockMessage("Could not delete selected image.");
     } finally {
       setIsDeletingProjectImage(false);
+    }
+  };
+
+  const onDeleteSelectedProjectFile = async () => {
+    if (!project || !generalAccess.edit || isUploadingProjectFiles || isDeletingProjectFile) return;
+    if (projectFiles.length === 0) {
+      setLockMessage("Select a file first.");
+      return;
+    }
+    const selected = projectFiles[selectedProjectFileIndex];
+    const selectedIdsSet = new Set(selectedProjectFileIds);
+    const deleteMode = selectedIdsSet.size > 0 ? "multi" : "single";
+    if (deleteMode === "single" && !selected) return;
+
+    setIsDeletingProjectFile(true);
+    try {
+      const existing = normalizeProjectFileEntries(project).filter((row) => !isProjectFileImageLike({
+        name: row.name,
+        path: row.path,
+        url: row.url,
+        contentType: row.contentType,
+      }));
+
+      const matchesSelected = (row: ProjectFileEntry): boolean => {
+        if (selectedIdsSet.size > 0) {
+          return selectedIdsSet.has(row.id);
+        }
+        return Boolean(
+          selected &&
+            (row.id === selected.id ||
+              (row.path && row.path === selected.path) ||
+              (row.url && row.url === selected.url)),
+        );
+      };
+
+      const filesToDelete = existing.filter(matchesSelected);
+      if (!filesToDelete.length) {
+        setLockMessage("Could not find selected file source.");
+        return;
+      }
+
+      const storageClient = storage;
+      if (storageClient) {
+        await Promise.all(
+          filesToDelete.map(async (row) => {
+            const sourceToDelete = String(row.path || row.url || "").trim();
+            if (!sourceToDelete) return;
+            try {
+              const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
+              await deleteObject(storageRef(storageClient, normalized));
+            } catch {
+              // ignore storage delete failures and still remove reference
+            }
+          }),
+        );
+      }
+
+      const nextFiles = existing.filter((row) => !matchesSelected(row));
+      const ok = await updateProjectPatch(project, {
+        projectFiles: nextFiles.map((row) => ({
+          id: row.id,
+          name: row.name,
+          path: row.path,
+          url: row.url,
+          size: row.size,
+          contentType: row.contentType,
+          uploadedAtIso: row.uploadedAtIso,
+        })),
+      });
+      if (!ok) {
+        setLockMessage("Could not delete selected file.");
+        return;
+      }
+
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              projectFiles: nextFiles.map((row) => ({
+                id: row.id,
+                name: row.name,
+                path: row.path,
+                url: row.url,
+                size: row.size,
+                contentType: row.contentType,
+                uploadedAtIso: row.uploadedAtIso,
+              })),
+            }
+          : prev,
+      );
+      setProjectFiles(nextFiles);
+      setSelectedProjectFileIds([]);
+      setSelectedProjectFileIndex((prev) => {
+        if (nextFiles.length === 0) return 0;
+        return Math.max(0, Math.min(prev, nextFiles.length - 1));
+      });
+      setLockMessage("");
+    } catch {
+      setLockMessage("Could not delete selected file.");
+    } finally {
+      setIsDeletingProjectFile(false);
     }
   };
 
@@ -2947,13 +3496,35 @@ export default function ProjectDetailsPage() {
     }
   }, [activeCutlistPartType, partTypeOptions, defaultCutlistRoom, cutlistBoardOptions, cutlistDraftInitialized]);
 
-  const statusOptions = (() => {
-    const set = new Set<string>(statusDefaults);
-    if (project?.statusLabel) {
-      set.add(project.statusLabel);
+  const projectStatusRows = useMemo(
+    () => normalizeProjectStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses),
+    [companyDoc],
+  );
+
+  const projectStatusColorByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of projectStatusRows) {
+      map.set(String(row.name || "").trim().toLowerCase(), String(row.color || "").trim() || "#64748B");
     }
-    return Array.from(set);
-  })();
+    return map;
+  }, [projectStatusRows]);
+
+  const statusOptions = useMemo(() => {
+    const options = projectStatusRows.map((row) => row.name).filter(Boolean);
+    const withDefaults = options.length ? options : statusDefaults;
+    if (project?.statusLabel && !withDefaults.some((opt) => opt.toLowerCase() === String(project.statusLabel || "").toLowerCase())) {
+      return [...withDefaults, project.statusLabel];
+    }
+    return withDefaults;
+  }, [projectStatusRows, project?.statusLabel]);
+
+  const projectStatusPillStyle = (statusLabel: string) => {
+    const configured = projectStatusColorByName.get(String(statusLabel || "").trim().toLowerCase());
+    if (configured) {
+      return { backgroundColor: configured, color: "#FFFFFF" };
+    }
+    return fallbackStatusPillColors(statusLabel);
+  };
 
   const onChangeStatus = async (value: string) => {
     if (!project || !value) {
@@ -2964,9 +3535,348 @@ export default function ProjectDetailsPage() {
     const ok = await updateProjectStatus(project, value);
     if (ok) {
       setProject({ ...project, statusLabel: value });
+      setProjectStatusMenuPos(null);
     }
     setIsSavingStatus(false);
   };
+
+  const saveGeneralDetailsPatch = async (patch: Partial<Project>) => {
+    if (!project || !generalAccess.edit) return false;
+    setIsSavingGeneralDetails(true);
+    const ok = await updateProjectPatch(project, patch as Record<string, unknown>);
+    if (ok) {
+      setProject((prev) => (prev ? { ...prev, ...patch } : prev));
+      setLockMessage("");
+    } else {
+      setLockMessage("Could not save project details.");
+    }
+    setIsSavingGeneralDetails(false);
+    return ok;
+  };
+
+  const commitClientDetails = async () => {
+    if (!project || !generalAccess.edit) return;
+    const patch: Partial<Project> = {};
+    const nextCustomer = String(generalDetailsDraft.customer ?? "").trim();
+    const nextPhone = String(generalDetailsDraft.clientPhone ?? "").trim();
+    const nextEmail = String(generalDetailsDraft.clientEmail ?? "").trim();
+    const nextAddress = String(generalDetailsDraft.clientAddress ?? "").trim();
+    if (nextCustomer !== String(project.customer ?? "").trim()) patch.customer = nextCustomer;
+    if (nextPhone !== String(project.clientPhone ?? "").trim()) patch.clientPhone = nextPhone;
+    if (nextEmail !== String(project.clientEmail ?? "").trim()) patch.clientEmail = nextEmail;
+    if (nextAddress !== String(project.clientAddress ?? "").trim()) patch.clientAddress = nextAddress;
+    if (Object.keys(patch).length > 0) {
+      await saveGeneralDetailsPatch(patch);
+    }
+  };
+
+  const commitNotesDetails = async () => {
+    if (!project || !generalAccess.edit) return;
+    const nextNotes = String((isEditingNotes && notesEditorRef.current
+      ? notesEditorRef.current.innerHTML
+      : generalDetailsDraft.notes) ?? "");
+    if (nextNotes !== String(project.notes ?? "")) {
+      await saveGeneralDetailsPatch({ notes: nextNotes });
+    }
+  };
+
+  const applyNotesFormat = (command: string) => {
+    if (!isEditingNotes || !generalAccess.edit) return;
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    try {
+      document.execCommand(command, false);
+    } catch {
+      // no-op
+    }
+    setGeneralDetailsDraft((prev) => ({ ...prev, notes: editor.innerHTML }));
+  };
+
+  const NOTES_BULLET_PREFIX = "\u2022\u00A0";
+
+  const insertNotesBullet = () => {
+    if (!isEditingNotes || !generalAccess.edit) return;
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    try {
+      let sel = window.getSelection();
+      let range: Range | null = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+
+      if (!range || !editor.contains(range.commonAncestorContainer)) {
+        editor.focus();
+        sel = window.getSelection();
+        range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      }
+
+      if (sel && range && editor.contains(range.commonAncestorContainer)) {
+        range.deleteContents();
+        const textNode = document.createTextNode(NOTES_BULLET_PREFIX);
+        range.insertNode(textNode);
+
+        const caretRange = document.createRange();
+        caretRange.setStartAfter(textNode);
+        caretRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(caretRange);
+      } else {
+        editor.focus();
+        document.execCommand("insertText", false, NOTES_BULLET_PREFIX);
+      }
+    } catch {
+      // no-op
+    }
+    setGeneralDetailsDraft((prev) => ({ ...prev, notes: editor.innerHTML }));
+  };
+
+  const currentNotesBlock = () => {
+    const editor = notesEditorRef.current;
+    if (!editor) return null;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const anchor = sel.anchorNode;
+    const base =
+      anchor && anchor.nodeType === Node.TEXT_NODE
+        ? (anchor.parentElement as Element | null)
+        : (anchor as Element | null);
+    const block = base?.closest("div, p");
+    if (!block || !editor.contains(block)) return null;
+    return block as HTMLElement;
+  };
+
+  const ensureBulletPrefixOnCurrentLine = () => {
+    const block = currentNotesBlock();
+    if (!block) return;
+    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ").trimStart();
+    if (!txt.startsWith("\u2022")) {
+      block.textContent = `${NOTES_BULLET_PREFIX}${txt}`;
+    } else if (!txt.startsWith(NOTES_BULLET_PREFIX)) {
+      block.textContent = txt.replace(/^\u2022(?:\u00A0|\s)*/, NOTES_BULLET_PREFIX);
+    }
+  };
+
+  const removeBulletPrefixFromCurrentLine = () => {
+    const block = currentNotesBlock();
+    if (!block) return;
+    const txt = String(block.textContent ?? "");
+    block.textContent = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "");
+  };
+
+  const isCurrentBulletLineEmpty = (): boolean => {
+    const block = currentNotesBlock();
+    if (!block) return false;
+    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ");
+    const noBullet = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "").trim();
+    return noBullet.length === 0;
+  };
+
+  const isCurrentLineBullet = (): boolean => {
+    const block = currentNotesBlock();
+    if (!block) return false;
+    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ").trimStart();
+    return txt.startsWith("\u2022");
+  };
+
+  const toggleNotesBulletMode = () => {
+    if (!isEditingNotes || !generalAccess.edit) return;
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    setNotesBulletMode((prev) => {
+      const next = !prev;
+      if (next) {
+        ensureBulletPrefixOnCurrentLine();
+      }
+      return next;
+    });
+  };
+
+  const insertNextBulletLine = () => {
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    const block = currentNotesBlock();
+
+    const newBlock = document.createElement("div");
+    const textNode = document.createTextNode(NOTES_BULLET_PREFIX);
+    newBlock.appendChild(textNode);
+    if ((block as HTMLElement | null)?.classList?.contains("notes-paragraph-line") || notesParagraphMode) {
+      newBlock.classList.add("notes-paragraph-line");
+    }
+
+    if (block && editor.contains(block)) {
+      if (block.nextSibling) {
+        block.parentNode?.insertBefore(newBlock, block.nextSibling);
+      } else {
+        block.parentNode?.appendChild(newBlock);
+      }
+    } else {
+      editor.appendChild(newBlock);
+    }
+
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.setStart(textNode, textNode.length);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  };
+
+  const applyParagraphClassToCurrentLine = () => {
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const anchor = sel.anchorNode;
+    if (!anchor) return;
+    const base = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as Element);
+    if (!base) return;
+    const block = base.closest("div, p");
+    if (!block || !editor.contains(block)) return;
+    block.classList.add("notes-paragraph-line");
+  };
+
+  const toggleNotesParagraphMode = () => {
+    if (!isEditingNotes || !generalAccess.edit) return;
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    setNotesParagraphMode((prev) => {
+      const next = !prev;
+      if (next) {
+        applyParagraphClassToCurrentLine();
+      }
+      return next;
+    });
+  };
+
+  const refreshNotesToolbarState = () => {
+    if (!isEditingNotes) return;
+    const editor = notesEditorRef.current;
+    const sel = window.getSelection();
+    const insideEditor =
+      !!editor &&
+      !!sel &&
+      sel.rangeCount > 0 &&
+      editor.contains(sel.anchorNode);
+    if (!insideEditor) return;
+    setNotesBulletMode(isCurrentLineBullet());
+    try {
+      setNotesBoldActive(!!document.queryCommandState("bold"));
+      setNotesItalicActive(!!document.queryCommandState("italic"));
+      setNotesStrikeActive(!!document.queryCommandState("strikeThrough"));
+    } catch {
+      setNotesBoldActive(false);
+      setNotesItalicActive(false);
+      setNotesStrikeActive(false);
+    }
+  };
+  const exitParagraphModeOnCurrentLine = () => {
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const anchor = sel.anchorNode;
+    const base =
+      anchor && anchor.nodeType === Node.TEXT_NODE
+        ? (anchor.parentElement as Element | null)
+        : (anchor as Element | null);
+    const currentBlock = base?.closest("div, p");
+    if (currentBlock && editor.contains(currentBlock)) {
+      currentBlock.classList.remove("notes-paragraph-line");
+    }
+  };
+
+  const isCurrentParagraphLineEmpty = (): boolean => {
+    const editor = notesEditorRef.current;
+    if (!editor) return false;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+    const anchor = sel.anchorNode;
+    const base =
+      anchor && anchor.nodeType === Node.TEXT_NODE
+        ? (anchor.parentElement as Element | null)
+        : (anchor as Element | null);
+    const currentBlock = base?.closest("div, p");
+    if (!currentBlock || !editor.contains(currentBlock)) return false;
+    if (!currentBlock.classList.contains("notes-paragraph-line")) return false;
+    const text = String(currentBlock.textContent ?? "").replace(/\u00A0/g, " ").trim();
+    return text.length === 0;
+  };
+
+  useEffect(() => {
+    if (!isEditingNotes) return;
+    const editor = notesEditorRef.current;
+    if (!editor) return;
+    editor.innerHTML = notesToDisplayHtml(generalDetailsDraft.notes);
+  }, [isEditingNotes]);
+
+  useEffect(() => {
+    if (isEditingNotes) return;
+    setNotesParagraphMode(false);
+    setNotesBulletMode(false);
+    setNotesBoldActive(false);
+    setNotesItalicActive(false);
+    setNotesStrikeActive(false);
+    notesLastEnterAtRef.current = 0;
+  }, [isEditingNotes]);
+
+  useEffect(() => {
+    if (!isEditingNotes) return;
+    const onSelectionChange = () => refreshNotesToolbarState();
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, [isEditingNotes]);
+
+  useEffect(() => {
+    if (!isEditingClientDetails && !isEditingNotes) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+
+      if (isEditingClientDetails) {
+        const root = clientDetailsContainerRef.current;
+        if (root && !root.contains(target)) {
+          setIsEditingClientDetails(false);
+          void commitClientDetails();
+        }
+      }
+
+      if (isEditingNotes) {
+        const root = notesContainerRef.current;
+        if (root && !root.contains(target)) {
+          setIsEditingNotes(false);
+          void commitNotesDetails();
+        }
+      }
+    };
+
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [isEditingClientDetails, isEditingNotes, commitClientDetails, commitNotesDetails]);
+
+  useEffect(() => {
+    if (!projectStatusMenuPos) return;
+
+    const closeMenu = () => setProjectStatusMenuPos(null);
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("[data-status-menu='true']")) return;
+      if (target.closest("[data-status-trigger='true']")) return;
+      closeMenu();
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [projectStatusMenuPos]);
 
   const saveTags = async (nextTags: string[]) => {
     if (!project) {
@@ -5219,7 +6129,7 @@ export default function ProjectDetailsPage() {
       <ProtectedRoute>
         <div className="min-h-screen bg-[var(--bg-app)]">
           <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
               <Scissors size={14} />
               <span>Cutlist</span>
               <span className="text-[#6B7280]">|</span>
@@ -5355,7 +6265,7 @@ export default function ProjectDetailsPage() {
           <div className="grid min-h-[calc(100dvh-56px)] gap-0 xl:grid-cols-[190px_1fr]">
             <aside className="border-r border-[#DCE3EC] bg-white">
               <div className="p-2">
-                <p className="mb-2 px-2 text-[16px] font-extrabold text-[#111827]">Rooms</p>
+                <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
                 <div className="space-y-1">
                   {cutlistAddedRoomTabs.map((roomTab) => {
                     const active = cutlistRoomFilter === roomTab.filter;
@@ -5406,7 +6316,7 @@ export default function ProjectDetailsPage() {
               {cutlistRoomFilter !== "Project Cutlist" && (
               <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible">
                 <div className="flex h-[50px] items-center px-1">
-                  <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                  <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
                 </div>
                 <div className="space-y-3 px-0 pb-0">
                   <div className="flex flex-wrap items-center gap-2 px-1">
@@ -5666,7 +6576,7 @@ export default function ProjectDetailsPage() {
               <section className="relative z-10 -mx-4 min-h-0 w-[calc(100%+2rem)] flex-1 overflow-hidden">
                 <div className="flex h-[50px] items-center justify-between px-1">
                   <div className="inline-flex items-center gap-2">
-                    <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
                     <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
                       {formatPartCount(visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0))}
                     </p>
@@ -6443,7 +7353,7 @@ export default function ProjectDetailsPage() {
       <ProtectedRoute>
         <div className="min-h-screen bg-[var(--bg-app)]">
           <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
               <Cpu size={14} />
               <span>CNC Cutlist</span>
               <span className="text-[#6B7280]">|</span>
@@ -6498,7 +7408,7 @@ export default function ProjectDetailsPage() {
                 {cncRowsByBoard.map((group) => (
                   <section key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
                     <div className="flex h-[40px] items-center border-b border-[#DCE3EC] bg-[#F8FAFC] px-3">
-                      <p className="text-[13px] font-extrabold text-[#12345B]">{group.boardLabel}</p>
+                      <p className="text-[13px] font-medium text-[#12345B]">{group.boardLabel}</p>
                     </div>
                     <div className="overflow-auto">
                       <table className="w-full text-left text-[12px]">
@@ -6555,7 +7465,7 @@ export default function ProjectDetailsPage() {
             </section>
             <section className="self-start min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white h-[calc(100dvh-80px)]">
               <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
-                <p className="text-[13px] font-extrabold text-[#111827]">Edit Visibility</p>
+                <p className="text-[13px] font-medium text-[#111827]">Edit Visibility</p>
                 <button
                   type="button"
                   disabled={productionReadOnly}
@@ -6690,7 +7600,7 @@ export default function ProjectDetailsPage() {
       <ProtectedRoute>
         <div className="min-h-screen bg-[var(--bg-app)]">
           <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
               <GitBranch size={14} />
               <span>Nesting</span>
               <span className="text-[#6B7280]">|</span>
@@ -6849,7 +7759,7 @@ export default function ProjectDetailsPage() {
 
             <aside className="self-start min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white h-[calc(100dvh-80px)]">
               <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
-                <p className="text-[13px] font-extrabold text-[#111827]">Part Rows</p>
+                <p className="text-[13px] font-medium text-[#111827]">Part Rows</p>
                 <button
                   type="button"
                   disabled={productionReadOnly}
@@ -6998,7 +7908,7 @@ export default function ProjectDetailsPage() {
               >
                 <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F7FAFF] px-3">
                   <div className="min-w-0">
-                    <p className="truncate text-[13px] font-extrabold text-[#12345B]">{selectedNestingSheet.group.boardLabel}</p>
+                    <p className="truncate text-[13px] font-medium text-[#12345B]">{selectedNestingSheet.group.boardLabel}</p>
                     <p className="text-[11px] font-semibold text-[#64748B]">Sheet {selectedNestingSheet.sheet.index}</p>
                   </div>
                   <button
@@ -7172,7 +8082,7 @@ export default function ProjectDetailsPage() {
                   </div>
                   {selectedNestingSheetStats && (
                     <div className="mt-3 mx-auto rounded-[10px] border border-[#DCE3EC] bg-[#F8FAFC] p-3 text-[12px]" style={{ width: selectedNestingSheetViewportWidth }}>
-                      <p className="mb-2 text-[12px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Sheet Stats</p>
+                      <p className="mb-2 text-[12px] font-medium uppercase tracking-[0.7px] text-[#12345B]">Sheet Stats</p>
                       <div
                         className="items-stretch text-[#334155]"
                         style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 24px minmax(0,1fr)" }}
@@ -7221,14 +8131,14 @@ export default function ProjectDetailsPage() {
           <div className="-mx-4 -mt-4 bg-white md:-mx-5">
           <div className="border-b border-[#D7DEE8]">
             <div className="px-4 pb-[10px] pt-4 md:px-5">
-            <Link href="/dashboard" className="mb-2 inline-flex items-center gap-1 text-[14px] font-semibold text-[#6E88AA]">
+            <Link href="/dashboard" className="mb-2 hidden items-center gap-1 text-[14px] font-semibold text-[#6E88AA] lg:inline-flex">
               <ArrowLeft size={15} />
               Back to Projects
             </Link>
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-start md:gap-4">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-[42px] font-medium text-[#1A1D23]">{project.name}</h1>
+                  <h1 className="text-[32px] font-medium leading-none text-[#1A1D23] md:text-[42px]">{project.name}</h1>
                   {projectTags.map((tag) => (
                     <button
                       key={tag}
@@ -7297,7 +8207,7 @@ export default function ProjectDetailsPage() {
                           void onAddTag();
                         }}
                         disabled={isSavingTags}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0] disabled:opacity-60"
+                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0] disabled:opacity-60"
                       >
                         <Plus size={14} />
                       </button>
@@ -7308,8 +8218,8 @@ export default function ProjectDetailsPage() {
                 <p className="text-[13px] text-[#8A97A8]">Created: {project.createdByName || "Unknown"}</p>
               </div>
 
-              <div className="text-right">
-                <div className="flex items-center justify-end gap-2">
+              <div className="w-full text-left md:w-auto md:text-right">
+                <div className="flex items-center gap-2 md:justify-end">
                   <button
                     type="button"
                     onClick={() => void onDeleteProject()}
@@ -7318,24 +8228,46 @@ export default function ProjectDetailsPage() {
                   >
                     {deleteArmed ? "Confirm Delete" : "Delete"}
                   </button>
-                  <div className="relative">
-                    <select
-                      disabled={isSavingStatus || !canEditStatus}
-                      value={project.statusLabel || "New"}
-                      onChange={(e) => void onChangeStatus(e.target.value)}
-                      className="h-8 min-w-[90px] appearance-none rounded-[10px] border border-[#2F6BFF] bg-[#2F6BFF] px-3 pr-6 text-[12px] font-bold text-white outline-none"
-                    >
-                      {statusOptions.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-white">▾</span>
-                  </div>
+                  <button
+                    data-status-trigger="true"
+                    type="button"
+                    disabled={isSavingStatus || !canEditStatus}
+                    onClick={(e) => {
+                      if (projectStatusMenuPos) {
+                        setProjectStatusMenuPos(null);
+                        return;
+                      }
+                      const trigger = e.currentTarget as HTMLButtonElement;
+                      const rect = trigger.getBoundingClientRect();
+                      const estimatedMenuHeight = Math.max(156, statusOptions.length * 34);
+                      const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
+                      const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
+                      const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
+                      const viewportWidth = Math.max(
+                        120,
+                        document.documentElement?.clientWidth || window.innerWidth,
+                      );
+                      const menuWidth = Math.min(
+                        Math.max(120, Math.round(rect.width)),
+                        Math.max(120, viewportWidth - 16),
+                      );
+                      const clampedLeft = Math.min(Math.max(8, rect.left), viewportWidth - menuWidth - 8);
+                      setProjectStatusMenuPos({
+                        left: clampedLeft,
+                        top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
+                        width: menuWidth,
+                      });
+                    }}
+                    className="inline-flex h-8 min-w-[90px] items-center justify-center rounded-[10px] px-3 text-[12px] font-bold disabled:opacity-60"
+                    style={projectStatusPillStyle(project.statusLabel || "New")}
+                    aria-label="Project status"
+                    title="Change project status"
+                  >
+                    {isSavingStatus ? "Saving..." : project.statusLabel || "New"}
+                  </button>
                 </div>
-                <p className="pt-3 text-[13px] text-[#8A97A8]">Created: {shortDate(project.createdAt)}</p>
-                <p className="text-[13px] text-[#8A97A8]">Modified: {shortDate(project.updatedAt)}</p>
+                <p className="pt-2 text-[13px] text-[#8A97A8] md:pt-3">Created: {dashboardStyleDate(project.createdAt)}</p>
+                <p className="text-[13px] text-[#8A97A8]">Modified: {dashboardStyleDate(project.updatedAt)}</p>
               </div>
             </div>
             </div>
@@ -7343,7 +8275,7 @@ export default function ProjectDetailsPage() {
 
           <div className="border-b border-[#D7DEE8]">
             <div className="px-4 md:px-5">
-              <div className="flex items-end gap-10 px-2">
+              <div className="grid grid-cols-4 items-end gap-1 sm:-mx-1 sm:flex sm:gap-4 sm:overflow-x-auto sm:px-1 md:mx-0 md:gap-10 md:px-2">
               {tabItemsWithAccess.map((item) => {
                 const active = resolvedTab === item.value;
                 return (
@@ -7353,7 +8285,7 @@ export default function ProjectDetailsPage() {
                     title={"title" in item ? item.title : undefined}
                     disabled={"disabled" in item ? item.disabled : false}
                     onClick={() => onChangeTab(item.value)}
-                    className={`border-b-2 pb-[10px] pt-[10px] text-[20px] font-semibold transition ${
+                    className={`w-full border-b-2 pb-[10px] pt-[10px] text-center text-[16px] font-semibold transition sm:w-auto sm:shrink-0 sm:whitespace-nowrap sm:text-left sm:text-[18px] md:text-[20px] ${
                       active
                         ? "border-[#7395BD] text-[#1F3654]"
                         : "border-transparent text-[#6D82A1] hover:text-[#45638A]"
@@ -7367,6 +8299,43 @@ export default function ProjectDetailsPage() {
             </div>
           </div>
           </div>
+
+          {project &&
+            projectStatusMenuPos &&
+            createPortal(
+              <div
+                data-status-menu="true"
+                className="fixed overflow-hidden rounded-[10px] border border-[#D7DEE8] bg-white shadow-[0_20px_44px_rgba(15,23,42,0.30),0_6px_14px_rgba(15,23,42,0.18)]"
+                style={{
+                  left: projectStatusMenuPos.left,
+                  top: projectStatusMenuPos.top,
+                  width: projectStatusMenuPos.width,
+                  zIndex: 2147483647,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {statusOptions.map((option) => {
+                  const active = String(project.statusLabel || "").trim().toLowerCase() === option.toLowerCase();
+                  const rowColor = projectStatusColorByName.get(String(option || "").trim().toLowerCase()) || "#64748B";
+                  return (
+                    <button
+                      key={`${project.id}_${option}`}
+                      type="button"
+                      disabled={isSavingStatus}
+                      onClick={() => void onChangeStatus(option)}
+                      className="block w-full border-b border-[#EEF2F7] px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
+                      style={{
+                        backgroundColor: rowColor,
+                        filter: active ? "brightness(0.96)" : "brightness(1)",
+                      }}
+                    >
+                      {option}
+                    </button>
+                  );
+                })}
+              </div>,
+              document.body,
+            )}
 
           {!!lockMessage && (
             <div className="rounded-[10px] border border-[#F7C9CC] bg-[#FDECEC] px-3 py-2 text-[12px] font-semibold text-[#B42318]">
@@ -7421,39 +8390,311 @@ export default function ProjectDetailsPage() {
           )}
 
           {resolvedTab === "general" && (
-            <div className="space-y-4">
-              <div className="grid gap-4 xl:grid-cols-[300px_1fr]">
-                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <CardHeader className="border-b border-[#D7DEE8] pb-2">
-                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Client Details</CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-1 text-[13px] text-[#1F2937]">
-                    {[
-                      { label: "Name", value: project.customer || "-" },
-                      { label: "Phone", value: project.clientPhone || "-" },
-                      { label: "Email", value: project.clientEmail || "-" },
-                      { label: "Address", value: project.clientAddress || "-" },
-                    ].map((row) => (
-                      <div key={row.label} className="grid grid-cols-[55px_1fr] border-b border-[#DCE3EC] py-[9px] last:border-none">
-                        <p className="font-bold text-[#1E2D42]">{row.label}</p>
-                        <p className="text-[#2F3F56]">{row.value}</p>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
+            <div className="-mx-4 -mb-4 -mt-4 md:-mx-5 xl:mx-0 xl:mb-0 xl:mt-0">
+              <div className="space-y-4 px-3 sm:px-4 md:px-5 xl:px-0 xl:pt-0 xl:pb-0">
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="space-y-4">
+                    <div ref={clientDetailsContainerRef}>
+                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                        <CardHeader className="flex min-h-[50px] flex-row items-center justify-between border-b border-[#D7DEE8] px-4 py-2">
+                          <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Client Details</CardTitle>
+                          <button
+                            type="button"
+                            disabled={!generalAccess.edit || isSavingGeneralDetails}
+                            onClick={() => {
+                              if (isEditingClientDetails) {
+                                void commitClientDetails();
+                              }
+                              setIsEditingClientDetails((prev) => !prev);
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
+                            style={
+                              isEditingClientDetails
+                                ? { backgroundColor: "#16A34A", borderColor: "#166534" }
+                                : { backgroundColor: "#7E9EBB", borderColor: "#2F4E68" }
+                            }
+                            title={isEditingClientDetails ? "Save changes" : "Edit client details"}
+                          >
+                            <img
+                              src={isEditingClientDetails ? "/tick.png" : "/Edit.png"}
+                              alt={isEditingClientDetails ? "Save" : "Edit"}
+                              className="block object-contain"
+                              style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
+                              onError={(e) => {
+                                e.currentTarget.src = "/file.svg";
+                              }}
+                            />
+                          </button>
+                        </CardHeader>
+                        <CardContent className="pt-1 text-[13px] text-[#1F2937]">
+                          {[
+                            { label: "Name", key: "customer" as const, value: project.customer || "-" },
+                            { label: "Phone", key: "clientPhone" as const, value: project.clientPhone || "-" },
+                            { label: "Email", key: "clientEmail" as const, value: project.clientEmail || "-" },
+                            { label: "Address", key: "clientAddress" as const, value: project.clientAddress || "-" },
+                          ].map((row) => (
+                            <div key={row.label} className="grid grid-cols-[55px_1fr] border-b border-[#DCE3EC] py-[9px] last:border-none">
+                              <p className="font-bold text-[#1E2D42]">{row.label}</p>
+                              <div className="relative min-h-[20px]">
+                                <p className={`text-[#2F3F56] ${isEditingClientDetails && generalAccess.edit ? "opacity-0" : ""}`}>
+                                  {row.value}
+                                </p>
+                                {isEditingClientDetails && generalAccess.edit ? (
+                                  <input
+                                    type="text"
+                                    value={generalDetailsDraft[row.key]}
+                                    onChange={(e) => {
+                                      const nextValue = e.target.value;
+                                      setGeneralDetailsDraft((prev) => ({ ...prev, [row.key]: nextValue }));
+                                    }}
+                                    onBlur={() => void commitClientDetails()}
+                                    className="absolute inset-0 h-full rounded-[6px] border border-[#C9D5E5] bg-white px-2 text-[12px] text-[#2F3F56]"
+                                  />
+                                ) : null}
+                              </div>
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    </div>
 
-                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <CardHeader className="border-b border-[#D7DEE8] pb-2">
-                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Notes</CardTitle>
-                  </CardHeader>
-                  <CardContent className="min-h-[155px] pt-3 text-[13px] text-[#475467]">{project.notes || ""}</CardContent>
-                </Card>
-              </div>
+                    <div ref={notesContainerRef}>
+                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                        <CardHeader className="flex min-h-[50px] flex-row items-center justify-between border-b border-[#D7DEE8] px-4 py-2">
+                          <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Notes</CardTitle>
+                          <div className="flex items-center gap-2">
+                            {isEditingNotes && generalAccess.edit ? (
+                              <div className="flex items-center gap-1 rounded-[8px] border border-[#C9D5E5] bg-white px-1 py-1">
+                                <button
+                                  type="button"
+                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[12px] font-semibold hover:brightness-95"
+                                  style={
+                                    notesBoldActive
+                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#000000" }
+                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#000000" }
+                                  }
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    applyNotesFormat("bold");
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                  }}
+                                  title="Bold"
+                                >
+                                  B
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[12px] italic hover:brightness-95"
+                                  style={
+                                    notesItalicActive
+                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#000000" }
+                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#000000" }
+                                  }
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    applyNotesFormat("italic");
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                  }}
+                                  title="Italic"
+                                >
+                                  I
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[12px] line-through hover:brightness-95"
+                                  style={
+                                    notesStrikeActive
+                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#000000" }
+                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#000000" }
+                                  }
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    applyNotesFormat("strikeThrough");
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                  }}
+                                  title="Strikethrough"
+                                >
+                                  S
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[14px] font-semibold hover:brightness-95"
+                                  style={
+                                    notesBulletMode
+                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#FFFFFF" }
+                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#243B58" }
+                                  }
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    if (notesBulletMode) {
+                                      setNotesBulletMode(false);
+                                    } else {
+                                      insertNotesBullet();
+                                      setNotesBulletMode(true);
+                                    }
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                  }}
+                                  title="Bullets"
+                                >
+                                  <img
+                                    src="/bulletpoint.png"
+                                    alt="Bullets"
+                                    className="block object-contain"
+                                    style={{
+                                      width: 14,
+                                      height: 14,
+                                      filter: "brightness(0) saturate(100%)",
+                                    }}
+                                    onError={(e) => {
+                                      e.currentTarget.src = "/file.svg";
+                                    }}
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] border px-1 hover:brightness-95"
+                                  style={{ backgroundColor: "#FFFFFF", borderColor: "#D8DEE8" }}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    toggleNotesParagraphMode();
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                  }}
+                                  title="Paragraph"
+                                >
+                                  <img
+                                    src="/paragraph.png"
+                                    alt="Paragraph mode"
+                                    className="block object-contain"
+                                    style={{
+                                      width: 14,
+                                      height: 14,
+                                      filter: notesParagraphMode ? "brightness(0) invert(1)" : "none",
+                                    }}
+                                    onError={(e) => {
+                                      e.currentTarget.src = "/file.svg";
+                                    }}
+                                  />
+                                </button>
+                              </div>
+                            ) : null}
+                            <button
+                              type="button"
+                              disabled={!generalAccess.edit || isSavingGeneralDetails}
+                              onClick={() => {
+                                if (isEditingNotes) {
+                                  void commitNotesDetails();
+                                }
+                                setIsEditingNotes((prev) => !prev);
+                              }}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
+                              style={
+                                isEditingNotes
+                                  ? { backgroundColor: "#16A34A", borderColor: "#166534" }
+                                  : { backgroundColor: "#7E9EBB", borderColor: "#2F4E68" }
+                              }
+                              title={isEditingNotes ? "Save changes" : "Edit notes"}
+                            >
+                              <img
+                                src={isEditingNotes ? "/tick.png" : "/Edit.png"}
+                                alt={isEditingNotes ? "Save" : "Edit"}
+                                className="block object-contain"
+                                style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
+                                onError={(e) => {
+                                  e.currentTarget.src = "/file.svg";
+                                }}
+                              />
+                            </button>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="min-h-[155px] pt-3 text-[13px] text-[#475467]">
+                          <div className="relative min-h-[130px]">
+                            <div
+                              className={`notes-rich leading-[20px] ${isEditingNotes && generalAccess.edit ? "opacity-0" : ""}`}
+                              dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project.notes || "") }}
+                            />
+                            {isEditingNotes && generalAccess.edit ? (
+                              <div
+                                ref={notesEditorRef}
+                                contentEditable
+                                suppressContentEditableWarning
+                                onKeyDown={(e) => {
+                                  if (e.key !== "Enter") {
+                                    notesLastEnterAtRef.current = 0;
+                                    if (notesParagraphMode) {
+                                      applyParagraphClassToCurrentLine();
+                                    }
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                    return;
+                                  }
+                                  if (notesBulletMode) {
+                                    if (isCurrentBulletLineEmpty()) {
+                                      e.preventDefault();
+                                      setNotesBulletMode(false);
+                                      notesLastEnterAtRef.current = 0;
+                                      removeBulletPrefixFromCurrentLine();
+                                      window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                      return;
+                                    }
+                                    e.preventDefault();
+                                    insertNextBulletLine();
+                                    notesLastEnterAtRef.current = Date.now();
+                                    const editor = notesEditorRef.current;
+                                    if (editor) {
+                                      setGeneralDetailsDraft((prev) => ({ ...prev, notes: editor.innerHTML }));
+                                    }
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                    return;
+                                  }
+                                  if (!notesParagraphMode) {
+                                    notesLastEnterAtRef.current = Date.now();
+                                    return;
+                                  }
+                                  if (isCurrentParagraphLineEmpty()) {
+                                    e.preventDefault();
+                                    setNotesParagraphMode(false);
+                                    notesLastEnterAtRef.current = 0;
+                                    exitParagraphModeOnCurrentLine();
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                    return;
+                                  }
+                                  const now = Date.now();
+                                  if (now - notesLastEnterAtRef.current <= 800) {
+                                    e.preventDefault();
+                                    setNotesParagraphMode(false);
+                                    notesLastEnterAtRef.current = 0;
+                                    exitParagraphModeOnCurrentLine();
+                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                    return;
+                                  }
+                                  e.preventDefault();
+                                  try {
+                                    document.execCommand("insertHTML", false, "<div class=\"notes-paragraph-line\"><br></div>");
+                                  } catch {
+                                    // no-op
+                                  }
+                                  notesLastEnterAtRef.current = now;
+                                }}
+                                onInput={(e) => {
+                                  if (notesParagraphMode) {
+                                    applyParagraphClassToCurrentLine();
+                                  }
+                                  const nextValue = (e.currentTarget as HTMLDivElement).innerHTML;
+                                  setGeneralDetailsDraft((prev) => ({ ...prev, notes: nextValue }));
+                                  window.setTimeout(() => refreshNotesToolbarState(), 0);
+                                }}
+                                className="notes-rich absolute inset-0 h-full w-full overflow-auto rounded-[8px] border border-[#C9D5E5] bg-white px-2 py-2 text-[12px] text-[#2F3F56] focus:outline-none"
+                              />
+                            ) : null}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </div>
 
-              <div className="grid items-start gap-4 xl:grid-cols-2">
-                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
-                    <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Images</p>
+                  <div className="space-y-4">
+                    <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] px-4 py-2">
+                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Images</p>
                     <div className="ml-auto flex items-center gap-2">
                       <input
                         ref={projectImagesInputRef}
@@ -7470,7 +8711,7 @@ export default function ProjectDetailsPage() {
                         }}
                       />
                       {isUploadingProjectImages && (
-                        <div className="mr-1 flex items-center gap-2">
+                        <div className="mr-1 hidden items-center gap-2 sm:flex">
                           <div className="h-[8px] w-[160px] overflow-hidden rounded-full border border-[#C9D5E5] bg-white">
                             <div
                               className="h-full rounded-full bg-[#2F6BFF] transition-[width] duration-150"
@@ -7535,7 +8776,7 @@ export default function ProjectDetailsPage() {
                       </button>
                     </div>
                   </div>
-                  <CardContent className="pt-4 pb-3" style={{ minHeight: projectImageAreaHeight + 28 }}>
+                  <CardContent className="pt-4 pb-3" style={{ minHeight: Math.max(400, projectImageAreaHeight + 28) }}>
                     {projectImageUrls.length > 0 ? (
                       <div className="flex items-start gap-3">
                         <div className="w-[88px] flex-none">
@@ -7643,64 +8884,205 @@ export default function ProjectDetailsPage() {
                     )}
                   </CardContent>
                 </Card>
-
-                <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
-                    <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Files</CardTitle>
-                    <div className="flex items-center gap-2">
-                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] bg-[#7E9EBB] px-3 text-[11px] font-bold text-white">
-                        <Upload size={12} /> Upload
-                      </button>
-                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F3F4F6] px-3 text-[11px] font-bold text-[#9CA3AF]">
-                        <FolderOpen size={12} /> Open
-                      </button>
-                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F3F4F6] px-3 text-[11px] font-bold text-[#9CA3AF]">
-                        <Trash2 size={12} /> Delete
+<Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] px-4 py-2">
+                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Files</p>
+                    <div className="ml-auto flex items-center gap-2">
+                      <p className="mr-1 text-[12px] font-bold text-[#475467]">{formatProjectFileTotal(projectFilesTotalBytes)}</p>
+                      <input
+                        ref={projectFilesInputRef}
+                        type="file"
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf,.dwg,.dxf,.zip,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/rtf,application/zip,application/x-zip-compressed"
+                        multiple
+                        className="hidden"
+                        style={{ display: "none" }}
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onChange={(e) => {
+                          void onUploadProjectFiles(e.target.files);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      {isUploadingProjectFiles && (
+                        <div className="mr-1 hidden items-center gap-2 sm:flex">
+                          <div className="h-[8px] w-[120px] overflow-hidden rounded-full border border-[#C9D5E5] bg-white">
+                            <div
+                              className="h-full rounded-full bg-[#2F6BFF] transition-[width] duration-150"
+                              style={{ width: `${projectFileUploadProgress}%` }}
+                            />
+                          </div>
+                          <span className="w-[40px] text-right text-[11px] font-bold text-[#12345B]">{projectFileUploadProgress}%</span>
+                        </div>
+                      )}
+                      {projectFilesTotalBytes < PROJECT_FILE_TOTAL_LIMIT_BYTES && (
+                        <button
+                          type="button"
+                          disabled={!generalAccess.edit || isUploadingProjectFiles || isDeletingProjectFile}
+                          onClick={() => projectFilesInputRef.current?.click()}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border bg-[#7E9EBB] hover:brightness-95"
+                          style={{ borderColor: "#2F4E68" }}
+                          title="Add file"
+                        >
+                          <img
+                            src="/add-file.png"
+                            alt="Add file"
+                            className="block object-contain"
+                            style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
+                            onError={(e) => {
+                              e.currentTarget.src = "/file.svg";
+                            }}
+                          />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!generalAccess.edit || isUploadingProjectFiles || isDeletingProjectFile}
+                        onClick={() => void onDeleteSelectedProjectFile()}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95"
+                        style={{ backgroundColor: "#EF4444", borderColor: "#7F1D1D" }}
+                        title="Delete file"
+                      >
+                        <img
+                          src="/trash.png"
+                          alt="Delete file"
+                          className="block object-contain"
+                          style={{ width: 17, height: 17, filter: "brightness(0) invert(1)" }}
+                          onError={(e) => {
+                            e.currentTarget.src = "/file.svg";
+                          }}
+                        />
                       </button>
                     </div>
-                  </CardHeader>
-                  <CardContent className="flex min-h-[280px] items-center justify-center pt-4 text-[13px] text-[#98A2B3]">
-                    No files uploaded.
+                  </div>
+                  <CardContent className="min-h-[280px] px-0 pb-0 pt-0">
+                    {projectFiles.length > 0 ? (
+                      <div className="border-b border-[#D8DEE8]">
+                        {projectFiles.map((file, idx) => {
+                          const selected = idx === selectedProjectFileIndex;
+                          const checked = selectedProjectFileIds.includes(file.id);
+                          const link = file.url || file.path;
+                          return (
+                            <div
+                              key={`${file.id}_${idx}`}
+                              className={`flex w-full items-center justify-between px-[10px] py-2 text-[12px] ${
+                                idx < projectFiles.length - 1 ? "border-b border-[#D8DEE8]" : ""
+                              } ${selected ? "bg-[#EEF3FF]" : "bg-transparent"}`}
+                            >
+                              <div className="flex min-w-0 flex-1 items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const nextChecked = e.target.checked;
+                                    setSelectedProjectFileIds((prev) => {
+                                      if (nextChecked) {
+                                        return prev.includes(file.id) ? prev : [...prev, file.id];
+                                      }
+                                      return prev.filter((id) => id !== file.id);
+                                    });
+                                  }}
+                                  className="h-4 w-4 rounded border-[#C9D5E5]"
+                                  aria-label={`Select ${file.name}`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedProjectFileIndex(idx)}
+                                  className="min-w-0 flex-1 truncate text-left font-semibold text-[#1F2937]"
+                                  title={file.name}
+                                >
+                                  {file.name}
+                                </button>
+                              </div>
+                              <div className="ml-3 flex items-center gap-3">
+                                <p className="text-[11px] font-semibold text-[#64748B]">{formatBytes(file.size)}</p>
+                                {link ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setOpenProjectFilePreviewId(file.id)}
+                                    className="inline-flex h-6 items-center justify-center rounded-[6px] border border-[#1D4ED8] bg-[#2563EB] px-2 text-[11px] font-bold text-white hover:bg-[#1D4ED8]"
+                                  >
+                                    Open
+                                  </button>
+                                ) : null}
+                                {link ? (
+                                  <a
+                                    href={link}
+                                    download={file.name || true}
+                                    className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] border border-[#166534] bg-[#16A34A] hover:bg-[#15803D]"
+                                    title="Download file"
+                                    aria-label={`Download ${file.name}`}
+                                  >
+                                    <img
+                                      src="/download.png"
+                                      alt="Download"
+                                      className="h-4 w-4 object-contain"
+                                      style={{ filter: "brightness(0) invert(1)" }}
+                                      onError={(e) => {
+                                        e.currentTarget.src = "/file.svg";
+                                      }}
+                                    />
+                                  </a>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="flex min-h-[240px] items-center justify-center text-[13px] text-[#98A2B3]">
+                        No files uploaded.
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
+                </div>
+              </div>
               </div>
             </div>
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div className="-mx-4 -mb-4 -mt-4 grid min-h-[calc(100dvh-220px)] gap-4 md:-mx-5 xl:grid-cols-[170px_1fr]">
-              <div className="border-r border-[#DCE3EC] pr-3">
+            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]">
+              <aside className="h-full overflow-hidden border-b border-[#DCE3EC] px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0">
+                <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
                   { label: "Initial Measure", icon: Ruler },
                   { label: "Items", icon: ListChecks },
                   { label: "Quote", icon: Quote },
                   { label: "Specifications", icon: ClipboardList },
-                ].map((item) => {
+                ].map((item, idx, arr) => {
                   const Icon = item.icon;
                   return (
+                    <div key={item.label} className="w-full sm:w-auto xl:w-full">
                     <button
-                      key={item.label}
                       type="button"
                       disabled={salesReadOnly}
-                      className="mb-2 inline-flex w-full items-center gap-2 rounded-[8px] px-2 py-2 text-left text-[13px] font-semibold text-[#243B58] hover:bg-[#EEF2F7] disabled:cursor-not-allowed disabled:opacity-55"
+                      className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold text-[#243B58] hover:bg-[#EEF2F7] disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                     >
-                      <Icon size={14} />
+                      <span className="pl-4">
+                        <Icon size={13} />
+                      </span>
                       {item.label}
                     </button>
+                    {idx < arr.length - 1 && (
+                      <div className="my-0.5 h-px w-full bg-[#DCE3EC] sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" />
+                    )}
+                    </div>
                   );
                 })}
-              </div>
+                </div>
+              </aside>
 
-              <div className="space-y-4">
+              <div className="isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0">
               {salesReadOnly && (
                 <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
                   Sales is in read-only mode for your account.
                 </div>
               )}
                 <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
-                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-sm">
+                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                     <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
-                      <p className="text-[14px] font-extrabold tracking-[1px] text-[#0F2A4A]">ROOMS</p>
+                      <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">ROOMS</p>
                       <button disabled={salesReadOnly} className="text-[12px] font-bold text-[#7E9EBB]">
                         + Add Room
                       </button>
@@ -7735,9 +9117,9 @@ export default function ProjectDetailsPage() {
                     </div>
                   </section>
 
-                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-sm">
+                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                     <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
-                      <p className="text-[14px] font-extrabold tracking-[1px] text-[#0F2A4A]">PRODUCT</p>
+                      <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">PRODUCT</p>
                     </div>
                     <div className="space-y-2 p-4 text-[12px]">
                       {["Melteca", "Woodgrain", "Lacquer (1 side)", "Lacquer (2 side)"].map((item) => (
@@ -7749,9 +9131,9 @@ export default function ProjectDetailsPage() {
                     </div>
                   </section>
 
-                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-sm">
+                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                     <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
-                      <p className="text-[14px] font-extrabold tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
+                      <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
                     </div>
                     <div className="space-y-2 p-4 text-[12px]">
                       {["Dear Client....", "Removal of small appliances", "Include Sundries", "Include Colour Consultation", "Include Promotional Discount", "Include GST"].map((item) => (
@@ -7785,8 +9167,9 @@ export default function ProjectDetailsPage() {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div className="-mx-4 -mb-4 -mt-4 grid min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid-cols-[170px_1fr]">
-              <aside className="h-full overflow-hidden border-r border-[#DCE3EC]">
+            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]">
+              <aside className="h-full overflow-hidden border-b border-[#DCE3EC] px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0">
+                <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
@@ -7797,7 +9180,7 @@ export default function ProjectDetailsPage() {
                   const Icon = item.icon;
                   const active = productionNav === item.key;
                   return (
-                    <div key={item.label} className="w-full">
+                    <div key={item.label} className="w-full sm:w-auto xl:w-full">
                       <button
                         type="button"
                         disabled={productionReadOnly}
@@ -7810,7 +9193,7 @@ export default function ProjectDetailsPage() {
                           setNestingFullscreen(false);
                           setProductionNav(item.key);
                         }}
-                        className={`inline-flex w-full items-center gap-2 pl-0 pr-2 py-3 text-left text-[13px] font-semibold ${
+                        className={`inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal ${
                           active ? "bg-[#EEF2F7] text-[#12345B]" : "text-[#243B58] hover:bg-[#EEF2F7]"
                         } disabled:cursor-not-allowed disabled:opacity-55`}
                       >
@@ -7819,17 +9202,20 @@ export default function ProjectDetailsPage() {
                         </span>
                         {item.label}
                       </button>
-                      {idx < arr.length - 1 && <div className="-ml-px -mr-px h-px bg-[#DCE3EC]" />}
+                      {idx < arr.length - 1 && (
+                        <div className="my-0.5 h-px w-full bg-[#DCE3EC] sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" />
+                      )}
                     </div>
                   );
                 })}
+                </div>
               </aside>
 
               <div
                 className={
                   productionNav === "cutlist"
-                    ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)]"
-                    : "isolate mt-4 w-full max-w-[1120px] space-y-4"
+                    ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
+                    : "isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
                 }
               >
                 {productionReadOnly && (
@@ -7842,7 +9228,7 @@ export default function ProjectDetailsPage() {
                   <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
                     <aside className="border-r border-[#DCE3EC]">
                       <div className="p-2">
-                        <p className="mb-2 px-2 text-[16px] font-extrabold text-[#111827]">Rooms</p>
+                        <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
                         <div className="space-y-1">
                           {cutlistAddedRoomTabs.map((roomTab) => {
                             const active = cutlistRoomFilter === roomTab.filter;
@@ -7891,9 +9277,9 @@ export default function ProjectDetailsPage() {
 
                     <div className="flex min-h-full flex-col gap-4 pl-4">
                       {cutlistRoomFilter !== "Project Cutlist" && (
-                      <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] flex-1 overflow-hidden">
+                      <section className="relative z-10 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
                         <div className="flex h-[50px] items-center px-1">
-                          <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                          <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
                         </div>
                         <div className="space-y-3 px-0 pb-0">
                           <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
@@ -8057,20 +9443,20 @@ export default function ProjectDetailsPage() {
                       </section>
                       )}
 
-                      <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-hidden">
+                      <section className="relative z-10 w-full overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
                         <div className="flex h-[50px] items-center justify-between px-1">
                           <div className="inline-flex items-center gap-2">
-                            <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                            <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
                             <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
                               {formatPartCount(visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0))}
                             </p>
                           </div>
-                          <div className="ml-auto flex items-center gap-2 pr-1">
+                          <div className="ml-auto flex flex-wrap items-center justify-end gap-2 pr-1">
                             <input
                               value={cutlistSearch}
                               onChange={(e) => setCutlistSearch(e.target.value)}
                               placeholder="Search part name or board"
-                              className="h-8 w-[280px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px]"
+                              className="h-8 w-[180px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px] sm:w-[240px] md:w-[280px]"
                             />
                             <select
                               value={cutlistPartTypeFilter}
@@ -8555,7 +9941,7 @@ export default function ProjectDetailsPage() {
                       <div className="flex h-[52px] items-center justify-between rounded-[14px] border border-[#D7DEE8] bg-white px-4">
                         <div className="inline-flex items-center gap-2">
                           <GitBranch size={16} className="text-[#12345B]" />
-                          <p className="text-[13px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Nesting</p>
+                          <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Nesting</p>
                           <span className="text-[12px] font-bold text-[#6B7280]">|</span>
                           <p className="text-[13px] font-bold text-[#334155]">{project?.name || "Project"}</p>
                         </div>
@@ -8599,7 +9985,7 @@ export default function ProjectDetailsPage() {
                               <div key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
                                 <div className="flex h-[40px] items-center justify-between bg-[#F8FAFC] pl-3">
                                   <div className="inline-flex items-center gap-2">
-                                    <p className="text-[13px] font-extrabold text-[#12345B]">{group.boardLabel}</p>
+                                    <p className="text-[13px] font-medium text-[#12345B]">{group.boardLabel}</p>
                                     <span className="rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
                                       {formatPartCount(qtySum)}
                                     </span>
@@ -8663,7 +10049,7 @@ export default function ProjectDetailsPage() {
 
                     <section className="min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white">
                       <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
-                        <p className="text-[13px] font-extrabold text-[#111827]">Edit Visibility</p>
+                        <p className="text-[13px] font-medium text-[#111827]">Edit Visibility</p>
                         <button
                           type="button"
                           disabled={productionReadOnly}
@@ -8705,7 +10091,7 @@ export default function ProjectDetailsPage() {
                                   />
                                   <span className="min-w-0 text-[11px] text-[#334155]">
                                     <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
-                                    <span className="block truncate">{row.partType || "Unassigned"} • {boardDisplayLabel(row.board) || "No board"} • {row.room || "-"}</span>
+                                    <span className="block truncate">{row.partType || "Unassigned"} â€¢ {boardDisplayLabel(row.board) || "No board"} â€¢ {row.room || "-"}</span>
                                   </span>
                                 </label>
                               );
@@ -8724,7 +10110,7 @@ export default function ProjectDetailsPage() {
                 <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
                   <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                     <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
-                      <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Existing</p>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Existing</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
                       {[
@@ -8753,7 +10139,7 @@ export default function ProjectDetailsPage() {
 
                   <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                     <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
-                      <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Cabinetry</p>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cabinetry</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
                       {[
@@ -8801,7 +10187,7 @@ export default function ProjectDetailsPage() {
 
                   <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                     <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
-                      <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Hardware</p>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Hardware</p>
                     </div>
                     <div className="space-y-3 p-3 text-[12px]">
                       <div className="flex items-center gap-3">
@@ -8857,7 +10243,7 @@ export default function ProjectDetailsPage() {
 
                 <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
                   <div className="flex h-[50px] items-center justify-between border-b border-[#DCE3EC] bg-white px-4">
-                    <p className="text-[14px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Board Settings</p>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Board Settings</p>
                     <button disabled={productionReadOnly} onClick={() => void onAddBoardRow()} className="text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55">+ Add Board</button>
                   </div>
                   <div className="p-3 text-[12px]">
@@ -8981,7 +10367,7 @@ export default function ProjectDetailsPage() {
             <div className="grid gap-4 xl:grid-cols-2">
               <Card>
                 <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
-                  <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Project Permissions</CardTitle>
+                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Project Permissions</CardTitle>
                   <button className="rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 py-1 text-[12px] font-bold text-[#44688F]">
                     Change Ownership
                   </button>
@@ -9005,7 +10391,7 @@ export default function ProjectDetailsPage() {
 
               <Card>
                 <CardHeader className="border-b border-[#D7DEE8] pb-2">
-                  <CardTitle className="text-[14px] uppercase tracking-[1px] text-[#12345B]">Changelog</CardTitle>
+                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Changelog</CardTitle>
                 </CardHeader>
                 <CardContent className="h-[560px] space-y-2 overflow-auto pt-2 text-[12px]">
                   {changes.length === 0 && <p className="text-[#6B7280]">No changes recorded.</p>}
@@ -9020,11 +10406,56 @@ export default function ProjectDetailsPage() {
               </Card>
             </div>
           )}
+
+          {openProjectFilePreview && (
+            <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
+              <button
+                type="button"
+                aria-label="Close file preview backdrop"
+                onClick={() => setOpenProjectFilePreviewId("")}
+                className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px]"
+              />
+              <div className="relative z-[1601] flex h-[min(88vh,760px)] w-[min(1100px,96vw)] flex-col overflow-hidden rounded-[14px] border border-[#D6DEE9] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+                <div className="flex items-center justify-between border-b border-[#D7DEE8] px-4 py-3">
+                  <p className="truncate pr-4 text-[13px] font-bold text-[#1F2937]">{openProjectFilePreview.name}</p>
+                  <button
+                    type="button"
+                    onClick={() => setOpenProjectFilePreviewId("")}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#64748B] hover:bg-[#F8FAFC]"
+                    aria-label="Close file preview"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 bg-white">
+                  {openProjectFilePreview.url || openProjectFilePreview.path ? (
+                    <iframe
+                      src={openProjectFilePreview.url || openProjectFilePreview.path}
+                      title={openProjectFilePreview.name}
+                      className="h-full w-full bg-white"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-[13px] font-semibold text-[#667085]">
+                      Preview unavailable.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </AppShell>
     </ProtectedRoute>
   );
 }
+
+
+
+
+
+
+
+
 
 
 

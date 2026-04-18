@@ -10,6 +10,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   fetchCompanyDoc,
   fetchProjects,
+  fetchUserColorMapByUids,
   updateProjectStatus,
 } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
@@ -100,17 +101,13 @@ function dashboardDate(value: string) {
 }
 
 function initials(text: string) {
-  const parts = String(text || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (!parts.length) {
-    return "U";
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return "CU";
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
   }
-  return parts
-    .slice(0, 2)
-    .map((p) => p[0]?.toUpperCase() ?? "")
-    .join("");
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
 }
 
 export default function DashboardPage() {
@@ -124,6 +121,8 @@ export default function DashboardPage() {
   const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [statusUpdatingProjectId, setStatusUpdatingProjectId] = useState("");
   const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
+  const [creatorColorByUid, setCreatorColorByUid] = useState<Record<string, string>>({});
+  const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
 
   useEffect(() => {
     const load = async () => {
@@ -134,12 +133,17 @@ export default function DashboardPage() {
       const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
       const items = await fetchProjects(user?.uid, preferredCompanyIds);
       setAllProjects(items);
+      const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
+      const userColorMap = await fetchUserColorMapByUids(creatorUids);
+      setCreatorColorByUid(userColorMap);
 
       const fallbackCompanyId = String(items[0]?.companyId || "").trim();
       const companyId = storedCompanyId || fallbackCompanyId;
       if (companyId) {
         const companyDoc = await fetchCompanyDoc(companyId);
         setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
+        const themeColor = String((companyDoc as Record<string, unknown> | null)?.themeColor ?? "").trim();
+        if (themeColor) setCompanyThemeColor(themeColor);
       } else {
         setStatusRows(normalizeStatuses(undefined));
       }
@@ -315,7 +319,7 @@ export default function DashboardPage() {
           <div className="space-y-0">
 
           <div style={{ marginBottom: 20 }}>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {statCards.map((card) => {
                 const Icon = card.icon;
                 const value = stats[card.key];
@@ -331,9 +335,9 @@ export default function DashboardPage() {
                       >
                         <Icon size={16} strokeWidth={2.4} />
                       </div>
-                      <p className="text-[17px] font-semibold text-[#2A3441]">{card.label}</p>
+                      <p className="text-[14px] font-semibold text-[#2A3441] sm:text-[16px] lg:text-[17px]">{card.label}</p>
                     </div>
-                    <p className="text-[46px] font-medium leading-none text-[#111111]">{value}</p>
+                    <p className="text-[34px] font-medium leading-none text-[#111111] sm:text-[40px] lg:text-[46px]">{value}</p>
                     {stats.weekly[card.key] > 0 && (
                       <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
                         + {stats.weekly[card.key]} this week
@@ -348,8 +352,8 @@ export default function DashboardPage() {
           <div
             className="-mx-4 rounded-none border-t border-[#D7DEE8] bg-white px-[10px] py-3 md:-mx-5"
           >
-              <div className="mb-2 flex flex-wrap items-center gap-2 pl-[10px]">
-                <div className="relative min-w-[280px]">
+              <div className="mb-2 flex flex-wrap items-center gap-2 pl-0 sm:pl-[10px]">
+                <div className="relative w-full min-w-0 sm:min-w-[280px] sm:max-w-[420px]">
                   <Search
                     size={14}
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#98A2B3]"
@@ -370,7 +374,7 @@ export default function DashboardPage() {
                 </button>
               </div>
 
-              <div className="mb-0 flex gap-2 pt-2 pl-[10px]">
+              <div className="mb-0 flex gap-2 pt-2 pl-0 sm:pl-[10px]">
                 {[
                   { key: "all", label: "All" },
                   { key: "active", label: "Active" },
@@ -393,7 +397,120 @@ export default function DashboardPage() {
 
           </div>
 
-          <div className="-mx-4 overflow-auto bg-white md:-mx-5">
+          <div className="-mx-4 bg-white md:-mx-5 lg:hidden">
+                {isLoading && (
+                  <div className="px-3 py-6 text-[13px] font-semibold text-[#6B7280]">Loading projects...</div>
+                )}
+                {!isLoading && filtered.length === 0 && (
+                  <div className="px-3 py-10">
+                    <div className="flex flex-col items-center gap-3">
+                      <p className="text-[14px] font-bold text-[#334155]">No Projects Yet</p>
+                      <button
+                        type="button"
+                        onClick={openNewProjectModal}
+                        className="rounded-[10px] border border-[#86EFAC] bg-[#22C55E] px-4 py-2 text-[12px] font-bold text-white hover:bg-[#16A34A]"
+                      >
+                        Create First Project
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {!isLoading && filtered.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2 px-2 pb-2 md:grid-cols-2">
+                    {filtered.map((project) => (
+                      <div
+                        key={project.id}
+                        role="button"
+                        tabIndex={0}
+                        className="w-full cursor-pointer rounded-[12px] border border-[#DCE3EC] bg-white px-3 py-3 text-left hover:bg-[#F8FAFD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#93C5FD]"
+                        onClick={() => void openProjectInDashboard(project.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            void openProjectInDashboard(project.id);
+                          }
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="line-clamp-2 text-[13px] font-bold text-[#111827]">{project.name}</p>
+                          <button
+                            data-status-trigger="true"
+                            type="button"
+                            disabled={statusUpdatingProjectId === project.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (statusMenuProjectId === project.id) {
+                                setStatusMenuProjectId("");
+                                setStatusMenuPos(null);
+                                return;
+                              }
+                              const trigger = e.currentTarget as HTMLButtonElement;
+                              const rect = trigger.getBoundingClientRect();
+                              const estimatedMenuHeight = 156;
+                              const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
+                              const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
+                              const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
+                              const menuWidth = Math.max(120, Math.round(rect.width));
+                              const clampedLeft = Math.min(
+                                Math.max(8, rect.left),
+                                window.innerWidth - menuWidth - 8,
+                              );
+                              setStatusMenuPos({
+                                left: clampedLeft,
+                                top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
+                                width: menuWidth,
+                              });
+                              setStatusMenuProjectId(project.id);
+                            }}
+                            className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold disabled:opacity-60"
+                            style={projectStatusPillStyle(project.statusLabel || "New")}
+                            aria-label="Project status"
+                            title="Change project status"
+                          >
+                            {statusUpdatingProjectId === project.id ? "Saving..." : project.statusLabel || "New"}
+                          </button>
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {project.tags.slice(0, 2).map((tag) => (
+                            <span
+                              key={tag}
+                              className="rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#475569]"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {project.tags.length > 2 && <span className="font-bold text-[#64748B]">...</span>}
+                        </div>
+
+                        <div className="mt-2 flex items-center gap-2 text-[12px]">
+                          <span
+                            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                            style={{
+                              backgroundColor:
+                                creatorColorByUid[String(project.createdByUid || "").trim()] || companyThemeColor,
+                            }}
+                          >
+                            {initials(project.createdByName)}
+                          </span>
+                          <span className="text-[#111827]">{project.createdByName || "-"}</span>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-[#475467] sm:grid-cols-2">
+                          <p>
+                            <span className="font-bold text-[#64748B]">Created:</span> {dashboardDate(project.createdAt)}
+                          </p>
+                          <p>
+                            <span className="font-bold text-[#64748B]">Modified:</span> {dashboardDate(project.updatedAt)}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+          <div className="-mx-4 hidden overflow-auto bg-white md:-mx-5 lg:block">
                 <table className="w-full min-w-[980px] table-fixed bg-white text-[12px]">
                   <colgroup>
                     <col style={{ width: "220px" }} />
@@ -463,7 +580,13 @@ export default function DashboardPage() {
                       </td>
                       <td className="py-[7px]">
                         <div className="flex items-center gap-2 text-[12px]">
-                          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#7D99B3] text-[9px] font-bold text-white">
+                          <span
+                            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                            style={{
+                              backgroundColor:
+                                creatorColorByUid[String(project.createdByUid || "").trim()] || companyThemeColor,
+                            }}
+                          >
                             {initials(project.createdByName)}
                           </span>
                           <span className="text-[#111827]">{project.createdByName || "-"}</span>

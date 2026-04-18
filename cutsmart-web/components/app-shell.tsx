@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
@@ -10,9 +10,12 @@ import {
   ImagePlus,
   LayoutDashboard,
   LogOut,
+  Menu,
+  Plus,
   PlusCircle,
   Search,
   Settings,
+  Tag,
   Trash2,
   UserCog,
   Waves,
@@ -25,6 +28,15 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { fetchPrimaryMembership } from "@/lib/membership";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
+
+type CompanyBrandingCache = {
+  themeColor: string;
+  logoPath: string;
+  name: string;
+};
+
+const brandingMemoryCacheByCompany: Record<string, CompanyBrandingCache> = {};
 
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -67,6 +79,32 @@ function normalizeTagValue(raw: string) {
   return String(raw || "").replace(/,/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function escapeHtml(value: string): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function notesToDisplayHtml(value: unknown): string {
+  const raw = String(value ?? "");
+  if (!raw.trim()) return "";
+  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(raw);
+  if (looksLikeHtml) return raw;
+  return escapeHtml(raw).replace(/\n/g, "<br />");
+}
+
+function notesHtmlIsEmpty(value: string): boolean {
+  const plain = String(value || "")
+    .replace(/<br\s*\/?>/gi, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/<[^>]*>/g, "")
+    .trim();
+  return !plain;
+}
+
 type LocalPhoto = { id: string; file: File; previewUrl: string; aspectRatio: number };
 type StaffOption = { uid: string; name: string; email: string };
 type PreviewRect = { left: number; top: number; width: number; height: number };
@@ -88,8 +126,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [clientEmail, setClientEmail] = useState("");
   const [projectAddress, setProjectAddress] = useState("");
   const [projectNotes, setProjectNotes] = useState("");
+  const [newProjectNotesParagraphMode, setNewProjectNotesParagraphMode] = useState(false);
+  const [newProjectNotesBulletMode, setNewProjectNotesBulletMode] = useState(false);
+  const [newProjectNotesBoldActive, setNewProjectNotesBoldActive] = useState(false);
+  const [newProjectNotesItalicActive, setNewProjectNotesItalicActive] = useState(false);
+  const [newProjectNotesStrikeActive, setNewProjectNotesStrikeActive] = useState(false);
+  const [isNewProjectNotesFocused, setIsNewProjectNotesFocused] = useState(false);
+  const [newProjectNotesHeight, setNewProjectNotesHeight] = useState(88);
   const [tagInput, setTagInput] = useState("");
   const [tags, setTags] = useState<string[]>([]);
+  const [isTagInputOpen, setIsTagInputOpen] = useState(false);
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [hoveredPhotoId, setHoveredPhotoId] = useState("");
   const [previewPhotoId, setPreviewPhotoId] = useState("");
@@ -102,7 +148,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
   const [projectFormError, setProjectFormError] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
+  const [companyLogoPath, setCompanyLogoPath] = useState("");
+  const [companyDisplayName, setCompanyDisplayName] = useState("");
   const [companyTagSuggestions, setCompanyTagSuggestions] = useState<string[]>([]);
   const [defaultProjectStatus, setDefaultProjectStatus] = useState("New");
   const [defaultQuoteExtras, setDefaultQuoteExtras] = useState<string[]>([]);
@@ -110,9 +159,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const previewPanelRef = useRef<HTMLDivElement | null>(null);
   const previewTimerRef = useRef<number | null>(null);
   const previewCloseRafRef = useRef<number | null>(null);
+  const newProjectTagInputRef = useRef<HTMLInputElement | null>(null);
+  const newProjectNotesContainerRef = useRef<HTMLDivElement | null>(null);
+  const newProjectNotesEditorRef = useRef<HTMLDivElement | null>(null);
+  const newProjectNotesLastEnterAtRef = useRef(0);
 
   const userInitials = useMemo(() => initials(user?.displayName || "User"), [user?.displayName]);
   const userEmblemColor = String(user?.userColor || "").trim() || companyThemeColor;
+  const isProjectDetailsRoute = useMemo(() => /^\/projects\/[^/]+/.test(String(pathname || "")), [pathname]);
   const canCreateForOthers = useMemo(() => {
     const perms = Array.isArray(user?.permissions)
       ? user.permissions.map((item) => String(item || "").trim().toLowerCase())
@@ -122,8 +176,65 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return role === "owner" || role === "admin";
   }, [user?.permissions, user?.role]);
 
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    const storedCompanyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    const directCompanyId = String(user?.companyId || "").trim();
+    const companyId = storedCompanyId || directCompanyId;
+    if (!companyId) return;
+
+    const fromMemory = brandingMemoryCacheByCompany[companyId];
+    if (fromMemory) {
+      setCompanyThemeColor(fromMemory.themeColor || "#2F6BFF");
+      setCompanyLogoPath(fromMemory.logoPath || "");
+      setCompanyDisplayName(fromMemory.name || "");
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(`${COMPANY_BRANDING_CACHE_KEY_PREFIX}${companyId}`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const themeColor = String(parsed.themeColor || "").trim() || "#2F6BFF";
+      const logoPath = String(parsed.logoPath || "").trim();
+      const name = String(parsed.name || "").trim();
+      setCompanyThemeColor(themeColor);
+      setCompanyLogoPath(logoPath);
+      setCompanyDisplayName(name);
+      brandingMemoryCacheByCompany[companyId] = { themeColor, logoPath, name };
+    } catch {
+      // ignore cache parse issues
+    }
+  }, [user?.companyId]);
+
   useEffect(() => {
     const load = async () => {
+      const readBrandingCache = (companyId: string) => {
+        if (typeof window === "undefined") return null;
+        try {
+          const raw = window.localStorage.getItem(`${COMPANY_BRANDING_CACHE_KEY_PREFIX}${companyId}`);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          return {
+            themeColor: String(parsed.themeColor || "").trim(),
+            logoPath: String(parsed.logoPath || "").trim(),
+            name: String(parsed.name || "").trim(),
+          };
+        } catch {
+          return null;
+        }
+      };
+      const writeBrandingCache = (companyId: string, payload: { themeColor: string; logoPath: string; name: string }) => {
+        if (typeof window === "undefined") return;
+        try {
+          window.localStorage.setItem(
+            `${COMPANY_BRANDING_CACHE_KEY_PREFIX}${companyId}`,
+            JSON.stringify(payload),
+          );
+        } catch {
+          // ignore storage write issues
+        }
+      };
       const storedCompanyId =
         typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
       const directCompanyId = String(user?.companyId || "").trim();
@@ -135,11 +246,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
         }
       }
+      const memoryBranding = brandingMemoryCacheByCompany[companyId];
+      if (memoryBranding) {
+        setCompanyThemeColor(memoryBranding.themeColor || "#2F6BFF");
+        setCompanyLogoPath(memoryBranding.logoPath || "");
+        setCompanyDisplayName(memoryBranding.name || "Company");
+        return;
+      }
+      const cachedBranding = readBrandingCache(companyId);
+      if (cachedBranding) {
+        if (cachedBranding.themeColor) setCompanyThemeColor(cachedBranding.themeColor);
+        setCompanyLogoPath(cachedBranding.logoPath);
+        setCompanyDisplayName(cachedBranding.name || "Company");
+        brandingMemoryCacheByCompany[companyId] = {
+          themeColor: cachedBranding.themeColor || "#2F6BFF",
+          logoPath: cachedBranding.logoPath || "",
+          name: cachedBranding.name || "Company",
+        };
+        return;
+      }
       const doc = await fetchCompanyDoc(companyId);
       const color = String((doc as Record<string, unknown> | null)?.themeColor ?? "").trim();
       if (color) {
         setCompanyThemeColor(color);
       }
+      const logoPath = String((doc as Record<string, unknown> | null)?.logoPath ?? "").trim();
+      setCompanyLogoPath(logoPath);
+      const name = String((doc as Record<string, unknown> | null)?.name ?? "").trim();
+      setCompanyDisplayName(name || "Company");
+      writeBrandingCache(companyId, {
+        themeColor: color || "#2F6BFF",
+        logoPath,
+        name: name || "Company",
+      });
+      brandingMemoryCacheByCompany[companyId] = {
+        themeColor: color || "#2F6BFF",
+        logoPath,
+        name: name || "Company",
+      };
     };
     void load();
   }, [user?.companyId, user?.uid]);
@@ -242,6 +386,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [showNewProject]);
 
   useEffect(() => {
+    if (!showNewProject) return;
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    editor.innerHTML = notesToDisplayHtml(projectNotes);
+    resizeNewProjectNotesEditor();
+    const onSelectionChange = () => refreshNewProjectNotesToolbarState();
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+    };
+  }, [showNewProject]);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (mobileNavOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
     return () => {
       if (previewTimerRef.current) {
         window.clearTimeout(previewTimerRef.current);
@@ -284,8 +457,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setClientEmail("");
     setProjectAddress("");
     setProjectNotes("");
+    setNewProjectNotesParagraphMode(false);
+    setNewProjectNotesBulletMode(false);
+    setNewProjectNotesBoldActive(false);
+    setNewProjectNotesItalicActive(false);
+    setNewProjectNotesStrikeActive(false);
+    setIsNewProjectNotesFocused(false);
+    setNewProjectNotesHeight(88);
     setTagInput("");
     setTags([]);
+    setIsTagInputOpen(false);
     setPhotos([]);
     setPreviewPhotoId("");
     setPreviewAnim(null);
@@ -301,17 +482,271 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const addTag = (raw: string) => {
     const next = normalizeTagValue(raw);
-    if (!next) return;
+    if (!next) return false;
+    let added = false;
     setTags((prev) => {
       const lower = new Set(prev.map((v) => v.toLowerCase()));
       if (lower.has(next.toLowerCase())) return prev;
-      return [...prev, next].slice(0, 10);
+      added = true;
+      return [...prev, next].slice(0, 5);
     });
     setTagInput("");
+    return added;
   };
 
   const removeTag = (tag: string) => {
     setTags((prev) => prev.filter((t) => t !== tag));
+  };
+
+  const NEW_PROJECT_NOTES_BULLET_PREFIX = "\u2022\u00A0";
+
+  const currentNewProjectNotesBlock = () => {
+    const editor = newProjectNotesEditorRef.current;
+    const sel = window.getSelection();
+    if (!editor || !sel || !sel.rangeCount) return null;
+    let node: Node | null = sel.getRangeAt(0).startContainer;
+    if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
+    if (!node || !(node as HTMLElement).closest) return null;
+    const block =
+      (node as HTMLElement).closest("div, p, li, blockquote, h1, h2, h3, h4, h5, h6") ||
+      (node as HTMLElement);
+    if (!editor.contains(block) || block === editor) return null;
+    return block as HTMLElement;
+  };
+
+  const isCurrentNewProjectNotesLineBullet = () => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return false;
+    const txt = String(block.textContent || "");
+    return /^\s*\u2022(?:\u00A0|\s)/.test(txt);
+  };
+
+  const isCurrentNewProjectNotesLineParagraph = () => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return false;
+    return block.classList.contains("notes-paragraph-line");
+  };
+
+  const ensureNewProjectNotesBulletOnCurrentLine = () => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return;
+    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ").trimStart();
+    if (!txt.startsWith("\u2022")) {
+      block.textContent = `${NEW_PROJECT_NOTES_BULLET_PREFIX}${txt}`;
+    } else if (!txt.startsWith(NEW_PROJECT_NOTES_BULLET_PREFIX)) {
+      block.textContent = txt.replace(/^\u2022(?:\u00A0|\s)*/, NEW_PROJECT_NOTES_BULLET_PREFIX);
+    }
+  };
+
+  const removeNewProjectNotesBulletPrefixFromCurrentLine = () => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return;
+    const txt = String(block.textContent ?? "");
+    block.textContent = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "");
+  };
+
+  const isCurrentNewProjectNotesBulletLineEmpty = (): boolean => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return false;
+    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ");
+    const noBullet = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "").trim();
+    return noBullet.length === 0;
+  };
+
+  const ensureNewProjectNotesParagraphOnCurrentLine = () => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return;
+    block.classList.add("notes-paragraph-line");
+  };
+
+  const insertNextNewProjectNotesBulletLine = () => {
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    const block = currentNewProjectNotesBlock();
+
+    const newBlock = document.createElement("div");
+    const textNode = document.createTextNode(NEW_PROJECT_NOTES_BULLET_PREFIX);
+    newBlock.appendChild(textNode);
+    if ((block as HTMLElement | null)?.classList?.contains("notes-paragraph-line") || newProjectNotesParagraphMode) {
+      newBlock.classList.add("notes-paragraph-line");
+    }
+
+    if (block && editor.contains(block)) {
+      if (block.nextSibling) {
+        block.parentNode?.insertBefore(newBlock, block.nextSibling);
+      } else {
+        block.parentNode?.appendChild(newBlock);
+      }
+    } else {
+      editor.appendChild(newBlock);
+    }
+
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.setStart(textNode, textNode.length);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  };
+
+  const exitNewProjectNotesParagraphModeOnCurrentLine = () => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return;
+    block.classList.remove("notes-paragraph-line");
+  };
+
+  const placeCaretInNewProjectNotesLine = (block: HTMLElement | null) => {
+    if (!block) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    if (!block.firstChild) {
+      block.appendChild(document.createElement("br"));
+    }
+    range.setStart(block, 0);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  };
+
+  const isCurrentNewProjectNotesParagraphLineEmpty = (): boolean => {
+    const block = currentNewProjectNotesBlock();
+    if (!block) return false;
+    if (!block.classList.contains("notes-paragraph-line")) return false;
+    const text = String(block.textContent ?? "").replace(/\u00A0/g, " ").trim();
+    return text.length === 0;
+  };
+
+  const refreshNewProjectNotesToolbarState = () => {
+    const editor = newProjectNotesEditorRef.current;
+    const sel = window.getSelection();
+    const insideEditor =
+      !!editor &&
+      !!sel &&
+      sel.rangeCount > 0 &&
+      editor.contains(sel.anchorNode);
+    if (!insideEditor) return;
+    setNewProjectNotesBulletMode(isCurrentNewProjectNotesLineBullet());
+    setNewProjectNotesParagraphMode(isCurrentNewProjectNotesLineParagraph());
+    try {
+      setNewProjectNotesBoldActive(!!document.queryCommandState("bold"));
+      setNewProjectNotesItalicActive(!!document.queryCommandState("italic"));
+      setNewProjectNotesStrikeActive(!!document.queryCommandState("strikeThrough"));
+    } catch {
+      setNewProjectNotesBoldActive(false);
+      setNewProjectNotesItalicActive(false);
+      setNewProjectNotesStrikeActive(false);
+    }
+  };
+
+  const applyNewProjectNotesFormat = (command: string) => {
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    try {
+      document.execCommand(command, false);
+    } catch {
+      // ignore browser differences
+    }
+    setProjectNotes(editor.innerHTML);
+    window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+  };
+
+  const insertNewProjectNotesBullet = () => {
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    try {
+      editor.focus();
+      const sel = window.getSelection();
+      if (!sel) return;
+      let range: Range | null = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      if (!range || !editor.contains(range.commonAncestorContainer)) {
+        let lastLine = editor.lastElementChild as HTMLElement | null;
+        if (!lastLine || !/^(DIV|P)$/i.test(lastLine.tagName)) {
+          lastLine = document.createElement("div");
+          lastLine.appendChild(document.createElement("br"));
+          editor.appendChild(lastLine);
+        }
+        const safeRange = document.createRange();
+        safeRange.selectNodeContents(lastLine);
+        safeRange.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(safeRange);
+        range = safeRange;
+      }
+
+      let block = currentNewProjectNotesBlock();
+      if (!block || !editor.contains(block) || block === editor) {
+        const line = document.createElement("div");
+        line.appendChild(document.createElement("br"));
+        editor.appendChild(line);
+        block = line;
+        const lineRange = document.createRange();
+        lineRange.selectNodeContents(block);
+        lineRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(lineRange);
+      }
+
+      const rawText = String(block.textContent ?? "").replace(/\u00A0/g, " ");
+      const plainText = rawText.replace(/^\s*\u2022(?:\u00A0|\s)*/, "");
+      block.textContent = `${NEW_PROJECT_NOTES_BULLET_PREFIX}${plainText}`;
+
+      const firstText = block.firstChild;
+      const caretRange = document.createRange();
+      if (firstText && firstText.nodeType === Node.TEXT_NODE) {
+        const fullTextLen = (firstText.textContent || "").length;
+        caretRange.setStart(firstText, fullTextLen);
+      } else {
+        caretRange.selectNodeContents(block);
+        caretRange.collapse(false);
+      }
+      caretRange.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(caretRange);
+    } catch {
+      // no-op
+    }
+    setProjectNotes(editor.innerHTML);
+  };
+
+  const toggleNewProjectNotesBulletMode = () => {
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    setNewProjectNotesBulletMode((prev) => {
+      const next = !prev;
+      if (next) {
+        ensureNewProjectNotesBulletOnCurrentLine();
+      }
+      setProjectNotes(editor.innerHTML);
+      return next;
+    });
+    window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+  };
+
+  const toggleNewProjectNotesParagraphMode = () => {
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    setNewProjectNotesParagraphMode((prev) => {
+      const next = !prev;
+      if (next) {
+        ensureNewProjectNotesParagraphOnCurrentLine();
+      }
+      setProjectNotes(editor.innerHTML);
+      return next;
+    });
+    window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+  };
+
+  const resizeNewProjectNotesEditor = () => {
+    const editor = newProjectNotesEditorRef.current;
+    if (!editor) return;
+    const measured = Math.max(88, editor.scrollHeight + 2);
+    setNewProjectNotesHeight(measured);
   };
 
   const imageAspectRatioFromFile = async (file: File): Promise<number> => {
@@ -606,21 +1041,188 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const modalRowClass =
+    "grid items-start gap-2 md:gap-3 [grid-template-columns:minmax(0,1fr)] md:[grid-template-columns:220px_minmax(0,1fr)]";
+  const modalLabelClass = "text-[11px] font-bold text-[#475467]";
+  const modalSectionLabelClass = "pt-1 md:pt-2 text-[11px] font-bold text-[#475467]";
+
   return (
     <div className="min-h-screen bg-[var(--bg-app)]">
+      <header className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(true)}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#334155]"
+            aria-label="Open menu"
+          >
+            <Menu size={18} />
+          </button>
+          {isProjectDetailsRoute && (
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard")}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#334155]"
+              aria-label="Back to projects"
+              title="Back to projects"
+            >
+              <img
+                src="/angle-left.png"
+                alt="Back"
+                className="h-4 w-4 object-contain"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="rounded-[8px] border border-[var(--panel-border)] bg-[var(--brand)] p-1.5 text-white">
+            <Building2 size={14} />
+          </div>
+          <p className="text-[12px] font-bold text-[var(--text-main)]">CutSmart</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowNewProject(true)}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#159947] bg-[#22C55E] text-white hover:bg-[#16A34A]"
+          aria-label="New project"
+        >
+          <Plus size={20} strokeWidth={2.8} />
+        </button>
+      </header>
+
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-[120] lg:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Close menu backdrop"
+          />
+          <aside className="relative z-[121] flex h-full w-[260px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white">
+            <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3">
+              <div className="flex min-h-[44px] items-center">
+                {companyLogoPath ? (
+                  <img
+                    src={companyLogoPath}
+                    alt={`${companyDisplayName} logo`}
+                    className="block h-[42px] w-auto object-contain"
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                ) : companyDisplayName ? (
+                  <p className="text-[13px] font-semibold text-[var(--text-main)]">{companyDisplayName}</p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileNavOpen(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#475467]"
+                aria-label="Close menu"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="flex min-h-0 h-full flex-1 flex-col px-3 py-3">
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewProject(true);
+                    setMobileNavOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold text-[#475467] transition hover:border-[#E4E7EC] hover:bg-[#F7F8FC]"
+                >
+                  <PlusCircle size={16} />
+                  New Project
+                </button>
+                {topNav.map((item) => {
+                  const active = pathname?.startsWith(item.href);
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
+                        active
+                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
+                          : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
+                      )}
+                    >
+                      <Icon size={16} />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+
+              <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3">
+                {bottomNav.map((item) => {
+                  const active = pathname?.startsWith(item.href);
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={cn(
+                        "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
+                        active
+                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
+                          : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
+                      )}
+                    >
+                      <Icon size={16} />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-full justify-start text-[13px] font-bold text-[#475467] hover:bg-[#F7F8FC] hover:text-[#475467]"
+                  onClick={() => void logout()}
+                >
+                  <LogOut size={14} className="mr-2" />
+                  Log Out
+                </Button>
+                <div className="mt-2 flex items-center gap-2 rounded-[10px] border border-[#E4E7EC] bg-[#F8FAFC] px-2 py-2">
+                  <div
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
+                    style={{ backgroundColor: userEmblemColor }}
+                  >
+                    {userInitials}
+                  </div>
+                  <span className="truncate text-[12px] font-semibold text-[#0F172A]">{user?.displayName || "CutSmart User"}</span>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       <aside
-        className="z-[70] flex w-[230px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white"
+        className="z-[70] hidden w-[230px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white lg:flex"
         style={{ position: "fixed", left: 0, top: 0, height: "100vh" }}
       >
         <div className="border-b border-[var(--panel-border)] px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="rounded-[10px] border border-[var(--panel-border)] bg-[var(--brand)] p-2 text-white">
-              <Building2 size={16} />
-            </div>
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">CutSmart</p>
-              <p className="text-[13px] font-bold text-[var(--text-main)]">Web Workspace</p>
-            </div>
+          <div className="flex min-h-[44px] items-center">
+            {companyLogoPath ? (
+              <img
+                src={companyLogoPath}
+                alt={`${companyDisplayName} logo`}
+                className="block h-[42px] w-auto object-contain"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            ) : companyDisplayName ? (
+              <p className="text-[13px] font-semibold text-[var(--text-main)]">{companyDisplayName}</p>
+            ) : null}
           </div>
         </div>
 
@@ -629,7 +1231,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               onClick={() => setShowNewProject(true)}
-              className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[12px] font-bold text-[#475467] transition hover:border-[#E4E7EC] hover:bg-[#F7F8FC]"
+              className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold text-[#475467] transition hover:border-[#E4E7EC] hover:bg-[#F7F8FC]"
             >
               <PlusCircle size={16} />
               New Project
@@ -642,9 +1244,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   key={item.href}
                   href={item.href}
                   className={cn(
-                    "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[12px] font-bold transition",
+                    "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
                     active
-                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[var(--brand)]"
+                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
                       : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
                   )}
                 >
@@ -664,9 +1266,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   key={item.href}
                   href={item.href}
                   className={cn(
-                    "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[12px] font-bold transition",
+                    "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
                     active
-                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[var(--brand)]"
+                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
                       : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
                   )}
                 >
@@ -675,7 +1277,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
-            <Button variant="ghost" size="sm" className="h-8 w-full justify-start" onClick={() => void logout()}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-full justify-start text-[13px] font-bold text-[#475467] hover:bg-[#F7F8FC] hover:text-[#475467]"
+              onClick={() => void logout()}
+            >
               <LogOut size={14} className="mr-2" />
               Log Out
             </Button>
@@ -698,10 +1305,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div
-        className="min-w-0 overflow-x-hidden"
-        style={{ width: "100%", paddingLeft: 230 }}
+        className="min-w-0 overflow-x-hidden pt-14 lg:pt-0"
+        style={{ width: "100%", paddingLeft: 0 }}
       >
-        <main className="min-w-0 overflow-x-clip px-4 py-4 md:px-5">{children}</main>
+        <main className="min-w-0 overflow-x-clip px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4" style={{ paddingLeft: "max(12px, env(safe-area-inset-left))", paddingRight: "max(12px, env(safe-area-inset-right))", marginLeft: "0" }}>
+          <div className="lg:ml-[230px]">{children}</div>
+        </main>
       </div>
 
       {showNewProject && (
@@ -714,13 +1323,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           }}
         >
           <div
-            className="relative flex flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white p-4 shadow-xl"
-            style={{ width: 1000, height: 600, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)" }}
+            className="relative flex flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white p-3 shadow-xl sm:p-4"
+            style={{ width: "min(1000px, calc(100vw - 16px))", height: "min(600px, calc(100vh - 16px))" }}
           >
             <p className="text-[15px] font-extrabold uppercase tracking-[1px] text-[#12345B]">New Project</p>
-            <div className="relative mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
-              <div className="grid items-center gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="text-[11px] font-bold text-[#475467]">Project Name</p>
+            <div className="relative mt-3 flex-1 space-y-3 overflow-y-auto pr-0 sm:pr-1">
+              <div className={modalRowClass}>
+                <p className={modalLabelClass}>Project Name</p>
                 <input
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
@@ -728,8 +1337,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   placeholder="Project name"
                 />
               </div>
-              <div className="grid items-center gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="text-[11px] font-bold text-[#475467]">Client Name</p>
+              <div className={modalRowClass}>
+                <p className={modalLabelClass}>Client Name</p>
                 <input
                   value={clientName}
                   onChange={(e) => setClientName(e.target.value)}
@@ -737,8 +1346,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   placeholder="Client name"
                 />
               </div>
-              <div className="grid items-center gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="text-[11px] font-bold text-[#475467]">Client Phone</p>
+              <div className={modalRowClass}>
+                <p className={modalLabelClass}>Client Phone</p>
                 <input
                   value={clientPhone}
                   onChange={(e) => setClientPhone(formatMobileLikeDesktop(e.target.value))}
@@ -746,8 +1355,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   placeholder="021 234 5678"
                 />
               </div>
-              <div className="grid items-center gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="text-[11px] font-bold text-[#475467]">Client Email</p>
+              <div className={modalRowClass}>
+                <p className={modalLabelClass}>Client Email</p>
                 <input
                   value={clientEmail}
                   onChange={(e) => setClientEmail(e.target.value)}
@@ -755,8 +1364,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   placeholder="client@email.com"
                 />
               </div>
-              <div className="grid items-center gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="text-[11px] font-bold text-[#475467]">Project Address</p>
+              <div className={modalRowClass}>
+                <p className={modalLabelClass}>Project Address</p>
                 <input
                   value={projectAddress}
                   onChange={(e) => setProjectAddress(e.target.value)}
@@ -765,8 +1374,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
               </div>
               {projectAddress.trim().length > 5 && (
-                <div className="grid items-start gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                  <div />
+                <div className={modalRowClass}>
+                  <div className="hidden md:block" />
                   <div className="overflow-hidden rounded-[10px] border border-[#D8DEE8]">
                     <iframe
                       title="Address preview"
@@ -776,46 +1385,66 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </div>
                 </div>
               )}
-              <div className="grid items-start gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="pt-2 text-[11px] font-bold text-[#475467]">Tags</p>
+              <div className={modalRowClass}>
+                <p className={modalSectionLabelClass}>Tags</p>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={tagInput}
-                      onChange={(e) => setTagInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === ",") {
-                          e.preventDefault();
-                          addTag(tagInput);
-                        }
-                      }}
-                      className="h-9 flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                      placeholder="Type tag and press Enter"
-                      list="new-project-tag-suggestions"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => addTag(tagInput)}
-                      className="h-9 rounded-[8px] border border-[#CFE1FF] bg-[#EDF4FF] px-3 text-[12px] font-bold text-[#2F6BFF]"
-                    >
-                      Add
-                    </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {tags.map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => removeTag(tag)}
+                        className="inline-flex items-center gap-1 rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[2px] text-[12px] font-semibold text-[#7B8798] hover:bg-[#FDECEC] hover:text-[#B42318]"
+                        title="Delete tag"
+                      >
+                        <Tag size={11} />
+                        {tag}
+                      </button>
+                    ))}
+                    {tags.length < 5 && isTagInputOpen && (
+                      <input
+                        ref={newProjectTagInputRef}
+                        value={tagInput}
+                        onChange={(e) => setTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === ",") {
+                            e.preventDefault();
+                            const added = addTag(tagInput);
+                            if (added) {
+                              window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                            }
+                          }
+                          if (e.key === "Escape") {
+                            setTagInput("");
+                            setIsTagInputOpen(false);
+                          }
+                        }}
+                        className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
+                        placeholder="Tag"
+                        list="new-project-tag-suggestions"
+                      />
+                    )}
+                    {tags.length < 5 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!isTagInputOpen) {
+                            setIsTagInputOpen(true);
+                            window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                            return;
+                          }
+                          const added = addTag(tagInput);
+                          if (added) {
+                            window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                          }
+                        }}
+                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0]"
+                        aria-label="Add tag"
+                      >
+                        <Plus size={14} />
+                      </button>
+                    )}
                   </div>
-                  {!!tags.length && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {tags.map((tag) => (
-                        <button
-                          key={tag}
-                          type="button"
-                          onClick={() => removeTag(tag)}
-                          className="inline-flex items-center gap-1 rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[2px] text-[11px] font-bold text-[#475569]"
-                        >
-                          {tag}
-                          <X size={12} />
-                        </button>
-                      ))}
-                    </div>
-                  )}
                   {!!companyTagSuggestions.length && (
                     <datalist id="new-project-tag-suggestions">
                       {companyTagSuggestions.map((tag) => (
@@ -825,21 +1454,218 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   )}
                 </div>
               </div>
-              <div className="grid items-start gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="pt-2 text-[11px] font-bold text-[#475467]">Notes</p>
-                <textarea
-                  value={projectNotes}
-                  onChange={(e) => setProjectNotes(e.target.value)}
-                  className="w-full resize-none rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-2 text-[12px]"
-                  style={{ height: 88, minHeight: 88 }}
-                  placeholder="Project notes..."
-                />
-              </div>
-              <div className="grid items-start gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                <p className="pt-2 text-[11px] font-bold text-[#475467]">Photos (max 5)</p>
+              <div className={modalRowClass}>
+                <p className={modalSectionLabelClass}>Notes</p>
                 <div
-                  className="grid w-full gap-2"
-                  style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}
+                  ref={newProjectNotesContainerRef}
+                  className="w-full"
+                  onFocusCapture={() => setIsNewProjectNotesFocused(true)}
+                  onBlurCapture={(e) => {
+                    const next = e.relatedTarget as Node | null;
+                    if (next && newProjectNotesContainerRef.current?.contains(next)) return;
+                    setIsNewProjectNotesFocused(false);
+                  }}
+                >
+                  <div className="relative">
+                    {isNewProjectNotesFocused && (
+                      <div className="absolute inset-x-0 top-0 z-10 flex h-8 items-center gap-1 rounded-t-[8px] border-b border-[#D8DEE8] bg-[#F8FAFC] px-2">
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => applyNewProjectNotesFormat("bold")}
+                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-2 text-[12px] font-semibold ${
+                            newProjectNotesBoldActive
+                              ? "border-[#2F6BFF] bg-[#2F6BFF] text-white"
+                              : "border-[#D6DEE9] bg-white text-black"
+                          }`}
+                          title="Bold"
+                        >
+                          B
+                        </button>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => applyNewProjectNotesFormat("italic")}
+                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-2 text-[12px] font-semibold ${
+                            newProjectNotesItalicActive
+                              ? "border-[#2F6BFF] bg-[#2F6BFF] text-white"
+                              : "border-[#D6DEE9] bg-white text-black"
+                          }`}
+                          title="Italic"
+                        >
+                          I
+                        </button>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => applyNewProjectNotesFormat("strikeThrough")}
+                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-2 text-[12px] font-semibold ${
+                            newProjectNotesStrikeActive
+                              ? "border-[#2F6BFF] bg-[#2F6BFF] text-white"
+                              : "border-[#D6DEE9] bg-white text-black"
+                          }`}
+                          title="Strikethrough"
+                        >
+                          S
+                        </button>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            if (newProjectNotesBulletMode) {
+                              setNewProjectNotesBulletMode(false);
+                            } else {
+                              insertNewProjectNotesBullet();
+                              setNewProjectNotesBulletMode(true);
+                            }
+                            window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                          }}
+                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-1 ${
+                            newProjectNotesBulletMode
+                              ? "border-[#2F6BFF] bg-[#2F6BFF]"
+                              : "border-[#D6DEE9] bg-white"
+                          }`}
+                          title="Bulleted row"
+                        >
+                          <img
+                            src="/bulletpoint.png"
+                            alt="Bullet"
+                            className="h-3 w-3 object-contain"
+                            style={{ filter: newProjectNotesBulletMode ? "brightness(0) invert(1)" : "none" }}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={toggleNewProjectNotesParagraphMode}
+                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-1 ${
+                            newProjectNotesParagraphMode
+                              ? "border-[#2F6BFF] bg-[#2F6BFF]"
+                              : "border-[#D6DEE9] bg-white"
+                          }`}
+                          title="Paragraph indent"
+                        >
+                          <img
+                            src="/paragraph.png"
+                            alt="Paragraph"
+                            className="h-3 w-3 object-contain"
+                            style={{ filter: newProjectNotesParagraphMode ? "brightness(0) invert(1)" : "none" }}
+                          />
+                        </button>
+                      </div>
+                    )}
+                    {notesHtmlIsEmpty(projectNotes) && (
+                      <p className="pointer-events-none absolute left-2 text-[12px] text-[#98A2B3]" style={{ top: isNewProjectNotesFocused ? 34 : 8 }}>
+                        Project notes...
+                      </p>
+                    )}
+                    <div
+                      ref={newProjectNotesEditorRef}
+                      contentEditable
+                      suppressContentEditableWarning
+                      onFocus={() =>
+                        window.setTimeout(() => {
+                          refreshNewProjectNotesToolbarState();
+                          resizeNewProjectNotesEditor();
+                        }, 0)
+                      }
+                      onInput={(e) => {
+                        if (newProjectNotesParagraphMode) {
+                          ensureNewProjectNotesParagraphOnCurrentLine();
+                        }
+                        const editor = e.currentTarget;
+                        setProjectNotes(editor.innerHTML);
+                        resizeNewProjectNotesEditor();
+                        window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                      }}
+                      onKeyDown={(e) => {
+                        const editor = newProjectNotesEditorRef.current;
+                        if (!editor) return;
+                        if (e.key !== "Enter") {
+                          newProjectNotesLastEnterAtRef.current = 0;
+                          if (newProjectNotesParagraphMode) {
+                            ensureNewProjectNotesParagraphOnCurrentLine();
+                          }
+                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                          return;
+                        }
+                        if (newProjectNotesBulletMode) {
+                          if (isCurrentNewProjectNotesBulletLineEmpty()) {
+                            e.preventDefault();
+                            const currentBlock = currentNewProjectNotesBlock();
+                            setNewProjectNotesBulletMode(false);
+                            setNewProjectNotesParagraphMode(false);
+                            newProjectNotesLastEnterAtRef.current = 0;
+                            removeNewProjectNotesBulletPrefixFromCurrentLine();
+                            exitNewProjectNotesParagraphModeOnCurrentLine();
+                            if (currentBlock) {
+                              currentBlock.innerHTML = "";
+                              currentBlock.appendChild(document.createElement("br"));
+                            }
+                            placeCaretInNewProjectNotesLine(currentBlock);
+                            setProjectNotes(editor.innerHTML);
+                            resizeNewProjectNotesEditor();
+                            window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                            return;
+                          }
+                          e.preventDefault();
+                          insertNextNewProjectNotesBulletLine();
+                          setProjectNotes(editor.innerHTML);
+                          resizeNewProjectNotesEditor();
+                          newProjectNotesLastEnterAtRef.current = Date.now();
+                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                          return;
+                        }
+                        if (!newProjectNotesParagraphMode) {
+                          newProjectNotesLastEnterAtRef.current = Date.now();
+                          return;
+                        }
+                        if (isCurrentNewProjectNotesParagraphLineEmpty()) {
+                          e.preventDefault();
+                          setNewProjectNotesParagraphMode(false);
+                          newProjectNotesLastEnterAtRef.current = 0;
+                          exitNewProjectNotesParagraphModeOnCurrentLine();
+                          setProjectNotes(editor.innerHTML);
+                          resizeNewProjectNotesEditor();
+                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                          return;
+                        }
+                        const now = Date.now();
+                        if (now - newProjectNotesLastEnterAtRef.current <= 800) {
+                          e.preventDefault();
+                          setNewProjectNotesParagraphMode(false);
+                          newProjectNotesLastEnterAtRef.current = 0;
+                          exitNewProjectNotesParagraphModeOnCurrentLine();
+                          setProjectNotes(editor.innerHTML);
+                          resizeNewProjectNotesEditor();
+                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                          return;
+                        }
+                        e.preventDefault();
+                        try {
+                          document.execCommand("insertHTML", false, "<div class=\"notes-paragraph-line\"><br></div>");
+                        } catch {
+                          // no-op
+                        }
+                        newProjectNotesLastEnterAtRef.current = now;
+                        setProjectNotes(editor.innerHTML);
+                        resizeNewProjectNotesEditor();
+                        window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
+                      }}
+                      className="notes-rich min-h-[88px] w-full overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#2F3F56] focus:outline-none"
+                      style={{
+                        paddingTop: isNewProjectNotesFocused ? 34 : 8,
+                        paddingBottom: 8,
+                        height: newProjectNotesHeight,
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className={modalRowClass}>
+                <p className={modalSectionLabelClass}>Photos (max 5)</p>
+                <div
+                  className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5"
                 >
                   {Array.from({ length: Math.min(photos.length + 1, 5) }).map((_, idx) => {
                     const photo = photos[idx] ?? null;
@@ -945,8 +1771,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </div>
               </div>
               {canCreateForOthers && (
-                <div className="grid items-start gap-3" style={{ gridTemplateColumns: "220px minmax(0, 1fr)" }}>
-                  <p className="pt-2 text-[11px] font-bold text-[#475467]">Assign Project To</p>
+                <div className={modalRowClass}>
+                  <p className={modalSectionLabelClass}>Assign Project To</p>
                   <div className="relative">
                     <button
                       type="button"
@@ -1075,14 +1901,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
               </button>
             )}
-            <div className="mt-4 flex items-center justify-end gap-2">
+            <div className="mt-4 flex flex-col-reverse items-stretch justify-end gap-2 sm:flex-row sm:items-center">
               <button
                 type="button"
                 onClick={() => {
                   setShowNewProject(false);
                   resetProjectForm();
                 }}
-                className="h-9 rounded-[9px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#334155]"
+                className="h-9 rounded-[9px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] sm:w-auto"
               >
                 Cancel
               </button>
@@ -1090,7 +1916,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 type="button"
                 disabled={creatingProject}
                 onClick={() => void onCreateProject()}
-                className="h-9 rounded-[9px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] disabled:opacity-55"
+                className="h-9 rounded-[9px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] disabled:opacity-55 sm:w-auto"
               >
                 {creatingProject ? "Creating..." : "Create Project"}
               </button>
