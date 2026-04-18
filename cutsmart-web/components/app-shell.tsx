@@ -994,6 +994,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         projectPermissions: {},
       };
       const sales = {
+        rooms: [],
         quoteExtrasIncluded: defaultQuoteExtras,
       };
       await setDoc(doc(db, "companies", companyId, "jobs", projectId), {
