@@ -1,0 +1,6 @@
+# One email per line. These users are application-wide Dev users.
+# Example:
+# yourname@example.com
+
+josh@mykitchenmakeover.co.nz
+

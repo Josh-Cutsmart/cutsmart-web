@@ -343,6 +343,22 @@ async function patchCompanyTagUsageByDelta(
   }
 }
 
+export async function updateCompanyProjectTagUsage(
+  companyId: string,
+  previousTags: string[],
+  nextTags: string[],
+): Promise<void> {
+  const cid = String(companyId || "").trim();
+  if (!cid) return;
+  await patchCompanyTagUsageByDelta(cid, normalizeTagList(previousTags), normalizeTagList(nextTags));
+}
+
+export async function resyncCompanyProjectTagUsage(companyId: string): Promise<void> {
+  const cid = String(companyId || "").trim();
+  if (!cid) return;
+  await syncCompanyProjectTagUsage(cid);
+}
+
 function normalizeJobProject(companyId: string, docSnap: QueryDocumentSnapshot): Project {
   const data = (docSnap.data() ?? {}) as Record<string, unknown>;
   const projectId = String(data.id ?? docSnap.id);
@@ -838,6 +854,23 @@ export interface UserNotificationRow {
   createdAtIso: string;
 }
 
+export type AppReportKind = "issue" | "feature";
+
+export interface AppReportRow {
+  id: string;
+  kind: AppReportKind;
+  deviceType: "desktop" | "tablet" | "mobile" | "";
+  subject: string;
+  body: string;
+  createdAtIso: string;
+  appVersion: string;
+  reporterEmail: string;
+  reporterName: string;
+  reporterUid: string;
+  completed: boolean;
+  completedAtIso: string;
+}
+
 function normalizeNameKey(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -990,48 +1023,52 @@ export async function updateProjectTags(
 
   const cleanedTags = normalizeTagList(tags);
   const previousCleaned = normalizeTagList(previousTags ?? project.tags ?? []);
+  const patch = {
+    tags: cleanedTags,
+    updatedAtIso: new Date().toISOString(),
+  };
+
+  let updated = false;
+
+  if (project.companyId) {
+    try {
+      const directJobRef = doc(db, "companies", project.companyId, "jobs", project.id);
+      const directJobSnap = await getDoc(directJobRef);
+      if (directJobSnap.exists()) {
+        await updateDoc(directJobRef, patch);
+        updated = true;
+      } else {
+        const jobsQ = query(
+          collection(db, "companies", project.companyId, "jobs"),
+          where("id", "==", project.id),
+          limit(1),
+        );
+        const jobsSnap = await getDocs(jobsQ);
+        if (!jobsSnap.empty) {
+          await updateDoc(jobsSnap.docs[0].ref, patch);
+          updated = true;
+        }
+      }
+      if (updated) {
+        await patchCompanyTagUsageByDelta(project.companyId, previousCleaned, cleanedTags);
+      }
+    } catch {
+      // keep trying top-level mirror/fallback
+    }
+  }
 
   try {
     const topLevelRef = doc(db, "projects", project.id);
     const topLevelSnap = await getDoc(topLevelRef);
     if (topLevelSnap.exists()) {
-      await updateDoc(topLevelRef, {
-        tags: cleanedTags,
-        updatedAtIso: new Date().toISOString(),
-      });
-      if (project.companyId) {
-        await patchCompanyTagUsageByDelta(project.companyId, previousCleaned, cleanedTags);
-      }
-      return true;
+      await updateDoc(topLevelRef, patch);
+      updated = true;
     }
   } catch {
-    // continue into nested company/jobs fallback
+    // ignore legacy mirror failure
   }
 
-  if (!project.companyId) {
-    return false;
-  }
-
-  try {
-    const jobsQ = query(
-      collection(db, "companies", project.companyId, "jobs"),
-      where("id", "==", project.id),
-      limit(1),
-    );
-    const jobsSnap = await getDocs(jobsQ);
-    if (jobsSnap.empty) {
-      return false;
-    }
-
-    await updateDoc(jobsSnap.docs[0].ref, {
-      tags: cleanedTags,
-      updatedAtIso: new Date().toISOString(),
-    });
-    await patchCompanyTagUsageByDelta(project.companyId, previousCleaned, cleanedTags);
-    return true;
-  } catch {
-    return false;
-  }
+  return updated;
 }
 
 export async function softDeleteProject(project: Project): Promise<boolean> {
@@ -1482,6 +1519,64 @@ export async function saveCompanyDocPatchDetailed(
   }
 }
 
+export async function removeTagsFromCompanyProjects(companyId: string, tagsToRemove: string[]): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) {
+    return false;
+  }
+
+  const removeSet = new Set(
+    (Array.isArray(tagsToRemove) ? tagsToRemove : [])
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if (!removeSet.size) {
+    return true;
+  }
+
+  try {
+    const jobsSnap = await getDocs(collection(db, "companies", cid, "jobs"));
+    let batch = writeBatch(db);
+    let ops = 0;
+    let changed = 0;
+
+    for (const job of jobsSnap.docs) {
+      const data = (job.data() ?? {}) as Record<string, unknown>;
+      const currentTags = normalizeTagList(Array.isArray(data.tags) ? data.tags : []);
+      if (!currentTags.length) continue;
+
+      const nextTags = currentTags.filter((tag) => !removeSet.has(String(tag || "").trim().toLowerCase()));
+      if (nextTags.length === currentTags.length) continue;
+
+      batch.update(job.ref, {
+        tags: nextTags,
+        updatedAt: serverTimestamp(),
+        updatedAtIso: new Date().toISOString(),
+      });
+      ops += 1;
+      changed += 1;
+
+      if (ops >= 450) {
+        await batch.commit();
+        batch = writeBatch(db);
+        ops = 0;
+      }
+    }
+
+    if (ops > 0) {
+      await batch.commit();
+    }
+
+    if (changed > 0) {
+      await syncCompanyProjectTagUsage(cid);
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchUserNotifications(uid: string): Promise<UserNotificationRow[]> {
   const userId = String(uid || "").trim();
   if (!db || !userId) {
@@ -1707,4 +1802,137 @@ export async function fetchUserColorMapByUids(uids: string[]): Promise<Record<st
   );
 
   return out;
+}
+
+export async function submitAppReport(input: {
+  kind: AppReportKind;
+  deviceType?: "desktop" | "tablet" | "mobile" | "";
+  subject: string;
+  body: string;
+  appVersion: string;
+  reporterUid: string;
+  reporterEmail: string;
+  reporterName: string;
+}): Promise<boolean> {
+  if (!db) return false;
+  const kind = String(input.kind || "").trim().toLowerCase();
+  if (kind !== "issue" && kind !== "feature") return false;
+  const subject = String(input.subject || "").trim();
+  const body = String(input.body || "").trim();
+  const deviceTypeRaw = String(input.deviceType || "").trim().toLowerCase();
+  const deviceType =
+    deviceTypeRaw === "desktop" || deviceTypeRaw === "tablet" || deviceTypeRaw === "mobile"
+      ? deviceTypeRaw
+      : "";
+  if (!subject || !body) return false;
+  const reporterUid = String(input.reporterUid || "").trim();
+  const reporterEmail = String(input.reporterEmail || "").trim();
+  const reporterName = String(input.reporterName || "").trim();
+  if (!reporterUid || !reporterEmail) return false;
+  const nowIso = new Date().toISOString();
+  try {
+    const reportRef = doc(collection(db, "appReports"));
+    await setDoc(reportRef, {
+      id: reportRef.id,
+      kind,
+      deviceType,
+      subject,
+      body,
+      appVersion: String(input.appVersion || "").trim(),
+      reporterUid,
+      reporterEmail,
+      reporterName,
+      completed: false,
+      completedAtIso: "",
+      createdAt: serverTimestamp(),
+      createdAtIso: nowIso,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: nowIso,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchAppReports(): Promise<AppReportRow[]> {
+  if (!db) return [];
+  try {
+    const snap = await getDocs(query(collection(db, "appReports"), orderBy("createdAt", "desc"), limit(500)));
+    return snap.docs
+      .map((docSnap) => {
+        const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+        const kindRaw = String(data.kind ?? "").trim().toLowerCase();
+        const kind: AppReportKind = kindRaw === "feature" ? "feature" : "issue";
+        return {
+          id: String(data.id ?? docSnap.id),
+          kind,
+          deviceType: ((): AppReportRow["deviceType"] => {
+            const raw = String(data.deviceType ?? "").trim().toLowerCase();
+            return raw === "desktop" || raw === "tablet" || raw === "mobile" ? raw : "";
+          })(),
+          subject: String(data.subject ?? ""),
+          body: String(data.body ?? ""),
+          createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+          appVersion: String(data.appVersion ?? ""),
+          reporterEmail: String(data.reporterEmail ?? ""),
+          reporterName: String(data.reporterName ?? ""),
+          reporterUid: String(data.reporterUid ?? ""),
+          completed: Boolean(data.completed),
+          completedAtIso: toIsoString(data.completedAtIso ?? data.completedAt, ""),
+        } as AppReportRow;
+      })
+      .filter((row) => row.subject || row.body);
+  } catch {
+    return [];
+  }
+}
+
+export async function setAppReportCompleted(reportId: string, completed: boolean): Promise<boolean> {
+  if (!db) return false;
+  const id = String(reportId || "").trim();
+  if (!id) return false;
+  const nowIso = new Date().toISOString();
+  try {
+    await updateDoc(doc(db, "appReports", id), {
+      completed: Boolean(completed),
+      completedAt: Boolean(completed) ? serverTimestamp() : null,
+      completedAtIso: Boolean(completed) ? nowIso : "",
+      updatedAt: serverTimestamp(),
+      updatedAtIso: nowIso,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cleanupCompletedReportsForNewVersion(currentVersion: string): Promise<boolean> {
+  if (!db) return false;
+  const normalizedVersion = String(currentVersion || "").trim().replace(/^v+/i, "");
+  if (!normalizedVersion) return false;
+  const markerRef = doc(db, "appMeta", "reportsCleanup");
+  try {
+    const markerSnap = await getDoc(markerRef);
+    const lastVersion = markerSnap.exists()
+      ? String((markerSnap.data() as Record<string, unknown>).lastVersion ?? "").trim().replace(/^v+/i, "")
+      : "";
+    if (lastVersion === normalizedVersion) {
+      return true;
+    }
+
+    // Keep completed entries so devs can review history across versions.
+    await setDoc(
+      markerRef,
+      {
+        lastVersion: normalizedVersion,
+        updatedAt: serverTimestamp(),
+        updatedAtIso: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -22,13 +22,21 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { fetchCompanyDoc, fetchCompanyMembers } from "@/lib/firestore-data";
+import {
+  cleanupCompletedReportsForNewVersion,
+  fetchCompanyDoc,
+  fetchCompanyMembers,
+  resyncCompanyProjectTagUsage,
+  saveCompanyDocPatchDetailed,
+} from "@/lib/firestore-data";
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { fetchPrimaryMembership } from "@/lib/membership";
+import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
+const UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX = "cutsmart_update_notice_seen_";
 
 type CompanyBrandingCache = {
   themeColor: string;
@@ -42,6 +50,7 @@ const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
   { href: "/company-updates", label: "Company Updates", icon: Waves },
+  { href: "/changelog", label: "Changelog", icon: Search },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
 ];
 
@@ -115,7 +124,7 @@ type PreviewAnimState = {
   to: PreviewRect;
 };
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, hideSidebar = false }: { children: React.ReactNode; hideSidebar?: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
@@ -136,6 +145,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [tagInput, setTagInput] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [isTagInputOpen, setIsTagInputOpen] = useState(false);
+  const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [hoveredPhotoId, setHoveredPhotoId] = useState("");
   const [previewPhotoId, setPreviewPhotoId] = useState("");
@@ -149,6 +159,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [projectFormError, setProjectFormError] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [showUpdateNotice, setShowUpdateNotice] = useState(false);
+  const [updateNoticeVersion, setUpdateNoticeVersion] = useState("");
+  const [updateNoticeText, setUpdateNoticeText] = useState("");
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [companyLogoPath, setCompanyLogoPath] = useState("");
   const [companyDisplayName, setCompanyDisplayName] = useState("");
@@ -287,6 +300,80 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
     void load();
   }, [user?.companyId, user?.uid]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const uid = String(user?.uid || "").trim();
+    if (!uid) {
+      setUpdateNoticeVersion("");
+      setUpdateNoticeText("");
+      setShowUpdateNotice(false);
+      return;
+    }
+    let cancelled = false;
+    const loadUpdateNotes = async () => {
+      try {
+        const res = await fetch("/update-notes.txt", { cache: "no-store" });
+        if (!res.ok) throw new Error(`Failed to load update notes (${res.status})`);
+        const raw = await res.text();
+        if (cancelled) return;
+        const parsed = parseUpdateNotesText(raw);
+        const version = String(parsed.version || "").trim();
+        const whatsNew = String(parsed.whatsNew || "").trim();
+        setUpdateNoticeVersion(version);
+        const storedCompanyId =
+          typeof window !== "undefined"
+            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+            : "";
+        const directCompanyId = String(user?.companyId || "").trim();
+        const fallbackMembership = !directCompanyId && uid ? await fetchPrimaryMembership(uid) : null;
+        const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
+        if (version && companyId) {
+          const companyDocData = await fetchCompanyDoc(companyId);
+          const existing = normalizeChangelogHistory((companyDocData as Record<string, unknown> | null)?.changelogHistory);
+          const matched = existing.find(
+            (row) => String(row.version || "").trim().toLowerCase() === version.toLowerCase(),
+          );
+          const canonicalWhatsNew = String(matched?.whatsNew || whatsNew || "").trim();
+          setUpdateNoticeText(canonicalWhatsNew);
+          const alreadyExists = Boolean(matched);
+          if (!alreadyExists) {
+            const nextHistory = [
+              ...existing,
+              {
+                version,
+                whatsNew: canonicalWhatsNew,
+                capturedAtIso: new Date().toISOString(),
+              },
+            ];
+            await saveCompanyDocPatchDetailed(companyId, { changelogHistory: nextHistory });
+          }
+        } else {
+          setUpdateNoticeText(whatsNew);
+        }
+        if (version) {
+          // App-wide cleanup: completed reports/features are removed once per new version.
+          await cleanupCompletedReportsForNewVersion(version);
+        }
+        if (!version) {
+          setShowUpdateNotice(false);
+          return;
+        }
+        const seenKey = `${UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX}${uid}_${version}`;
+        const seen = window.localStorage.getItem(seenKey) === "1";
+        setShowUpdateNotice(!seen);
+      } catch {
+        if (cancelled) return;
+        setUpdateNoticeVersion("");
+        setUpdateNoticeText("");
+        setShowUpdateNotice(false);
+      }
+    };
+    void loadUpdateNotes();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, user?.companyId]);
 
   useEffect(() => {
     const openNewProject = () => setShowNewProject(true);
@@ -443,6 +530,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setPreviewClosePopped(false);
   }, [previewAnim?.phase]);
 
+  const dismissUpdateNotice = () => {
+    if (typeof window !== "undefined") {
+      const version = String(updateNoticeVersion || "").trim();
+      const uid = String(user?.uid || "").trim();
+      if (version && uid) {
+        window.localStorage.setItem(`${UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX}${uid}_${version}`, "1");
+      }
+    }
+    setShowUpdateNotice(false);
+  };
+
   const resetProjectForm = () => {
     for (const photo of photos) {
       try {
@@ -467,6 +565,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setTagInput("");
     setTags([]);
     setIsTagInputOpen(false);
+    setShowTagSuggestions(false);
     setPhotos([]);
     setPreviewPhotoId("");
     setPreviewAnim(null);
@@ -926,6 +1025,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return staffOptions.filter((s) => `${s.name} ${s.email}`.toLowerCase().includes(q));
   }, [staffOptions, assigneeSearch]);
 
+  const availableTagSuggestions = useMemo(
+    () =>
+      companyTagSuggestions.filter(
+        (value) => !tags.some((tag) => tag.toLowerCase() === String(value || "").toLowerCase()),
+      ),
+    [companyTagSuggestions, tags],
+  );
+
+  const filteredTagSuggestions = useMemo(() => {
+    const q = String(tagInput || "").trim().toLowerCase();
+    if (!q) return availableTagSuggestions.slice(0, 25);
+    const starts = availableTagSuggestions.filter((tag) => String(tag || "").toLowerCase().startsWith(q));
+    const contains = availableTagSuggestions.filter(
+      (tag) => !String(tag || "").toLowerCase().startsWith(q) && String(tag || "").toLowerCase().includes(q),
+    );
+    return [...starts, ...contains].slice(0, 25);
+  }, [availableTagSuggestions, tagInput]);
+
   const onCreateProject = async () => {
     if (creatingProject) return;
     const name = String(projectName || "").trim();
@@ -1028,6 +1145,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         sales,
         salesJson: JSON.stringify(sales),
       });
+      if (tags.length > 0) {
+        await resyncCompanyProjectTagUsage(companyId);
+      }
       setShowNewProject(false);
       resetProjectForm();
       router.push(`/projects/${projectId}`);
@@ -1051,14 +1171,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[var(--bg-app)]">
       <header className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden">
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setMobileNavOpen(true)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#334155]"
-            aria-label="Open menu"
-          >
-            <Menu size={18} />
-          </button>
+          {!hideSidebar && (
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(true)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#334155]"
+              aria-label="Open menu"
+            >
+              <Menu size={18} />
+            </button>
+          )}
           {isProjectDetailsRoute && (
             <button
               type="button"
@@ -1094,7 +1216,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </header>
 
-      {mobileNavOpen && (
+      {!hideSidebar && mobileNavOpen && (
         <div className="fixed inset-0 z-[120] lg:hidden">
           <button
             type="button"
@@ -1109,7 +1231,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <img
                     src={companyLogoPath}
                     alt={`${companyDisplayName} logo`}
-                    className="block h-[42px] w-auto object-contain"
+                    className="block h-auto w-full object-contain"
+                    style={{ maxHeight: 100 }}
                     onError={(e) => {
                       e.currentTarget.style.display = "none";
                     }}
@@ -1206,6 +1329,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       )}
 
+      {!hideSidebar && (
       <aside
         className="z-[70] hidden w-[230px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white lg:flex"
         style={{ position: "fixed", left: 0, top: 0, height: "100vh" }}
@@ -1216,7 +1340,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <img
                 src={companyLogoPath}
                 alt={`${companyDisplayName} logo`}
-                className="block h-[42px] w-auto object-contain"
+                className="block h-auto w-full object-contain"
+                style={{ maxHeight: 100 }}
                 onError={(e) => {
                   e.currentTarget.style.display = "none";
                 }}
@@ -1304,15 +1429,50 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </aside>
+      )}
 
       <div
         className="min-w-0 overflow-x-hidden pt-14 lg:pt-0"
         style={{ width: "100%", paddingLeft: 0 }}
       >
         <main className="min-w-0 overflow-x-clip px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4" style={{ paddingLeft: "max(12px, env(safe-area-inset-left))", paddingRight: "max(12px, env(safe-area-inset-right))", marginLeft: "0" }}>
-          <div className="lg:ml-[230px]">{children}</div>
+          <div className={hideSidebar ? "" : "lg:ml-[230px]"}>{children}</div>
         </main>
       </div>
+
+      {showUpdateNotice && (
+        <div
+          className="fixed inset-0 z-[8900] flex items-center justify-center px-4"
+          style={{
+            backgroundColor: "rgba(8,12,20,0.52)",
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+          }}
+        >
+          <div className="relative flex w-[min(860px,calc(100vw-20px))] max-h-[min(80vh,720px)] flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-xl text-black">
+            <div className="flex h-[50px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-[#F8FAFC] px-3">
+              <p className="text-[20px] font-medium uppercase tracking-[1px] text-black">
+                Updated to {updateNoticeVersion || "Unknown Version"}
+              </p>
+              <button
+                type="button"
+                onClick={dismissUpdateNotice}
+                className="h-8 rounded-[9px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+              >
+                OK
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
+              <div
+                className="text-[15px] leading-7 text-black"
+                dangerouslySetInnerHTML={{
+                  __html: updateNotesToDisplayHtml(updateNoticeText || "- No update notes provided."),
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {showNewProject && (
         <div
@@ -1403,27 +1563,56 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       </button>
                     ))}
                     {tags.length < 5 && isTagInputOpen && (
-                      <input
-                        ref={newProjectTagInputRef}
-                        value={tagInput}
-                        onChange={(e) => setTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === ",") {
-                            e.preventDefault();
-                            const added = addTag(tagInput);
-                            if (added) {
-                              window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                      <div className="relative">
+                        <input
+                          ref={newProjectTagInputRef}
+                          value={tagInput}
+                          onFocus={() => setShowTagSuggestions(true)}
+                          onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
+                          onChange={(e) => {
+                            setTagInput(e.target.value);
+                            setShowTagSuggestions(true);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === ",") {
+                              e.preventDefault();
+                              const added = addTag(tagInput);
+                              if (added) {
+                                setShowTagSuggestions(true);
+                                window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                              }
                             }
-                          }
-                          if (e.key === "Escape") {
-                            setTagInput("");
-                            setIsTagInputOpen(false);
-                          }
-                        }}
-                        className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
-                        placeholder="Tag"
-                        list="new-project-tag-suggestions"
-                      />
+                            if (e.key === "Escape") {
+                              setTagInput("");
+                              setShowTagSuggestions(false);
+                              setIsTagInputOpen(false);
+                            }
+                          }}
+                          className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
+                          placeholder="Tag"
+                        />
+                        {showTagSuggestions && filteredTagSuggestions.length > 0 && (
+                          <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                            {filteredTagSuggestions.map((tag) => (
+                              <button
+                                key={tag}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  const added = addTag(tag);
+                                  if (added) {
+                                    setShowTagSuggestions(true);
+                                    window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
+                                  }
+                                }}
+                                className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                              >
+                                {tag}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     )}
                     {tags.length < 5 && (
                       <button
@@ -1431,11 +1620,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         onClick={() => {
                           if (!isTagInputOpen) {
                             setIsTagInputOpen(true);
+                            setShowTagSuggestions(true);
                             window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
                             return;
                           }
                           const added = addTag(tagInput);
                           if (added) {
+                            setShowTagSuggestions(true);
                             window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
                           }
                         }}
@@ -1446,13 +1637,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       </button>
                     )}
                   </div>
-                  {!!companyTagSuggestions.length && (
-                    <datalist id="new-project-tag-suggestions">
-                      {companyTagSuggestions.map((tag) => (
-                        <option key={tag} value={tag} />
-                      ))}
-                    </datalist>
-                  )}
                 </div>
               </div>
               <div className={modalRowClass}>

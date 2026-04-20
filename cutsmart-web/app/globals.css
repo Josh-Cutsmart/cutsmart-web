@@ -117,3 +117,38 @@ body.new-project-open .project-image-nav-arrow {
   width: 0;
   height: 0;
 }
+
+.changelog-version-scroll {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.changelog-version-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.changelog-content-scroll {
+  overflow-y: scroll !important;
+  scrollbar-gutter: stable;
+  -ms-overflow-style: auto;
+  scrollbar-width: auto !important;
+  scrollbar-color: #5b6577 #d5dde8 !important;
+}
+
+.changelog-content-scroll::-webkit-scrollbar {
+  display: block !important;
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.changelog-content-scroll::-webkit-scrollbar-track {
+  background: #d5dde8 !important;
+}
+
+.changelog-content-scroll::-webkit-scrollbar-thumb {
+  background: #5b6577 !important;
+  border: 2px solid #d5dde8 !important;
+  border-radius: 999px !important;
+}

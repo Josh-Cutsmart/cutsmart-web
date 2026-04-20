@@ -21,6 +21,7 @@ import {
   fetchProjectById,
   fetchQuotes,
   grantTempProductionAccess,
+  resyncCompanyProjectTagUsage,
   saveCompanyDocPatch,
   softDeleteProject,
   updateProjectPatch,
@@ -959,6 +960,7 @@ function DrawerHeightDropdown({
 
   const heightCls = compact ? "h-6 text-[11px]" : "h-8 text-[12px]";
   const summaryValue = summarizeDrawerHeightTokens(String(value || ""));
+  const displayValue = summaryValue || String(value || "").trim() || "\u00A0";
   const hoverPreview = summaryValue || String(value || "").trim();
   const showHoverPreview = hoverPreview.length > 0 && isOverflowing;
   const shouldExpand = showHoverPreview && hoverExpand && !open;
@@ -994,7 +996,7 @@ function DrawerHeightDropdown({
   }, [shouldExpand]);
 
   return (
-    <div ref={hostRef} className="relative min-w-0 overflow-visible">
+    <div ref={hostRef} className={`relative w-full min-w-0 overflow-visible ${open ? "z-[2147483646]" : ""}`}>
       <button
         ref={buttonRef}
         type="button"
@@ -1018,8 +1020,8 @@ function DrawerHeightDropdown({
           color: text,
         }}
       >
-        <span ref={labelRef} className="truncate">{summaryValue || value || ""}</span>
-        <ChevronDown size={compact ? 13 : 14} />
+        <span ref={labelRef} className="min-w-0 flex-1 truncate leading-[1]">{displayValue}</span>
+        <ChevronDown size={compact ? 13 : 14} className="ml-2 shrink-0 self-center" />
       </button>
       {shouldExpand && hoverRect && (
         <div
@@ -1038,11 +1040,11 @@ function DrawerHeightDropdown({
           }}
         >
           <span className="whitespace-nowrap pr-2">{hoverPreview}</span>
-          <ChevronDown size={compact ? 13 : 14} />
+          <ChevronDown size={compact ? 13 : 14} className="ml-2 shrink-0 self-center" />
         </div>
       )}
       {open && !disabled && (
-        <div className="absolute left-0 top-[calc(100%+2px)] z-40 min-w-[220px] rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]">
+        <div className="absolute left-0 top-[calc(100%+2px)] z-[2147483647] min-w-[220px] rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]">
           {options.length === 0 ? (
             <p className="px-2 py-1 text-[11px] text-[#64748B]">No heights configured</p>
           ) : (
@@ -1081,17 +1083,145 @@ function DrawerHeightDropdown({
 
 type BoardPillDropdownProps = {
   value: string;
-  options: string[];
+  options: readonly string[];
   disabled?: boolean;
   bg: string;
   border: string;
   text: string;
+  size?: "default" | "compact";
   className?: string;
   title?: string;
+  matchDrawerArrow?: boolean;
   getSize: (value: string) => string;
   getLabel: (value: string) => string;
   onChange: (value: string) => void;
 };
+
+type CompactPlainDropdownProps = {
+  value: string;
+  options: readonly string[];
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  placeholder?: string;
+};
+
+function CompactPlainDropdown({
+  value,
+  options,
+  disabled,
+  onChange,
+  placeholder = "",
+}: CompactPlainDropdownProps) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshRect = () => {
+    if (!buttonRef.current) return;
+    const r = buttonRef.current.getBoundingClientRect();
+    setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    refreshRect();
+    const onDocDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inHost = Boolean(hostRef.current?.contains(target));
+      const inMenu = Boolean(menuRef.current?.contains(target));
+      if (!inHost && !inMenu) setOpen(false);
+    };
+    const onWin = () => refreshRect();
+    document.addEventListener("mousedown", onDocDown);
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [open]);
+
+  const selected = String(value ?? "").trim();
+
+  return (
+    <div ref={hostRef} data-cutlist-clash-dropdown="1" className="relative z-[60] pointer-events-auto">
+      <button
+        ref={buttonRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className="pointer-events-auto h-6 w-full rounded-[4px] border border-[#94A3B8] bg-white px-1 pr-5 text-left text-[11px] text-[#0F172A] disabled:opacity-70"
+      >
+        <span className="truncate">{selected || placeholder}</span>
+        <ChevronDown size={12} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[#0F172A]" />
+      </button>
+      {open && rect && !disabled && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
+          <div
+            ref={menuRef}
+            data-cutlist-clash-dropdown="1"
+            className="pointer-events-auto fixed max-h-[220px] overflow-auto rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
+            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onClick={() => {
+                onChange("");
+                setOpen(false);
+              }}
+              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[#64748B] hover:bg-[#F8FAFC]"
+            >
+              <span className="truncate"></span>
+            </button>
+            {options.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={() => {
+                  onChange(opt);
+                  setOpen(false);
+                }}
+                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[#0F172A] hover:bg-[#F8FAFC]"
+              >
+                <span className="truncate">{opt}</span>
+              </button>
+            ))}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+function hasShelfQuantity(value: unknown): boolean {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  const numeric = Number.parseFloat(text);
+  return Number.isFinite(numeric) && numeric >= 1;
+}
+
+function numericOnlyText(value: unknown): string {
+  return String(value ?? "").replace(/[^\d]/g, "");
+}
+
+function isNumericCutlistInputKey(key: string): boolean {
+  return key === "height" || key === "width" || key === "depth" || key === "quantity";
+}
 
 function BoardPillDropdown({
   value,
@@ -1100,8 +1230,10 @@ function BoardPillDropdown({
   bg,
   border,
   text,
+  size = "default",
   className,
   title,
+  matchDrawerArrow = false,
   getSize,
   getLabel,
   onChange,
@@ -1141,6 +1273,7 @@ function BoardPillDropdown({
 
   const selectedSize = getSize(value);
   const selectedLabel = getLabel(value);
+  const compact = size === "compact";
 
   return (
     <div ref={hostRef} className="relative z-[60] pointer-events-auto">
@@ -1150,29 +1283,51 @@ function BoardPillDropdown({
         disabled={disabled}
         title={title}
         onClick={() => setOpen((v) => !v)}
-        className={`pointer-events-auto h-8 w-full rounded-[8px] border px-2 text-left text-[12px] disabled:opacity-70 ${className ?? ""}`}
+        className={`pointer-events-auto relative w-full border text-left disabled:opacity-70 ${compact ? "h-6 rounded-[4px] px-1 text-[11px]" : "h-8 rounded-[8px] px-2 text-[12px]"} ${className ?? ""}`}
         style={{ backgroundColor: bg, borderColor: border, color: text }}
       >
-        <span className="inline-flex w-full items-center justify-between gap-2">
-          <span className="inline-flex min-w-0 items-center gap-2">
-            {!!selectedSize && (
-              <span
-                className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
-                style={{ backgroundColor: darkenHex(bg, 0.15), color: text }}
-              >
-                {selectedSize}
+        {compact ? (
+          <>
+            <span className={`inline-flex w-full min-w-0 items-center ${matchDrawerArrow ? "" : "pr-4"}`}>
+              <span className="inline-flex min-w-0 items-center gap-2">
+                {!!selectedSize && (
+                  <span
+                    className="inline-flex h-4 min-w-[24px] items-center justify-center rounded-[999px] px-1.5 text-[9px] font-bold"
+                    style={{ backgroundColor: darkenHex(bg, 0.15), color: text }}
+                  >
+                    {selectedSize}
+                  </span>
+                )}
+                <span className="truncate">{selectedLabel}</span>
               </span>
-            )}
-            <span className="truncate">{selectedLabel}</span>
+            </span>
+            <ChevronDown
+              size={12}
+              className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2"
+            />
+          </>
+        ) : (
+          <span className="inline-flex w-full items-center gap-2 pr-5">
+            <span className="inline-flex min-w-0 items-center gap-2">
+              {!!selectedSize && (
+                <span
+                  className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
+                  style={{ backgroundColor: darkenHex(bg, 0.15), color: text }}
+                >
+                  {selectedSize}
+                </span>
+              )}
+              <span className="truncate">{selectedLabel}</span>
+            </span>
+            <ChevronDown size={14} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2" />
           </span>
-          <ChevronDown size={14} />
-        </span>
+        )}
       </button>
       {open && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
           <div
             ref={menuRef}
-            className="pointer-events-auto fixed max-h-[280px] overflow-auto rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
+            className={`pointer-events-auto fixed overflow-auto border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)] ${compact ? "max-h-[240px] rounded-[8px]" : "max-h-[280px] rounded-[8px]"}`}
             style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
@@ -1183,7 +1338,7 @@ function BoardPillDropdown({
                 onChange("");
                 setOpen(false);
               }}
-              className="flex h-8 w-full items-center rounded-[6px] px-2 text-left text-[12px] text-[#64748B] hover:bg-[#F8FAFC]"
+              className={`flex w-full items-center text-left text-[#64748B] hover:bg-[#F8FAFC] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
             >
               <span className="truncate"></span>
             </button>
@@ -1198,15 +1353,15 @@ function BoardPillDropdown({
                     e.preventDefault();
                     e.stopPropagation();
                   }}
-                  onClick={() => {
-                    onChange(opt);
-                    setOpen(false);
-                  }}
-                  className="flex h-8 w-full items-center rounded-[6px] px-2 text-left text-[12px] text-[#0F172A] hover:bg-[#F8FAFC]"
+                    onClick={() => {
+                      onChange(opt);
+                      setOpen(false);
+                    }}
+                   className={`flex w-full items-center text-left text-[#0F172A] hover:bg-[#F8FAFC] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
                 >
                   <span className="inline-flex min-w-0 items-center gap-2">
                   {!!sz && (
-                    <span className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] bg-[#B6C3D4] px-2 text-[10px] font-bold text-[#0F172A]">
+                    <span className={`inline-flex items-center justify-center rounded-[999px] bg-[#B6C3D4] font-bold text-[#0F172A] ${compact ? "h-4 min-w-[24px] px-1.5 text-[9px]" : "h-5 min-w-[28px] px-2 text-[10px]"}`}>
                       {sz}
                     </span>
                   )}
@@ -1285,6 +1440,7 @@ export default function ProjectDetailsPage() {
   const [isTagInputOpen, setIsTagInputOpen] = useState(false);
   const [isSavingTags, setIsSavingTags] = useState(false);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+  const [activeBoardColourSuggestionsRowId, setActiveBoardColourSuggestionsRowId] = useState<string | null>(null);
   const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
   const [salesRoomDeleteBlocked, setSalesRoomDeleteBlocked] = useState<{ roomName: string } | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
@@ -1350,6 +1506,7 @@ export default function ProjectDetailsPage() {
   const [cutlistCellWarnings, setCutlistCellWarnings] = useState<Record<string, Record<string, string>>>({});
   const [cutlistFlashingCells, setCutlistFlashingCells] = useState<Record<string, boolean>>({});
   const [cutlistActivityFeed, setCutlistActivityFeed] = useState<CutlistActivityEntry[]>([]);
+  const [cutlistActivityEnteringIds, setCutlistActivityEnteringIds] = useState<Record<number, boolean>>({});
   const [cutlistFlashPhaseOn, setCutlistFlashPhaseOn] = useState(false);
   const cutlistFlashTimeoutRef = useRef<number | null>(null);
   const cutlistFlashIntervalRef = useRef<number | null>(null);
@@ -1357,6 +1514,7 @@ export default function ProjectDetailsPage() {
   const cutlistActivityInnerRef = useRef<HTMLDivElement | null>(null);
   const cutlistActivityNextIdRef = useRef<number>(1);
   const cutlistActivityDraggingRef = useRef(false);
+  const [cutlistActivityIsDragging, setCutlistActivityIsDragging] = useState(false);
   const cutlistActivityActivePointerIdRef = useRef<number | null>(null);
   const cutlistActivityDragStartXRef = useRef(0);
   const cutlistActivityDragStartOffsetRef = useRef(0);
@@ -1364,7 +1522,11 @@ export default function ProjectDetailsPage() {
   const cutlistActivityOffsetRef = useRef(0);
   const cutlistActivityMinOffsetRef = useRef(0);
   const cutlistActivityMaxOffsetRef = useRef(0);
+  const cutlistActivityRafRef = useRef<number | null>(null);
+  const cutlistActivityPendingOffsetRef = useRef<number | null>(null);
   const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
+  const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
+  const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
   const [editingCell, setEditingCell] = useState<{ rowId: string; key: CutlistEditableField } | null>(null);
   const cncExportMenuRef = useRef<HTMLDivElement | null>(null);
   const [editingCellValue, setEditingCellValue] = useState("");
@@ -1971,12 +2133,13 @@ export default function ProjectDetailsPage() {
   ) => {
     const msg = String(message || "").trim();
     if (!msg) return;
+    const newId = cutlistActivityNextIdRef.current++;
     setCutlistActivityFeed((prev) => {
       const key = String(opts?.dedupeKey || "").trim();
       let next = [...prev];
       if (key) next = next.filter((item) => String(item.dedupeKey || "") !== key);
       next.push({
-        id: cutlistActivityNextIdRef.current++,
+        id: newId,
         message: msg,
         action: String(opts?.action || "").trim(),
         actionKind: (String(opts?.actionKind || "").trim().toLowerCase() as "clear" | "undo" | "") || "",
@@ -1989,9 +2152,24 @@ export default function ProjectDetailsPage() {
       if (next.length > 120) next = next.slice(next.length - 120);
       return next;
     });
+    setCutlistActivityEnteringIds((prev) => ({ ...prev, [newId]: true }));
+    window.requestAnimationFrame(() => {
+      setCutlistActivityEnteringIds((prev) => {
+        if (!prev[newId]) return prev;
+        const next = { ...prev };
+        delete next[newId];
+        return next;
+      });
+    });
   };
   const removeCutlistActivity = (id: number) => {
     setCutlistActivityFeed((prev) => prev.filter((entry) => entry.id !== id));
+    setCutlistActivityEnteringIds((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
   const warningTextForIssue = (issue: CutlistValidationIssue) => {
     const field = String(issue.field || "").toLowerCase();
@@ -2058,6 +2236,19 @@ export default function ProjectDetailsPage() {
     cutlistActivityOffsetRef.current = next;
     setCutlistActivityOffset(next);
   };
+  const setCutlistActivityOffsetDomOnly = (value: number) => {
+    const next = clampCutlistActivityOffset(value);
+    cutlistActivityOffsetRef.current = next;
+    cutlistActivityPendingOffsetRef.current = next;
+    if (cutlistActivityRafRef.current != null) return;
+    cutlistActivityRafRef.current = window.requestAnimationFrame(() => {
+      cutlistActivityRafRef.current = null;
+      const pending = cutlistActivityPendingOffsetRef.current;
+      if (pending == null) return;
+      const inner = cutlistActivityInnerRef.current;
+      if (inner) inner.style.transform = `translate3d(${pending}px, 0, 0)`;
+    });
+  };
   const recalcCutlistActivityBounds = (alignLatest: boolean) => {
     const container = cutlistActivityScrollRef.current;
     const inner = cutlistActivityInnerRef.current;
@@ -2083,6 +2274,7 @@ export default function ProjectDetailsPage() {
     if (!cutlistActivityScrollRef.current) return;
     recalcCutlistActivityBounds(false);
     cutlistActivityDraggingRef.current = true;
+    setCutlistActivityIsDragging(true);
     cutlistActivityActivePointerIdRef.current = e.pointerId;
     cutlistActivityDragStartXRef.current = e.clientX;
     cutlistActivityDragStartOffsetRef.current = cutlistActivityOffsetRef.current;
@@ -2097,6 +2289,7 @@ export default function ProjectDetailsPage() {
   const endCutlistActivityPointerDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (cutlistActivityActivePointerIdRef.current !== null && e.pointerId !== cutlistActivityActivePointerIdRef.current) return;
     cutlistActivityDraggingRef.current = false;
+    setCutlistActivityIsDragging(false);
     cutlistActivityActivePointerIdRef.current = null;
     const node = e.currentTarget;
     if (node) {
@@ -2121,13 +2314,14 @@ export default function ProjectDetailsPage() {
       if (cutlistActivityActivePointerIdRef.current !== null && ev.pointerId !== cutlistActivityActivePointerIdRef.current) return;
       const dx = ev.clientX - cutlistActivityDragStartXRef.current;
       const target = cutlistActivityDragStartOffsetRef.current + dx;
-      setCutlistActivityOffsetClamped(target);
+      setCutlistActivityOffsetDomOnly(target);
       ev.preventDefault();
     };
     const onPointerUpWindow = (ev: PointerEvent) => {
       if (!cutlistActivityDraggingRef.current) return;
       if (cutlistActivityActivePointerIdRef.current !== null && ev.pointerId !== cutlistActivityActivePointerIdRef.current) return;
       cutlistActivityDraggingRef.current = false;
+      setCutlistActivityIsDragging(false);
       const node = cutlistActivityScrollRef.current;
       if (node) {
         node.style.cursor = "grab";
@@ -2135,6 +2329,7 @@ export default function ProjectDetailsPage() {
           node.releasePointerCapture(ev.pointerId);
         } catch {}
       }
+      setCutlistActivityOffset(cutlistActivityOffsetRef.current);
       cutlistActivityActivePointerIdRef.current = null;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
@@ -2143,6 +2338,10 @@ export default function ProjectDetailsPage() {
     window.addEventListener("pointerup", onPointerUpWindow);
     window.addEventListener("pointercancel", onPointerUpWindow);
     return () => {
+      if (cutlistActivityRafRef.current != null) {
+        window.cancelAnimationFrame(cutlistActivityRafRef.current);
+        cutlistActivityRafRef.current = null;
+      }
       window.removeEventListener("pointermove", onPointerMoveWindow);
       window.removeEventListener("pointerup", onPointerUpWindow);
       window.removeEventListener("pointercancel", onPointerUpWindow);
@@ -3336,6 +3535,7 @@ export default function ProjectDetailsPage() {
     if (!cutlistUiStateStorageKey) {
       setCutlistUiStateReady(false);
       setCutlistActivityFeed([]);
+      setCutlistActivityEnteringIds({});
       cutlistActivityNextIdRef.current = 1;
       return;
     }
@@ -3403,16 +3603,19 @@ export default function ProjectDetailsPage() {
             .filter((entry) => entry.message)
             .slice(-120);
           setCutlistActivityFeed(restored);
+          setCutlistActivityEnteringIds({});
           const maxId = restored.reduce((m, e) => Math.max(m, Number(e.id || 0)), 0);
           cutlistActivityNextIdRef.current = maxId + 1;
         }
       } else {
         setCutlistActivityFeed([]);
+        setCutlistActivityEnteringIds({});
         cutlistActivityNextIdRef.current = 1;
       }
     } catch {
       // Ignore invalid local state and continue with defaults.
       setCutlistActivityFeed([]);
+      setCutlistActivityEnteringIds({});
       cutlistActivityNextIdRef.current = 1;
     } finally {
       setCutlistUiStateReady(true);
@@ -3898,8 +4101,14 @@ export default function ProjectDetailsPage() {
     if (ok) {
       setProjectTags(nextTags);
       setProject({ ...project, tags: nextTags });
-      if (project.companyId) {
-        const refreshed = await fetchCompanyDoc(project.companyId);
+      const resolvedCompanyId =
+        String(project.companyId || "").trim() ||
+        (typeof window !== "undefined"
+          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+          : "");
+      if (resolvedCompanyId) {
+        await resyncCompanyProjectTagUsage(resolvedCompanyId);
+        const refreshed = await fetchCompanyDoc(resolvedCompanyId);
         if (refreshed) {
           setCompanyDoc(refreshed);
         }
@@ -4398,7 +4607,7 @@ export default function ProjectDetailsPage() {
     }));
   };
 
-  const onBoardFieldCommit = async (id: string, patch: Partial<ProductionBoardRow>, bumpColour = false, previousColourRaw?: string) => {
+  const onBoardFieldCommit = async (id: string, patch: Partial<ProductionBoardRow>, bumpColour = false) => {
     const prevRows = productionForm.boardTypes;
     const next = {
       ...productionForm,
@@ -4407,8 +4616,7 @@ export default function ProjectDetailsPage() {
     setProductionForm(next);
     const ok = await persistProductionForm(next);
     if (ok && bumpColour) {
-      const fallbackOld = String(prevRows.find((row) => row.id === id)?.colour ?? "").trim();
-      const oldColour = String(previousColourRaw ?? fallbackOld).trim();
+      const oldColour = String(prevRows.find((row) => row.id === id)?.colour ?? "").trim();
       const newColour = String(patch.colour ?? "").trim();
       if (newColour.toLowerCase() !== oldColour.toLowerCase()) {
         await syncBoardColourMemorySingleChange(oldColour, newColour);
@@ -4894,9 +5102,9 @@ export default function ProjectDetailsPage() {
     setCutlistRows(nextRows);
     if (rejectedIds.size > 0) {
       const rejectedRows = cutlistDraftRows.filter((row) => rejectedIds.has(row.id));
-      setCutlistDraftRows(rejectedRows.length ? rejectedRows : [createDraftCutlistRow(activeCutlistPartType || accepted[0].partType, cutlistEntryRoom || defaultCutlistRoom, { board: accepted[accepted.length - 1].board || cutlistBoardOptions[0] || "" })]);
+      setCutlistDraftRows(rejectedRows);
     } else {
-      setCutlistDraftRows([createDraftCutlistRow(activeCutlistPartType || accepted[0].partType, cutlistEntryRoom || defaultCutlistRoom, { board: accepted[accepted.length - 1].board || cutlistBoardOptions[0] || "" })]);
+      setCutlistDraftRows([]);
     }
     await persistCutlistRows(nextRows);
   };
@@ -4911,6 +5119,47 @@ export default function ProjectDetailsPage() {
       });
     }
     await persistCutlistRows(next);
+  };
+
+  const togglePendingCutlistRowDelete = (partType: string, rowId: string) => {
+    const groupKey = String(partType || "Unassigned").trim() || "Unassigned";
+    const id = String(rowId || "").trim();
+    if (!id) return;
+    setPendingDeleteRowsByGroup((prev) => {
+      const existing = Array.isArray(prev[groupKey]) ? prev[groupKey] : [];
+      const has = existing.includes(id);
+      const next = has ? existing.filter((v) => v !== id) : [...existing, id];
+      if (!next.length) {
+        const { [groupKey]: _removed, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [groupKey]: next };
+    });
+    setDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
+  };
+
+  const deletePendingCutlistRowsForGroup = async (partType: string) => {
+    const groupKey = String(partType || "Unassigned").trim() || "Unassigned";
+    const pending = Array.isArray(pendingDeleteRowsByGroup[groupKey]) ? pendingDeleteRowsByGroup[groupKey] : [];
+    if (!pending.length) return;
+    if (!deleteConfirmArmedGroups[groupKey]) {
+      setDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: true }));
+      return;
+    }
+
+    const pendingSet = new Set(pending);
+    const removedRows = cutlistRows.filter((row) => pendingSet.has(row.id));
+    const nextRows = cutlistRows.filter((row) => !pendingSet.has(row.id));
+    setCutlistRows(nextRows);
+    for (const removed of removedRows) {
+      logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType });
+    }
+    setPendingDeleteRowsByGroup((prev) => {
+      const { [groupKey]: _removed, ...rest } = prev;
+      return rest;
+    });
+    setDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
+    await persistCutlistRows(nextRows);
   };
 
   const onCutlistEntryInformationLineChange = (index: number, value: string) => {
@@ -5132,6 +5381,32 @@ export default function ProjectDetailsPage() {
       })
       .map(([partType, rows]) => ({ partType, rows }));
   }, [visibleCutlistRows, partTypeOptions]);
+
+  useEffect(() => {
+    setPendingDeleteRowsByGroup((prev) => {
+      const validRowIds = new Set(cutlistRows.map((row) => row.id));
+      let changed = false;
+      const next: Record<string, string[]> = {};
+      for (const [groupKey, ids] of Object.entries(prev)) {
+        const filtered = (ids || []).filter((id) => validRowIds.has(id));
+        if (filtered.length) next[groupKey] = filtered;
+        if (filtered.length !== (ids || []).length) changed = true;
+      }
+      return changed ? next : prev;
+    });
+    setDeleteConfirmArmedGroups((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [groupKey, armed] of Object.entries(prev)) {
+        if ((pendingDeleteRowsByGroup[groupKey] || []).length > 0) {
+          next[groupKey] = armed;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [cutlistRows, pendingDeleteRowsByGroup]);
 
   const cncSourceRows = useMemo(() => {
     return effectiveCutlistRows.filter((row) => isPartTypeIncludedInCnc(row.partType));
@@ -6978,7 +7253,13 @@ export default function ProjectDetailsPage() {
                 ref={cutlistActivityInnerRef}
                 className="inline-flex w-max cursor-grab items-center gap-[10px] pr-2"
                 dir="ltr"
-                style={{ userSelect: "none", touchAction: "none", transform: `translate3d(${cutlistActivityOffset}px, 0, 0)`, willChange: "transform" }}
+                style={{
+                  userSelect: "none",
+                  touchAction: "none",
+                  transform: `translate3d(${cutlistActivityOffset}px, 0, 0)`,
+                  willChange: "transform",
+                  transition: cutlistActivityIsDragging ? "none" : "transform 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                }}
                 onPointerDown={onCutlistActivityPointerDown}
                 onPointerUp={endCutlistActivityPointerDrag}
                 onPointerCancel={endCutlistActivityPointerDrag}
@@ -6987,6 +7268,25 @@ export default function ProjectDetailsPage() {
                   const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
                   const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
                   const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
+                  const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
+                  const rawMessage = String(entry.message || "");
+                  const messageLower = rawMessage.toLowerCase();
+                  let messagePrefix = rawMessage;
+                  let actionText = "";
+                  let messageSuffix = "";
+                  if (!isPartTypeMove && !isValueMove) {
+                    const addedToken = " added to ";
+                    const addedIdx = messageLower.indexOf(addedToken);
+                    if (addedIdx > 0) {
+                      messagePrefix = rawMessage.slice(0, addedIdx).trim();
+                      actionText = "added to";
+                      messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
+                    } else if (messageLower.endsWith(" removed")) {
+                      messagePrefix = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
+                      actionText = "removed";
+                      messageSuffix = "";
+                    }
+                  }
                   return (
                     <div
                       key={entry.id}
@@ -6995,11 +7295,38 @@ export default function ProjectDetailsPage() {
                         backgroundColor: colors.chipBg,
                         borderColor: colors.chipBorder,
                         marginRight: idx < cutlistActivityFeed.length - 1 ? 10 : 0,
+                        opacity: isEntering ? 0 : 1,
+                        transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
+                        transition: "opacity 240ms ease, transform 240ms ease",
                       }}
                     >
-                      <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
-                        {entry.message}
-                      </span>
+                      {!!messagePrefix && !!actionText && (
+                        <span
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: colors.pillBg,
+                            borderColor: colors.pillBorder,
+                            color: colors.pillText,
+                          }}
+                        >
+                          {messagePrefix}
+                        </span>
+                      )}
+                      {!!messagePrefix && !actionText && (
+                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
+                          {messagePrefix}
+                        </span>
+                      )}
+                      {!!actionText && (
+                        <span className="text-[11px] font-bold" style={{ color: colors.chipText }}>
+                          {actionText}
+                        </span>
+                      )}
+                      {!!messageSuffix && (
+                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingLeft: 5 }}>
+                          {messageSuffix}
+                        </span>
+                      )}
                       {isPartTypeMove && !!entry.partType && (
                         <>
                           <span
@@ -7196,7 +7523,7 @@ export default function ProjectDetailsPage() {
                       return (
                         <div
                           key={draft.id}
-                          className="relative z-20 grid items-center gap-2 overflow-visible border-y px-1 py-1"
+                          className="relative grid items-center gap-2 overflow-visible border-y px-1 py-1"
                           style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
                         >
                           <button
@@ -7239,94 +7566,114 @@ export default function ProjectDetailsPage() {
                             />
                             </div>
                           ) : (
-                            <input disabled={productionReadOnly} title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                            <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                           )}
-                          <input disabled={productionReadOnly} title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
-                          <input disabled={productionReadOnly} title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
-                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                          <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                          <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                           {draftIsCabinetry ? (
-                            <div className="grid gap-[1px]" style={cutlistEntryCellStyle("clashing", 2)}>
-                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                <span className="text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
-                                <input
-                                  disabled={productionReadOnly}
-                                  value={draft.fixedShelf ?? ""}
-                                  onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: e.target.value })}
-                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
-                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                />
+                            <div className="grid content-start gap-[1px]" style={cutlistEntryCellStyle("clashing", 2)}>
+                              <div className="grid content-start gap-0">
+                                <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                  <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
+                                  <input
+                                    disabled={productionReadOnly}
+                                    value={draft.fixedShelf ?? ""}
+                                    onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
+                                    className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                  />
+                                </div>
+                                {hasShelfQuantity(draft.fixedShelf) && (
+                                  <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                    <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
+                                      <DrillingArrowIcon color={draftTextColor} />
+                                      Drilling
+                                    </span>
+                                    <div className="w-full min-w-0">
+                                      <BoardPillDropdown
+                                        value={normalizeDrillingValue(draft.fixedShelfDrilling)}
+                                        options={DRILLING_OPTIONS}
+                                        disabled={productionReadOnly}
+                                        bg={draftFieldBg}
+                                        border={draftFieldBorder}
+                                        text={draftTextColor}
+                                        size="compact"
+                                        className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                        getSize={() => ""}
+                                        getLabel={(v) => v}
+                                        onChange={(v) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
                               </div>
-                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
-                                  <DrillingArrowIcon color={draftTextColor} />
-                                  Drilling
-                                </span>
-                                <select
-                                  disabled={productionReadOnly}
-                                  value={normalizeDrillingValue(draft.fixedShelfDrilling)}
-                                  onChange={(e) => updateDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(e.target.value) })}
-                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
-                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                >
-                                  {DRILLING_OPTIONS.map((opt) => (
-                                    <option key={opt} value={opt}>{opt}</option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                <span className="text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Adjustable Shelf</span>
-                                <input
-                                  disabled={productionReadOnly}
-                                  value={draft.adjustableShelf ?? ""}
-                                  onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: e.target.value })}
-                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
-                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                />
-                              </div>
-                              <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                <span className="inline-flex items-center gap-[2px] pl-[10px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
-                                  <DrillingArrowIcon color={draftTextColor} />
-                                  Drilling
-                                </span>
-                                <select
-                                  disabled={productionReadOnly}
-                                  value={normalizeDrillingValue(draft.adjustableShelfDrilling)}
-                                  onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(e.target.value) })}
-                                  className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
-                                  style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                                >
-                                  {DRILLING_OPTIONS.map((opt) => (
-                                    <option key={opt} value={opt}>{opt}</option>
-                                  ))}
-                                </select>
+                              <div className="grid content-start gap-0">
+                                <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                  <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Adjustable Shelf</span>
+                                  <input
+                                    disabled={productionReadOnly}
+                                    value={draft.adjustableShelf ?? ""}
+                                    onChange={(e) => updateDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
+                                    className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                  />
+                                </div>
+                                {hasShelfQuantity(draft.adjustableShelf) && (
+                                  <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                    <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
+                                      <DrillingArrowIcon color={draftTextColor} />
+                                      Drilling
+                                    </span>
+                                    <div className="w-full min-w-0">
+                                      <BoardPillDropdown
+                                        value={normalizeDrillingValue(draft.adjustableShelfDrilling)}
+                                        options={DRILLING_OPTIONS}
+                                        disabled={productionReadOnly}
+                                        bg={draftFieldBg}
+                                        border={draftFieldBorder}
+                                        text={draftTextColor}
+                                        size="compact"
+                                        className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                        getSize={() => ""}
+                                        getLabel={(v) => v}
+                                        onChange={(v) => updateDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           ) : (
                             <>
-                              <select
-                                disabled={productionReadOnly}
-                                value={draft.clashLeft ?? ""}
-                                onChange={(e) => updateDraftCutlistRow(draft.id, { clashLeft: e.target.value })}
-                                className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                                style={{ ...cutlistEntrySubCellStyle("clashing", 0), backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                              >
-                                <option value=""></option>
-                                {CLASH_LEFT_OPTIONS.map((opt) => (
-                                  <option key={opt} value={opt}>{opt}</option>
-                                ))}
-                              </select>
-                              <select
-                                disabled={productionReadOnly}
-                                value={draft.clashRight ?? ""}
-                                onChange={(e) => updateDraftCutlistRow(draft.id, { clashRight: e.target.value })}
-                                className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                                style={{ ...cutlistEntrySubCellStyle("clashing", 1), backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                              >
-                                <option value=""></option>
-                                {CLASH_RIGHT_OPTIONS.map((opt) => (
-                                  <option key={opt} value={opt}>{opt}</option>
-                                ))}
-                              </select>
+                              <div style={cutlistEntrySubCellStyle("clashing", 0)}>
+                                <BoardPillDropdown
+                                  value={draft.clashLeft ?? ""}
+                                  options={CLASH_LEFT_OPTIONS}
+                                  disabled={productionReadOnly || isDrawerPartType(draft.partType)}
+                                  bg={draftFieldBg}
+                                  border={draftFieldBorder}
+                                  text={draftTextColor}
+                                  size="default"
+                                  getSize={() => ""}
+                                  getLabel={(v) => v}
+                                  onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
+                                />
+                              </div>
+                              <div style={cutlistEntrySubCellStyle("clashing", 1)}>
+                                <BoardPillDropdown
+                                  value={draft.clashRight ?? ""}
+                                  options={CLASH_RIGHT_OPTIONS}
+                                  disabled={productionReadOnly || isDrawerPartType(draft.partType)}
+                                  bg={draftFieldBg}
+                                  border={draftFieldBorder}
+                                  text={draftTextColor}
+                                  size="default"
+                                  getSize={() => ""}
+                                  getLabel={(v) => v}
+                                  onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
+                                />
+                              </div>
                             </>
                           )}
                           <div className="grid gap-[2px]" style={cutlistEntryCellStyle("information")}>
@@ -7357,25 +7704,25 @@ export default function ProjectDetailsPage() {
                           </div>
                           {showCutlistGrainColumn && (
                             draftBoardAllowsGrain ? (
-                              <select
-                                disabled={productionReadOnly}
-                                value={String(draft.grainValue ?? "")}
-                                onChange={(e) =>
-                                  updateDraftCutlistRow(draft.id, {
-                                    grainValue: e.target.value,
-                                    grain: Boolean(String(e.target.value).trim()),
-                                  })
-                                }
-                                className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                                style={{ ...cutlistEntryCellStyle("grain"), backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
-                              >
-                                <option value=""></option>
-                                {grainDimensionOptions(draft.height, draft.width, draft.depth).map((opt) => (
-                                  <option key={`${draft.id}_grain_${opt}`} value={opt}>
-                                    {opt}
-                                  </option>
-                                ))}
-                              </select>
+                              <div style={cutlistEntryCellStyle("grain")}>
+                                <BoardPillDropdown
+                                  value={String(draft.grainValue ?? "")}
+                                  options={grainDimensionOptions(draft.height, draft.width, draft.depth)}
+                                  disabled={productionReadOnly}
+                                  bg={draftFieldBg}
+                                  border={draftFieldBorder}
+                                  text={draftTextColor}
+                                  size="default"
+                                  getSize={() => ""}
+                                  getLabel={(v) => v}
+                                  onChange={(v) =>
+                                    updateDraftCutlistRow(draft.id, {
+                                      grainValue: v,
+                                      grain: Boolean(String(v).trim()),
+                                    })
+                                  }
+                                />
+                              </div>
                             ) : (
                               <div style={cutlistEntryCellStyle("grain")} />
                             )
@@ -7436,6 +7783,11 @@ export default function ProjectDetailsPage() {
                         const qty = Number(row.quantity);
                         return sum + (Number.isFinite(qty) ? qty : 0);
                       }, 0);
+                      const pendingGroupRows = Array.isArray(pendingDeleteRowsByGroup[group.partType])
+                        ? pendingDeleteRowsByGroup[group.partType]
+                        : [];
+                      const pendingGroupCount = pendingGroupRows.length;
+                      const groupDeleteConfirmArmed = Boolean(deleteConfirmArmedGroups[group.partType]);
                       return (
                         <section
                           key={group.partType}
@@ -7461,24 +7813,41 @@ export default function ProjectDetailsPage() {
                                 {group.partType}
                               </span>
                               <span className="text-[12px] font-bold">{formatPartCount(groupPartCount)}</span>
+                              {pendingGroupCount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => void deletePendingCutlistRowsForGroup(group.partType)}
+                                  className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold"
+                                  style={{
+                                    borderColor: groupDeleteConfirmArmed ? "#8AC0A0" : "#F2A7A7",
+                                    backgroundColor: groupDeleteConfirmArmed ? "#DFF3E7" : "#FFECEC",
+                                    color: groupDeleteConfirmArmed ? "#1E6A43" : "#991B1B",
+                                  }}
+                                  title={groupDeleteConfirmArmed ? "Confirm delete selected rows" : "Delete selected rows"}
+                                >
+                                  {groupDeleteConfirmArmed ? `Confirm (${pendingGroupCount})` : `Delete (${pendingGroupCount})`}
+                                </button>
+                              )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => toggleCutlistGroup(group.partType)}
-                              className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
-                              style={{
-                                borderLeftColor: palette.divider,
-                                backgroundColor: palette.titleBarBg,
-                              }}
-                            >
-                              {collapsed ? <Plus size={24} strokeWidth={2.6} /> : <Minus size={24} strokeWidth={2.6} />}
-                            </button>
+                            <div className="flex h-full items-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleCutlistGroup(group.partType)}
+                                className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
+                                style={{
+                                  borderLeftColor: palette.divider,
+                                  backgroundColor: palette.titleBarBg,
+                                }}
+                              >
+                                {collapsed ? <Plus size={24} strokeWidth={2.6} /> : <Minus size={24} strokeWidth={2.6} />}
+                              </button>
+                            </div>
                           </div>
                           {!collapsed && (
                           <table className="w-full text-left text-[12px]">
                             <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
                               <tr>
-                                <th className="w-[34px] px-2 py-2"></th>
+                                <th className="px-2 py-2" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></th>
                                 {showRoomColumnInList && (
                                   <th className="px-2 py-2" style={{ color: groupTextColor, width: 150, minWidth: 150 }}>Room</th>
                                 )}
@@ -7504,6 +7873,7 @@ export default function ProjectDetailsPage() {
                                 const infoLines = informationLinesFromValue(String(row.information ?? ""));
                                 const rowIsCabinetry = isCabinetryPartType(row.partType);
                                 const rowIsDrawer = isDrawerPartType(row.partType);
+                                const rowPendingDelete = pendingGroupRows.includes(row.id);
                                 const cabinetryOpen = Boolean(expandedCabinetryRows[row.id]);
                                 const drawerOpen = Boolean(expandedDrawerRows[row.id]);
                                 const cabinetryPieces = rowIsCabinetry ? buildCabinetryDerivedPieces(row) : [];
@@ -7530,34 +7900,51 @@ export default function ProjectDetailsPage() {
                                   className="border-t"
                                   style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}
                                 >
-                                  <td className="px-2 py-[3px] align-middle">
+                                  <td className="px-2 py-[3px] align-middle" style={{ width: 78, minWidth: 78, maxWidth: 78 }}>
                                     <div className="flex items-center gap-1">
                                       <button
+                                        type="button"
                                         disabled={productionReadOnly}
-                                        onClick={() => void removeCutlistRow(row.id)}
-                                        className="flex h-6 w-6 items-center justify-center rounded-[7px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
+                                        onClick={() => togglePendingCutlistRowDelete(group.partType, row.id)}
+                                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border disabled:opacity-55"
+                                        style={{
+                                          borderColor: rowPendingDelete ? "#8AC0A0" : "#F4B5B5",
+                                          backgroundColor: rowPendingDelete ? "#DFF3E7" : "#FCEAEA",
+                                          color: rowPendingDelete ? "#1E6A43" : "#C62828",
+                                        }}
                                       >
-                                        <X size={11} strokeWidth={2.5} />
+                                        {rowPendingDelete ? (
+                                          <img src="/tick.png" alt="Selected" className="h-[11px] w-[11px] object-contain" />
+                                        ) : (
+                                          <X size={11} strokeWidth={2.5} />
+                                        )}
                                       </button>
-                                      {(rowIsCabinetry || rowIsDrawer) && (
-                                        <button
-                                          type="button"
-                                          onClick={() => (rowIsCabinetry ? toggleCabinetryRowExpand(row.id) : toggleDrawerRowExpand(row.id))}
-                                          className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border"
-                                          style={{
-                                            backgroundColor: color,
-                                            borderColor: darkenHex(color, 0.18),
-                                          }}
-                                          title={(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "Collapse pieces" : "Expand pieces"}
-                                        >
-                                          <img
-                                            src="/Arrow.png"
-                                            alt="Expand"
-                                            className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
-                                            style={{ filter: groupTextColor === "#FFFFFF" ? "invert(1) brightness(2)" : "none" }}
-                                          />
-                                        </button>
-                                      )}
+                                      <button
+                                        type="button"
+                                        disabled={!(rowIsCabinetry || rowIsDrawer)}
+                                        onClick={() => {
+                                          if (rowIsCabinetry) {
+                                            toggleCabinetryRowExpand(row.id);
+                                            return;
+                                          }
+                                          if (rowIsDrawer) {
+                                            toggleDrawerRowExpand(row.id);
+                                          }
+                                        }}
+                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer) ? "" : "invisible pointer-events-none"}`}
+                                        style={{
+                                          backgroundColor: color,
+                                          borderColor: darkenHex(color, 0.18),
+                                        }}
+                                        title={(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "Collapse pieces" : "Expand pieces"}
+                                      >
+                                        <img
+                                          src="/Arrow.png"
+                                          alt="Expand"
+                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
+                                          style={{ filter: groupTextColor === "#FFFFFF" ? "invert(1) brightness(2)" : "none" }}
+                                        />
+                                      </button>
                                     </div>
                                   </td>
                                   {showRoomColumnInList && (
@@ -7657,25 +8044,21 @@ export default function ProjectDetailsPage() {
                                           style={{ ...cutlistListColumnStyle("board"), color: groupTextColor }}
                                         >
                                           {editing ? (
-                                            <select
-                                              autoFocus
+                                            <BoardPillDropdown
                                               value={editingCellValue}
-                                              onChange={(e) => setEditingCellValue(e.target.value)}
-                                              onBlur={() => void commitCellEdit()}
-                                              onKeyDown={(e) => {
-                                                if (e.key === "Enter") {
-                                                  e.preventDefault();
-                                                  void commitCellEdit();
-                                                }
-                                                if (e.key === "Escape") cancelCellEdit();
+                                              options={options}
+                                              disabled={productionReadOnly}
+                                              bg="#FFFFFF"
+                                              border="#94A3B8"
+                                              text="#0F172A"
+                                              size="compact"
+                                              getSize={boardSizeFor}
+                                              getLabel={boardDisplayLabel}
+                                              onChange={(next) => {
+                                                setEditingCellValue(next);
+                                                void commitCellEdit(next);
                                               }}
-                                              className="h-6 min-w-[170px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                            >
-                                              <option value=""></option>
-                                              {options.map((opt) => (
-                                                <option key={opt} value={opt}>{boardOptionLabel(opt)}</option>
-                                              ))}
-                                            </select>
+                                            />
                                           ) : (
                                             <div className="inline-flex items-center gap-2">
                                               {boardSizeFor(row.board) && (
@@ -7705,24 +8088,21 @@ export default function ProjectDetailsPage() {
                                           style={{ ...cutlistListColumnStyle("grain"), color: groupTextColor }}
                                         >
                                           {!rowBoardAllowsGrain ? "" : editing ? (
-                                            <select
-                                              autoFocus
+                                            <BoardPillDropdown
                                               value={editingCellValue}
-                                              onChange={(e) => {
-                                                const v = e.target.value;
+                                              options={grainDimensionOptions(row.height, row.width, row.depth)}
+                                              disabled={productionReadOnly}
+                                              bg="#FFFFFF"
+                                              border="#94A3B8"
+                                              text="#0F172A"
+                                              size="compact"
+                                              getSize={() => ""}
+                                              getLabel={(v) => v}
+                                              onChange={(v) => {
                                                 setEditingCellValue(v);
                                                 void commitCellEdit(v);
                                               }}
-                                              onBlur={() => void commitCellEdit()}
-                                              className="h-6 min-w-[72px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                            >
-                                              <option value=""></option>
-                                              {grainDimensionOptions(row.height, row.width, row.depth).map((opt) => (
-                                                <option key={`${row.id}_grain_edit_${opt}`} value={opt}>
-                                                  {opt}
-                                                </option>
-                                              ))}
-                                            </select>
+                                            />
                                           ) : (
                                             row.grainValue || (row.grain ? "Yes" : "")
                                           )}
@@ -7769,7 +8149,9 @@ export default function ProjectDetailsPage() {
                                               <input
                                                 autoFocus
                                                 value={editingCellValue}
-                                                onChange={(e) => setEditingCellValue(e.target.value)}
+                                                inputMode="numeric"
+                                                pattern="[0-9]*"
+                                                onChange={(e) => setEditingCellValue(numericOnlyText(e.target.value))}
                                                 onBlur={() => void commitCellEdit()}
                                                 onKeyDown={(e) => {
                                                   if (e.key === "Enter") {
@@ -7782,7 +8164,13 @@ export default function ProjectDetailsPage() {
                                               />
                                             )
                                           ) : (
-                                            String(row.height ?? "")
+                                            rowIsDrawer ? (
+                                              <span className="block truncate whitespace-nowrap" title={String(row.height ?? "")}>
+                                                {summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height ?? "")}
+                                              </span>
+                                            ) : (
+                                              String(row.height ?? "")
+                                            )
                                           )}
                                         </td>
                                       );
@@ -7798,13 +8186,15 @@ export default function ProjectDetailsPage() {
                                         >
                                           {editing ? (
                                             rowIsCabinetry ? (
-                                              <div className="grid gap-[1px] text-left">
-                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                  <span className="text-[9px] font-bold leading-none">Fixed Shelf</span>
+                                              <div className="grid min-h-[78px] content-center gap-[1px] text-left">
+                                                <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                  <span className="block pr-[3px] text-right text-[9px] font-bold leading-none">Fixed Shelf</span>
                                                   <input
                                                     autoFocus
                                                     value={editingFixedShelf}
-                                                    onChange={(e) => setEditingFixedShelf(e.target.value)}
+                                                    inputMode="numeric"
+                                                    pattern="[0-9]*"
+                                                    onChange={(e) => setEditingFixedShelf(numericOnlyText(e.target.value))}
                                                     onKeyDown={(e) => {
                                                       if (e.key === "Enter") {
                                                         e.preventDefault();
@@ -7815,26 +8205,43 @@ export default function ProjectDetailsPage() {
                                                     className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
                                                   />
                                                 </div>
-                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                  <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                    <DrillingArrowIcon color={groupTextColor} />
-                                                    Drilling
-                                                  </span>
-                                                  <select
-                                                    value={editingFixedShelfDrilling}
-                                                    onChange={(e) => setEditingFixedShelfDrilling(normalizeDrillingValue(e.target.value))}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
-                                                  >
-                                                    {DRILLING_OPTIONS.map((opt) => (
-                                                      <option key={opt} value={opt}>{opt}</option>
-                                                    ))}
-                                                  </select>
+                                                <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                  {hasShelfQuantity(editingFixedShelf) ? (
+                                                    <>
+                                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none">
+                                                        <DrillingArrowIcon color={groupTextColor} />
+                                                        Drilling
+                                                      </span>
+                                                      <div className="w-full min-w-0">
+                                                        <BoardPillDropdown
+                                                          value={editingFixedShelfDrilling}
+                                                          options={DRILLING_OPTIONS}
+                                                          disabled={productionReadOnly}
+                                                          bg="#FFFFFF"
+                                                          border="#94A3B8"
+                                                          text="#0F172A"
+                                                          size="compact"
+                                                          className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                                          getSize={() => ""}
+                                                          getLabel={(v) => v}
+                                                          onChange={(v) => setEditingFixedShelfDrilling(normalizeDrillingValue(v))}
+                                                        />
+                                                      </div>
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <span></span>
+                                                      <span></span>
+                                                    </>
+                                                  )}
                                                 </div>
-                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                  <span className="text-[9px] font-bold leading-none">Adjustable Shelf</span>
+                                                <div className="grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                  <span className="block pr-[3px] text-right text-[9px] font-bold leading-none">Adjustable Shelf</span>
                                                   <input
                                                     value={editingAdjustableShelf}
-                                                    onChange={(e) => setEditingAdjustableShelf(e.target.value)}
+                                                    inputMode="numeric"
+                                                    pattern="[0-9]*"
+                                                    onChange={(e) => setEditingAdjustableShelf(numericOnlyText(e.target.value))}
                                                     onBlur={() => void commitCellEdit()}
                                                     onKeyDown={(e) => {
                                                       if (e.key === "Enter") {
@@ -7846,89 +8253,102 @@ export default function ProjectDetailsPage() {
                                                     className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
                                                   />
                                                 </div>
-                                                <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                  <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                    <DrillingArrowIcon color={groupTextColor} />
-                                                    Drilling
-                                                  </span>
-                                                  <select
-                                                    value={editingAdjustableShelfDrilling}
-                                                    onChange={(e) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(e.target.value))}
-                                                    onBlur={() => void commitCellEdit()}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
-                                                  >
-                                                    {DRILLING_OPTIONS.map((opt) => (
-                                                      <option key={opt} value={opt}>{opt}</option>
-                                                    ))}
-                                                  </select>
+                                                <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                  {hasShelfQuantity(editingAdjustableShelf) ? (
+                                                    <>
+                                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none">
+                                                        <DrillingArrowIcon color={groupTextColor} />
+                                                        Drilling
+                                                      </span>
+                                                      <div className="w-full min-w-0">
+                                                        <BoardPillDropdown
+                                                          value={editingAdjustableShelfDrilling}
+                                                          options={DRILLING_OPTIONS}
+                                                          disabled={productionReadOnly}
+                                                          bg="#FFFFFF"
+                                                          border="#94A3B8"
+                                                          text="#0F172A"
+                                                          size="compact"
+                                                          className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                                          getSize={() => ""}
+                                                          getLabel={(v) => v}
+                                                          onChange={(v) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(v))}
+                                                        />
+                                                      </div>
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <span></span>
+                                                      <span></span>
+                                                    </>
+                                                  )}
                                                 </div>
                                               </div>
                                             ) : (
                                               <div className="grid grid-cols-2 gap-1">
-                                                <select
-                                                  autoFocus
+                                                <BoardPillDropdown
                                                   value={editingClashLeft}
-                                                  onChange={(e) => setEditingClashLeft(e.target.value)}
-                                                  onKeyDown={(e) => {
-                                                    if (e.key === "Enter") {
-                                                      e.preventDefault();
-                                                      void commitCellEdit();
-                                                    }
-                                                    if (e.key === "Escape") cancelCellEdit();
-                                                  }}
-                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                                >
-                                                  <option value=""></option>
-                                                  {CLASH_LEFT_OPTIONS.map((opt) => (
-                                                    <option key={opt} value={opt}>{opt}</option>
-                                                  ))}
-                                                </select>
-                                                <select
+                                                  options={CLASH_LEFT_OPTIONS}
+                                                  disabled={productionReadOnly || isDrawerPartType(row.partType)}
+                                                  bg="#FFFFFF"
+                                                  border="#94A3B8"
+                                                  text="#0F172A"
+                                                  size="compact"
+                                                  matchDrawerArrow={isDrawerPartType(row.partType)}
+                                                  getSize={() => ""}
+                                                  getLabel={(v) => v}
+                                                  onChange={(next) => setEditingClashLeft(next)}
+                                                />
+                                                <BoardPillDropdown
                                                   value={editingClashRight}
-                                                  onChange={(e) => setEditingClashRight(e.target.value)}
-                                                  onBlur={() => void commitCellEdit()}
-                                                  onKeyDown={(e) => {
-                                                    if (e.key === "Enter") {
-                                                      e.preventDefault();
+                                                  options={CLASH_RIGHT_OPTIONS}
+                                                  disabled={productionReadOnly || isDrawerPartType(row.partType)}
+                                                  bg="#FFFFFF"
+                                                  border="#94A3B8"
+                                                  text="#0F172A"
+                                                  size="compact"
+                                                  matchDrawerArrow={isDrawerPartType(row.partType)}
+                                                  getSize={() => ""}
+                                                  getLabel={(v) => v}
+                                                  onChange={(next) => {
+                                                    setEditingClashRight(next);
+                                                    window.setTimeout(() => {
                                                       void commitCellEdit();
-                                                    }
-                                                    if (e.key === "Escape") cancelCellEdit();
+                                                    }, 0);
                                                   }}
-                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                                >
-                                                  <option value=""></option>
-                                                  {CLASH_RIGHT_OPTIONS.map((opt) => (
-                                                    <option key={opt} value={opt}>{opt}</option>
-                                                  ))}
-                                                </select>
+                                                />
                                               </div>
                                             )
                                           ) : (
                                             rowIsCabinetry
                                               ? (
-                                                <div className="grid min-h-[78px] grid-rows-4 gap-[2px] text-left text-[9px]">
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="font-bold">Fixed Shelf</span>
+                                                <div className="grid min-h-[78px] content-center gap-[1px] text-left text-[9px]">
+                                                <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    <span className="block pr-[3px] text-right font-bold">Fixed Shelf</span>
                                                     <span>{row.fixedShelf || ""}</span>
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <DrillingArrowIcon color={groupTextColor} />
-                                                      Drilling
-                                                    </span>
-                                                    <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
-                                                  </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="font-bold">Adjustable Shelf</span>
+                                                  {hasShelfQuantity(row.fixedShelf) && (
+                                                    <div className="-mt-[2px] grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] font-bold">
+                                                        <DrillingArrowIcon color={groupTextColor} />
+                                                        Drilling
+                                                      </span>
+                                                      <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
+                                                    </div>
+                                                  )}
+                                                  <div className="grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    <span className="block pr-[3px] text-right font-bold">Adjustable Shelf</span>
                                                     <span>{row.adjustableShelf || ""}</span>
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <DrillingArrowIcon color={groupTextColor} />
-                                                      Drilling
-                                                    </span>
-                                                    <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
-                                                  </div>
+                                                  {hasShelfQuantity(row.adjustableShelf) && (
+                                                    <div className="-mt-[2px] grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] font-bold">
+                                                        <DrillingArrowIcon color={groupTextColor} />
+                                                        Drilling
+                                                      </span>
+                                                      <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
+                                                    </div>
+                                                  )}
                                                 </div>
                                               )
                                               : row.clashing
@@ -8012,6 +8432,8 @@ export default function ProjectDetailsPage() {
                                       (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height)) ||
                                       (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width)) ||
                                       (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth));
+                                    const drawerTextboxLift =
+                                      isDrawerPartType(row.partType) && (key === "width" || key === "depth" || key === "quantity");
                                     return (
                                       <td
                                         key={`${row.id}_${col.label}`}
@@ -8027,7 +8449,9 @@ export default function ProjectDetailsPage() {
                                           <input
                                             autoFocus
                                             value={editingCellValue}
-                                            onChange={(e) => setEditingCellValue(e.target.value)}
+                                            inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
+                                            pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
+                                            onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
                                             onBlur={() => void commitCellEdit()}
                                             onKeyDown={(e) => {
                                               if (e.key === "Enter") {
@@ -8036,6 +8460,7 @@ export default function ProjectDetailsPage() {
                                               }
                                               if (e.key === "Escape") cancelCellEdit();
                                             }}
+                                            style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
                                             className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
                                           />
                                         ) : (
@@ -8057,7 +8482,7 @@ export default function ProjectDetailsPage() {
                                     className="border-t"
                                     style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
-                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold">
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}>
                                       
                                     </td>
                                     {showRoomColumnInList && (
@@ -8109,7 +8534,7 @@ export default function ProjectDetailsPage() {
                                     className="border-t"
                                     style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
-                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold"></td>
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
                                     {showRoomColumnInList && (
                                       <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
                                         {row.room}
@@ -10259,35 +10684,39 @@ export default function ProjectDetailsPage() {
                                 />
                               </div>
                             ) : (
-                              <input disabled={productionReadOnly} title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, height: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={{ ...warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                              <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, height: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={{ ...warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                             )}
-                            <input disabled={productionReadOnly} title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
-                            <input disabled={productionReadOnly} title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
-                            <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
-                            <select
-                              disabled={productionReadOnly}
-                              value={cutlistEntry.clashLeft ?? ""}
-                              onChange={(e) => setCutlistEntry((prev) => ({ ...prev, clashLeft: e.target.value }))}
-                              className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                              style={{ ...cutlistEntrySubCellStyle("clashing", 0), backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
-                            >
-                              <option value=""></option>
-                              {CLASH_LEFT_OPTIONS.map((opt) => (
-                                <option key={opt} value={opt}>{opt}</option>
-                              ))}
-                            </select>
-                            <select
-                              disabled={productionReadOnly}
-                              value={cutlistEntry.clashRight ?? ""}
-                              onChange={(e) => setCutlistEntry((prev) => ({ ...prev, clashRight: e.target.value }))}
-                              className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                              style={{ ...cutlistEntrySubCellStyle("clashing", 1), backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
-                            >
-                              <option value=""></option>
-                              {CLASH_RIGHT_OPTIONS.map((opt) => (
-                                <option key={opt} value={opt}>{opt}</option>
-                              ))}
-                            </select>
+                            <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                            <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                            <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                            <div style={cutlistEntrySubCellStyle("clashing", 0)}>
+                              <BoardPillDropdown
+                                value={cutlistEntry.clashLeft ?? ""}
+                                options={CLASH_LEFT_OPTIONS}
+                                disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)}
+                                bg={activeCutlistEntryFieldBg}
+                                border={activeCutlistEntryFieldBorder}
+                                text={activeCutlistEntryTextColor}
+                                size="default"
+                                getSize={() => ""}
+                                getLabel={(v) => v}
+                                onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashLeft: v }))}
+                              />
+                            </div>
+                            <div style={cutlistEntrySubCellStyle("clashing", 1)}>
+                              <BoardPillDropdown
+                                value={cutlistEntry.clashRight ?? ""}
+                                options={CLASH_RIGHT_OPTIONS}
+                                disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)}
+                                bg={activeCutlistEntryFieldBg}
+                                border={activeCutlistEntryFieldBorder}
+                                text={activeCutlistEntryTextColor}
+                                size="default"
+                                getSize={() => ""}
+                                getLabel={(v) => v}
+                                onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashRight: v }))}
+                              />
+                            </div>
                             <div className="grid gap-[2px]" style={cutlistEntryCellStyle("information")}>
                               {informationLinesFromValue(cutlistEntry.information).map((line, idx) => (
                                 <div key={`entry_info_${idx}`} className="flex items-center gap-[3px]">
@@ -10316,26 +10745,26 @@ export default function ProjectDetailsPage() {
                             </div>
                             {showCutlistGrainColumn && (
                               boardGrainFor(String(cutlistEntry.board ?? "").trim()) ? (
-                                <select
-                                  disabled={productionReadOnly}
-                                  value={String(cutlistEntry.grainValue ?? "")}
-                                  onChange={(e) =>
-                                    setCutlistEntry((prev) => ({
-                                      ...prev,
-                                      grainValue: e.target.value,
-                                      grain: Boolean(String(e.target.value).trim()),
-                                    }))
-                                  }
-                                  className="h-8 rounded-[8px] border bg-transparent px-1 text-[12px] text-center"
-                                  style={{ ...cutlistEntryCellStyle("grain"), backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
-                                >
-                                  <option value=""></option>
-                                  {grainDimensionOptions(cutlistEntry.height, cutlistEntry.width, cutlistEntry.depth).map((opt) => (
-                                    <option key={`entry_grain_${opt}`} value={opt}>
-                                      {opt}
-                                    </option>
-                                  ))}
-                                </select>
+                                <div style={cutlistEntryCellStyle("grain")}>
+                                  <BoardPillDropdown
+                                    value={String(cutlistEntry.grainValue ?? "")}
+                                    options={grainDimensionOptions(cutlistEntry.height, cutlistEntry.width, cutlistEntry.depth)}
+                                    disabled={productionReadOnly}
+                                    bg={activeCutlistEntryFieldBg}
+                                    border={activeCutlistEntryFieldBorder}
+                                    text={activeCutlistEntryTextColor}
+                                    size="default"
+                                    getSize={() => ""}
+                                    getLabel={(v) => v}
+                                    onChange={(v) =>
+                                      setCutlistEntry((prev) => ({
+                                        ...prev,
+                                        grainValue: v,
+                                        grain: Boolean(String(v).trim()),
+                                      }))
+                                    }
+                                  />
+                                </div>
                               ) : (
                                 <div style={cutlistEntryCellStyle("grain")} />
                               )
@@ -10482,7 +10911,9 @@ export default function ProjectDetailsPage() {
                                               >
                                                 <option value=""></option>
                                                 {options.map((opt) => (
-                                                  <option key={opt} value={opt}>{boardOptionLabel(opt)}</option>
+                                                  <option key={opt} value={opt}>
+                                                    {`${boardSizeFor(opt) ? `${boardSizeFor(opt)} ` : ""}${boardDisplayLabel(opt)}`}
+                                                  </option>
                                                 ))}
                                               </select>
                                             ) : (
@@ -10514,25 +10945,21 @@ export default function ProjectDetailsPage() {
                                             style={{ ...cutlistListColumnStyle("board"), color: rowTextColor }}
                                           >
                                             {editing ? (
-                                              <select
-                                                autoFocus
+                                              <BoardPillDropdown
                                                 value={editingCellValue}
-                                                onChange={(e) => setEditingCellValue(e.target.value)}
-                                                onBlur={() => void commitCellEdit()}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === "Enter") {
-                                                    e.preventDefault();
-                                                    void commitCellEdit();
-                                                  }
-                                                  if (e.key === "Escape") cancelCellEdit();
+                                                options={options}
+                                                disabled={productionReadOnly}
+                                                bg="#FFFFFF"
+                                                border="#94A3B8"
+                                                text="#0F172A"
+                                                size="compact"
+                                                getSize={boardSizeFor}
+                                                getLabel={boardDisplayLabel}
+                                                onChange={(next) => {
+                                                  setEditingCellValue(next);
+                                                  void commitCellEdit(next);
                                                 }}
-                                                className="h-6 min-w-[170px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                              >
-                                                <option value=""></option>
-                                                {options.map((opt) => (
-                                                  <option key={opt} value={opt}>{boardOptionLabel(opt)}</option>
-                                                ))}
-                                              </select>
+                                              />
                                             ) : (
                                               <div className="inline-flex items-center gap-2">
                                                 {boardSizeFor(row.board) && (
@@ -10562,24 +10989,21 @@ export default function ProjectDetailsPage() {
                                             style={{ ...cutlistListColumnStyle("grain"), color: rowTextColor }}
                                           >
                                             {!rowBoardAllowsGrain ? "" : editing ? (
-                                              <select
-                                                autoFocus
+                                              <BoardPillDropdown
                                                 value={editingCellValue}
-                                                onChange={(e) => {
-                                                  const v = e.target.value;
+                                                options={grainDimensionOptions(row.height, row.width, row.depth)}
+                                                disabled={productionReadOnly}
+                                                bg="#FFFFFF"
+                                                border="#94A3B8"
+                                                text="#0F172A"
+                                                size="compact"
+                                                getSize={() => ""}
+                                                getLabel={(v) => v}
+                                                onChange={(v) => {
                                                   setEditingCellValue(v);
                                                   void commitCellEdit(v);
                                                 }}
-                                                onBlur={() => void commitCellEdit()}
-                                                className="h-6 min-w-[72px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                              >
-                                                <option value=""></option>
-                                                {grainDimensionOptions(row.height, row.width, row.depth).map((opt) => (
-                                                  <option key={`${row.id}_grain_edit_${opt}`} value={opt}>
-                                                    {opt}
-                                                  </option>
-                                                ))}
-                                              </select>
+                                              />
                                             ) : (
                                               row.grainValue || (row.grain ? "Yes" : "")
                                             )}
@@ -10597,13 +11021,15 @@ export default function ProjectDetailsPage() {
                                           >
                                             {editing ? (
                                               rowIsCabinetry ? (
-                                                <div className="grid gap-[1px] text-left">
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="text-[9px] font-bold leading-none">Fixed Shelf</span>
+                                                <div className="grid min-h-[78px] content-center gap-[1px] text-left">
+                                                  <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    <span className="block pr-[3px] text-right text-[9px] font-bold leading-none">Fixed Shelf</span>
                                                     <input
                                                       autoFocus
                                                       value={editingFixedShelf}
-                                                      onChange={(e) => setEditingFixedShelf(e.target.value)}
+                                                      inputMode="numeric"
+                                                      pattern="[0-9]*"
+                                                      onChange={(e) => setEditingFixedShelf(numericOnlyText(e.target.value))}
                                                       onKeyDown={(e) => {
                                                         if (e.key === "Enter") {
                                                           e.preventDefault();
@@ -10614,26 +11040,43 @@ export default function ProjectDetailsPage() {
                                                     className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
                                                     />
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                      <DrillingArrowIcon color={rowTextColor} />
-                                                      Drilling
-                                                    </span>
-                                                    <select
-                                                      value={editingFixedShelfDrilling}
-                                                      onChange={(e) => setEditingFixedShelfDrilling(normalizeDrillingValue(e.target.value))}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
-                                                    >
-                                                      {DRILLING_OPTIONS.map((opt) => (
-                                                        <option key={opt} value={opt}>{opt}</option>
-                                                      ))}
-                                                    </select>
+                                                  <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    {hasShelfQuantity(editingFixedShelf) ? (
+                                                      <>
+                                                        <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none">
+                                                          <DrillingArrowIcon color={rowTextColor} />
+                                                          Drilling
+                                                        </span>
+                                                        <div className="w-full min-w-0">
+                                                          <BoardPillDropdown
+                                                            value={editingFixedShelfDrilling}
+                                                            options={DRILLING_OPTIONS}
+                                                            disabled={productionReadOnly}
+                                                            bg="#FFFFFF"
+                                                            border="#94A3B8"
+                                                            text="#0F172A"
+                                                            size="compact"
+                                                            className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                                            getSize={() => ""}
+                                                            getLabel={(v) => v}
+                                                            onChange={(v) => setEditingFixedShelfDrilling(normalizeDrillingValue(v))}
+                                                          />
+                                                        </div>
+                                                      </>
+                                                    ) : (
+                                                      <>
+                                                        <span></span>
+                                                        <span></span>
+                                                      </>
+                                                    )}
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="text-[9px] font-bold leading-none">Adjustable Shelf</span>
+                                                  <div className="grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    <span className="block pr-[3px] text-right text-[9px] font-bold leading-none">Adjustable Shelf</span>
                                                     <input
                                                       value={editingAdjustableShelf}
-                                                      onChange={(e) => setEditingAdjustableShelf(e.target.value)}
+                                                      inputMode="numeric"
+                                                      pattern="[0-9]*"
+                                                      onChange={(e) => setEditingAdjustableShelf(numericOnlyText(e.target.value))}
                                                       onBlur={() => void commitCellEdit()}
                                                       onKeyDown={(e) => {
                                                         if (e.key === "Enter") {
@@ -10645,88 +11088,101 @@ export default function ProjectDetailsPage() {
                                                     className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
                                                     />
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="inline-flex items-center gap-[2px] text-[9px] font-bold leading-none">
-                                                      <DrillingArrowIcon color={rowTextColor} />
-                                                      Drilling
-                                                    </span>
-                                                    <select
-                                                      value={editingAdjustableShelfDrilling}
-                                                      onChange={(e) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(e.target.value))}
-                                                      onBlur={() => void commitCellEdit()}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
-                                                    >
-                                                      {DRILLING_OPTIONS.map((opt) => (
-                                                        <option key={opt} value={opt}>{opt}</option>
-                                                      ))}
-                                                    </select>
+                                                  <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    {hasShelfQuantity(editingAdjustableShelf) ? (
+                                                      <>
+                                                        <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none">
+                                                          <DrillingArrowIcon color={rowTextColor} />
+                                                          Drilling
+                                                        </span>
+                                                        <div className="w-full min-w-0">
+                                                          <BoardPillDropdown
+                                                            value={editingAdjustableShelfDrilling}
+                                                            options={DRILLING_OPTIONS}
+                                                            disabled={productionReadOnly}
+                                                            bg="#FFFFFF"
+                                                            border="#94A3B8"
+                                                            text="#0F172A"
+                                                            size="compact"
+                                                            className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                                            getSize={() => ""}
+                                                            getLabel={(v) => v}
+                                                            onChange={(v) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(v))}
+                                                          />
+                                                        </div>
+                                                      </>
+                                                    ) : (
+                                                      <>
+                                                        <span></span>
+                                                        <span></span>
+                                                      </>
+                                                    )}
                                                   </div>
                                                 </div>
                                               ) : (
                                               <div className="grid grid-cols-2 gap-1">
-                                                  <select
-                                                    autoFocus
+                                                  <BoardPillDropdown
                                                     value={editingClashLeft}
-                                                    onChange={(e) => setEditingClashLeft(e.target.value)}
-                                                    onKeyDown={(e) => {
-                                                      if (e.key === "Enter") {
-                                                        e.preventDefault();
-                                                        void commitCellEdit();
-                                                      }
-                                                      if (e.key === "Escape") cancelCellEdit();
-                                                    }}
-                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                                  >
-                                                    <option value=""></option>
-                                                    {CLASH_LEFT_OPTIONS.map((opt) => (
-                                                      <option key={opt} value={opt}>{opt}</option>
-                                                    ))}
-                                                  </select>
-                                                  <select
+                                                    options={CLASH_LEFT_OPTIONS}
+                                                    disabled={productionReadOnly || isDrawerPartType(row.partType)}
+                                                    bg="#FFFFFF"
+                                                    border="#94A3B8"
+                                                    text="#0F172A"
+                                                    size="compact"
+                                                    matchDrawerArrow={isDrawerPartType(row.partType)}
+                                                    getSize={() => ""}
+                                                    getLabel={(v) => v}
+                                                    onChange={(next) => setEditingClashLeft(next)}
+                                                  />
+                                                  <BoardPillDropdown
                                                     value={editingClashRight}
-                                                    onChange={(e) => setEditingClashRight(e.target.value)}
-                                                    onBlur={() => void commitCellEdit()}
-                                                    onKeyDown={(e) => {
-                                                      if (e.key === "Enter") {
-                                                        e.preventDefault();
+                                                    options={CLASH_RIGHT_OPTIONS}
+                                                    disabled={productionReadOnly || isDrawerPartType(row.partType)}
+                                                    bg="#FFFFFF"
+                                                    border="#94A3B8"
+                                                    text="#0F172A"
+                                                    size="compact"
+                                                    matchDrawerArrow={isDrawerPartType(row.partType)}
+                                                    getSize={() => ""}
+                                                    getLabel={(v) => v}
+                                                    onChange={(next) => {
+                                                      setEditingClashRight(next);
+                                                      window.setTimeout(() => {
                                                         void commitCellEdit();
-                                                      }
-                                                      if (e.key === "Escape") cancelCellEdit();
+                                                      }, 0);
                                                     }}
-                                                  className="h-6 w-full min-w-0 rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
-                                                  >
-                                                    <option value=""></option>
-                                                    {CLASH_RIGHT_OPTIONS.map((opt) => (
-                                                      <option key={opt} value={opt}>{opt}</option>
-                                                    ))}
-                                                  </select>
+                                                  />
                                                 </div>
                                               )
                                             ) : (
                                               rowIsCabinetry ? (
-                                                <div className="grid min-h-[78px] grid-rows-4 gap-[2px] text-left text-[9px]">
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="font-bold">Fixed Shelf</span>
+                                                <div className="grid min-h-[78px] content-center gap-[1px] text-left text-[9px]">
+                                                  <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    <span className="block pr-[3px] text-right font-bold">Fixed Shelf</span>
                                                     <span>{row.fixedShelf || ""}</span>
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <DrillingArrowIcon color={rowTextColor} />
-                                                      Drilling
-                                                    </span>
-                                                    <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
-                                                  </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="font-bold">Adjustable Shelf</span>
+                                                  {hasShelfQuantity(row.fixedShelf) && (
+                                                    <div className="-mt-[2px] grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] font-bold">
+                                                        <DrillingArrowIcon color={rowTextColor} />
+                                                        Drilling
+                                                      </span>
+                                                      <span>{normalizeDrillingValue(row.fixedShelfDrilling)}</span>
+                                                    </div>
+                                                  )}
+                                                  <div className="grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                    <span className="block pr-[3px] text-right font-bold">Adjustable Shelf</span>
                                                     <span>{row.adjustableShelf || ""}</span>
                                                   </div>
-                                                  <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-[2px]">
-                                                    <span className="inline-flex items-center gap-[2px] font-bold">
-                                                      <DrillingArrowIcon color={rowTextColor} />
-                                                      Drilling
-                                                    </span>
-                                                    <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
-                                                  </div>
+                                                  {hasShelfQuantity(row.adjustableShelf) && (
+                                                    <div className="-mt-[2px] grid h-[18px] grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] font-bold">
+                                                        <DrillingArrowIcon color={rowTextColor} />
+                                                        Drilling
+                                                      </span>
+                                                      <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
+                                                    </div>
+                                                  )}
                                                 </div>
                                               ) : (
                                                 row.clashing
@@ -10792,6 +11248,8 @@ export default function ProjectDetailsPage() {
                                         (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height)) ||
                                         (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width)) ||
                                         (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth));
+                                      const drawerTextboxLift =
+                                        isDrawerPartType(row.partType) && (key === "width" || key === "depth" || key === "quantity");
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
@@ -10807,7 +11265,9 @@ export default function ProjectDetailsPage() {
                                             <input
                                               autoFocus
                                               value={editingCellValue}
-                                              onChange={(e) => setEditingCellValue(e.target.value)}
+                                              inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
+                                              pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
+                                              onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
                                               onBlur={() => void commitCellEdit()}
                                               onKeyDown={(e) => {
                                                 if (e.key === "Enter") {
@@ -10816,6 +11276,7 @@ export default function ProjectDetailsPage() {
                                                 }
                                                 if (e.key === "Escape") cancelCellEdit();
                                               }}
+                                              style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
                                               className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
                                             />
                                           ) : (
@@ -11168,11 +11629,6 @@ export default function ProjectDetailsPage() {
                       <p className="text-center">Sheets</p>
                       <p className="text-center">Edgetape</p>
                     </div>
-                    <datalist id="board-colour-suggestions">
-                      {boardColourSuggestions.map((colour) => (
-                        <option key={colour} value={colour} />
-                      ))}
-                    </datalist>
                     <div className="mt-2 space-y-2">
                       {productionForm.boardTypes.map((row) => (
                         <div key={row.id} className="grid grid-cols-[24px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2">
@@ -11187,21 +11643,62 @@ export default function ProjectDetailsPage() {
                           >
                             x
                           </button>
-                          <input
-                            disabled={productionReadOnly}
-                            value={row.colour}
-                            list="board-colour-suggestions"
-                            onFocus={() => {
-                              boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
-                            }}
-                            onChange={(e) => onBoardFieldDraftChange(row.id, { colour: e.target.value })}
-                            onBlur={(e) => {
-                              const previousColour = boardColourEditStartRef.current[row.id] ?? "";
+                          <div className="relative">
+                            <input
+                              disabled={productionReadOnly}
+                              value={row.colour}
+                              onFocus={() => {
+                                boardColourEditStartRef.current[row.id] = String(row.colour || "").trim();
+                                setActiveBoardColourSuggestionsRowId(row.id);
+                              }}
+                              onChange={(e) => {
+                                onBoardFieldDraftChange(row.id, { colour: e.target.value });
+                                setActiveBoardColourSuggestionsRowId(row.id);
+                              }}
+                              onBlur={(e) => {
                               delete boardColourEditStartRef.current[row.id];
-                              void onBoardFieldCommit(row.id, { colour: e.target.value }, true, previousColour);
+                              window.setTimeout(() => {
+                                setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
+                              }, 120);
+                              void onBoardFieldCommit(row.id, { colour: e.target.value }, true);
                             }}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                          />
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  setActiveBoardColourSuggestionsRowId(null);
+                                }
+                              }}
+                              className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            {activeBoardColourSuggestionsRowId === row.id &&
+                              (() => {
+                                const query = String(row.colour || "").trim().toLowerCase();
+                                const starts = boardColourSuggestions.filter((c) => c.toLowerCase().startsWith(query));
+                                const contains = boardColourSuggestions.filter(
+                                  (c) => !c.toLowerCase().startsWith(query) && c.toLowerCase().includes(query),
+                                );
+                                const filtered = (query ? [...starts, ...contains] : boardColourSuggestions).slice(0, 20);
+                                if (!filtered.length) return null;
+                                return (
+                                  <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                                    {filtered.map((colour) => (
+                                      <button
+                                        key={`${row.id}_${colour}`}
+                                        type="button"
+                                        onMouseDown={(ev) => ev.preventDefault()}
+                                        onClick={() => {
+                                          delete boardColourEditStartRef.current[row.id];
+                                          setActiveBoardColourSuggestionsRowId(null);
+                                          void onBoardFieldCommit(row.id, { colour }, true);
+                                        }}
+                                        className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                                      >
+                                        {colour}
+                                      </button>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+                          </div>
                           <select
                             disabled={productionReadOnly}
                             value={row.thickness}
@@ -11396,6 +11893,12 @@ export default function ProjectDetailsPage() {
     </ProtectedRoute>
   );
 }
+
+
+
+
+
+
 
 
 

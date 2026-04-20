@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Building2, CircleDollarSign, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, Settings, Users, Wrench, X } from "lucide-react";
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
@@ -10,6 +11,7 @@ import {
   fetchCompanyDoc,
   fetchCompanyMembers,
   fetchProjects,
+  removeTagsFromCompanyProjects,
   fetchUserColorMapByUids,
   fetchUserNotifications,
   saveCompanyDocPatchDetailed,
@@ -17,6 +19,7 @@ import {
   type CompanyMemberOption,
   type UserNotificationRow,
 } from "@/lib/firestore-data";
+import { storage } from "@/lib/firebase";
 
 type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
@@ -660,9 +663,11 @@ export default function CompanySettingsPage() {
   const [staffIconColorByUid, setStaffIconColorByUid] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Desktop parity data mode");
   const [isHydrated, setIsHydrated] = useState(false);
   const blurAutoSaveTimerRef = useRef<number | null>(null);
+  const logoFileInputRef = useRef<HTMLInputElement | null>(null);
   const hasPendingBlurSaveRef = useRef(false);
   const saveQueuedWhileBusyRef = useRef(false);
   const skipFirstDirtyEffectRef = useRef(true);
@@ -1176,6 +1181,63 @@ export default function CompanySettingsPage() {
     setDrawerHeightsExpanded((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
   };
 
+  const deleteStorageObjectIfExists = async (value: string) => {
+    const client = storage;
+    const raw = String(value || "").trim();
+    if (!client || !raw) return;
+    try {
+      if (/^https?:\/\//i.test(raw) || /^gs:\/\//i.test(raw)) {
+        await deleteObject(storageRef(client, raw));
+        return;
+      }
+      await deleteObject(storageRef(client, raw));
+    } catch {
+      // best effort
+    }
+  };
+
+  const onUploadCompanyLogo = async (file: File | null) => {
+    if (!file || !activeCompanyId) return;
+    const client = storage;
+    if (!client) {
+      setSaveLabel("Save failed (storage-unavailable)");
+      return;
+    }
+    setIsUploadingLogo(true);
+    const previousLogoPath = toStr(form.logoPath);
+    try {
+      const ext = file.name.includes(".") ? file.name.split(".").pop() : "png";
+      const safeExt = String(ext || "png").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "png";
+      const nextPath = `companies/${activeCompanyId}/branding/logo_${Date.now()}.${safeExt}`;
+      const uploadRef = storageRef(client, nextPath);
+      await uploadBytes(uploadRef, file, { contentType: file.type || "image/png" });
+      const nextUrl = await getDownloadURL(uploadRef);
+
+      const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
+        logoPath: nextUrl,
+      });
+      if (!result.ok) {
+        setSaveLabel(`Save failed (${result.error || "logo-save-failed"})`);
+        return;
+      }
+
+      setForm((prev) => ({ ...prev, logoPath: nextUrl }));
+      setCompany((prev) => (prev ? { ...prev, logoPath: nextUrl } : prev));
+      setSaveLabel("Saved");
+
+      if (previousLogoPath && previousLogoPath !== nextUrl) {
+        await deleteStorageObjectIfExists(previousLogoPath);
+      }
+    } catch {
+      setSaveLabel("Save failed (logo-upload-failed)");
+    } finally {
+      setIsUploadingLogo(false);
+      if (logoFileInputRef.current) {
+        logoFileInputRef.current.value = "";
+      }
+    }
+  };
+
   const markAllNotifications = async (read: boolean) => {
     if (!user?.uid) {
       return;
@@ -1199,6 +1261,23 @@ export default function CompanySettingsPage() {
       saveQueuedWhileBusyRef.current = false;
     }
     setIsSaving(true);
+    const existingTagRows = normalizeProjectTagUsage((company?.projectTagUsage as unknown) ?? []);
+    const nextTagSet = new Set(projectTagUsage.map((row) => toStr(row.value).toLowerCase()).filter(Boolean));
+    const removedTags = Array.from(
+      new Set(
+        existingTagRows
+          .map((row) => toStr(row.value))
+          .filter((value) => value && !nextTagSet.has(value.toLowerCase())),
+      ),
+    );
+    if (removedTags.length > 0) {
+      const removedOk = await removeTagsFromCompanyProjects(activeCompanyId, removedTags);
+      if (!removedOk) {
+        setIsSaving(false);
+        setSaveLabel("Save failed (tags-remove-failed)");
+        return;
+      }
+    }
     const hardwareForSave = sanitizeHardwareRows(hardware);
     const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
       name: form.name,
@@ -1645,7 +1724,34 @@ export default function CompanySettingsPage() {
                           />
                         </div>
                       </div>
-                      <div className="grid grid-cols-[95px_1fr] items-center gap-2"><p className="font-bold text-[#334155]">Company Logo</p><input value={form.logoPath} onChange={(e) => setForm((prev) => ({ ...prev, logoPath: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" /></div>
+                      <div className="grid grid-cols-[95px_1fr_auto] items-center gap-2">
+                        <p className="font-bold text-[#334155]">Company Logo</p>
+                        <input
+                          value={form.logoPath}
+                          onChange={(e) => setForm((prev) => ({ ...prev, logoPath: e.target.value }))}
+                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            ref={logoFileInputRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] ?? null;
+                              void onUploadCompanyLogo(file);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => logoFileInputRef.current?.click()}
+                            disabled={isUploadingLogo || isLoading || !activeCompanyId}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467] disabled:opacity-60"
+                          >
+                            {isUploadingLogo ? "Uploading..." : "Upload"}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </Panel>
                 </div>

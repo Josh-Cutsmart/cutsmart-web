@@ -1,0 +1,24 @@
+Version: v0.1.5
+
+whatsNew: [
+<u><b>Changelog:</u></b>
+- New layout to suit the rest of the application.
+- Version history now works correctyy, and pushes the update correctly.
+- Users can now report a problem to application devs like a ticket system.
+- Users can now suggest a feature for the application to devs like a ticket system.
+- Users now select what version of the application they are on (Mobile, Tablet, Desktop) when reporting and issue or suggesting a feature. Device autodetection is enabled prior to selection.
+
+<u><b>Production Cutlist:</u></b>
+- Selection of more than 1 row at a time for deletion is now possible, and now requires confirmation via the button at the top of each part type table.
+- "Cutlist List" Columns now line up across all part type tables.
+- Edit mode board rows in the Cutlist list now show simplified board height for reference.
+- Matched drop down styling in edit mode in the "Cutlist list" for Board Colour, Clashing, Drilling (Cabinetry), Grain (Grained ticked board).
+- Drilling drop downs on "Cabinetry" Part types now only show when a quantity is entered in the relevant shelf textbox.
+- The "Change live feed" at the top now has smoother animation when changes are made.
+- "Drilling" textbox for shelves now only shows up when a quantity >0 is entered.
+- Height, Width, Depth, Quantity, Fixed Shelf, and Adjustable Shelf columns now only support numerical input.
+- "Clashing" column drop downs are now disabled in "Drawer" Part Types.
+- Fixed "Height" drop down for "Drawer" part types sitting off centre and shifting row on selection.
+- "Cutlist List" no longer automatically enters a blank part type row of the last submitted row.
+]
+
