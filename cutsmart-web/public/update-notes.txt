@@ -1,24 +1,23 @@
-Version: v0.1.5
+Version: v0.1.6
 
 whatsNew: [
-<u><b>Changelog:</u></b>
-- New layout to suit the rest of the application.
-- Version history now works correctyy, and pushes the update correctly.
-- Users can now report a problem to application devs like a ticket system.
-- Users can now suggest a feature for the application to devs like a ticket system.
-- Users now select what version of the application they are on (Mobile, Tablet, Desktop) when reporting and issue or suggesting a feature. Device autodetection is enabled prior to selection.
+<u><b>General:</u></b>
+- Users can now use "Remember me on this device" on log in for automatic log in.
 
-<u><b>Production Cutlist:</u></b>
-- Selection of more than 1 row at a time for deletion is now possible, and now requires confirmation via the button at the top of each part type table.
-- "Cutlist List" Columns now line up across all part type tables.
-- Edit mode board rows in the Cutlist list now show simplified board height for reference.
-- Matched drop down styling in edit mode in the "Cutlist list" for Board Colour, Clashing, Drilling (Cabinetry), Grain (Grained ticked board).
-- Drilling drop downs on "Cabinetry" Part types now only show when a quantity is entered in the relevant shelf textbox.
-- The "Change live feed" at the top now has smoother animation when changes are made.
-- "Drilling" textbox for shelves now only shows up when a quantity >0 is entered.
-- Height, Width, Depth, Quantity, Fixed Shelf, and Adjustable Shelf columns now only support numerical input.
-- "Clashing" column drop downs are now disabled in "Drawer" Part Types.
-- Fixed "Height" drop down for "Drawer" part types sitting off centre and shifting row on selection.
-- "Cutlist List" no longer automatically enters a blank part type row of the last submitted row.
+<u><b>Production:</u></b>
+- Added "Order" window.
+- Edgetape is now calcualted per board type.
+- Changed [X] button in board settings to match other row deletion buttons.
+- CNC Cutlist now separated Cabinety part types and draws a 3D model of the cabinet for better production flow.
+- CNC Cutlist [.PDF] Export now has a new layout showing the new cabinet cards and Drawer Rows properly.
+- CNC Cutlist [.xlxs] Export now has a new layout showing the new cabinet cards and Drawer Rows properly.
+- Fixed Grain column width and made it underline the correct dimensions IF 2 dimensions are the same value.
+- Added helper text for grain direction in the headers of the board tables in CNC Cutlist.
+- Grain direction can now be selected for cabinets, this will show in the grain direction in the cabinet break down for CNC Cutlist.
+- "Print" now works correctly in CNC Cutlist, title page and copies the layout of the new PDF Export.
+- Information rows are now stacked in the CNC Cutlist rather than inline.
+
+<u><b>Company Settings:</u></b>
+- Company Admins can now use a rounding up/down system for edgetape counts in the "Production" tab.
 ]
 

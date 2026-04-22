@@ -420,7 +420,13 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
   return out.length ? out : defaults;
 }
 
-function normalizeEdgebandingSettings(raw: unknown): { rules: EdgebandingRuleRow[]; excessPerEndMm: string } {
+function normalizeEdgebandingSettings(raw: unknown): {
+  rules: EdgebandingRuleRow[];
+  excessPerEndMm: string;
+  roundEnabled: boolean;
+  roundDirection: "up" | "down";
+  roundNearestMeters: string;
+} {
   const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const rulesRaw = Array.isArray(obj.addToTotalRules) ? obj.addToTotalRules : [];
   const rules = rulesRaw
@@ -436,6 +442,9 @@ function normalizeEdgebandingSettings(raw: unknown): { rules: EdgebandingRuleRow
   return {
     rules,
     excessPerEndMm: toStr(obj.excessPerEndMm),
+    roundEnabled: Boolean(obj.roundEnabled ?? false),
+    roundDirection: toStr(obj.roundDirection).toLowerCase() === "down" ? "down" : "up",
+    roundNearestMeters: toStr(obj.roundNearestMeters),
   };
 }
 
@@ -715,6 +724,9 @@ export default function CompanySettingsPage() {
   const [cutlistColumnDragOverIndex, setCutlistColumnDragOverIndex] = useState<number | null>(null);
   const [edgebandingRules, setEdgebandingRules] = useState<EdgebandingRuleRow[]>([]);
   const [edgebandingExcessPerEndMm, setEdgebandingExcessPerEndMm] = useState("");
+  const [edgebandingRoundEnabled, setEdgebandingRoundEnabled] = useState(false);
+  const [edgebandingRoundDirection, setEdgebandingRoundDirection] = useState<"up" | "down">("up");
+  const [edgebandingRoundNearestMeters, setEdgebandingRoundNearestMeters] = useState("");
   const [unlockSuffix, setUnlockSuffix] = useState("");
   const [unlockHours, setUnlockHours] = useState("6");
   const [quoteBaseLayoutHtml, setQuoteBaseLayoutHtml] = useState(defaultQuoteBaseLayoutHtml);
@@ -839,6 +851,9 @@ export default function CompanySettingsPage() {
         const edgeSettings = normalizeEdgebandingSettings(doc.edgebandingSettings);
         setEdgebandingRules(edgeSettings.rules);
         setEdgebandingExcessPerEndMm(edgeSettings.excessPerEndMm);
+        setEdgebandingRoundEnabled(edgeSettings.roundEnabled);
+        setEdgebandingRoundDirection(edgeSettings.roundDirection);
+        setEdgebandingRoundNearestMeters(edgeSettings.roundNearestMeters);
         setUnlockSuffix(toStr(doc.productionUnlockPasswordSuffix));
         setUnlockHours(toStr(doc.productionUnlockDurationHours, "6"));
         setQuoteBaseLayoutHtml(toStr(doc.quoteBaseLayoutHtml, defaultQuoteBaseLayoutHtml));
@@ -1373,6 +1388,12 @@ export default function CompanySettingsPage() {
           const n = Number(toStr(edgebandingExcessPerEndMm).replace(/,/g, ""));
           return Number.isFinite(n) && n > 0 ? n : 0;
         })(),
+        roundEnabled: Boolean(edgebandingRoundEnabled),
+        roundDirection: edgebandingRoundDirection === "down" ? "down" : "up",
+        roundNearestMeters: (() => {
+          const n = Number(toStr(edgebandingRoundNearestMeters).replace(/,/g, ""));
+          return Number.isFinite(n) && n > 0 ? n : 0;
+        })(),
       },
       productionUnlockPasswordSuffix: unlockSuffix.replace(/\D/g, ""),
       productionUnlockDurationHours: Number(unlockHours || 6),
@@ -1493,6 +1514,9 @@ export default function CompanySettingsPage() {
         edgebandingSettings: {
           addToTotalRules: edgebandingRules,
           excessPerEndMm: edgebandingExcessPerEndMm,
+          roundEnabled: edgebandingRoundEnabled,
+          roundDirection: edgebandingRoundDirection,
+          roundNearestMeters: edgebandingRoundNearestMeters,
         },
         productionUnlockPasswordSuffix: unlockSuffix,
         productionUnlockDurationHours: unlockHours,
@@ -1592,6 +1616,9 @@ export default function CompanySettingsPage() {
     cutlistColumnOrder,
     edgebandingRules,
     edgebandingExcessPerEndMm,
+    edgebandingRoundEnabled,
+    edgebandingRoundDirection,
+    edgebandingRoundNearestMeters,
     unlockSuffix,
     unlockHours,
   ]);
@@ -2103,6 +2130,32 @@ export default function CompanySettingsPage() {
                             onChange={(e) => setEdgebandingExcessPerEndMm(e.target.value)}
                             className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
                           />
+                        </div>
+                        <div className="grid grid-cols-[26px_62px_90px_110px_80px_30px] items-center gap-2 pt-1">
+                          <input
+                            type="checkbox"
+                            checked={edgebandingRoundEnabled}
+                            onChange={(e) => setEdgebandingRoundEnabled(e.target.checked)}
+                            className="h-4 w-4 justify-self-center"
+                          />
+                          <p className="font-bold text-[#64748B]">Round</p>
+                          <select
+                            value={edgebandingRoundDirection}
+                            onChange={(e) => setEdgebandingRoundDirection(e.target.value === "down" ? "down" : "up")}
+                            disabled={!edgebandingRoundEnabled}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:opacity-50"
+                          >
+                            <option value="up">up</option>
+                            <option value="down">down</option>
+                          </select>
+                          <p className="font-bold text-[#64748B]">to the nearest</p>
+                          <input
+                            value={edgebandingRoundNearestMeters}
+                            onChange={(e) => setEdgebandingRoundNearestMeters(e.target.value)}
+                            disabled={!edgebandingRoundEnabled}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:opacity-50"
+                          />
+                          <p className="font-bold text-[#64748B]">m.</p>
                         </div>
                       </div>
                     </Panel>

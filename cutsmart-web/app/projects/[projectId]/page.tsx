@@ -134,7 +134,7 @@ type HardwareDrawerType = {
   hardwareLengths: number[];
   spaceRequirement: number | null;
 };
-type HardwareTypeRow = { name: string; isDefault: boolean; drawers: HardwareDrawerType[] };
+type HardwareTypeRow = { name: string; isDefault: boolean; drawers: HardwareDrawerType[]; hinges: string[]; other: string[] };
 type SheetSizeOption = { h: string; w: string; isDefault: boolean };
 type BoardColourMemoryRow = { value: string; count: number };
 type ProductionBoardRow = {
@@ -170,6 +170,8 @@ type ProductionFormState = {
   };
   boardTypes: ProductionBoardRow[];
 };
+type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: boolean };
+type OrderHingeRow = { id: string; name: string; qty: string };
 
 type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock";
 type CutlistRow = {
@@ -205,6 +207,7 @@ type CabinetryDerivedPiece = {
   quantity: string;
   clashLeft: string;
   clashRight: string;
+  grainValue?: string;
 };
 type DrawerDerivedPiece = {
   key: string;
@@ -215,6 +218,10 @@ type DrawerDerivedPiece = {
   quantity: string;
   clashLeft: string;
   clashRight: string;
+};
+type CncDisplayRow = CutlistRow & {
+  sourceRowId: string;
+  cncCabinetryRowKind?: "main" | "fixedShelf" | "adjustableShelf";
 };
 type SalesRoomRow = { name: string; included: boolean; totalPrice: string };
 type CutlistEditableField =
@@ -260,6 +267,7 @@ type ProjectFileEntry = {
   contentType: string;
   uploadedAtIso: string;
 };
+type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
 
 const PROJECT_FILE_TOTAL_LIMIT_BYTES = 10 * 1024 * 1024;
 const PROJECT_FILE_ACCEPT_EXTENSIONS = [
@@ -479,6 +487,309 @@ function formatPartCount(value: number): string {
   return `${count} ${count === 1 ? "Part" : "Parts"}`;
 }
 
+function cabinetPreviewRatioFromDims(widthMm: number, heightMm: number, depthMm: number): number {
+  const w = Math.max(0, Number(widthMm) || 0);
+  const h = Math.max(0, Number(heightMm) || 0);
+  const d = Math.max(0, Number(depthMm) || 0);
+  if (w <= 0 || h <= 0 || d <= 0) return 1;
+  const maxDim = Math.max(w, h, d, 1);
+  const frontW = Math.max(54, Math.min(122, (w / maxDim) * 122));
+  const frontH = Math.max(62, Math.min(132, (h / maxDim) * 132));
+  const depthX = Math.max(14, Math.min(56, (d / maxDim) * 56));
+  const depthY = Math.max(10, Math.min(30, (d / maxDim) * 30));
+  const drawW = frontW + depthX;
+  const drawH = frontH + depthY;
+  return drawH > 0 ? drawW / drawH : 1;
+}
+
+function CabinetIsoPreview({
+  widthMm,
+  heightMm,
+  depthMm,
+  thicknessMm,
+  fixedShelfCount,
+  adjustableShelfCount,
+}: {
+  widthMm: number;
+  heightMm: number;
+  depthMm: number;
+  thicknessMm: number;
+  fixedShelfCount: number;
+  adjustableShelfCount: number;
+}) {
+  const w = Math.max(0, Number(widthMm) || 0);
+  const h = Math.max(0, Number(heightMm) || 0);
+  const d = Math.max(0, Number(depthMm) || 0);
+  const t = Math.max(0, Number(thicknessMm) || 0);
+  if (w <= 0 || h <= 0 || d <= 0) {
+    return (
+      <div className="flex h-[170px] items-center justify-center rounded-[8px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] text-[11px] font-semibold text-[#64748B]">
+        No size
+      </div>
+    );
+  }
+
+  // Keep CNC window preview proportions aligned with export/PDF geometry.
+  const maxDim = Math.max(w, h, d, 1);
+  const frontW = Math.max(54, Math.min(122, (w / maxDim) * 122));
+  const frontH = Math.max(62, Math.min(132, (h / maxDim) * 132));
+  const depthX = Math.max(14, Math.min(56, (d / maxDim) * 56));
+  const depthY = Math.max(10, Math.min(30, (d / maxDim) * 30));
+
+  const drawW = frontW + depthX;
+  const drawH = frontH + depthY;
+  const viewInset = 2;
+  const svgW = Math.max(1, drawW + viewInset * 2);
+  const svgH = Math.max(1, drawH + viewInset * 2);
+  const frontX = viewInset;
+  const frontY = depthY + viewInset;
+  const rightX = frontX + frontW;
+  const bottomY = frontY + frontH;
+  const panelT = Math.max(2, Math.min(14, t > 0 ? (t / maxDim) * 122 : 4));
+  const innerX = frontX + panelT;
+  const innerY = frontY + panelT;
+  const innerW = Math.max(8, frontW - panelT * 2);
+  const innerH = Math.max(8, frontH - panelT * 2);
+  const innerRight = innerX + innerW;
+  const innerBottom = innerY + innerH;
+  const cavityOffX = depthX * 0.78;
+  const cavityOffY = depthY * 0.78;
+  const backX = innerX + cavityOffX;
+  const backY = innerY - cavityOffY;
+  const backRight = backX + innerW;
+  const backBottom = backY + innerH;
+
+  const topPoly = `${frontX},${frontY} ${rightX},${frontY} ${rightX + depthX},${frontY - depthY} ${frontX + depthX},${frontY - depthY}`;
+  const sidePoly = `${rightX},${frontY} ${rightX + depthX},${frontY - depthY} ${rightX + depthX},${bottomY - depthY} ${rightX},${bottomY}`;
+  const frameInnerH = Math.max(0, frontH - panelT * 2);
+  const frameInnerW = Math.max(0, frontW - panelT * 2);
+  const frameCenterY = frontY + panelT;
+  const frameCenterX = frontX + panelT;
+  const totalShelves = Math.max(0, fixedShelfCount) + Math.max(0, adjustableShelfCount);
+  const fixedCount = Math.max(0, fixedShelfCount);
+  const shelfRows = Math.min(10, totalShelves);
+  const shelfT = Math.max(1.5, Math.min(8, panelT * 0.9));
+  const shelfBoards = Array.from({ length: shelfRows }, (_v, idx) => {
+    const y = innerY + ((idx + 1) * innerH) / (shelfRows + 1);
+    const yBottom = y + shelfT;
+    const isAdjustable = idx >= fixedCount;
+    const shelfTopPoly = `${innerX},${y} ${innerRight},${y} ${innerRight + cavityOffX},${y - cavityOffY} ${innerX + cavityOffX},${y - cavityOffY}`;
+    const shelfBottomPoly = `${innerX},${yBottom} ${innerRight},${yBottom} ${innerRight + cavityOffX},${yBottom - cavityOffY} ${innerX + cavityOffX},${yBottom - cavityOffY}`;
+    const shelfFrontFace = `${innerX},${y} ${innerRight},${y} ${innerRight},${yBottom} ${innerX},${yBottom}`;
+    const shelfRightFace = `${innerRight},${y} ${innerRight + cavityOffX},${y - cavityOffY} ${innerRight + cavityOffX},${yBottom - cavityOffY} ${innerRight},${yBottom}`;
+    return (
+      <g key={`cab_shelf_${idx}`}>
+        <polygon
+          points={shelfBottomPoly}
+          fill={isAdjustable ? "#C6D2E2" : "#B8C5D9"}
+          stroke={isAdjustable ? "#64748B" : "#334155"}
+          strokeWidth={0.65}
+        />
+        <polygon
+          points={shelfRightFace}
+          fill={isAdjustable ? "#B7C4D7" : "#A9B8CE"}
+          stroke={isAdjustable ? "#64748B" : "#334155"}
+          strokeWidth={0.65}
+        />
+        <polygon
+          points={shelfFrontFace}
+          fill={isAdjustable ? "#D3DDEA" : "#C6D2E2"}
+          stroke={isAdjustable ? "#64748B" : "#334155"}
+          strokeWidth={0.65}
+        />
+        <polygon
+          points={shelfTopPoly}
+          fill={isAdjustable ? "#DCE3EC" : "#CCD6E4"}
+          stroke={isAdjustable ? "#64748B" : "#334155"}
+          strokeWidth={0.9}
+          strokeDasharray={isAdjustable ? "4 2" : undefined}
+        />
+      </g>
+    );
+  });
+
+  return (
+    <div className="w-[220px] shrink-0 self-stretch p-[10px]">
+      <div className="relative h-full w-full">
+      <svg
+        viewBox={`0 0 ${svgW} ${svgH}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="absolute inset-0 h-full w-full"
+      >
+        <rect x={frontX} y={frontY} width={frontW} height={frontH} fill="#E9EFF8" stroke="#475569" strokeWidth="1.2" />
+        <polygon
+          points={`${innerX},${innerY} ${innerRight},${innerY} ${backRight},${backY} ${backX},${backY}`}
+          fill="#EEF3FA"
+          stroke="#90A2BA"
+          strokeWidth="0.8"
+        />
+        <polygon
+          points={`${innerRight},${innerY} ${innerRight},${innerBottom} ${backRight},${backBottom} ${backRight},${backY}`}
+          fill="#E3EAF4"
+          stroke="#90A2BA"
+          strokeWidth="0.8"
+        />
+        <polygon
+          points={`${innerX},${innerY} ${innerX},${innerBottom} ${backX},${backBottom} ${backX},${backY}`}
+          fill="#EAF0F8"
+          stroke="#90A2BA"
+          strokeWidth="0.8"
+        />
+        <polygon
+          points={`${innerX},${innerBottom} ${innerRight},${innerBottom} ${backRight},${backBottom} ${backX},${backBottom}`}
+          fill="#E7EEF7"
+          stroke="#90A2BA"
+          strokeWidth="0.8"
+        />
+        <rect x={backX} y={backY} width={innerW} height={innerH} fill="#F4F8FD" stroke="#91A4BC" strokeWidth="0.8" />
+        {shelfBoards}
+        <rect x={innerX} y={innerY} width={innerW} height={innerH} fill="none" stroke="#5B6F88" strokeWidth="0.95" />
+        <polygon points={topPoly} fill="#D6DFEC" stroke="#64748B" strokeWidth="1.1" />
+        <rect x={frontX} y={frontY} width={frontW} height={panelT} fill="#E9EFF8" />
+        <rect x={frontX} y={frameCenterY} width={panelT} height={frameInnerH} fill="#E9EFF8" />
+        <rect x={rightX - panelT} y={frameCenterY} width={panelT} height={frameInnerH} fill="#E9EFF8" />
+        <rect x={frameCenterX} y={bottomY - panelT} width={frameInnerW} height={panelT} fill="#E9EFF8" />
+        <polygon points={sidePoly} fill="#BFCBDD" stroke="#64748B" strokeWidth="1.1" />
+      </svg>
+      </div>
+    </div>
+  );
+}
+
+function buildCabinetSvgForExport(
+  widthMm: number,
+  heightMm: number,
+  depthMm: number,
+  thicknessMm: number,
+  fixedShelfCount: number,
+  adjustableShelfCount: number,
+): { svg: string; svgW: number; svgH: number } | null {
+  const w = Math.max(0, Number(widthMm) || 0);
+  const h = Math.max(0, Number(heightMm) || 0);
+  const d = Math.max(0, Number(depthMm) || 0);
+  const t = Math.max(0, Number(thicknessMm) || 0);
+  if (w <= 0 || h <= 0 || d <= 0) return null;
+  const maxDim = Math.max(w, h, d, 1);
+  const frontW = Math.max(54, Math.min(122, (w / maxDim) * 122));
+  const frontH = Math.max(62, Math.min(132, (h / maxDim) * 132));
+  const depthX = Math.max(14, Math.min(56, (d / maxDim) * 56));
+  const depthY = Math.max(10, Math.min(30, (d / maxDim) * 30));
+  const drawW = frontW + depthX;
+  const drawH = frontH + depthY;
+  const viewInset = 2;
+  const svgW = Math.max(1, drawW + viewInset * 2);
+  const svgH = Math.max(1, drawH + viewInset * 2);
+  const frontX = viewInset;
+  const frontY = depthY + viewInset;
+  const rightX = frontX + frontW;
+  const bottomY = frontY + frontH;
+  const panelT = Math.max(2, Math.min(14, t > 0 ? (t / maxDim) * 122 : 4));
+  const innerX = frontX + panelT;
+  const innerY = frontY + panelT;
+  const innerW = Math.max(8, frontW - panelT * 2);
+  const innerH = Math.max(8, frontH - panelT * 2);
+  const innerRight = innerX + innerW;
+  const innerBottom = innerY + innerH;
+  const cavityOffX = depthX * 0.78;
+  const cavityOffY = depthY * 0.78;
+  const backX = innerX + cavityOffX;
+  const backY = innerY - cavityOffY;
+  const backRight = backX + innerW;
+  const backBottom = backY + innerH;
+  const topPoly = `${frontX},${frontY} ${rightX},${frontY} ${rightX + depthX},${frontY - depthY} ${frontX + depthX},${frontY - depthY}`;
+  const sidePoly = `${rightX},${frontY} ${rightX + depthX},${frontY - depthY} ${rightX + depthX},${bottomY - depthY} ${rightX},${bottomY}`;
+  const totalShelves = Math.max(0, fixedShelfCount) + Math.max(0, adjustableShelfCount);
+  const fixedCount = Math.max(0, fixedShelfCount);
+  const shelfRows = Math.min(10, totalShelves);
+  const shelfT = Math.max(1.5, Math.min(8, panelT * 0.9));
+  const shelfGroups = Array.from({ length: shelfRows }, (_v, idx) => {
+    const y = innerY + ((idx + 1) * innerH) / (shelfRows + 1);
+    const yBottom = y + shelfT;
+    const isAdjustable = idx >= fixedCount;
+    const shelfTopPoly = `${innerX},${y} ${innerRight},${y} ${innerRight + cavityOffX},${y - cavityOffY} ${innerX + cavityOffX},${y - cavityOffY}`;
+    const shelfBottomPoly = `${innerX},${yBottom} ${innerRight},${yBottom} ${innerRight + cavityOffX},${yBottom - cavityOffY} ${innerX + cavityOffX},${yBottom - cavityOffY}`;
+    const shelfFrontFace = `${innerX},${y} ${innerRight},${y} ${innerRight},${yBottom} ${innerX},${yBottom}`;
+    const shelfRightFace = `${innerRight},${y} ${innerRight + cavityOffX},${y - cavityOffY} ${innerRight + cavityOffX},${yBottom - cavityOffY} ${innerRight},${yBottom}`;
+    return `
+      <polygon points="${shelfBottomPoly}" fill="${isAdjustable ? "#C6D2E2" : "#B8C5D9"}" stroke="${isAdjustable ? "#64748B" : "#334155"}" stroke-width="0.65" />
+      <polygon points="${shelfRightFace}" fill="${isAdjustable ? "#B7C4D7" : "#A9B8CE"}" stroke="${isAdjustable ? "#64748B" : "#334155"}" stroke-width="0.65" />
+      <polygon points="${shelfFrontFace}" fill="${isAdjustable ? "#D3DDEA" : "#C6D2E2"}" stroke="${isAdjustable ? "#64748B" : "#334155"}" stroke-width="0.65" />
+      <polygon points="${shelfTopPoly}" fill="${isAdjustable ? "#DCE3EC" : "#CCD6E4"}" stroke="${isAdjustable ? "#64748B" : "#334155"}" stroke-width="0.9" ${isAdjustable ? 'stroke-dasharray="4 2"' : ""} />
+    `;
+  }).join("");
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}">
+      <rect x="${frontX}" y="${frontY}" width="${frontW}" height="${frontH}" fill="#E9EFF8" stroke="#475569" stroke-width="1.2" />
+      <polygon points="${innerX},${innerY} ${innerRight},${innerY} ${backRight},${backY} ${backX},${backY}" fill="#EEF3FA" stroke="#90A2BA" stroke-width="0.8" />
+      <polygon points="${innerRight},${innerY} ${innerRight},${innerBottom} ${backRight},${backBottom} ${backRight},${backY}" fill="#E3EAF4" stroke="#90A2BA" stroke-width="0.8" />
+      <polygon points="${innerX},${innerY} ${innerX},${innerBottom} ${backX},${backBottom} ${backX},${backY}" fill="#EAF0F8" stroke="#90A2BA" stroke-width="0.8" />
+      <polygon points="${innerX},${innerBottom} ${innerRight},${innerBottom} ${backRight},${backBottom} ${backX},${backBottom}" fill="#E7EEF7" stroke="#90A2BA" stroke-width="0.8" />
+      <rect x="${backX}" y="${backY}" width="${innerW}" height="${innerH}" fill="#F4F8FD" stroke="#91A4BC" stroke-width="0.8" />
+      ${shelfGroups}
+      <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" fill="none" stroke="#5B6F88" stroke-width="0.95" />
+      <polygon points="${topPoly}" fill="#D6DFEC" stroke="#64748B" stroke-width="1.1" />
+      <rect x="${frontX}" y="${frontY}" width="${frontW}" height="${panelT}" fill="#E9EFF8" />
+      <rect x="${frontX}" y="${frontY + panelT}" width="${panelT}" height="${Math.max(0, frontH - panelT * 2)}" fill="#E9EFF8" />
+      <rect x="${rightX - panelT}" y="${frontY + panelT}" width="${panelT}" height="${Math.max(0, frontH - panelT * 2)}" fill="#E9EFF8" />
+      <rect x="${frontX + panelT}" y="${bottomY - panelT}" width="${Math.max(0, frontW - panelT * 2)}" height="${panelT}" fill="#E9EFF8" />
+      <polygon points="${sidePoly}" fill="#BFCBDD" stroke="#64748B" stroke-width="1.1" />
+    </svg>
+  `;
+  return { svg, svgW, svgH };
+}
+
+async function cabinetSvgMarkupToPngDataUrl(svgMarkup: string, widthPx: number, heightPx: number): Promise<string> {
+  if (typeof window === "undefined") return "";
+  const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = (e) => reject(e);
+      image.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.floor(widthPx));
+    canvas.height = Math.max(1, Math.floor(heightPx));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "";
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function normalizeEdgebandingSettings(raw: unknown): {
+  rules: EdgebandingRuleRow[];
+  excessPerEndMm: string;
+  roundEnabled: boolean;
+  roundDirection: "up" | "down";
+  roundNearestMeters: string;
+} {
+  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const rulesRaw = Array.isArray(obj.addToTotalRules) ? obj.addToTotalRules : [];
+  const rules = rulesRaw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      return {
+        upToMeters: toStr(item.upToMeters),
+        addMeters: toStr(item.addMeters),
+      };
+    })
+    .filter((r) => r.upToMeters || r.addMeters);
+  return {
+    rules,
+    excessPerEndMm: toStr(obj.excessPerEndMm),
+    roundEnabled: Boolean(obj.roundEnabled ?? false),
+    roundDirection: toStr(obj.roundDirection).toLowerCase() === "down" ? "down" : "up",
+    roundNearestMeters: toStr(obj.roundNearestMeters),
+  };
+}
+
 function approximateTextWidthPx(value: string): number {
   const txt = String(value ?? "");
   return txt.length * 8;
@@ -672,10 +983,32 @@ function normalizeHardwareRows(raw: unknown): HardwareTypeRow[] {
     .map((row) => {
       const item = row as Record<string, unknown>;
       const name = toStr(item.name);
+      const hingesRaw = Array.isArray(item.hinges) ? item.hinges : [];
+      const hinges = hingesRaw
+        .map((entry) => {
+          if (typeof entry === "string") return entry.trim();
+          if (entry && typeof entry === "object") {
+            return toStr((entry as Record<string, unknown>).name ?? (entry as Record<string, unknown>).label);
+          }
+          return "";
+        })
+        .filter(Boolean);
+      const otherRaw = Array.isArray(item.other) ? item.other : [];
+      const other = otherRaw
+        .map((entry) => {
+          if (typeof entry === "string") return entry.trim();
+          if (entry && typeof entry === "object") {
+            return toStr((entry as Record<string, unknown>).name ?? (entry as Record<string, unknown>).label);
+          }
+          return "";
+        })
+        .filter(Boolean);
       return {
         name,
         isDefault: Boolean(item.default),
         drawers: normalizeDrawerTypes(item.drawers),
+        hinges,
+        other,
       };
     })
     .filter((row) => row.name);
@@ -1551,6 +1884,10 @@ export default function ProjectDetailsPage() {
     hardware: { hardwareCategory: "", newDrawerType: "", hingeType: "" },
     boardTypes: [],
   });
+  const [orderMiscDraftByCategory, setOrderMiscDraftByCategory] = useState<Record<string, Record<string, OrderMiscDraftRow>>>({});
+  const orderMiscDraftByCategoryRef = useRef(orderMiscDraftByCategory);
+  const [orderHingeRowsByCategory, setOrderHingeRowsByCategory] = useState<Record<string, OrderHingeRow[]>>({});
+  const orderHingeRowsByCategoryRef = useRef(orderHingeRowsByCategory);
   const projectImagesInputRef = useRef<HTMLInputElement | null>(null);
   const projectFilesInputRef = useRef<HTMLInputElement | null>(null);
   const projectImageThumbsRef = useRef<HTMLDivElement | null>(null);
@@ -1780,15 +2117,107 @@ export default function ProjectDetailsPage() {
     [productionForm.boardTypes],
   );
   const grainDimensionOptions = (height: string, width: string, depth: string) => {
-    const values = [height, width, depth]
-      .map((v) => String(v ?? "").trim())
-      .filter(Boolean);
-    return Array.from(new Set(values));
+    const h = String(height ?? "").trim();
+    const w = String(width ?? "").trim();
+    const d = String(depth ?? "").trim();
+    const out: string[] = [];
+    if (h) out.push(`H:${h}`);
+    if (w) out.push(`W:${w}`);
+    if (d) out.push(`D:${d}`);
+    return out;
   };
-  const matchesGrainDimension = (grainValue: string, dimensionValue: string) => {
+  const resolveGrainAxis = (
+    grainValue: string,
+    height: string,
+    width: string,
+    depth: string,
+  ): "height" | "width" | "depth" | null => {
+    const g = String(grainValue ?? "").trim();
+    if (!g) return null;
+    const prefixed = g.match(/^([HWD])\s*:\s*(.+)$/i);
+    if (prefixed) {
+      const axis = String(prefixed[1] || "").toUpperCase();
+      if (axis === "H") return "height";
+      if (axis === "W") return "width";
+      if (axis === "D") return "depth";
+    }
+    if (matchesGrainDimension(g, height, "height")) return "height";
+    if (matchesGrainDimension(g, width, "width")) return "width";
+    if (matchesGrainDimension(g, depth, "depth")) return "depth";
+    return null;
+  };
+  const grainDimensionOptionsForRow = (rowLike: Pick<CutlistRow, "partType" | "height" | "width" | "depth">) => {
+    if (isCabinetryPartType(String(rowLike.partType || ""))) {
+      const h = String(rowLike.height ?? "").trim();
+      const w = String(rowLike.width ?? "").trim();
+      const out: string[] = [];
+      if (h) out.push(`H:${h}`);
+      if (w) out.push(`W:${w}`);
+      return out;
+    }
+    return grainDimensionOptions(String(rowLike.height ?? ""), String(rowLike.width ?? ""), String(rowLike.depth ?? ""));
+  };
+  const cabinetryPieceGrainValue = (row: CutlistRow, piece: CabinetryDerivedPiece): string => {
+    const rowGrainValue = String(row.grainValue ?? "").trim();
+    if (!rowGrainValue) return "";
+    const axis = resolveGrainAxis(rowGrainValue, row.height, row.width, row.depth);
+    if (!axis) return rowGrainValue;
+    const h = String(piece.height ?? "").trim();
+    const w = String(piece.width ?? "").trim();
+    const d = String(piece.depth ?? "").trim();
+    const toPrefixed = (key: "height" | "width" | "depth", value: string) => {
+      const v = String(value ?? "").trim();
+      if (!v) return "";
+      return `${key === "height" ? "H" : key === "width" ? "W" : "D"}:${v}`;
+    };
+    if (axis === "height") {
+      if (piece.key === "top" || piece.key === "bottom" || piece.key === "fixed_shelf" || piece.key === "adjustable_shelf") {
+        return toPrefixed("width", w);
+      }
+      if (piece.key === "back") return toPrefixed("height", h);
+      if (piece.key === "left_side" || piece.key === "right_side") return toPrefixed("height", h);
+      return toPrefixed("height", h) || toPrefixed("width", w) || toPrefixed("depth", d) || rowGrainValue;
+    }
+    if (axis === "width") {
+      if (piece.key === "left_side" || piece.key === "right_side") return toPrefixed("depth", d);
+      if (
+        piece.key === "top" ||
+        piece.key === "bottom" ||
+        piece.key === "fixed_shelf" ||
+        piece.key === "adjustable_shelf" ||
+        piece.key === "back"
+      ) {
+        return toPrefixed("width", w);
+      }
+      return toPrefixed("width", w) || toPrefixed("depth", d) || toPrefixed("height", h) || rowGrainValue;
+    }
+    return toPrefixed("depth", d) || toPrefixed("width", w) || toPrefixed("height", h) || rowGrainValue;
+  };
+  const matchesGrainDimension = (
+    grainValue: string,
+    dimensionValue: string,
+    dimensionKey?: "height" | "width" | "depth",
+  ) => {
     const g = String(grainValue ?? "").trim();
     const d = String(dimensionValue ?? "").trim();
     if (!g || !d) return false;
+    const prefixed = g.match(/^([HWD])\s*:\s*(.+)$/i);
+    if (prefixed) {
+      if (!dimensionKey) return false;
+      const axis = prefixed[1].toUpperCase();
+      const mappedKey = axis === "H" ? "height" : axis === "W" ? "width" : "depth";
+      if (mappedKey !== dimensionKey) return false;
+      const gv = String(prefixed[2] ?? "").trim();
+      if (!gv) return false;
+      const gNumMatch = gv.match(/-?\d+(?:\.\d+)?/);
+      const dNumMatch = d.match(/-?\d+(?:\.\d+)?/);
+      const gn = gNumMatch ? Number.parseFloat(gNumMatch[0]) : Number.NaN;
+      const dn = dNumMatch ? Number.parseFloat(dNumMatch[0]) : Number.NaN;
+      if (Number.isFinite(gn) && Number.isFinite(dn)) {
+        return Math.abs(gn - dn) < 0.001;
+      }
+      return gv.toLowerCase() === d.toLowerCase();
+    }
     const gNumMatch = g.match(/-?\d+(?:\.\d+)?/);
     const dNumMatch = d.match(/-?\d+(?:\.\d+)?/);
     const gn = gNumMatch ? Number.parseFloat(gNumMatch[0]) : Number.NaN;
@@ -2468,8 +2897,8 @@ export default function ProjectDetailsPage() {
         key: "back",
         partName: "Back",
         height: formatMm(height),
-        width: "",
-        depth: formatMm(depthMinusT),
+        width: formatMm(widthMinus2T),
+        depth: "",
         quantity: String(mainQty),
         clashLeft: "",
         clashRight: "",
@@ -3402,7 +3831,52 @@ export default function ProjectDetailsPage() {
       },
       boardTypes: boardRows,
     });
+
+    const miscRaw = raw.orderMiscDraftByCategory;
+    const miscByCategory: Record<string, Record<string, OrderMiscDraftRow>> = {};
+    if (miscRaw && typeof miscRaw === "object" && !Array.isArray(miscRaw)) {
+      for (const [categoryKey, categoryValue] of Object.entries(miscRaw as Record<string, unknown>)) {
+        if (!categoryValue || typeof categoryValue !== "object" || Array.isArray(categoryValue)) continue;
+        const categoryRows: Record<string, OrderMiscDraftRow> = {};
+        for (const [lineKey, lineValue] of Object.entries(categoryValue as Record<string, unknown>)) {
+          if (!lineValue || typeof lineValue !== "object" || Array.isArray(lineValue)) continue;
+          const lineObj = lineValue as Record<string, unknown>;
+          categoryRows[String(lineKey || "").trim().toLowerCase()] = {
+            name: toStr(lineObj.name),
+            notes: toStr(lineObj.notes),
+            qty: toStr(lineObj.qty),
+            deleted: Boolean(lineObj.deleted),
+          };
+        }
+        miscByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryRows;
+      }
+    }
+    setOrderMiscDraftByCategory(miscByCategory);
+    const hingeRowsRaw = raw.orderHingeRowsByCategory;
+    const hingeRowsByCategory: Record<string, OrderHingeRow[]> = {};
+    if (hingeRowsRaw && typeof hingeRowsRaw === "object" && !Array.isArray(hingeRowsRaw)) {
+      for (const [categoryKey, categoryValue] of Object.entries(hingeRowsRaw as Record<string, unknown>)) {
+        if (!Array.isArray(categoryValue)) continue;
+        hingeRowsByCategory[String(categoryKey || "").trim().toLowerCase()] = categoryValue
+          .filter((row) => row && typeof row === "object")
+          .map((row) => {
+            const item = row as Record<string, unknown>;
+            return {
+              id: toStr(item.id) || `ord_hinge_${Math.random().toString(36).slice(2, 8)}`,
+              name: toStr(item.name),
+              qty: toStr(item.qty),
+            };
+          });
+      }
+    }
+    setOrderHingeRowsByCategory(hingeRowsByCategory);
   }, [project?.id, boardThicknessOptions, boardFinishOptions, sheetSizeOptions, hardwareRows]);
+  useEffect(() => {
+    orderMiscDraftByCategoryRef.current = orderMiscDraftByCategory;
+  }, [orderMiscDraftByCategory]);
+  useEffect(() => {
+    orderHingeRowsByCategoryRef.current = orderHingeRowsByCategory;
+  }, [orderHingeRowsByCategory]);
 
   useEffect(() => {
     const loadMembers = async () => {
@@ -4420,6 +4894,39 @@ export default function ProjectDetailsPage() {
     return ok;
   };
 
+  const persistOrderMiscDraft = async (nextByCategory: Record<string, Record<string, OrderMiscDraftRow>>) => {
+    if (!project) return false;
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const nextSettings: Record<string, unknown> = {
+      ...currentSettings,
+      orderMiscDraftByCategory: nextByCategory,
+    };
+    const ok = await updateProjectPatch(project, {
+      projectSettings: nextSettings,
+      projectSettingsJson: JSON.stringify(nextSettings),
+    });
+    if (ok) {
+      setProject({ ...project, projectSettings: nextSettings });
+    }
+    return ok;
+  };
+  const persistOrderHingeDraft = async (nextByCategory: Record<string, OrderHingeRow[]>) => {
+    if (!project) return false;
+    const currentSettings = (project.projectSettings ?? {}) as Record<string, unknown>;
+    const nextSettings: Record<string, unknown> = {
+      ...currentSettings,
+      orderHingeRowsByCategory: nextByCategory,
+    };
+    const ok = await updateProjectPatch(project, {
+      projectSettings: nextSettings,
+      projectSettingsJson: JSON.stringify(nextSettings),
+    });
+    if (ok) {
+      setProject({ ...project, projectSettings: nextSettings });
+    }
+    return ok;
+  };
+
   const boardColourCountsFromRows = (rows: ProductionBoardRow[]) => {
     const map = new Map<string, BoardColourMemoryRow>();
     for (const row of rows) {
@@ -5347,15 +5854,15 @@ export default function ProjectDetailsPage() {
     [cutlistEntry.partType],
   );
   const singleEntryHeightGrainMatch = useMemo(
-    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.height),
+    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.height, "height"),
     [cutlistEntry.grainValue, cutlistEntry.height],
   );
   const singleEntryWidthGrainMatch = useMemo(
-    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.width),
+    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.width, "width"),
     [cutlistEntry.grainValue, cutlistEntry.width],
   );
   const singleEntryDepthGrainMatch = useMemo(
-    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.depth),
+    () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.depth, "depth"),
     [cutlistEntry.grainValue, cutlistEntry.depth],
   );
 
@@ -5413,45 +5920,73 @@ export default function ProjectDetailsPage() {
   }, [effectiveCutlistRows, isPartTypeIncludedInCnc]);
 
   const cncExpandedRows = useMemo(() => {
-    const out: Array<CutlistRow & { sourceRowId: string }> = [];
+    const out: CncDisplayRow[] = [];
     for (const row of cncSourceRows) {
       const visible = typeof cncVisibilityMap[row.id] === "boolean" ? cncVisibilityMap[row.id] : true;
       if (!visible) continue;
 
       if (isCabinetryPartType(row.partType)) {
-        const pieces = buildCabinetryDerivedPieces(row);
-        for (const piece of pieces) {
-          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
-          if (qty <= 0) continue;
-          out.push({
-            ...row,
-            id: `${row.id}__cab__${piece.key}`,
-            sourceRowId: row.id,
-            name: piece.partName || row.name,
-            parentName: String(row.name || ""),
-            height: String(piece.height || ""),
-            width: String(piece.width || ""),
-            depth: String(piece.depth || ""),
-            quantity: String(qty),
-            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
-            clashLeft: String(piece.clashLeft || ""),
-            clashRight: String(piece.clashRight || ""),
-            information: String(row.information || ""),
-          });
-        }
+        const mainQty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+        if (mainQty <= 0) continue;
+        const fixedTotal = Math.max(0, Math.floor(toNum(row.fixedShelf)));
+        const adjustableTotal = Math.max(0, Math.floor(toNum(row.adjustableShelf)));
+
+        out.push({
+          ...row,
+          id: `${row.id}__cab__main`,
+          sourceRowId: row.id,
+          cncCabinetryRowKind: "main",
+        });
+
+        out.push({
+          ...row,
+          id: `${row.id}__cab__fixed`,
+          sourceRowId: row.id,
+          cncCabinetryRowKind: "fixedShelf",
+          name: "Fixed Shelf",
+          height: "",
+          width: "",
+          depth: "",
+          quantity: fixedTotal > 0 ? String(fixedTotal) : "",
+          clashing: "",
+          clashLeft: "",
+          clashRight: "",
+          information: "",
+        });
+        out.push({
+          ...row,
+          id: `${row.id}__cab__adjustable`,
+          sourceRowId: row.id,
+          cncCabinetryRowKind: "adjustableShelf",
+          name: "Adjustable Shelf",
+          height: "",
+          width: "",
+          depth: "",
+          quantity: adjustableTotal > 0 ? String(adjustableTotal) : "",
+          clashing: "",
+          clashLeft: "",
+          clashRight: "",
+          information: "",
+        });
         continue;
       }
 
       if (isDrawerPartType(row.partType)) {
         const pieces = buildDrawerDerivedPieces(row);
+        const mainName = String(row.name || "").trim();
         for (const piece of pieces) {
           const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
           if (qty <= 0) continue;
+          const pieceName = String(piece.partName || "").trim();
+          const combinedName =
+            mainName && pieceName
+              ? `${mainName} - ${pieceName}`
+              : [mainName, pieceName].filter(Boolean).join("").trim();
           out.push({
             ...row,
             id: `${row.id}__drw__${piece.key}`,
             sourceRowId: row.id,
-            name: piece.partName || row.name,
+            name: combinedName || row.name,
             parentName: String(row.name || ""),
             height: String(piece.height || ""),
             width: String(piece.width || ""),
@@ -5499,7 +6034,7 @@ export default function ProjectDetailsPage() {
       if (/\bback\b/.test(txt)) return 1;
       return 2;
     };
-    const map = new Map<string, { boardKey: string; boardLabel: string; rows: (CutlistRow & { sourceRowId: string })[] }>();
+    const map = new Map<string, { boardKey: string; boardLabel: string; rows: CncDisplayRow[] }>();
     for (const row of filteredCncRows) {
       const boardKey = String(row.board || "").trim() || "Unknown Board";
       const boardLabel = boardDisplayLabel(boardKey) || boardKey || "Unknown Board";
@@ -5515,8 +6050,29 @@ export default function ProjectDetailsPage() {
       .map((group) => ({
         ...group,
         rows: [...group.rows].sort((a, b) => {
+          const aCab = isCabinetryPartType(a.partType) ? 1 : 0;
+          const bCab = isCabinetryPartType(b.partType) ? 1 : 0;
+          const aDrw = isDrawerPartType(a.partType) ? 1 : 0;
+          const bDrw = isDrawerPartType(b.partType) ? 1 : 0;
           const ar = rank.has(a.partType) ? Number(rank.get(a.partType)) : 999;
           const br = rank.has(b.partType) ? Number(rank.get(b.partType)) : 999;
+          if (aCab !== bCab) return aCab - bCab;
+          if (aCab === 1 && bCab === 1) {
+            const bySource = String(a.sourceRowId || "").localeCompare(String(b.sourceRowId || ""));
+            if (bySource !== 0) return bySource;
+            const kindRank = (kind: CncDisplayRow["cncCabinetryRowKind"]) => {
+              if (kind === "fixedShelf") return 1;
+              if (kind === "adjustableShelf") return 2;
+              return 0;
+            };
+            const ak = kindRank(a.cncCabinetryRowKind);
+            const bk = kindRank(b.cncCabinetryRowKind);
+            if (ak !== bk) return ak - bk;
+          }
+          if (aDrw === 1 && bDrw === 1) {
+            const bySource = String(a.sourceRowId || "").localeCompare(String(b.sourceRowId || ""));
+            if (bySource !== 0) return bySource;
+          }
           return (
             ar - br ||
             pieceKindRank(a.name) - pieceKindRank(b.name) ||
@@ -5525,7 +6081,140 @@ export default function ProjectDetailsPage() {
           );
         }),
       }));
-  }, [filteredCncRows, partTypeOptions, boardDisplayLabel]);
+  }, [filteredCncRows, partTypeOptions, boardDisplayLabel, isCabinetryPartType, isDrawerPartType]);
+  const cncRowsByBoardNonCab = useMemo(
+    () =>
+      cncRowsByBoard
+        .map((group) => ({
+          ...group,
+          rows: group.rows.filter((row) => !isCabinetryPartType(row.partType)),
+        }))
+        .filter((group) => group.rows.length > 0),
+    [cncRowsByBoard, isCabinetryPartType],
+  );
+  const cncNonCabDisplayIdCount = useMemo(() => {
+    let count = 0;
+    let lastIdKey = "";
+    for (const group of cncRowsByBoardNonCab) {
+      for (const row of group.rows) {
+        const isDrawer = isDrawerPartType(row.partType);
+        const idKey = isDrawer
+          ? String((row as CncDisplayRow).sourceRowId || row.id)
+          : String(row.id);
+        if (idKey !== lastIdKey) {
+          count += 1;
+          lastIdKey = idKey;
+        }
+      }
+    }
+    return count;
+  }, [cncRowsByBoardNonCab, isDrawerPartType]);
+  const cncCabinetCards = useMemo(() => {
+    const q = String(cncSearch || "").trim().toLowerCase();
+    const rows = cncSourceRows.filter((row) => {
+      const visible = typeof cncVisibilityMap[row.id] === "boolean" ? cncVisibilityMap[row.id] : true;
+      if (!visible) return false;
+      if (!isCabinetryPartType(row.partType)) return false;
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) return false;
+      const typeOk = cncPartTypeFilter === "All Part Types" || row.partType === cncPartTypeFilter;
+      if (!typeOk) return false;
+      if (!q) return true;
+      return [
+        row.room,
+        row.partType,
+        row.board,
+        row.name,
+        row.information,
+        row.fixedShelf,
+        row.adjustableShelf,
+        row.height,
+        row.width,
+        row.depth,
+      ]
+        .some((v) => String(v || "").toLowerCase().includes(q));
+    });
+    const sorted = [...rows].sort((a, b) =>
+      String(boardDisplayLabel(a.board) || "").localeCompare(String(boardDisplayLabel(b.board) || "")) ||
+      String(a.name || "").localeCompare(String(b.name || "")) ||
+      String(a.id || "").localeCompare(String(b.id || "")),
+    );
+    return sorted.map((row, idx) => ({
+      cabinetryPieces: (() => {
+        const out: Record<string, CabinetryDerivedPiece | undefined> = {};
+        for (const p of buildCabinetryDerivedPieces(row)) out[p.key] = p;
+        return out;
+      })(),
+      row,
+      displayId: cncNonCabDisplayIdCount + idx + 1,
+      boardLabel: boardDisplayLabel(row.board) || String(row.board || "-"),
+      thicknessMm: (() => {
+        const fromRow = Math.max(0, boardThicknessFor(String(row.board || "").trim()));
+        if (fromRow > 0) return fromRow;
+        const label = String(boardDisplayLabel(row.board) || row.board || "");
+        const m = label.match(/(\d+(?:\.\d+)?)\s*mm/i);
+        return m ? Math.max(0, Number.parseFloat(m[1] || "0")) : 0;
+      })(),
+      heightMm: Math.max(0, toNum(row.height)),
+      widthMm: Math.max(0, toNum(row.width)),
+      depthMm: Math.max(0, toNum(row.depth)),
+      sizeLabel: [String(row.height || "").trim(), String(row.width || "").trim(), String(row.depth || "").trim()]
+        .filter(Boolean)
+        .join(" x "),
+      fixedShelf: Math.max(0, Math.floor(toNum(row.fixedShelf))),
+      adjustableShelf: Math.max(0, Math.floor(toNum(row.adjustableShelf))),
+      infoLines: informationLinesFromValue(String(row.information || "")),
+    }));
+  }, [
+    cncSearch,
+    cncSourceRows,
+    cncVisibilityMap,
+    cncPartTypeFilter,
+    isCabinetryPartType,
+    boardDisplayLabel,
+    boardThicknessFor,
+    buildCabinetryDerivedPieces,
+    cncNonCabDisplayIdCount,
+  ]);
+  const cabinetPdfImageCacheRef = useRef<Record<string, { url: string; svgW: number; svgH: number }>>({});
+  const cabinetPdfImageKey = (card: (typeof cncCabinetCards)[number]) =>
+    `${String(card.row.id)}|${card.widthMm}|${card.heightMm}|${card.depthMm}|${card.thicknessMm}|${card.fixedShelf}|${card.adjustableShelf}`;
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      const entries = await Promise.all(
+        cncCabinetCards.map(async (card) => {
+          const key = cabinetPdfImageKey(card);
+          const svg = buildCabinetSvgForExport(
+            card.widthMm,
+            card.heightMm,
+            card.depthMm,
+            card.thicknessMm,
+            card.fixedShelf,
+            card.adjustableShelf,
+          );
+          if (!svg) return [key, null] as const;
+          const url = await cabinetSvgMarkupToPngDataUrl(
+            svg.svg,
+            Math.max(120, Math.floor(svg.svgW * 2)),
+            Math.max(120, Math.floor(svg.svgH * 2)),
+          );
+          if (!url) return [key, null] as const;
+          return [key, { url, svgW: svg.svgW, svgH: svg.svgH }] as const;
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, { url: string; svgW: number; svgH: number }> = {};
+      for (const [key, value] of entries) {
+        if (value) next[key] = value;
+      }
+      cabinetPdfImageCacheRef.current = next;
+    };
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [cncCabinetCards]);
   const cncRoomColumnPx = useMemo(() => {
     const maxContentPx = Math.max(
       approximateTextWidthPx("Room"),
@@ -6171,6 +6860,144 @@ export default function ProjectDetailsPage() {
     }
     return out;
   }, [productionForm.boardTypes, requiredSheetCountByBoardKey, resolveBoardKey]);
+  const edgebandingSettings = useMemo(
+    () => normalizeEdgebandingSettings((companyDoc as Record<string, unknown> | null)?.edgebandingSettings),
+    [companyDoc],
+  );
+  const requiredEdgetapeByBoardRowId = useMemo(() => {
+    const out: Record<string, string> = {};
+    const excessPerEndMm = Math.max(
+      0,
+      Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0,
+    );
+    const rules = [...(edgebandingSettings.rules || [])]
+      .map((rule) => ({
+        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
+        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
+      }))
+      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
+      .sort((a, b) => a.upToMeters - b.upToMeters);
+    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
+    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
+    const roundNearestMeters = Math.max(
+      0,
+      Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0,
+    );
+
+    const rowsForEdgeTape: CutlistRow[] = [];
+    for (const row of effectiveCutlistRows) {
+      if (isCabinetryPartType(row.partType)) {
+        const pieces = buildCabinetryDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({
+            ...row,
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+          });
+        }
+        continue;
+      }
+      if (isDrawerPartType(row.partType)) {
+        const pieces = buildDrawerDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({
+            ...row,
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+          });
+        }
+        continue;
+      }
+      rowsForEdgeTape.push(row);
+    }
+
+    const mmByBoardKey: Record<string, number> = {};
+    const parseDim = (value: unknown): number => {
+      const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
+      if (!match) return 0;
+      const n = Number.parseFloat(match[0]);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+    const addTapeFromToken = (tokenRaw: string, longDim: number, shortDim: number, qty: number): number => {
+      const token = String(tokenRaw || "").trim().toUpperCase();
+      if (!token) return 0;
+      if (!["1L", "2L", "1S", "2S"].includes(token)) return 0;
+      const isLong = token.endsWith("L");
+      const edgeCount = token.startsWith("2") ? 2 : 1;
+      const dim = isLong ? longDim : shortDim;
+      if (!Number.isFinite(dim) || dim <= 0 || qty <= 0) return 0;
+      const edgeWithExcess = dim + excessPerEndMm * 2;
+      return edgeWithExcess * qty * edgeCount;
+    };
+
+    for (const row of rowsForEdgeTape) {
+      const boardKey = resolveBoardKey(String(row.board || ""));
+      if (!boardKey) continue;
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      const dims = [parseDim(row.height), parseDim(row.width), parseDim(row.depth)].filter((v) => v > 0);
+      if (!dims.length) continue;
+      const longDim = Math.max(...dims);
+      const shortDim = Math.min(...dims);
+      const split = splitClashing(String(row.clashing || ""));
+      const left = String(row.clashLeft || split.left || "").trim().toUpperCase();
+      const right = String(row.clashRight || split.right || "").trim().toUpperCase();
+      const rowMm = addTapeFromToken(left, longDim, shortDim, qty) + addTapeFromToken(right, longDim, shortDim, qty);
+      if (rowMm <= 0) continue;
+      mmByBoardKey[boardKey] = (mmByBoardKey[boardKey] ?? 0) + rowMm;
+    }
+
+    const formatMeters = (meters: number) => {
+      const rounded = Math.round(Math.max(0, meters) * 100) / 100;
+      return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
+    };
+
+    for (const boardRow of productionForm.boardTypes) {
+      const boardKey = resolveBoardKey(boardKeyFromRow(boardRow));
+      if (!boardKey) {
+        out[boardRow.id] = "";
+        continue;
+      }
+      const baseMeters = (mmByBoardKey[boardKey] ?? 0) / 1000;
+      let extraMeters = 0;
+      if (baseMeters > 0) {
+        const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
+        if (matchRule) extraMeters = matchRule.addMeters;
+      }
+      let finalMeters = baseMeters + extraMeters;
+      if (finalMeters > 0 && roundEnabled && roundNearestMeters > 0) {
+        const ratio = finalMeters / roundNearestMeters;
+        finalMeters = (roundDirection === "down" ? Math.floor(ratio) : Math.ceil(ratio)) * roundNearestMeters;
+      }
+      out[boardRow.id] = finalMeters > 0 ? formatMeters(finalMeters) : "";
+    }
+    return out;
+  }, [
+    productionForm.boardTypes,
+    edgebandingSettings.excessPerEndMm,
+    edgebandingSettings.rules,
+    edgebandingSettings.roundEnabled,
+    edgebandingSettings.roundDirection,
+    edgebandingSettings.roundNearestMeters,
+    effectiveCutlistRows,
+    isCabinetryPartType,
+    isDrawerPartType,
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+    resolveBoardKey,
+  ]);
   const toggleNestingGroup = (key: string) => {
     setNestingCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -6247,7 +7074,7 @@ export default function ProjectDetailsPage() {
       } else if (col.key === "information") {
         cols.push("minmax(216px,1fr)");
       } else if (col.key === "grain") {
-        cols.push("60px");
+        cols.push("96px");
       }
     });
     return cols.join(" ");
@@ -6282,7 +7109,7 @@ export default function ProjectDetailsPage() {
       case "clashing":
         return { width: 168, minWidth: 168 };
       case "grain":
-        return { width: 60, minWidth: 60 };
+        return { width: 96, minWidth: 96 };
       case "information":
         return { minWidth: 216 };
       default:
@@ -6560,6 +7387,7 @@ export default function ProjectDetailsPage() {
 
   const isCutlistFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
   const isCncFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cnc";
+  const isOrderFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "order";
   const isNestingFullscreen =
     resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
   useEffect(() => {
@@ -6660,7 +7488,272 @@ export default function ProjectDetailsPage() {
       largest,
     };
   })();
+  const orderBoardSummary = productionForm.boardTypes
+    .map((row) => {
+      const sheetsRequired = Math.max(0, requiredSheetCountByBoardRowId[row.id] ?? 0);
+      const boardLabel = boardDisplayLabel(row.colour) || "Unassigned";
+      const boardSize = row.sheetSize || boardSizeFor(row.colour) || "-";
+      const thickness = row.thickness ? `${row.thickness} mm` : "-";
+      const finish = row.finish || "-";
+      const hasAnyValue =
+        String(row.colour || "").trim().length > 0 ||
+        String(row.thickness || "").trim().length > 0 ||
+        String(row.finish || "").trim().length > 0 ||
+        String(row.sheetSize || "").trim().length > 0 ||
+        sheetsRequired > 0;
+      return {
+        id: row.id,
+        boardLabel,
+        boardSize,
+        thickness,
+        finish,
+        sheetsRequired,
+        hasAnyValue,
+      };
+    })
+    .filter((row) => row.hasAnyValue);
+  const orderTotalSheetsRequired = orderBoardSummary.reduce((sum, row) => sum + row.sheetsRequired, 0);
+  const orderDrawerRows = cutlistRows.filter((row) => isDrawerPartType(row.partType));
+  const orderDrawerQtyTotal = orderDrawerRows.reduce(
+    (sum, row) => sum + Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0),
+    0,
+  );
+  const orderDrawerGroupedRows = (() => {
+    type Group = {
+      key: string;
+      hardware: string;
+      drawerType: string;
+      hardwareLength: string;
+      backHeight: string;
+      total: number;
+    };
+    const selectedCategory = String(productionForm.hardware.hardwareCategory || defaultHardwareCategory()).trim() || "Unassigned";
+    const selectedDrawerType = String(productionForm.hardware.newDrawerType || "").trim() || "Unassigned";
+    const groups: Record<string, Group> = {};
 
+    for (const row of orderDrawerRows) {
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+
+      const depthVal = toNum(row.depth);
+      let hardwareDepthLabel = "-";
+      if (depthVal > 0) {
+        let depthForHardware = depthVal;
+        if (selectedDrawerBreakdown.spaceRequirement != null) {
+          depthForHardware = Math.max(0, depthForHardware - selectedDrawerBreakdown.spaceRequirement);
+        }
+        let roundedHardwareDepth = depthForHardware;
+        if (selectedDrawerBreakdown.hardwareLengths.length) {
+          const candidates = selectedDrawerBreakdown.hardwareLengths.filter((v) => v <= depthForHardware);
+          if (candidates.length) roundedHardwareDepth = Math.max(...candidates);
+        }
+        hardwareDepthLabel = formatMm(roundedHardwareDepth);
+      }
+
+      const rawHeight = String(row.height || "").trim();
+      let tokens = parseDrawerHeightTokens(rawHeight);
+      if (!tokens.length && rawHeight) tokens = [rawHeight];
+      if (!tokens.length) tokens = ["-"];
+      const groupedHeights: Record<string, number> = {};
+      for (const token of tokens) {
+        const tokenClean = sanitizeDerivedValue(token);
+        const tokenWithCountMatch = tokenClean.match(/^(.*?)(?:\s*\(\s*x\s*(\d+)\s*\))$/i);
+        const tokenBase = sanitizeDerivedValue(tokenWithCountMatch?.[1] ?? tokenClean);
+        const tokenCount = Math.max(
+          1,
+          Number.parseInt(String(tokenWithCountMatch?.[2] ?? "1"), 10) || 1,
+        );
+        const displayHeight = tokenBase || "-";
+        groupedHeights[displayHeight] = (groupedHeights[displayHeight] ?? 0) + tokenCount;
+      }
+      for (const [height, perDrawerQty] of Object.entries(groupedHeights)) {
+        const groupKey = `${selectedCategory}|${selectedDrawerType}|${hardwareDepthLabel}|${height}`;
+        if (!groups[groupKey]) {
+          groups[groupKey] = {
+            key: groupKey,
+            hardware: selectedCategory,
+            drawerType: selectedDrawerType,
+            hardwareLength: hardwareDepthLabel,
+            backHeight: height || "-",
+            total: 0,
+          };
+        }
+        groups[groupKey].total += perDrawerQty * qty;
+      }
+    }
+
+    return Object.values(groups).sort((a, b) => {
+        if (b.total !== a.total) return b.total - a.total;
+        const byHardware = a.hardware.localeCompare(b.hardware);
+        if (byHardware) return byHardware;
+        const byType = a.drawerType.localeCompare(b.drawerType);
+        if (byType) return byType;
+        const byLength = a.hardwareLength.localeCompare(b.hardwareLength);
+        if (byLength) return byLength;
+        return a.backHeight.localeCompare(b.backHeight);
+      });
+  })();
+  const orderSelectedHardwareCategoryKey = String(
+    productionForm.hardware.hardwareCategory || defaultHardwareCategory(),
+  )
+    .trim()
+    .toLowerCase();
+  const orderSelectedHardwareRow = hardwareRows.find(
+    (row) => row.name.toLowerCase() === orderSelectedHardwareCategoryKey,
+  );
+  const orderHingeOptions = orderSelectedHardwareRow?.hinges ?? [];
+  const orderHingeRows = orderHingeRowsByCategory[orderSelectedHardwareCategoryKey] ?? [];
+  const orderMiscDraftForCategory = orderMiscDraftByCategory[orderSelectedHardwareCategoryKey] ?? {};
+  const orderMiscLines = (() => {
+    type Line = { key: string; name: string; notes: string; qty: string };
+    const names = orderSelectedHardwareRow?.other ?? [];
+    const out: Line[] = [];
+    const seen = new Set<string>();
+    for (const raw of names) {
+      const fallbackName = String(raw || "").trim();
+      if (!fallbackName) continue;
+      const key = fallbackName.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const draft = orderMiscDraftForCategory[key];
+      if (draft?.deleted) continue;
+      out.push({
+        key,
+        name: String(draft?.name || "").trim(),
+        notes: String(draft?.notes || "").trim(),
+        qty: String(draft?.qty || "").trim(),
+      });
+    }
+    for (const [keyRaw, draft] of Object.entries(orderMiscDraftForCategory)) {
+      const key = String(keyRaw || "").trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      if (draft?.deleted) continue;
+      seen.add(key);
+      out.push({
+        key,
+        name: String(draft?.name || "").trim(),
+        notes: String(draft?.notes || "").trim(),
+        qty: String(draft?.qty || "").trim(),
+      });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  })();
+  const onAddOrderHingeRow = () => {
+    setOrderHingeRowsByCategory((prev) => {
+      const current = prev[orderSelectedHardwareCategoryKey] ?? [];
+      return {
+        ...prev,
+        [orderSelectedHardwareCategoryKey]: [
+          ...current,
+          {
+            id: `ord_hinge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            name: "",
+            qty: "",
+          },
+        ],
+      };
+    });
+  };
+  const onUpdateOrderHingeRow = (rowId: string, patch: Partial<OrderHingeRow>) => {
+    setOrderHingeRowsByCategory((prev) => {
+      const current = prev[orderSelectedHardwareCategoryKey] ?? [];
+      return {
+        ...prev,
+        [orderSelectedHardwareCategoryKey]: current.map((row) => (row.id === rowId ? { ...row, ...patch } : row)),
+      };
+    });
+  };
+  const onOrderHingeTypeChange = async (rowId: string, value: string) => {
+    const prev = orderHingeRowsByCategoryRef.current;
+    const current = prev[orderSelectedHardwareCategoryKey] ?? [];
+    const nextRows = current.map((row) => (row.id === rowId ? { ...row, name: value } : row));
+    const next = {
+      ...prev,
+      [orderSelectedHardwareCategoryKey]: nextRows,
+    };
+    orderHingeRowsByCategoryRef.current = next;
+    setOrderHingeRowsByCategory(next);
+    await persistOrderHingeDraft(next);
+  };
+  const onOrderHingeQtyBlur = async (rowId: string, value: string) => {
+    const prev = orderHingeRowsByCategoryRef.current;
+    const current = prev[orderSelectedHardwareCategoryKey] ?? [];
+    const nextRows = current.map((row) => (row.id === rowId ? { ...row, qty: value } : row));
+    const next = {
+      ...prev,
+      [orderSelectedHardwareCategoryKey]: nextRows,
+    };
+    orderHingeRowsByCategoryRef.current = next;
+    setOrderHingeRowsByCategory(next);
+    await persistOrderHingeDraft(next);
+  };
+  const onOrderMiscDraftChange = (lineKey: string, patch: Partial<OrderMiscDraftRow>) => {
+    const categoryKey = orderSelectedHardwareCategoryKey;
+    const prev = orderMiscDraftByCategoryRef.current;
+    const categoryRows = { ...(prev[categoryKey] ?? {}) };
+    const row = { ...(categoryRows[lineKey] ?? { name: "", notes: "", qty: "", deleted: false }), ...patch };
+    categoryRows[lineKey] = row;
+    const next = {
+      ...prev,
+      [categoryKey]: categoryRows,
+    };
+    orderMiscDraftByCategoryRef.current = next;
+    setOrderMiscDraftByCategory(next);
+  };
+  const onOrderMiscDraftBlur = async (lineKey: string, patch: Partial<OrderMiscDraftRow>) => {
+    const categoryKey = orderSelectedHardwareCategoryKey;
+    const prev = orderMiscDraftByCategoryRef.current;
+    const categoryRows = { ...(prev[categoryKey] ?? {}) };
+    const row = { ...(categoryRows[lineKey] ?? { name: "", notes: "", qty: "", deleted: false }), ...patch };
+    categoryRows[lineKey] = row;
+    const next = {
+      ...prev,
+      [categoryKey]: categoryRows,
+    };
+    orderMiscDraftByCategoryRef.current = next;
+    setOrderMiscDraftByCategory(next);
+    await persistOrderMiscDraft(next);
+  };
+  const onAddOrderMiscRow = async () => {
+    const categoryKey = orderSelectedHardwareCategoryKey;
+    const prev = orderMiscDraftByCategoryRef.current;
+    const categoryRows = { ...(prev[categoryKey] ?? {}) };
+    const lineKey = `misc_custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`.toLowerCase();
+    categoryRows[lineKey] = { name: "", notes: "", qty: "", deleted: false };
+    const next = {
+      ...prev,
+      [categoryKey]: categoryRows,
+    };
+    orderMiscDraftByCategoryRef.current = next;
+    setOrderMiscDraftByCategory(next);
+    await persistOrderMiscDraft(next);
+  };
+  const onDeleteOrderMiscRow = async (lineKey: string) => {
+    const categoryKey = orderSelectedHardwareCategoryKey;
+    const prev = orderMiscDraftByCategoryRef.current;
+    const categoryRows = { ...(prev[categoryKey] ?? {}) };
+    const current = { ...(categoryRows[lineKey] ?? { name: "", notes: "", qty: "", deleted: false }) };
+    categoryRows[lineKey] = { ...current, deleted: true };
+    const next = {
+      ...prev,
+      [categoryKey]: categoryRows,
+    };
+    orderMiscDraftByCategoryRef.current = next;
+    setOrderMiscDraftByCategory(next);
+    await persistOrderMiscDraft(next);
+  };
+  const onDeleteOrderHingeRow = async (rowId: string) => {
+    const prev = orderHingeRowsByCategoryRef.current;
+    const current = prev[orderSelectedHardwareCategoryKey] ?? [];
+    const nextRows = current.filter((row) => row.id !== rowId);
+    const next = {
+      ...prev,
+      [orderSelectedHardwareCategoryKey]: nextRows,
+    };
+    orderHingeRowsByCategoryRef.current = next;
+    setOrderHingeRowsByCategory(next);
+    await persistOrderHingeDraft(next);
+  };
   const onSaveAndBackFromCutlist = async () => {
     await persistCutlistRows(cutlistRows);
     setProductionNav("overview");
@@ -6681,13 +7774,17 @@ export default function ProjectDetailsPage() {
     setProductionNav("overview");
     setNestingFullscreen(false);
   };
-
-  const onPrintCnc = () => {
-    if (typeof window === "undefined") return;
-    window.print();
+  const onSaveAndBackFromOrder = async () => {
+    await persistCutlistRows(cutlistRows);
+    setProductionNav("overview");
+    setNestingFullscreen(false);
   };
 
-  const onExportCncXlsx = () => {
+  const onPrintCnc = () => {
+    onExportCncPdf("print");
+  };
+
+  const onExportCncXlsx = async () => {
     if (typeof window === "undefined") return;
     const safeProject = (project?.name || "project")
       .replace(/[\\/:*?"<>|]/g, "_")
@@ -6707,67 +7804,226 @@ export default function ProjectDetailsPage() {
       ...(showCncGrainColumn ? ["Grain"] : []),
       "Information",
     ];
-    const workbook = XLSX.utils.book_new();
-    const allRows: string[][] = [];
-    let runningId = 0;
     const colCount = header.length;
-    const sectionMeta: Array<{
-      titleRow: number;
-      headerRow: number;
-      dataStart: number;
-      dataEnd: number;
-      gapRows: number[];
-    }> = [];
-    const rowHeights: Array<{ hpt?: number }> = [];
+    const spacerCols = 1;
+    const infoCol = colCount; // 1-based index in worksheet
+    const extraInfoColsNarrow = 1;
+    const extraInfoColsWide = 3;
+    const extraInfoCols = extraInfoColsNarrow + extraInfoColsWide;
+    const totalCols = spacerCols + colCount + extraInfoCols;
+    const { Workbook } = await import("exceljs");
+    const workbook = new Workbook();
+    const sheet = workbook.addWorksheet("CNC Cutlist");
 
-    const toXlsxColor = (hex: string) => {
-      const clean = String(hex || "")
-        .replace("#", "")
-        .trim();
-      if (clean.length === 3) {
-        return `FF${clean[0]}${clean[0]}${clean[1]}${clean[1]}${clean[2]}${clean[2]}`.toUpperCase();
-      }
-      if (clean.length === 6) {
-        return `FF${clean}`.toUpperCase();
-      }
-      return "FF2F6BFF";
+    const toArgb = (hex: string, fallback = "FF2F6BFF") => {
+      const clean = String(hex || "").replace("#", "").trim();
+      if (clean.length === 3) return `FF${clean[0]}${clean[0]}${clean[1]}${clean[1]}${clean[2]}${clean[2]}`.toUpperCase();
+      if (clean.length === 6) return `FF${clean}`.toUpperCase();
+      return fallback;
     };
 
-    const themeBg = toXlsxColor(companyThemeColor);
-    const headerFont = toXlsxColor(cncHeaderTextColor);
+    const themeBg = toArgb(companyThemeColor);
+    const headerFont = toArgb(cncHeaderTextColor, "FFFFFFFF");
     const blackBg = "FF111111";
     const whiteFont = "FFFFFFFF";
     const zebraBg = "FFF6F8FB";
     const whiteBg = "FFFFFFFF";
-    const lightBorder = "FFDCE3EC";
     const darkBorder = "FF111111";
-    const centeredCols = new Set([
-      "ID",
-      "Height",
-      "Width",
-      "Depth",
-      "Qty",
-      "Clashing",
-      "Grain",
-    ]);
-
-    const pushRow = (row: string[], hpt?: number) => {
-      allRows.push(row);
-      rowHeights.push(hpt ? { hpt } : {});
+    const centeredCols = new Set(["ID", "Height", "Width", "Depth", "Qty", "Clashing", "Grain"]);
+    const helperEnabledAny = productionForm.boardTypes.some((row) => Boolean(row.grain));
+    const helperWord = "Underlined";
+    const helperTail = " Dimension has grain along it.";
+    const buildDimExcelRichText = (
+      height: string,
+      width: string,
+      depth: string,
+      grainValue: string,
+      qtySuffix = "",
+    ) => {
+      const parts: Array<{ key: "height" | "width" | "depth"; value: string }> = [];
+      const h = String(height || "").trim();
+      const w = String(width || "").trim();
+      const d = String(depth || "").trim();
+      if (h) parts.push({ key: "height", value: h });
+      if (w) parts.push({ key: "width", value: w });
+      if (d) parts.push({ key: "depth", value: d });
+      if (parts.length === 0) return "";
+      const richText: Array<{ text: string; font?: Record<string, unknown> }> = [];
+      parts.forEach((part, idx) => {
+        if (idx > 0) richText.push({ text: " x ", font: { color: { argb: "FF0F172A" }, size: 10 } });
+        const isMatch = matchesGrainDimension(grainValue, part.value, part.key);
+        richText.push({
+          text: part.value,
+          font: {
+            color: { argb: "FF0F172A" },
+            size: 10,
+            bold: isMatch,
+            underline: isMatch ? true : undefined,
+          },
+        });
+      });
+      if (qtySuffix) {
+        richText.push({ text: qtySuffix, font: { color: { argb: "FF0F172A" }, size: 10 } });
+      }
+      return { richText };
     };
 
-    cncRowsByBoard.forEach((group) => {
-      const titleRow = allRows.length;
-      pushRow([`Board: ${group.boardLabel}`, ...Array.from({ length: Math.max(0, colCount - 1) }, () => "")], 22);
-      const headerRow = allRows.length;
-      pushRow([...header], 20);
-      const dataStart = allRows.length;
-      for (const row of group.rows) {
-        runningId += 1;
-        pushRow([
+    const baseWidths = [7, 14, 12, 34, 9, 9, 9, 8, 12, ...(showCncGrainColumn ? [10] : []), 34];
+    const heightLikeWidth = baseWidths[4] ?? 9; // match Height column width
+    const normalExtraWidth = 12;
+    const widths = Array.from({ length: totalCols }, (_, i) => {
+      if (i < spacerCols) return Math.max(3, (baseWidths[0] ?? 7) / 2);
+      const dataIdx = i - spacerCols;
+      // Keep all fixed columns before Information as-is.
+      if (dataIdx < colCount - 1) return baseWidths[dataIdx] ?? 12;
+      // Make Information base column (K) match Height width.
+      if (dataIdx === colCount - 1) return heightLikeWidth;
+      // Extra Information expansion columns to the right.
+      const extraIdx = dataIdx - colCount;
+      return extraIdx < extraInfoColsNarrow ? heightLikeWidth : normalExtraWidth;
+    });
+    sheet.columns = widths.map((w) => ({ width: w }));
+
+    const darkEdgeBorder = {
+      top: { style: "thin", color: { argb: darkBorder } },
+      left: { style: "thin", color: { argb: darkBorder } },
+      right: { style: "thin", color: { argb: darkBorder } },
+      bottom: { style: "thin", color: { argb: darkBorder } },
+    } as const;
+
+    const setRangeFill = (rowStart: number, rowEnd: number, colStart: number, colEnd: number, argb: string) => {
+      for (let r = rowStart; r <= rowEnd; r += 1) {
+        for (let c = colStart; c <= colEnd; c += 1) {
+          const cell = sheet.getCell(r, c);
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+        }
+      }
+    };
+
+    const setRangeOuterBorder = (rowStart: number, rowEnd: number, colStart: number, colEnd: number) => {
+      const thin = { style: "thin" as const, color: { argb: darkBorder } };
+      for (let r = rowStart; r <= rowEnd; r += 1) {
+        for (let c = colStart; c <= colEnd; c += 1) {
+          const cell = sheet.getCell(r, c);
+          const top = r === rowStart ? thin : cell.border?.top;
+          const bottom = r === rowEnd ? thin : cell.border?.bottom;
+          const left = c === colStart ? thin : cell.border?.left;
+          const right = c === colEnd ? thin : cell.border?.right;
+          cell.border = { top, bottom, left, right } as any;
+        }
+      }
+    };
+
+    const setVerticalDividers = (rowStart: number, rowEnd: number, colStart: number, colEnd: number) => {
+      for (let r = rowStart; r <= rowEnd; r += 1) {
+        for (let c = colStart; c <= colEnd; c += 1) {
+          const cell = sheet.getCell(r, c);
+          cell.border = {
+            ...cell.border,
+            left: { style: "thin", color: { argb: darkBorder } },
+            right: { style: "thin", color: { argb: darkBorder } },
+          };
+        }
+      }
+    };
+
+    let rowPtr = 1;
+    let runningId = 0;
+    for (const group of cncRowsByBoardNonCab) {
+      const boardHasGrain = boardGrainFor(group.boardKey);
+      const tableStartCol = spacerCols + 1;
+      const leftEnd = Math.max(tableStartCol, totalCols - 5);
+      sheet.mergeCells(rowPtr, tableStartCol, rowPtr, leftEnd);
+      if (boardHasGrain) {
+        sheet.mergeCells(rowPtr, leftEnd + 1, rowPtr, totalCols);
+      } else {
+        sheet.mergeCells(rowPtr, leftEnd + 1, rowPtr, totalCols);
+      }
+      const titleCell = sheet.getCell(rowPtr, tableStartCol);
+      titleCell.value = String(group.boardLabel || "Board");
+      titleCell.font = { bold: true, color: { argb: whiteFont }, size: 14 };
+      titleCell.alignment = { horizontal: "left", vertical: "middle" };
+      const helperCell = sheet.getCell(rowPtr, leftEnd + 1);
+      if (boardHasGrain) {
+        helperCell.value = {
+          richText: [
+            { text: helperWord, font: { bold: true, underline: true, color: { argb: whiteFont }, size: 11 } },
+            { text: helperTail, font: { bold: false, color: { argb: whiteFont }, size: 11 } },
+          ],
+        };
+        helperCell.alignment = { horizontal: "right", vertical: "middle" };
+      } else {
+        helperCell.value = "";
+      }
+      setRangeFill(rowPtr, rowPtr, tableStartCol, totalCols, blackBg);
+      setRangeOuterBorder(rowPtr, rowPtr, tableStartCol, totalCols);
+      sheet.getRow(rowPtr).height = 22;
+      rowPtr += 1;
+
+      for (let i = 0; i < header.length - 1; i += 1) {
+        const c = tableStartCol + i;
+        const cell = sheet.getCell(rowPtr, c);
+        cell.value = header[i];
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: themeBg } };
+        cell.font = { bold: true, color: { argb: headerFont }, size: 11 };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+        cell.border = darkEdgeBorder;
+      }
+      const infoStartCol = tableStartCol + infoCol - 1;
+      sheet.mergeCells(rowPtr, infoStartCol, rowPtr, totalCols);
+      const infoHeadCell = sheet.getCell(rowPtr, infoStartCol);
+      infoHeadCell.value = "Information";
+      infoHeadCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: themeBg } };
+      infoHeadCell.font = { bold: true, color: { argb: headerFont }, size: 11 };
+      infoHeadCell.alignment = { horizontal: "center", vertical: "middle" };
+      infoHeadCell.border = darkEdgeBorder;
+      sheet.getRow(rowPtr).height = 20;
+      const dataStart = rowPtr + 1;
+      rowPtr += 1;
+
+      let lastIdKey = "";
+      let stripeIndex = -1;
+      let lastStripeKey = "";
+      for (let rowIndex = 0; rowIndex < group.rows.length; rowIndex += 1) {
+        const row = group.rows[rowIndex];
+        const isDrawer = isDrawerPartType(row.partType);
+        const drawerSourceKey = isDrawer ? String((row as CncDisplayRow).sourceRowId || row.id) : "";
+        const prevDrawer =
+          rowIndex > 0 && isDrawerPartType(group.rows[rowIndex - 1].partType)
+            ? group.rows[rowIndex - 1]
+            : null;
+        const isDrawerContinuation =
+          Boolean(prevDrawer) &&
+          isDrawer &&
+          String((prevDrawer as CncDisplayRow).sourceRowId || prevDrawer?.id || "") === drawerSourceKey;
+        let drawerRowSpan = 1;
+        if (isDrawer && !isDrawerContinuation) {
+          for (let look = rowIndex + 1; look < group.rows.length; look += 1) {
+            const next = group.rows[look];
+            if (!isDrawerPartType(String(next.partType || ""))) break;
+            const nextKey = String((next as CncDisplayRow).sourceRowId || next.id);
+            if (nextKey !== drawerSourceKey) break;
+            drawerRowSpan += 1;
+          }
+        }
+        const idKey = (isCabinetryPartType(row.partType) || isDrawer)
+          ? String((row as CncDisplayRow).sourceRowId || row.id)
+          : String(row.id);
+        if (idKey !== lastIdKey) {
+          runningId += 1;
+          lastIdKey = idKey;
+        }
+        const stripeKey = isDrawer ? String((row as CncDisplayRow).sourceRowId || row.id) : String(row.id);
+        if (stripeKey !== lastStripeKey) {
+          stripeIndex += 1;
+          lastStripeKey = stripeKey;
+        }
+        const stripeBg = stripeIndex % 2 === 1 ? zebraBg : whiteBg;
+        const partTypeForOutput = String(row.partType ?? "");
+        const values = [
           String(runningId),
           String(row.room ?? ""),
-          String(row.partType ?? ""),
+          partTypeForOutput,
           String(row.name ?? ""),
           String(row.height ?? ""),
           String(row.width ?? ""),
@@ -6776,176 +8032,345 @@ export default function ProjectDetailsPage() {
           String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
           ...(showCncGrainColumn ? [String(row.grainValue ?? "")] : []),
           String(row.information ?? ""),
-        ], 18);
-      }
-      const dataEnd = allRows.length - 1;
-      // Visible gap between tables
-      const gapA = allRows.length;
-      pushRow(Array.from({ length: colCount }, () => ""), 8);
-      const gapB = allRows.length;
-      pushRow(Array.from({ length: colCount }, () => ""), 8);
-      sectionMeta.push({ titleRow, headerRow, dataStart, dataEnd, gapRows: [gapA, gapB] });
-    });
-
-    if (allRows.length === 0) {
-      pushRow(header, 20);
-    }
-
-    const ws = XLSX.utils.aoa_to_sheet(allRows) as XLSX.WorkSheet & { [key: string]: unknown };
-    ws["!rows"] = rowHeights;
-    const minColWidths = [
-      6, // ID
-      14, // Room
-      12, // Part Type
-      18, // Part Name
-      8, // Height
-      8, // Width
-      8, // Depth
-      8, // Qty
-      10, // Clashing
-      ...(showCncGrainColumn ? [8] : []), // Grain
-      22, // Information
-    ];
-    const maxLenByCol = Array.from({ length: colCount }, (_, idx) => (header[idx] || "").length);
-    for (const meta of sectionMeta) {
-      for (let r = meta.headerRow; r <= meta.dataEnd; r += 1) {
-        for (let c = 0; c < colCount; c += 1) {
-          const cellVal = allRows[r]?.[c] ?? "";
-          const cellLen = String(cellVal).length;
-          if (cellLen > maxLenByCol[c]) maxLenByCol[c] = cellLen;
+        ];
+        for (let i = 0; i < values.length - 1; i += 1) {
+          const c = tableStartCol + i;
+          const label = header[i] ?? "";
+          const cell = sheet.getCell(rowPtr, c);
+          const isMergedIdentityCol = isDrawer && i <= 2;
+          if (isMergedIdentityCol && isDrawerContinuation) {
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: stripeBg } };
+            cell.border = {
+              left: { style: "thin", color: { argb: darkBorder } },
+              right: { style: "thin", color: { argb: darkBorder } },
+            };
+            continue;
+          }
+          if (isMergedIdentityCol && drawerRowSpan > 1) {
+            sheet.mergeCells(rowPtr, c, rowPtr + drawerRowSpan - 1, c);
+          }
+          cell.value = values[i];
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: stripeBg } };
+          cell.font = { color: { argb: "FF0F172A" }, size: 10 };
+          const isDrawerGroupedCell = isMergedIdentityCol && drawerRowSpan > 1;
+          cell.alignment = {
+            horizontal: isDrawerGroupedCell ? "center" : (centeredCols.has(label) ? "center" : "left"),
+            vertical: "middle",
+          };
+          cell.border = {
+            left: { style: "thin", color: { argb: darkBorder } },
+            right: { style: "thin", color: { argb: darkBorder } },
+          };
         }
-      }
-    }
-    ws["!cols"] = maxLenByCol.map((len, idx) => ({
-      wch: Math.min(80, Math.max(minColWidths[idx] ?? 8, len + 2)),
-    }));
+        const infoValue = values[values.length - 1] ?? "";
+        const infoStartCol = tableStartCol + infoCol - 1;
+        sheet.mergeCells(rowPtr, infoStartCol, rowPtr, totalCols);
+        const infoCell = sheet.getCell(rowPtr, infoStartCol);
+        infoCell.value = infoValue;
+        infoCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: stripeBg } };
+        infoCell.font = { color: { argb: "FF0F172A" }, size: 10 };
+        infoCell.alignment = { horizontal: "left", vertical: "middle" };
+        infoCell.border = {
+          left: { style: "thin", color: { argb: darkBorder } },
+          right: { style: "thin", color: { argb: darkBorder } },
+        };
+        const rowPartType = String(row.partType ?? "").trim();
+        const partTypeHex = normalizeHexColor(partTypeColors[rowPartType] ?? partTypeColors[rowPartType.toLowerCase()] ?? "");
+        if (partTypeHex) {
+          const partCell = sheet.getCell(rowPtr, tableStartCol + 2);
+          const partArgb = toArgb(partTypeHex);
+          if (isDrawer && drawerRowSpan > 1) {
+            setRangeFill(rowPtr, rowPtr + drawerRowSpan - 1, tableStartCol + 2, tableStartCol + 2, partArgb);
+          } else {
+            partCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: partArgb } };
+          }
+          partCell.font = { bold: true, color: { argb: isLightHex(partTypeHex) ? "FF0F172A" : "FFFFFFFF" }, size: 10 };
+          partCell.alignment = { horizontal: "center", vertical: "middle" };
+        }
 
-    const merges: XLSX.Range[] = [];
-    for (const meta of sectionMeta) {
-      merges.push({ s: { r: meta.titleRow, c: 0 }, e: { r: meta.titleRow, c: colCount - 1 } });
-    }
-    if (merges.length > 0) {
-      ws["!merges"] = merges;
-    }
-
-    const setCellStyle = (r: number, c: number, style: Record<string, unknown>) => {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = ws[addr] as (Record<string, unknown> & { s?: Record<string, unknown> }) | undefined;
-      if (!cell) return;
-      cell.s = style;
-    };
-
-    const borderAllLight = {
-      top: { style: "thin", color: { rgb: lightBorder } },
-      bottom: { style: "thin", color: { rgb: lightBorder } },
-      left: { style: "thin", color: { rgb: lightBorder } },
-      right: { style: "thin", color: { rgb: lightBorder } },
-    };
-    const borderAllDark = {
-      top: { style: "thin", color: { rgb: darkBorder } },
-      bottom: { style: "thin", color: { rgb: darkBorder } },
-      left: { style: "thin", color: { rgb: darkBorder } },
-      right: { style: "thin", color: { rgb: darkBorder } },
-    };
-    const borderWithVerticalDark = {
-      top: { style: "thin", color: { rgb: lightBorder } },
-      bottom: { style: "thin", color: { rgb: lightBorder } },
-      left: { style: "thin", color: { rgb: darkBorder } },
-      right: { style: "thin", color: { rgb: darkBorder } },
-    };
-    const borderVerticalOnlyDark = {
-      left: { style: "thin", color: { rgb: darkBorder } },
-      right: { style: "thin", color: { rgb: darkBorder } },
-    };
-
-    for (const meta of sectionMeta) {
-      for (let c = 0; c < colCount; c += 1) {
-        setCellStyle(meta.titleRow, c, {
-          fill: { patternType: "solid", fgColor: { rgb: blackBg } },
-          font: { bold: true, color: { rgb: whiteFont }, sz: 13 },
-          alignment: { horizontal: c === 0 ? "left" : "center", vertical: "center" },
-          border: borderAllDark,
-        });
-        const label = header[c] ?? "";
-        setCellStyle(meta.headerRow, c, {
-          fill: { patternType: "solid", fgColor: { rgb: themeBg } },
-          font: { bold: true, color: { rgb: headerFont }, sz: 11 },
-          alignment: {
-            horizontal: "center",
-            vertical: "center",
-          },
-          border: borderAllDark,
-        });
-      }
-
-      for (let r = meta.dataStart; r <= meta.dataEnd; r += 1) {
-        const stripe = (r - meta.dataStart) % 2 === 1;
-        for (let c = 0; c < colCount; c += 1) {
-          const label = header[c] ?? "";
-          const rowPartType = String(allRows[r]?.[2] ?? "").trim();
-          const partTypeHex = normalizeHexColor(partTypeColors[rowPartType] ?? partTypeColors[rowPartType.toLowerCase()] ?? "");
-          const partTypeBg = partTypeHex ? toXlsxColor(partTypeHex) : null;
-          const partTypeText = partTypeHex ? (isLightHex(partTypeHex) ? "FF0F172A" : "FFFFFFFF") : "FF0F172A";
-          setCellStyle(r, c, {
-            fill: {
-              patternType: "solid",
-              fgColor: { rgb: c === 2 && partTypeBg ? partTypeBg : stripe ? zebraBg : whiteBg },
-            },
-            font: {
-              color: { rgb: c === 2 && partTypeBg ? partTypeText : "FF0F172A" },
-              sz: 10,
-              bold: c === 2 && Boolean(partTypeBg),
-            },
-            alignment: {
-              horizontal: centeredCols.has(label) ? "center" : "left",
-              vertical: "center",
-            },
-            border: c === 2 && partTypeBg ? borderVerticalOnlyDark : borderWithVerticalDark,
+        const boardHasGrainForRow = boardGrainFor(String(row.board || "").trim());
+        const grainValue = String(row.grainValue ?? "");
+        const matchCols = [
+          matchesGrainDimension(grainValue, String(row.height ?? ""), "height"),
+          matchesGrainDimension(grainValue, String(row.width ?? ""), "width"),
+          matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth"),
+        ];
+        if (boardHasGrainForRow) {
+          [5, 6, 7].forEach((col, idx) => {
+            if (matchCols[idx]) {
+              const c = sheet.getCell(rowPtr, tableStartCol + col - 1);
+              c.font = { ...(c.font ?? {}), bold: true, underline: true, color: { argb: "FF0F172A" }, size: 10 };
+            }
           });
         }
+        sheet.getRow(rowPtr).height = 18;
+        rowPtr += 1;
       }
+      const dataEnd = rowPtr - 1;
+      if (dataEnd >= dataStart) {
+        setVerticalDividers(dataStart, dataEnd, tableStartCol, totalCols);
+        setRangeOuterBorder(rowPtr - (dataEnd - dataStart + 1) - 1, dataEnd, tableStartCol, totalCols);
+      }
+      rowPtr += 1; // one-row gap between board tables
+    }
 
-      // Add a black bottom border to close each board table section.
-      if (meta.dataEnd >= meta.dataStart) {
-        for (let c = 0; c < colCount; c += 1) {
-          const addr = XLSX.utils.encode_cell({ r: meta.dataEnd, c });
-          const cell = ws[addr] as (Record<string, unknown> & { s?: Record<string, unknown> }) | undefined;
-          if (!cell || !cell.s) continue;
-          const style = cell.s as Record<string, unknown> & { border?: Record<string, unknown> };
-          const currentBorder = (style.border ?? {}) as Record<string, unknown>;
-          style.border = {
-            ...currentBorder,
-            bottom: { style: "thin", color: { rgb: darkBorder } },
+    if (cncCabinetCards.length > 0) {
+      const tableStartCol = spacerCols + 1;
+      const leftEnd = Math.max(tableStartCol, totalCols - 5);
+      sheet.mergeCells(rowPtr, tableStartCol, rowPtr, leftEnd);
+      sheet.mergeCells(rowPtr, leftEnd + 1, rowPtr, totalCols);
+      const t = sheet.getCell(rowPtr, tableStartCol);
+      t.value = "Cabinets";
+      t.font = { bold: true, color: { argb: whiteFont }, size: 14 };
+      t.alignment = { horizontal: "left", vertical: "middle" };
+      if (helperEnabledAny) {
+        const helperCell = sheet.getCell(rowPtr, leftEnd + 1);
+        helperCell.value = {
+          richText: [
+            { text: helperWord, font: { bold: true, underline: true, color: { argb: whiteFont }, size: 11 } },
+            { text: helperTail, font: { bold: false, color: { argb: whiteFont }, size: 11 } },
+          ],
+        };
+        helperCell.alignment = { horizontal: "right", vertical: "middle" };
+      }
+      setRangeFill(rowPtr, rowPtr, tableStartCol, totalCols, blackBg);
+      setRangeOuterBorder(rowPtr, rowPtr, tableStartCol, totalCols);
+      sheet.getRow(rowPtr).height = 22;
+      rowPtr += 1;
+
+      for (const card of cncCabinetCards) {
+        const cardStart = rowPtr;
+        const headerRow = rowPtr;
+        const bodyStart = headerRow + 1;
+        const bodyRows = 6;
+        const bodyEnd = bodyStart + bodyRows - 1;
+        const cardEnd = bodyEnd;
+
+        const tableStartCol = spacerCols + 1;
+        sheet.mergeCells(headerRow, tableStartCol + 1, headerRow, totalCols);
+        sheet.getCell(headerRow, tableStartCol).value = String(card.displayId);
+        sheet.getCell(headerRow, tableStartCol + 1).value = String(card.row.name || "-");
+        sheet.getCell(headerRow, tableStartCol).alignment = { horizontal: "center", vertical: "middle" };
+        sheet.getCell(headerRow, tableStartCol).font = { color: { argb: "FF0F172A" }, size: 11 };
+        sheet.getCell(headerRow, tableStartCol + 1).font = { bold: true, color: { argb: "FF0F172A" }, size: 11 };
+        sheet.getCell(headerRow, tableStartCol + 1).alignment = { horizontal: "left", vertical: "middle" };
+        setRangeFill(headerRow, headerRow, tableStartCol, totalCols, "FFF5F8FC");
+        for (let c = tableStartCol; c <= totalCols; c += 1) {
+          const cell = sheet.getCell(headerRow, c);
+          cell.border = {
+            ...(cell.border ?? {}),
+            bottom: { style: "thin", color: { argb: darkBorder } },
+          } as any;
+        }
+        sheet.getRow(headerRow).height = 22;
+
+        // Image area C:E across full cabinetry card body height.
+        const imageColStart = tableStartCol + 1; // C
+        const imageColEnd = tableStartCol + 3; // E
+        const imageRowEnd = bodyEnd;
+        sheet.mergeCells(bodyStart, imageColStart, imageRowEnd, imageColEnd);
+        // Left detail labels/values F:K
+        // Right detail labels/values M:... (to totalCols)
+        const leftLabelColStart = tableStartCol + 4;
+        const leftLabelColEnd = tableStartCol + 5;
+        const leftValueColStart = tableStartCol + 6;
+        const leftValueColEnd = tableStartCol + 9;
+        const rightLabelColStart = tableStartCol + 10;
+        const rightLabelColEnd = tableStartCol + 11;
+        const rightValueColStart = tableStartCol + 12;
+        const rightValueColEnd = totalCols;
+
+        const topBottomPiece = card.cabinetryPieces.top ?? card.cabinetryPieces.bottom;
+        const leftRightPiece = card.cabinetryPieces.left_side ?? card.cabinetryPieces.right_side;
+        const backPiece = card.cabinetryPieces.back;
+        const fixedPiece = card.cabinetryPieces.fixed_shelf;
+        const adjustablePiece = card.cabinetryPieces.adjustable_shelf;
+        const infoLines = card.infoLines.length ? card.infoLines : [""];
+        const leftRows: Array<[string, string]> = [
+          ["Material", card.boardLabel || "-"],
+          ["Quantity", String(card.row.quantity || "")],
+          ["Size (H x W x D)", card.sizeLabel || "-"],
+          [card.fixedShelf === 1 ? "Fixed Shelf" : "Fixed Shelves", card.fixedShelf > 0 ? `${card.fixedShelf} (${String(normalizeDrillingValue(card.row.fixedShelfDrilling || "No")).toLowerCase()} drilling)` : ""],
+          [card.adjustableShelf === 1 ? "Adjustable Shelf" : "Adjustable Shelves", card.adjustableShelf > 0 ? `${card.adjustableShelf} (${String(normalizeDrillingValue(card.row.adjustableShelfDrilling || "No")).toLowerCase()} drilling)` : ""],
+          ["Information", infoLines.join("\n")],
+        ];
+        const rightRows: Array<[string, string]> = [
+          ["Top / Bottom", ""],
+          ["Left / Right Side", ""],
+          ["Back", ""],
+          ["Fixed Shelf", ""],
+          ["Adjustable Shelf", ""],
+          ["", ""],
+        ];
+
+        for (let i = 0; i < bodyRows; i += 1) {
+          const r = bodyStart + i;
+          sheet.mergeCells(r, leftLabelColStart, r, leftLabelColEnd);
+          sheet.mergeCells(r, leftValueColStart, r, leftValueColEnd);
+          sheet.mergeCells(r, rightLabelColStart, r, rightLabelColEnd);
+          sheet.mergeCells(r, rightValueColStart, r, rightValueColEnd);
+          const [lk, lv] = leftRows[i];
+          const [rk, rv] = rightRows[i];
+          const lkc = sheet.getCell(r, leftLabelColStart);
+          lkc.value = lk;
+          lkc.font = { bold: true, color: { argb: "FF0F172A" }, size: 10 };
+          lkc.alignment = { horizontal: "left", vertical: "middle" };
+          const lvc = sheet.getCell(r, leftValueColStart);
+          if (i === 2) {
+            lvc.value = buildDimExcelRichText(
+              String(card.row.height ?? ""),
+              String(card.row.width ?? ""),
+              String(card.row.depth ?? ""),
+              String(card.row.grainValue ?? ""),
+            ) as any;
+          } else {
+            lvc.value = lv;
+          }
+          lvc.font = { color: { argb: "FF0F172A" }, size: 10 };
+          lvc.alignment = { horizontal: "left", vertical: "middle", wrapText: i === 5 };
+
+          const rkc = sheet.getCell(r, rightLabelColStart);
+          rkc.value = rk;
+          rkc.font = { bold: true, color: { argb: "FF0F172A" }, size: 10 };
+          rkc.alignment = { horizontal: "left", vertical: "middle" };
+          const rvc = sheet.getCell(r, rightValueColStart);
+          if (i <= 4) {
+            const piece =
+              i === 0 ? topBottomPiece :
+              i === 1 ? leftRightPiece :
+              i === 2 ? backPiece :
+              i === 3 ? fixedPiece :
+              adjustablePiece;
+            if (piece) {
+              const qty = Number.parseInt(String(piece.quantity || "0"), 10) || 0;
+              const qtyMultiplier = i <= 1 ? 2 : 1;
+              const finalQty = qty > 0 ? qty * qtyMultiplier : 0;
+              rvc.value = buildDimExcelRichText(
+                String(piece.height ?? ""),
+                String(piece.width ?? ""),
+                String(piece.depth ?? ""),
+                cabinetryPieceGrainValue(card.row, piece),
+                finalQty > 0 ? ` (x${finalQty})` : "",
+              ) as any;
+            } else {
+              rvc.value = rv;
+            }
+          } else {
+            rvc.value = rv;
+          }
+          rvc.font = { color: { argb: "FF0F172A" }, size: 10 };
+          rvc.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+          sheet.getRow(r).height = i === 5 ? Math.max(20, 16 + Math.max(0, infoLines.length - 1) * 14) : 20;
+        }
+
+        setRangeFill(bodyStart, bodyEnd, tableStartCol, totalCols, whiteBg);
+        setRangeOuterBorder(cardStart, cardEnd, tableStartCol, totalCols);
+        setVerticalDividers(cardStart, cardEnd, tableStartCol, totalCols);
+
+        const cacheKey = cabinetPdfImageKey(card);
+        const cachedImg = cabinetPdfImageCacheRef.current[cacheKey];
+        let dataUrl = cachedImg?.url || "";
+        let imageRatio = cachedImg && cachedImg.svgH > 0 ? (cachedImg.svgW / cachedImg.svgH) : 1;
+        if (!dataUrl) {
+          const svg = buildCabinetSvgForExport(
+            card.widthMm,
+            card.heightMm,
+            card.depthMm,
+            card.thicknessMm,
+            card.fixedShelf,
+            card.adjustableShelf,
+          );
+          if (svg) {
+            imageRatio = svg.svgH > 0 ? (svg.svgW / svg.svgH) : imageRatio;
+            dataUrl = await cabinetSvgMarkupToPngDataUrl(
+              svg.svg,
+              Math.max(240, Math.floor(svg.svgW * 3)),
+              Math.max(240, Math.floor(svg.svgH * 3)),
+            );
+          }
+        }
+        if (dataUrl) {
+          const colWidthPx = (col1Based: number) => {
+            const wch = Number(sheet.getColumn(col1Based).width ?? 8);
+            return Math.max(1, Math.round(wch * 7 + 5));
           };
-          cell.s = style;
+          const rowHeightPx = (row1Based: number) => {
+            const hpt = Number(sheet.getRow(row1Based).height ?? 15);
+            return Math.max(1, Math.round((hpt * 96) / 72));
+          };
+          const pxToColUnits = (startCol1Based: number, pxFromStart: number, endCol1Based: number) => {
+            let remaining = Math.max(0, pxFromStart);
+            let units = 0;
+            for (let c = startCol1Based; c <= endCol1Based; c += 1) {
+              const w = colWidthPx(c);
+              if (remaining <= w) {
+                units += remaining / Math.max(1, w);
+                return units;
+              }
+              units += 1;
+              remaining -= w;
+            }
+            return units;
+          };
+          const pxToRowUnits = (startRow1Based: number, pxFromStart: number, endRow1Based: number) => {
+            let remaining = Math.max(0, pxFromStart);
+            let units = 0;
+            for (let r = startRow1Based; r <= endRow1Based; r += 1) {
+              const h = rowHeightPx(r);
+              if (remaining <= h) {
+                units += remaining / Math.max(1, h);
+                return units;
+              }
+              units += 1;
+              remaining -= h;
+            }
+            return units;
+          };
+          let areaWpx = 0;
+          for (let c = imageColStart; c <= imageColEnd; c += 1) areaWpx += colWidthPx(c);
+          let areaHpx = 0;
+          for (let r = bodyStart; r <= imageRowEnd; r += 1) areaHpx += rowHeightPx(r);
+          const imageInsetPx = 8;
+          const fitWpx = Math.max(1, areaWpx - imageInsetPx * 2);
+          const fitHpx = Math.max(1, areaHpx - imageInsetPx * 2);
+          // Keep XLSX previews locked to the cabinet's true dimension-based ratio.
+          // This avoids renderer/metadata drift and matches PDF cabinet proportions.
+          const ratioFromDims = cabinetPreviewRatioFromDims(card.widthMm, card.heightMm, card.depthMm);
+          const safeRatio =
+            Number.isFinite(ratioFromDims) && ratioFromDims > 0
+              ? ratioFromDims
+              : (Number.isFinite(imageRatio) && imageRatio > 0 ? imageRatio : 1);
+          let drawWpx = fitWpx;
+          let drawHpx = drawWpx / safeRatio;
+          if (drawHpx > fitHpx) {
+            drawHpx = fitHpx;
+            drawWpx = drawHpx * safeRatio;
+          }
+          const offsetXpx = imageInsetPx + (fitWpx - drawWpx) / 2;
+          const offsetYpx = imageInsetPx + (fitHpx - drawHpx) / 2;
+          const tlCol = (imageColStart - 1) + pxToColUnits(imageColStart, offsetXpx, imageColEnd);
+          const tlRow = (bodyStart - 1) + pxToRowUnits(bodyStart, offsetYpx, imageRowEnd);
+          const imgId = workbook.addImage({ base64: dataUrl, extension: "png" });
+          sheet.addImage(imgId, {
+            // ExcelJS image anchors are zero-based.
+            // Place image as "contain" centered in merged C:E image area.
+            // Use ext (px) so Excel keeps aspect ratio exactly and does not
+            // reinterpret sizing via br cell math.
+            tl: { col: tlCol, row: tlRow },
+            ext: {
+              width: Math.max(1, Math.round(drawWpx)),
+              height: Math.max(1, Math.round(drawHpx)),
+            },
+            editAs: "oneCell",
+          } as any);
         }
-      }
 
-      // Ensure black outer left/right borders for the full board table block.
-      for (let r = meta.titleRow; r <= meta.dataEnd; r += 1) {
-        const leftAddr = XLSX.utils.encode_cell({ r, c: 0 });
-        const leftCell = ws[leftAddr] as (Record<string, unknown> & { s?: Record<string, unknown> }) | undefined;
-        if (leftCell && leftCell.s) {
-          const s = leftCell.s as Record<string, unknown> & { border?: Record<string, unknown> };
-          const b = (s.border ?? {}) as Record<string, unknown>;
-          s.border = { ...b, left: { style: "thin", color: { rgb: darkBorder } } };
-          leftCell.s = s;
-        }
-
-        const rightAddr = XLSX.utils.encode_cell({ r, c: colCount - 1 });
-        const rightCell = ws[rightAddr] as (Record<string, unknown> & { s?: Record<string, unknown> }) | undefined;
-        if (rightCell && rightCell.s) {
-          const s = rightCell.s as Record<string, unknown> & { border?: Record<string, unknown> };
-          const b = (s.border ?? {}) as Record<string, unknown>;
-          s.border = { ...b, right: { style: "thin", color: { rgb: darkBorder } } };
-          rightCell.s = s;
-        }
+        rowPtr = cardEnd + 2;
       }
     }
 
-    XLSX.utils.book_append_sheet(workbook, ws, "CNC Cutlist");
-    const wbArray = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([wbArray], {
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
     const url = URL.createObjectURL(blob);
@@ -6958,7 +8383,7 @@ export default function ProjectDetailsPage() {
     window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
 
-  const onExportCncPdf = () => {
+  const onExportCncPdf = async (mode: "download" | "print" = "download") => {
     if (typeof window === "undefined") return;
     const safeProject = (project?.name || "project")
       .replace(/[\\/:*?"<>|]/g, "_")
@@ -6982,29 +8407,21 @@ export default function ProjectDetailsPage() {
     const rowAltRgb: [number, number, number] = [246, 248, 251];
     const rowBaseRgb: [number, number, number] = [255, 255, 255];
 
-    const header = [
-      "ID",
-      "Room",
-      "Part Type",
-      "Part Name",
-      "Height",
-      "Width",
-      "Depth",
-      "Qty",
-      "Clashing",
-      ...(showCncGrainColumn ? ["Grain"] : []),
-      "Information",
-    ];
-    const centeredCols = new Set(["ID", "Height", "Width", "Depth", "Qty", "Clashing", "Grain"]);
+    const header = ["ID", "Room", "Part Type", "Part Name", "Height", "Width", "Depth", "Qty", "Clashing", ...(showCncGrainColumn ? ["Grain"] : []), "Information"];
+    const centeredCols = new Set(["ID", "Part Type", "Height", "Width", "Depth", "Qty", "Clashing", "Grain"]);
 
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
     const sidePad = 18;
     const topPad = 18;
     const boardBarHeight = 22;
     const pxToPt = 0.75;
     const usableTableWidthPt = pageWidth - sidePad * 2;
-    const allPdfRows = cncRowsByBoard.flatMap((group) => group.rows);
+    const allPdfRows = cncRowsByBoardNonCab.flatMap((group) => group.rows);
+    const anyBoardHasGrain = productionForm.boardTypes.some((row) => Boolean(row.grain));
+    const helperWord = "Underlined";
+    const helperTail = " Dimension has grain along it.";
     const colValues = {
       id: allPdfRows.map((_row, idx) => String(idx + 1)),
       room: allPdfRows.map((row) => String(row.room ?? "")),
@@ -7084,17 +8501,157 @@ export default function ProjectDetailsPage() {
       );
     }
 
+    const companyName = String(
+      companyDoc?.companyName ??
+      companyDoc?.name ??
+      ((companyDoc?.company as Record<string, unknown> | undefined)?.name ?? ""),
+    ).trim() || "Company";
+    const projectName = String(project?.name || "-").trim() || "-";
+    const projectCreator = String(project?.createdByName || "-").trim() || "-";
+    const titleLeft = "PROJECT CUTLIST";
+
+    const logoRaw = String(
+      companyDoc?.logoPath ??
+      companyDoc?.logoUrl ??
+      ((companyDoc?.theme as Record<string, unknown> | undefined)?.logoPath ?? ""),
+    ).trim();
+    const logoResolvedUrl = logoRaw
+      ? (await resolveProjectImageUrl(logoRaw)) || (/^https?:\/\//i.test(logoRaw) ? logoRaw : "")
+      : "";
+    const blobToDataUrl = (blob: Blob) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("file-reader-failed"));
+        reader.readAsDataURL(blob);
+      });
+    const imageNaturalSize = (dataUrl: string) =>
+      new Promise<{ w: number; h: number }>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ w: Math.max(1, img.naturalWidth || 1), h: Math.max(1, img.naturalHeight || 1) });
+        img.onerror = () => resolve({ w: 1, h: 1 });
+        img.src = dataUrl;
+      });
+    let logoDataUrl = "";
+    let logoFormat: "PNG" | "JPEG" | "WEBP" = "PNG";
+    let logoW = 1;
+    let logoH = 1;
+    if (logoResolvedUrl) {
+      try {
+        const resp = await fetch(logoResolvedUrl);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const mime = String(blob.type || "").toLowerCase();
+          if (mime.includes("jpeg") || mime.includes("jpg")) logoFormat = "JPEG";
+          else if (mime.includes("webp")) logoFormat = "WEBP";
+          else logoFormat = "PNG";
+          logoDataUrl = await blobToDataUrl(blob);
+          const size = await imageNaturalSize(logoDataUrl);
+          logoW = size.w;
+          logoH = size.h;
+        }
+      } catch {
+        logoDataUrl = "";
+      }
+    }
+
+    // Full-page title sheet (shared by PDF export and Print).
+    {
+      const left = sidePad;
+      const right = pageWidth - sidePad;
+
+      // Top-right company logo
+      if (logoDataUrl) {
+        const maxW = 190;
+        const maxH = 90;
+        const ratio = logoW / Math.max(1, logoH);
+        let drawW = maxW;
+        let drawH = drawW / Math.max(0.0001, ratio);
+        if (drawH > maxH) {
+          drawH = maxH;
+          drawW = drawH * ratio;
+        }
+        const logoX = right - drawW;
+        const logoY = topPad + 6;
+        doc.addImage(logoDataUrl, logoFormat, logoX, logoY, drawW, drawH);
+      }
+
+      // Center the entire title content block on the page.
+      const contentHeight = 232;
+      const contentTop = Math.max(28, (pageHeight - contentHeight) / 2);
+      const titleY = contentTop + 20;
+      const firstRuleY = contentTop + 38;
+      const projectNameY = contentTop + 66;
+      const secondRuleY = contentTop + 90;
+      const notesLabelY = contentTop + 132;
+
+      doc.setTextColor(17, 17, 17);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(18);
+      doc.text(titleLeft, left, titleY, { align: "left" });
+      doc.text(companyName, right, titleY, { align: "right" });
+
+      doc.setDrawColor(17, 17, 17);
+      doc.setLineWidth(0.8);
+      doc.line(left, firstRuleY, right, firstRuleY);
+
+      doc.setFontSize(14);
+      doc.text(projectName, left, projectNameY, { align: "left" });
+      doc.setFontSize(12);
+      doc.text(projectCreator, right, projectNameY, { align: "right" });
+
+      doc.line(left, secondRuleY, right, secondRuleY);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text("NOTES", left, notesLabelY, { align: "left" });
+    }
+
+    // Start CNC tables on the next page after title sheet.
+    doc.addPage();
+
     let runningId = 0;
-    cncRowsByBoard.forEach((group, idx) => {
+    cncRowsByBoardNonCab.forEach((group, idx) => {
       if (idx > 0) {
         doc.addPage();
       }
-      const rows = group.rows.map((row) => {
-        runningId += 1;
-        return [
-          String(runningId),
-          String(row.room ?? ""),
-          String(row.partType ?? ""),
+      let lastIdKey = "";
+      let stripeIndex = -1;
+      let lastStripeKey = "";
+      const rowBgByIndex: Array<[number, number, number]> = [];
+      const rows = group.rows.map((row, rowIdx) => {
+        const partTypeForOutput =
+          isCabinetryPartType(row.partType) && (row as CncDisplayRow).cncCabinetryRowKind && (row as CncDisplayRow).cncCabinetryRowKind !== "main"
+            ? ""
+            : String(row.partType ?? "");
+        const isDrawer = isDrawerPartType(row.partType);
+        const idKey = (isCabinetryPartType(row.partType) || isDrawer)
+          ? String((row as CncDisplayRow).sourceRowId || row.id)
+          : String(row.id);
+        const stripeKey = isDrawer ? String((row as CncDisplayRow).sourceRowId || row.id) : String(row.id);
+        if (stripeKey !== lastStripeKey) {
+          stripeIndex += 1;
+          lastStripeKey = stripeKey;
+        }
+        rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
+        if (idKey !== lastIdKey) {
+          runningId += 1;
+          lastIdKey = idKey;
+        }
+        const prev = rowIdx > 0 ? group.rows[rowIdx - 1] : null;
+        const prevDrawerKey = prev && isDrawerPartType(prev.partType) ? String((prev as CncDisplayRow).sourceRowId || prev.id) : "";
+        const isDrawerContinuation = isDrawer && prevDrawerKey === String((row as CncDisplayRow).sourceRowId || row.id);
+        let drawerRowSpan = 1;
+        if (isDrawer && !isDrawerContinuation) {
+          for (let i = rowIdx + 1; i < group.rows.length; i += 1) {
+            const next = group.rows[i];
+            if (!isDrawerPartType(next.partType)) break;
+            const nextKey = String((next as CncDisplayRow).sourceRowId || next.id);
+            if (nextKey !== String((row as CncDisplayRow).sourceRowId || row.id)) break;
+            drawerRowSpan += 1;
+          }
+        }
+        const tailCells: any[] = [
           String(row.name ?? ""),
           String(row.height ?? ""),
           String(row.width ?? ""),
@@ -7104,6 +8661,20 @@ export default function ProjectDetailsPage() {
           ...(showCncGrainColumn ? [String(row.grainValue ?? "")] : []),
           String(row.information ?? ""),
         ];
+        if (isDrawer && isDrawerContinuation) {
+          // Important: with rowSpan in first row, continuation rows must not emit overlapped cells.
+          return tailCells;
+        }
+        const idCell: any = isDrawer
+          ? { content: String(runningId), rowSpan: drawerRowSpan, styles: { valign: "middle", halign: "center" } }
+          : String(runningId);
+        const roomCell: any = isDrawer
+          ? { content: String(row.room ?? ""), rowSpan: drawerRowSpan, styles: { valign: "middle", halign: "center" } }
+          : String(row.room ?? "");
+        const typeCell: any = isDrawer
+          ? { content: partTypeForOutput, rowSpan: drawerRowSpan, styles: { valign: "middle", halign: "center" } }
+          : partTypeForOutput;
+        return [idCell, roomCell, typeCell, ...tailCells] as any[];
       });
       autoTable(doc, {
         startY: topPad + boardBarHeight,
@@ -7123,6 +8694,7 @@ export default function ProjectDetailsPage() {
           valign: "middle",
           overflow: "linebreak",
         },
+        tableLineWidth: 0,
         headStyles: {
           fillColor: themeRgb,
           textColor: headerTextRgb,
@@ -7130,9 +8702,6 @@ export default function ProjectDetailsPage() {
           lineColor: [17, 17, 17],
           lineWidth: 0.7,
           halign: "center",
-        },
-        alternateRowStyles: {
-          fillColor: rowAltRgb,
         },
         columnStyles: Object.fromEntries(
           header.map((name, colIdx) => [
@@ -7165,33 +8734,59 @@ export default function ProjectDetailsPage() {
               left: 0.5,
             } as any;
             if (colIndex === 0) {
-              (hookData.cell.styles.lineWidth as any).left = 0.7;
+              // outer border drawn separately to keep rounded corners clean
+              (hookData.cell.styles.lineWidth as any).left = 0;
             }
             if (colIndex === lastCol) {
-              (hookData.cell.styles.lineWidth as any).right = 0.7;
+              // outer border drawn separately to keep rounded corners clean
+              (hookData.cell.styles.lineWidth as any).right = 0;
             }
             return;
           }
 
           if (hookData.section !== "body") return;
 
+          const rowBg = rowBgByIndex[hookData.row.index] ?? rowBaseRgb;
           const isLastBodyRow = hookData.row.index === hookData.table.body.length - 1;
+          // Last row background is painted once as a rounded row in willDrawCell.
+          // Keep edge cells transparent so corners remain rounded.
+          hookData.cell.styles.fillColor = (isLastBodyRow && (colIndex === 0 || colIndex === lastCol)) ? (false as any) : rowBg;
           hookData.cell.styles.lineColor = blackRgb;
           hookData.cell.styles.lineWidth = {
             top: 0,
-            right: 0,
-            bottom: isLastBodyRow ? 0.7 : 0,
+            right: 0.5,
+            bottom: isLastBodyRow ? 0 : 0,
             left: 0,
           } as any;
           if (colIndex === 0) {
-            (hookData.cell.styles.lineWidth as any).left = 0.7;
+            // outer border drawn separately to keep rounded corners clean
+            (hookData.cell.styles.lineWidth as any).left = 0;
           }
           if (colIndex === lastCol) {
-            (hookData.cell.styles.lineWidth as any).right = 0.7;
+            // outer border drawn separately to keep rounded corners clean
+            (hookData.cell.styles.lineWidth as any).right = 0;
+          }
+
+          if (colIndex === 4 || colIndex === 5 || colIndex === 6) {
+            const row = group.rows[hookData.row.index];
+            if (row) {
+              const boardHasGrain = boardGrainFor(String(row.board || "").trim());
+              const grainValue = String(row.grainValue ?? "");
+              const isMatch =
+                boardHasGrain && (
+                  (colIndex === 4 && matchesGrainDimension(grainValue, String(row.height ?? ""), "height")) ||
+                  (colIndex === 5 && matchesGrainDimension(grainValue, String(row.width ?? ""), "width")) ||
+                  (colIndex === 6 && matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth"))
+                );
+              if (isMatch) {
+                hookData.cell.styles.fontStyle = "bold";
+              }
+            }
           }
 
           if (colIndex !== 2) return;
-          const partType = String(hookData.cell.raw ?? "").trim();
+          const raw = hookData.cell.raw as any;
+          const partType = String((raw && typeof raw === "object" && "content" in raw) ? raw.content : raw ?? "").trim();
           const partHex =
             normalizeHexColor(partTypeColors[partType] ?? partTypeColors[partType.toLowerCase()] ?? "") ?? null;
           if (!partHex) return;
@@ -7199,19 +8794,380 @@ export default function ProjectDetailsPage() {
           hookData.cell.styles.fillColor = partRgb;
           hookData.cell.styles.textColor = isLightHex(partHex) ? [15, 23, 42] : [255, 255, 255];
         },
+        willDrawCell: (hookData) => {
+          if (hookData.section !== "body") return;
+          const isLastBodyRow = hookData.row.index === hookData.table.body.length - 1;
+          if (!isLastBodyRow || hookData.column.index !== 0) return;
+          const rowBg = rowBgByIndex[hookData.row.index] ?? rowBaseRgb;
+          const rowX = hookData.cell.x;
+          const rowY = hookData.cell.y;
+          const rowH = hookData.cell.height;
+          const rowW = usableTableWidthPt;
+          const r = 7;
+          doc.setFillColor(rowBg[0], rowBg[1], rowBg[2]);
+          doc.roundedRect(rowX, rowY, rowW, rowH, r, r, "F");
+          // Square top edge only so bottom outside corners stay rounded.
+          doc.rect(rowX, rowY, rowW, Math.max(0, rowH - r), "F");
+        },
+        didDrawCell: (hookData) => {
+          if (hookData.section !== "body") return;
+          const colIndex = hookData.column.index;
+          if (colIndex !== 4 && colIndex !== 5 && colIndex !== 6) return;
+          const row = group.rows[hookData.row.index];
+          if (!row) return;
+          const boardHasGrain = boardGrainFor(String(row.board || "").trim());
+          if (!boardHasGrain) return;
+          const grainValue = String(row.grainValue ?? "");
+          const isMatch =
+            (colIndex === 4 && matchesGrainDimension(grainValue, String(row.height ?? ""), "height")) ||
+            (colIndex === 5 && matchesGrainDimension(grainValue, String(row.width ?? ""), "width")) ||
+            (colIndex === 6 && matchesGrainDimension(grainValue, String(row.depth ?? ""), "depth"));
+          if (!isMatch) return;
+          const rawVal = colIndex === 4 ? row.height : colIndex === 5 ? row.width : row.depth;
+          const text = String(rawVal ?? "").trim();
+          if (!text) return;
+          hookData.cell.styles.fontStyle = "bold";
+          const textW = doc.getTextWidth(text);
+          const centerX = hookData.cell.x + hookData.cell.width / 2;
+          const textX = centerX - textW / 2;
+          const underlineY = hookData.cell.y + hookData.cell.height * 0.66;
+          doc.setDrawColor(15, 23, 42);
+          doc.setLineWidth(0.6);
+          doc.line(textX, underlineY, textX + textW, underlineY);
+        },
         didDrawPage: () => {
+          const boardBarW = pageWidth - sidePad * 2;
           doc.setFillColor(17, 17, 17);
-          doc.rect(sidePad, topPad, pageWidth - sidePad * 2, boardBarHeight, "F");
+          doc.roundedRect(sidePad, topPad, boardBarW, boardBarHeight, 7, 7, "F");
+          // Square the bottom corners while keeping only top corners rounded.
+          doc.rect(sidePad, topPad + 7, boardBarW, Math.max(0, boardBarHeight - 7), "F");
           doc.setTextColor(255, 255, 255);
           doc.setFont("helvetica", "bold");
           doc.setFontSize(9);
           doc.text(String(group.boardLabel || "Board"), sidePad + 8, topPad + 14);
+          if (boardGrainFor(group.boardKey)) {
+            doc.setFontSize(8);
+            doc.setFont("helvetica", "bold");
+            const helperWordW = doc.getTextWidth(helperWord);
+            doc.setFont("helvetica", "normal");
+            const helperTailW = doc.getTextWidth(helperTail);
+            const helperTotalW = helperWordW + helperTailW;
+            const helperStartX = sidePad + boardBarW - 8 - helperTotalW;
+            const helperY = topPad + 14;
+            doc.setTextColor(255, 255, 255);
+            doc.setFont("helvetica", "bold");
+            doc.text(helperWord, helperStartX, helperY);
+            doc.setDrawColor(255, 255, 255);
+            doc.setLineWidth(0.6);
+            doc.line(helperStartX, helperY + 1, helperStartX + helperWordW, helperY + 1);
+            doc.setFont("helvetica", "normal");
+            doc.text(helperTail, helperStartX + helperWordW, helperY);
+          }
         },
       });
+      const lastAuto = (doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable;
+      const finalY = Math.max(topPad + boardBarHeight + 10, Number(lastAuto?.finalY ?? 0));
+      // Draw table column dividers last using deterministic layout widths.
+      const dividerTop = topPad + boardBarHeight;
+      if (finalY > dividerTop) {
+        doc.setDrawColor(17, 17, 17);
+        doc.setLineWidth(0.7);
+        let x = sidePad;
+        for (let c = 0; c < header.length - 1; c += 1) {
+          x += Number(globalColumnWidthPtByHeader[header[c]] ?? 0);
+          doc.line(x, dividerTop, x, finalY);
+        }
+      }
+      const sectionH = finalY - topPad;
+      const cornerRadius = 7;
+      const tableW = pageWidth - sidePad * 2;
+      doc.setDrawColor(17, 17, 17);
+      doc.setLineWidth(0.7);
+      doc.roundedRect(sidePad, topPad, tableW, sectionH, cornerRadius, cornerRadius, "S");
     });
+
+    if (cncCabinetCards.length > 0) {
+      const drawCabinetsPageHeader = () => {
+        const barW = pageWidth - sidePad * 2;
+        doc.setFillColor(17, 17, 17);
+        doc.roundedRect(sidePad, topPad, barW, boardBarHeight, 7, 7, "F");
+        doc.setTextColor(255, 255, 255);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.text("Cabinets", sidePad + 8, topPad + 14);
+        if (anyBoardHasGrain) {
+          doc.setFontSize(8);
+          doc.setFont("helvetica", "bold");
+          const helperWordW = doc.getTextWidth(helperWord);
+          doc.setFont("helvetica", "normal");
+          const helperTailW = doc.getTextWidth(helperTail);
+          const helperTotalW = helperWordW + helperTailW;
+          const helperStartX = sidePad + barW - 8 - helperTotalW;
+          const helperY = topPad + 14;
+          doc.setTextColor(255, 255, 255);
+          doc.setFont("helvetica", "bold");
+          doc.text(helperWord, helperStartX, helperY);
+          doc.setDrawColor(255, 255, 255);
+          doc.setLineWidth(0.6);
+          doc.line(helperStartX, helperY + 1, helperStartX + helperWordW, helperY + 1);
+          doc.setFont("helvetica", "normal");
+          doc.text(helperTail, helperStartX + helperWordW, helperY);
+        }
+      };
+      doc.addPage();
+      drawCabinetsPageHeader();
+      let y = topPad + boardBarHeight + 8;
+      const cardGap = 10;
+      const cardX = sidePad;
+      const cardW = pageWidth - sidePad * 2;
+      const headerH = 22;
+      const bodyPad = 8;
+      const imageColW = 165;
+      for (const card of cncCabinetCards) {
+        const topBottomPiece = card.cabinetryPieces.top ?? card.cabinetryPieces.bottom;
+        const leftRightPiece = card.cabinetryPieces.left_side ?? card.cabinetryPieces.right_side;
+        const backPiece = card.cabinetryPieces.back;
+        const fixedPiece = card.cabinetryPieces.fixed_shelf;
+        const adjustablePiece = card.cabinetryPieces.adjustable_shelf;
+        const infoLines = card.infoLines.length ? card.infoLines : [""];
+        const contentLineH = 12;
+        const detailRowH = 18;
+        const rowsH = 5 * detailRowH;
+        // Information row matches normal row height by default, and grows only for extra lines.
+        const infoRowBaseH = detailRowH;
+        const infoRowExtraH = Math.max(0, infoLines.length - 1) * contentLineH;
+        const infoRowH = infoRowBaseH + infoRowExtraH;
+        const bodyH = Math.max(130, rowsH + infoRowH);
+        const cardH = headerH + bodyH;
+        if (y + cardH > pageHeight - 20) {
+          doc.addPage();
+          drawCabinetsPageHeader();
+          y = topPad + boardBarHeight + 8;
+        }
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(cardX, y, cardW, cardH, 6, 6, "F");
+        doc.setFillColor(245, 248, 252);
+        doc.roundedRect(cardX, y, cardW, headerH, 6, 6, "F");
+        // Keep only top corners rounded on the title bar fill.
+        doc.rect(cardX, y + 6, cardW, Math.max(0, headerH - 6), "F");
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(15, 23, 42);
+        doc.setFontSize(9);
+        doc.text(String(card.displayId), cardX + 20, y + headerH / 2 + 3, { align: "center" });
+        doc.setFont("helvetica", "bold");
+        doc.text(String(card.row.name || "-"), cardX + 48, y + 14);
+
+        const bodyY = y + headerH;
+        const imageX = cardX + bodyPad;
+        const imageY = bodyY + bodyPad;
+        const imageW = imageColW - bodyPad * 2;
+        const imageH = bodyH - bodyPad * 2;
+        const detailX = cardX + imageColW;
+        const detailW = cardW - imageColW;
+
+        const colGap = 10;
+        const leftColX = detailX + bodyPad;
+        const rightColX = detailX + detailW / 2 + colGap / 2;
+        const colW = detailW / 2 - bodyPad - colGap / 2;
+        const drawDimRun = (
+          x: number,
+          baselineY: number,
+          height: string,
+          width: string,
+          depth: string,
+          grainValue: string,
+          qtySuffix = "",
+        ) => {
+          const parts: Array<{ key: "height" | "width" | "depth"; value: string }> = [];
+          const h = String(height || "").trim();
+          const w = String(width || "").trim();
+          const d = String(depth || "").trim();
+          if (h) parts.push({ key: "height", value: h });
+          if (w) parts.push({ key: "width", value: w });
+          if (d) parts.push({ key: "depth", value: d });
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(8);
+          let cx = x;
+          parts.forEach((part, idx) => {
+            if (idx > 0) {
+              const sep = " x ";
+              doc.text(sep, cx, baselineY);
+              cx += doc.getTextWidth(sep);
+            }
+            const isMatch = matchesGrainDimension(grainValue, part.value, part.key);
+            doc.setFont("helvetica", isMatch ? "bold" : "normal");
+            doc.text(part.value, cx, baselineY);
+            const wPart = doc.getTextWidth(part.value);
+            if (isMatch) {
+              doc.setDrawColor(15, 23, 42);
+              doc.setLineWidth(0.6);
+              doc.line(cx, baselineY + 1, cx + wPart, baselineY + 1);
+            }
+            cx += wPart;
+          });
+          if (qtySuffix) {
+            doc.setFont("helvetica", "normal");
+            doc.text(qtySuffix, cx, baselineY);
+          }
+        };
+        const drawKv = (x: number, rowTop: number, rowH: number, key: string, value: string) => {
+          const baselineY = rowTop + rowH / 2 + 3;
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.text(key, x, baselineY);
+          doc.setFont("helvetica", "normal");
+          const wrapped = doc.splitTextToSize(String(value || ""), Math.max(10, colW - 90));
+          doc.text(wrapped, x + 88, baselineY);
+        };
+        const detailsTop = bodyY;
+        drawKv(leftColX, detailsTop + detailRowH * 0, detailRowH, "Material", card.boardLabel || "-");
+        drawKv(leftColX, detailsTop + detailRowH * 1, detailRowH, "Quantity", String(card.row.quantity || ""));
+        drawKv(leftColX, detailsTop + detailRowH * 2, detailRowH, "Size (H x W x D)", "");
+        drawDimRun(
+          leftColX + 88,
+          detailsTop + detailRowH * 2 + detailRowH / 2 + 3,
+          String(card.row.height ?? ""),
+          String(card.row.width ?? ""),
+          String(card.row.depth ?? ""),
+          String(card.row.grainValue ?? ""),
+        );
+        drawKv(leftColX, detailsTop + detailRowH * 3, detailRowH, card.fixedShelf === 1 ? "Fixed Shelf" : "Fixed Shelves", card.fixedShelf > 0 ? `${card.fixedShelf} (${String(normalizeDrillingValue(card.row.fixedShelfDrilling || "No")).toLowerCase()} drilling)` : "");
+        drawKv(leftColX, detailsTop + detailRowH * 4, detailRowH, card.adjustableShelf === 1 ? "Adjustable Shelf" : "Adjustable Shelves", card.adjustableShelf > 0 ? `${card.adjustableShelf} (${String(normalizeDrillingValue(card.row.adjustableShelfDrilling || "No")).toLowerCase()} drilling)` : "");
+
+        drawKv(rightColX, detailsTop + detailRowH * 0, detailRowH, "Top / Bottom", "");
+        if (topBottomPiece) {
+          const qty = Number.parseInt(String(topBottomPiece.quantity || "0"), 10) || 0;
+          drawDimRun(
+            rightColX + 88,
+            detailsTop + detailRowH * 0 + detailRowH / 2 + 3,
+            String(topBottomPiece.height ?? ""),
+            String(topBottomPiece.width ?? ""),
+            String(topBottomPiece.depth ?? ""),
+            cabinetryPieceGrainValue(card.row, topBottomPiece),
+            qty > 0 ? ` (x${qty * 2})` : "",
+          );
+        }
+        drawKv(rightColX, detailsTop + detailRowH * 1, detailRowH, "Left / Right Side", "");
+        if (leftRightPiece) {
+          const qty = Number.parseInt(String(leftRightPiece.quantity || "0"), 10) || 0;
+          drawDimRun(
+            rightColX + 88,
+            detailsTop + detailRowH * 1 + detailRowH / 2 + 3,
+            String(leftRightPiece.height ?? ""),
+            String(leftRightPiece.width ?? ""),
+            String(leftRightPiece.depth ?? ""),
+            cabinetryPieceGrainValue(card.row, leftRightPiece),
+            qty > 0 ? ` (x${qty * 2})` : "",
+          );
+        }
+        drawKv(rightColX, detailsTop + detailRowH * 2, detailRowH, "Back", "");
+        if (backPiece) {
+          const qty = Number.parseInt(String(backPiece.quantity || "0"), 10) || 0;
+          drawDimRun(
+            rightColX + 88,
+            detailsTop + detailRowH * 2 + detailRowH / 2 + 3,
+            String(backPiece.height ?? ""),
+            String(backPiece.width ?? ""),
+            String(backPiece.depth ?? ""),
+            cabinetryPieceGrainValue(card.row, backPiece),
+            qty > 0 ? ` (x${qty})` : "",
+          );
+        }
+        drawKv(rightColX, detailsTop + detailRowH * 3, detailRowH, "Fixed Shelf", "");
+        if (fixedPiece) {
+          const qty = Number.parseInt(String(fixedPiece.quantity || "0"), 10) || 0;
+          drawDimRun(
+            rightColX + 88,
+            detailsTop + detailRowH * 3 + detailRowH / 2 + 3,
+            String(fixedPiece.height ?? ""),
+            String(fixedPiece.width ?? ""),
+            String(fixedPiece.depth ?? ""),
+            cabinetryPieceGrainValue(card.row, fixedPiece),
+            qty > 0 ? ` (x${qty})` : "",
+          );
+        }
+        drawKv(rightColX, detailsTop + detailRowH * 4, detailRowH, "Adjustable Shelf", "");
+        if (adjustablePiece) {
+          const qty = Number.parseInt(String(adjustablePiece.quantity || "0"), 10) || 0;
+          drawDimRun(
+            rightColX + 88,
+            detailsTop + detailRowH * 4 + detailRowH / 2 + 3,
+            String(adjustablePiece.height ?? ""),
+            String(adjustablePiece.width ?? ""),
+            String(adjustablePiece.depth ?? ""),
+            cabinetryPieceGrainValue(card.row, adjustablePiece),
+            qty > 0 ? ` (x${qty})` : "",
+          );
+        }
+
+        // Row partitions between cabinet detail rows.
+        const detailRowsStartY = detailsTop;
+        doc.setDrawColor(228, 231, 238);
+        doc.setLineWidth(0.5);
+        for (let i = 1; i <= 4; i += 1) {
+          const lineY = detailRowsStartY + i * detailRowH;
+          doc.line(detailX, lineY, cardX + cardW, lineY);
+        }
+
+        const infoRowTop = detailRowsStartY + rowsH;
+        const infoStartY = infoRowTop + infoRowBaseH / 2 + 3;
+        doc.setDrawColor(228, 231, 238);
+        doc.line(detailX, infoRowTop, cardX + cardW, infoRowTop);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(8);
+        doc.setTextColor(15, 23, 42);
+        doc.text("Information", leftColX, infoStartY);
+        doc.setFont("helvetica", "normal");
+        doc.text(infoLines, leftColX + 88, infoStartY);
+
+        const cacheKey = cabinetPdfImageKey(card);
+        const cached = cabinetPdfImageCacheRef.current[cacheKey];
+        if (cached?.url) {
+          const ratio = cached.svgW / Math.max(1, cached.svgH);
+          const targetW = imageW - 12;
+          const targetH = imageH - 12;
+          let drawW = targetW;
+          let drawH = targetW / ratio;
+          if (drawH > targetH) {
+            drawH = targetH;
+            drawW = drawH * ratio;
+          }
+          const drawX = imageX + (imageW - drawW) / 2;
+          const drawY = imageY + (imageH - drawH) / 2;
+          doc.addImage(cached.url, "PNG", drawX, drawY, drawW, drawH);
+        }
+
+        // Draw black card borders/major dividers last so they stay visually consistent.
+        const idDividerX = cardX + 40;
+        doc.setDrawColor(17, 17, 17);
+        doc.setLineWidth(0.7);
+        doc.roundedRect(cardX, y, cardW, cardH, 6, 6, "S");
+        doc.line(idDividerX, y, idDividerX, y + headerH);
+        doc.line(cardX, y + headerH, cardX + cardW, y + headerH);
+        doc.line(detailX, bodyY, detailX, bodyY + bodyH);
+        y += cardH + cardGap;
+      }
+    }
 
     const pdfBlob = doc.output("blob");
     const url = URL.createObjectURL(pdfBlob);
+    if (mode === "print") {
+      const printWindow = window.open(url, "_blank");
+      if (printWindow) {
+        const triggerPrint = () => {
+          try {
+            printWindow.focus();
+            printWindow.print();
+          } catch {
+            // no-op
+          }
+        };
+        printWindow.addEventListener("load", triggerPrint, { once: true });
+        window.setTimeout(triggerPrint, 500);
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+      return;
+    }
     const a = document.createElement("a");
     a.href = url;
     a.download = fileName;
@@ -7220,6 +9176,302 @@ export default function ProjectDetailsPage() {
     a.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
+
+  if (isOrderFullscreen) {
+    return (
+      <ProtectedRoute>
+        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+              <ShoppingCart size={14} />
+              <span>Order</span>
+              <span className="text-[#6B7280]">|</span>
+              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void onSaveAndBackFromOrder()}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+            >
+              <ArrowLeft size={14} />
+              Save & Back
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4">
+            <div className="flex h-full min-h-[calc(100dvh-120px)] flex-col gap-3">
+              <div className="grid min-h-0 flex-1 gap-3">
+                <div className="grid min-h-0 gap-3 xl:grid-cols-3">
+                  <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
+                      <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Drawers</p>
+                      <div className="inline-flex items-center gap-2">
+                        <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
+                          {orderDrawerGroupedRows.length} Groups
+                        </span>
+                        <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
+                          {orderDrawerQtyTotal} Qty
+                        </span>
+                      </div>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      {orderDrawerGroupedRows.length === 0 ? (
+                        <p className="px-3 py-6 text-center text-[12px] font-semibold text-[#64748B]">No drawer rows.</p>
+                      ) : (
+                        <table className="w-full text-left text-[12px]">
+                          <thead className="bg-[#EAF2FD] text-[#0F172A]">
+                            <tr>
+                              <th className="px-3 py-2">Hardware</th>
+                              <th className="px-2 py-2">Drawer Type</th>
+                              <th className="px-2 py-2 text-center">Length</th>
+                              <th className="px-2 py-2 text-center">Back Height</th>
+                              <th className="px-2 py-2 text-center">Qty</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {orderDrawerGroupedRows.map((group, idx) => (
+                              <tr key={`order_drawer_row_${group.key}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
+                                <td className="px-3 py-[7px] font-semibold text-[#1F2937]">{group.hardware || "-"}</td>
+                                <td className="px-2 py-[7px] font-semibold text-[#1F2937]">{group.drawerType || "-"}</td>
+                                <td className="px-2 py-[7px] text-center text-[#334155]">{group.hardwareLength || "-"}</td>
+                                <td className="px-2 py-[7px] text-center text-[#334155]">{group.backHeight || "-"}</td>
+                                <td className="px-2 py-[7px] text-center font-bold text-[#0F172A]">{group.total}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
+                      <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Hinges</p>
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={onAddOrderHingeRow}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] text-[16px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                          title="Add hinge row"
+                        >
+                          <img
+                            src="/plus.png"
+                            alt="Add hinge row"
+                            className="block object-contain"
+                            style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                            }}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      {orderHingeRows.length === 0 ? (
+                        <p className="px-3 py-6 text-center text-[12px] font-semibold text-[#64748B]">No hinge rows.</p>
+                      ) : (
+                        <table className="w-full text-left text-[12px]">
+                          <thead className="bg-[#EAF2FD] text-[#0F172A]">
+                            <tr>
+                              <th className="w-[38px] px-0 py-2 text-center"></th>
+                              <th className="px-3 py-2">Hinge Type</th>
+                              <th className="px-2 py-2 text-center">Qty</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {orderHingeRows.map((line, idx) => (
+                              <tr key={`order_hw_${line.id}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
+                                <td className="w-[38px] px-0 py-[7px] text-center align-middle">
+                                  <button
+                                    type="button"
+                                    onClick={() => void onDeleteOrderHingeRow(line.id)}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                    title="Delete row"
+                                  >
+                                    <X size={15} className="mx-auto" strokeWidth={2.8} />
+                                  </button>
+                                </td>
+                                <td className="px-3 py-[7px]">
+                                  <select
+                                    value={line.name}
+                                    onChange={(e) => void onOrderHingeTypeChange(line.id, e.target.value)}
+                                    className="h-7 w-full rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[12px] font-semibold text-[#1F2937] outline-none focus:border-[#93C5FD]"
+                                  >
+                                    <option value=""></option>
+                                    {orderHingeOptions.map((opt) => (
+                                      <option key={`order_hinge_opt_${opt}`} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="px-2 py-[7px] text-center">
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={line.qty ?? ""}
+                                    onChange={(e) => onUpdateOrderHingeRow(line.id, { qty: e.target.value.replace(/\D+/g, "") })}
+                                    onBlur={(e) => void onOrderHingeQtyBlur(line.id, e.target.value.replace(/\D+/g, ""))}
+                                    className="h-7 w-[68px] rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-center text-[12px] font-bold text-[#0F172A] outline-none focus:border-[#93C5FD]"
+                                  />
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
+                      <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Misc.</p>
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void onAddOrderMiscRow()}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] hover:bg-[#DDF2E7]"
+                          title="Add misc row"
+                        >
+                          <img
+                            src="/plus.png"
+                            alt="Add misc row"
+                            className="block object-contain"
+                            style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                            }}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto">
+                      {orderMiscLines.length === 0 ? (
+                        <p className="px-3 py-6 text-center text-[12px] font-semibold text-[#64748B]">No misc rows.</p>
+                      ) : (
+                        <table className="w-full table-fixed text-left text-[12px]">
+                          <colgroup>
+                            <col style={{ width: "38px" }} />
+                            <col />
+                            <col style={{ width: "50%" }} />
+                            <col style={{ width: "84px" }} />
+                          </colgroup>
+                          <thead className="bg-[#EAF2FD] text-[#0F172A]">
+                            <tr>
+                              <th className="px-0 py-2 text-center"></th>
+                              <th className="px-3 py-2">Misc Item</th>
+                              <th className="px-2 py-2">Notes</th>
+                              <th className="px-2 py-2 text-center">Qty</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {orderMiscLines.map((line, idx) => (
+                              <tr key={`order_misc_${line.key}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
+                                <td className="w-[38px] px-0 py-[7px] text-center align-middle">
+                                  <button
+                                    type="button"
+                                    onClick={() => void onDeleteOrderMiscRow(line.key)}
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                    title="Delete row"
+                                  >
+                                    <X size={15} className="mx-auto" strokeWidth={2.8} />
+                                  </button>
+                                </td>
+                                <td className="px-3 py-[7px]">
+                                  <input
+                                    type="text"
+                                    value={line.name ?? ""}
+                                    onChange={(e) => onOrderMiscDraftChange(line.key, { name: e.target.value })}
+                                    onBlur={(e) => void onOrderMiscDraftBlur(line.key, { name: e.target.value })}
+                                    className="h-7 w-full rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[12px] font-semibold text-[#1F2937] outline-none focus:border-[#93C5FD]"
+                                  />
+                                </td>
+                                <td className="px-2 py-[7px]">
+                                  <input
+                                    type="text"
+                                    value={line.notes ?? ""}
+                                    onChange={(e) => onOrderMiscDraftChange(line.key, { notes: e.target.value })}
+                                    onBlur={(e) => void onOrderMiscDraftBlur(line.key, { notes: e.target.value })}
+                                    className="h-7 w-full rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-[12px] text-[#1F2937] outline-none focus:border-[#93C5FD]"
+                                  />
+                                </td>
+                                <td className="px-2 py-[7px] text-center">
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={line.qty ?? ""}
+                                    onChange={(e) => onOrderMiscDraftChange(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
+                                    onBlur={(e) => void onOrderMiscDraftBlur(line.key, { qty: e.target.value.replace(/\D+/g, "") })}
+                                    className="h-7 w-[68px] rounded-[8px] border border-[#CBD5E1] bg-white px-2 text-center text-[12px] font-bold text-[#0F172A] outline-none focus:border-[#93C5FD]"
+                                  />
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                <section className="min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                  <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
+                    <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Boards To Order</p>
+                    <div className="inline-flex items-center gap-2">
+                      <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
+                        {orderBoardSummary.length} Rows
+                      </span>
+                      <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
+                        {formatPartCount(cutlistRows.length)}
+                      </span>
+                      <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
+                        {orderTotalSheetsRequired} Sheets
+                      </span>
+                    </div>
+                  </div>
+                  <div className="max-h-[calc(100dvh-180px)] overflow-auto">
+                    <table className="w-full text-left text-[12px]">
+                      <thead className="bg-[#FDF1C9] text-[#0F172A]">
+                        <tr>
+                          <th className="px-3 py-2">Board</th>
+                          <th className="px-2 py-2 text-center">Size</th>
+                          <th className="px-2 py-2 text-center">Thickness</th>
+                          <th className="px-2 py-2 text-center">Finish</th>
+                          <th className="px-2 py-2 text-center">Sheets</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderBoardSummary.map((row, idx) => (
+                          <tr key={`order_board_full_${row.id}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
+                            <td className="px-3 py-[7px] font-semibold text-[#1F2937]">{row.boardLabel}</td>
+                            <td className="px-2 py-[7px] text-center text-[#334155]">{row.boardSize}</td>
+                            <td className="px-2 py-[7px] text-center text-[#334155]">{row.thickness}</td>
+                            <td className="px-2 py-[7px] text-center text-[#334155]">{row.finish}</td>
+                            <td className="px-2 py-[7px] text-center">
+                              <span className="inline-flex min-w-[28px] justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] font-bold text-[#2F4E68]">
+                                {row.sheetsRequired}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                        {orderBoardSummary.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="px-3 py-8 text-center text-[12px] font-semibold text-[#64748B]">
+                              No board order data yet.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+              </div>
+            </div>
+          </div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
 
   if (isCutlistFullscreen) {
     return (
@@ -7511,9 +9763,9 @@ export default function ProjectDetailsPage() {
                       const draftIsCabinetry = isCabinetryPartType(draft.partType);
                       const draftBoardAllowsGrain = boardGrainFor(String(draft.board ?? "").trim());
                       const draftGrainValue = String(draft.grainValue ?? "").trim();
-                      const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height);
-                      const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width);
-                      const draftDepthGrainMatch = matchesGrainDimension(draftGrainValue, draft.depth);
+                      const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
+                      const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
+                      const draftDepthGrainMatch = matchesGrainDimension(draftGrainValue, draft.depth, "depth");
                       const boardWarn = warningForCell(draft.id, "board");
                       const nameWarn = warningForCell(draft.id, "name");
                       const heightWarn = warningForCell(draft.id, "height");
@@ -7707,7 +9959,7 @@ export default function ProjectDetailsPage() {
                               <div style={cutlistEntryCellStyle("grain")}>
                                 <BoardPillDropdown
                                   value={String(draft.grainValue ?? "")}
-                                  options={grainDimensionOptions(draft.height, draft.width, draft.depth)}
+                                  options={grainDimensionOptionsForRow(draft)}
                                   disabled={productionReadOnly}
                                   bg={draftFieldBg}
                                   border={draftFieldBorder}
@@ -8090,7 +10342,7 @@ export default function ProjectDetailsPage() {
                                           {!rowBoardAllowsGrain ? "" : editing ? (
                                             <BoardPillDropdown
                                               value={editingCellValue}
-                                              options={grainDimensionOptions(row.height, row.width, row.depth)}
+                                              options={grainDimensionOptionsForRow(row)}
                                               disabled={productionReadOnly}
                                               bg="#FFFFFF"
                                               border="#94A3B8"
@@ -8114,6 +10366,7 @@ export default function ProjectDetailsPage() {
                                       const isHeightGrainMatched = matchesGrainDimension(
                                         String(row.grainValue ?? ""),
                                         row.height,
+                                        "height",
                                       );
                                       return (
                                         <td
@@ -8429,9 +10682,9 @@ export default function ProjectDetailsPage() {
                                     }
                                     const value = String(row[col.key] ?? "");
                                     const isGrainMatchedDimension =
-                                      (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height)) ||
-                                      (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width)) ||
-                                      (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth));
+                                      (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height, "height")) ||
+                                      (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width, "width")) ||
+                                      (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth, "depth"));
                                     const drawerTextboxLift =
                                       isDrawerPartType(row.partType) && (key === "width" || key === "depth" || key === "quantity");
                                     return (
@@ -8505,7 +10758,12 @@ export default function ProjectDetailsPage() {
                                       if (col.key === "quantity") value = piece.quantity;
                                       if (col.key === "clashing") value = joinClashing(piece.clashLeft, piece.clashRight);
                                       if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
-                                      if (col.key === "grain") value = row.grainValue || (row.grain ? "Yes" : "");
+                                      const pieceGrainValue = cabinetryPieceGrainValue(row, piece);
+                                      if (col.key === "grain") value = pieceGrainValue || (row.grain ? "Yes" : "");
+                                      const isPieceGrainMatchedDimension =
+                                        (key === "height" && matchesGrainDimension(pieceGrainValue, piece.height, "height")) ||
+                                        (key === "width" && matchesGrainDimension(pieceGrainValue, piece.width, "width")) ||
+                                        (key === "depth" && matchesGrainDimension(pieceGrainValue, piece.depth, "depth"));
                                       return (
                                         <td
                                           key={`${row.id}_${piece.key}_${col.key}`}
@@ -8514,7 +10772,11 @@ export default function ProjectDetailsPage() {
                                             if (col.key !== "information") return;
                                             startCellEdit(row, "information", infoLineIndex);
                                           }}
-                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                          style={{
+                                            ...cutlistListColumnStyle(key),
+                                            color: groupTextColor,
+                                            ...(isPieceGrainMatchedDimension ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                          }}
                                         >
                                           {editingThisInfoCell ? (
                                             ""
@@ -8671,20 +10933,30 @@ export default function ProjectDetailsPage() {
           >
             <section className="h-full min-h-0 overflow-auto pl-3 pr-3 pb-3">
               <div className="space-y-3 px-0 py-2">
-                {cncRowsByBoard.length === 0 && (
+                {cncRowsByBoardNonCab.length === 0 && cncCabinetCards.length === 0 && (
                   <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
                     No visible CNC rows.
                   </div>
                 )}
-                {cncRowsByBoard.length > 0 && (() => {
+                {cncRowsByBoardNonCab.length > 0 && (() => {
                   let runningId = 0;
-                  return cncRowsByBoard.map((group) => (
+                  let lastIdKey = "";
+                  let stripeIndex = -1;
+                  let lastStripeKey = "";
+                  return cncRowsByBoardNonCab.map((group) => {
+                    const showBoardGrainHelper = boardGrainFor(group.boardKey);
+                    return (
                     <section key={group.boardKey} className="overflow-hidden rounded-[9px] border border-[#111111] bg-[#111111]">
                       <div
                         className="border-b px-3 py-2 text-[16px] font-semibold"
                         style={{ borderColor: "#111111", backgroundColor: "#111111", color: "#FFFFFF" }}
                       >
-                        {group.boardLabel}
+                        <span>{group.boardLabel}</span>
+                        {showBoardGrainHelper && (
+                          <span className="float-right whitespace-nowrap text-[12px] font-normal text-white">
+                            <span className="underline font-bold">Underlined</span> Dimension has grain along it.
+                          </span>
+                        )}
                       </div>
                       <div className="overflow-auto bg-white">
                         <table className="w-full table-fixed text-left text-[12px]">
@@ -8718,35 +10990,119 @@ export default function ProjectDetailsPage() {
                           </thead>
                           <tbody>
                             {group.rows.map((row, idx) => {
-                              runningId += 1;
+                              const prevRow = idx > 0 ? group.rows[idx - 1] : null;
+                              const partTypeForDisplay =
+                                isCabinetryPartType(row.partType) && (row as CncDisplayRow).cncCabinetryRowKind && (row as CncDisplayRow).cncCabinetryRowKind !== "main"
+                                  ? ""
+                                  : String(row.partType || "");
+                              const cabinetryKind = (row as CncDisplayRow).cncCabinetryRowKind;
+                              const isCabinetryMainRow = isCabinetryPartType(row.partType) && cabinetryKind === "main";
+                              const isCabinetryShelfRow = isCabinetryPartType(row.partType) && cabinetryKind && cabinetryKind !== "main";
+                              const isDrawerRow = isDrawerPartType(row.partType);
+                              const drawerSourceKey = isDrawerRow
+                                ? String((row as CncDisplayRow).sourceRowId || row.id)
+                                : "";
+                              const idKey = (isCabinetryPartType(row.partType) || isDrawerRow)
+                                ? String((row as CncDisplayRow).sourceRowId || row.id)
+                                : String(row.id);
+                              if (idKey !== lastIdKey) {
+                                runningId += 1;
+                                lastIdKey = idKey;
+                              }
+                              const stripeKey = (isCabinetryPartType(row.partType) || isDrawerRow)
+                                ? String((row as CncDisplayRow).sourceRowId || row.id)
+                                : String(row.id);
+                              if (stripeKey !== lastStripeKey) {
+                                stripeIndex += 1;
+                                lastStripeKey = stripeKey;
+                              }
+                              const prevIdKey = prevRow
+                                ? ((isCabinetryPartType(prevRow.partType) || isDrawerPartType(prevRow.partType))
+                                    ? String((prevRow as CncDisplayRow).sourceRowId || prevRow.id)
+                                    : String(prevRow.id))
+                                : "";
+                              const isContinuationOfSameCabinetry =
+                                Boolean(prevRow) &&
+                                isCabinetryPartType(row.partType) &&
+                                isCabinetryPartType(String(prevRow?.partType || "")) &&
+                                idKey === prevIdKey;
+                              const isContinuationOfSameDrawer =
+                                Boolean(prevRow) &&
+                                isDrawerRow &&
+                                isDrawerPartType(String(prevRow?.partType || "")) &&
+                                drawerSourceKey === String((prevRow as CncDisplayRow).sourceRowId || prevRow?.id || "");
+                              const isFirstDrawerRowOfGroup = isDrawerRow && !isContinuationOfSameDrawer;
+                              let drawerRowSpan = 1;
+                              if (isFirstDrawerRowOfGroup) {
+                                for (let look = idx + 1; look < group.rows.length; look += 1) {
+                                  const nextRow = group.rows[look];
+                                  if (!isDrawerPartType(String(nextRow.partType || ""))) break;
+                                  const nextKey = String((nextRow as CncDisplayRow).sourceRowId || nextRow.id);
+                                  if (nextKey !== drawerSourceKey) break;
+                                  drawerRowSpan += 1;
+                                }
+                              }
+                              const hideIdentityCells = isCabinetryShelfRow || (isDrawerRow && !isFirstDrawerRowOfGroup);
+                              const identityRowSpan = isCabinetryMainRow ? 3 : (isFirstDrawerRowOfGroup ? drawerRowSpan : 1);
+                              const hidePartTypeCell = isDrawerRow && !isFirstDrawerRowOfGroup;
+                              const partTypeRowSpan = isFirstDrawerRowOfGroup ? drawerRowSpan : 1;
                               const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                               const partText = isLightHex(partColor) ? "#111827" : "#F8FAFC";
+                              const rowBoardHasGrain = boardGrainFor(String(row.board || "").trim());
+                              const isHeightGrainMatch =
+                                rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.height ?? ""), "height");
+                              const isWidthGrainMatch =
+                                rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.width ?? ""), "width");
+                              const isDepthGrainMatch =
+                                rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.depth ?? ""), "depth");
                               return (
                                 <tr
                                   key={`${group.boardKey}_${row.id}_${idx}`}
-                                  className="border-t border-[#E4E7EE]"
-                                  style={{ backgroundColor: idx % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
+                                  className={(isContinuationOfSameCabinetry || isContinuationOfSameDrawer) ? "border-0" : "border-t border-[#E4E7EE]"}
+                                  style={{ backgroundColor: stripeIndex % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
                                 >
-                                  <td className="px-2 py-[5px] text-center text-[#334155]">{runningId}</td>
-                                  <td className="px-2 py-[5px] text-[#334155]">{row.room || ""}</td>
-                                  <td className="w-[75px] px-2 py-[5px]">
-                                    <span
-                                      className="inline-flex max-w-[71px] truncate rounded-[7px] px-2 py-[1px] text-[11px] font-semibold"
-                                      style={{ backgroundColor: partColor, color: partText }}
+                                  {!hideIdentityCells && (
+                                    <td
+                                      rowSpan={identityRowSpan}
+                                      className="px-2 py-[5px] text-center align-middle text-[#334155]"
                                     >
-                                      {row.partType || ""}
-                                    </span>
-                                  </td>
+                                      {runningId}
+                                    </td>
+                                  )}
+                                  {!hideIdentityCells && (
+                                    <td
+                                      rowSpan={identityRowSpan}
+                                      className="px-2 py-[5px] align-middle text-[#334155]"
+                                    >
+                                      {row.room || ""}
+                                    </td>
+                                  )}
+                                  {!hidePartTypeCell && (
+                                    <td rowSpan={partTypeRowSpan} className="w-[75px] px-2 py-[5px] align-middle">
+                                      {partTypeForDisplay ? (
+                                        <span
+                                          className="inline-flex max-w-[71px] truncate rounded-[7px] px-2 py-[1px] text-[11px] font-semibold"
+                                          style={{ backgroundColor: partColor, color: partText }}
+                                        >
+                                          {partTypeForDisplay}
+                                        </span>
+                                      ) : null}
+                                    </td>
+                                  )}
                                   <td className="px-2 py-[5px] font-semibold text-[#0F172A]">{row.name || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]">{row.height || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]">{row.width || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]">{row.depth || ""}</td>
+                                  <td className="px-2 py-[5px] text-center text-[#334155]" style={isHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.height || ""}</td>
+                                  <td className="px-2 py-[5px] text-center text-[#334155]" style={isWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.width || ""}</td>
+                                  <td className="px-2 py-[5px] text-center text-[#334155]" style={isDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.depth || ""}</td>
                                   <td className="px-2 py-[5px] text-center font-bold text-[#0F172A]">{row.quantity || ""}</td>
                                   <td className="px-2 py-[5px] text-center text-[#334155]">{joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || ""}</td>
                                   {showCncGrainColumn && (
                                     <td className="px-2 py-[5px] text-center text-[#334155]">{row.grainValue || (row.grain ? "Yes" : "")}</td>
                                   )}
-                                  <td className="px-2 py-[5px] text-[#334155]">{row.information || ""}</td>
+                                  <td className="px-2 py-[5px] text-[#334155]">
+                                    {informationLinesFromValue(String(row.information || "")).map((line, infoIdx) => (
+                                      <div key={`cnc-info-${row.id}-${idx}-${infoIdx}`}>{line}</div>
+                                    ))}
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -8754,8 +11110,176 @@ export default function ProjectDetailsPage() {
                         </table>
                       </div>
                     </section>
-                  ));
+                  );
+                  });
                 })()}
+                {cncCabinetCards.length > 0 && (
+                  <section className="rounded-[9px] border border-[#111111] bg-[#111111]">
+                    <div className="overflow-hidden rounded-[8px]">
+                    <div className="border-b border-[#111111] bg-[#111111] px-3 py-2 text-[16px] font-semibold text-white">
+                      <span>Cabinets</span>
+                      {productionForm.boardTypes.some((row) => Boolean(row.grain)) && (
+                        <span className="float-right whitespace-nowrap text-[12px] font-normal text-white">
+                          <span className="underline font-bold">Underlined</span> Dimension has grain along it.
+                        </span>
+                      )}
+                    </div>
+                    <div className="divide-y divide-[#111111] bg-white">
+                    {cncCabinetCards.map(({ row, displayId, boardLabel, sizeLabel, fixedShelf, adjustableShelf, infoLines, cabinetryPieces, widthMm, heightMm, depthMm, thicknessMm }, idx) => {
+                      const renderDimsWithGrain = (
+                        height: string,
+                        width: string,
+                        depth: string,
+                        grainValue: string,
+                      ) => {
+                        const h = String(height || "").trim();
+                        const w = String(width || "").trim();
+                        const d = String(depth || "").trim();
+                        const parts: Array<{ key: "height" | "width" | "depth"; value: string }> = [];
+                        if (h) parts.push({ key: "height", value: h });
+                        if (w) parts.push({ key: "width", value: w });
+                        if (d) parts.push({ key: "depth", value: d });
+                        if (parts.length === 0) return "";
+                        return (
+                          <>
+                            {parts.map((part, partIdx) => (
+                              <span key={`dim_${part.key}_${partIdx}`}>
+                                {partIdx > 0 ? " x " : ""}
+                                <span
+                                  style={
+                                    matchesGrainDimension(grainValue, part.value, part.key)
+                                      ? { fontWeight: 700, textDecoration: "underline" }
+                                      : undefined
+                                  }
+                                >
+                                  {part.value}
+                                </span>
+                              </span>
+                            ))}
+                          </>
+                        );
+                      };
+                      const renderPieceDimsWithQty = (piece: CabinetryDerivedPiece | undefined, qtyMultiplier = 1) => {
+                        if (!piece) return "";
+                        const qty = Number.parseInt(String(piece.quantity || "0"), 10) || 0;
+                        const finalQty = qty > 0 ? qty * Math.max(1, qtyMultiplier) : 0;
+                        const pieceGrainValue = cabinetryPieceGrainValue(row, piece);
+                        return (
+                          <>
+                            {renderDimsWithGrain(piece.height, piece.width, piece.depth, pieceGrainValue)}
+                            {finalQty > 0 ? ` (x${finalQty})` : ""}
+                          </>
+                        );
+                      };
+                      return (
+                      <article
+                        key={`cnc_cab_card_${row.id}`}
+                        className="bg-white"
+                        style={{ backgroundColor: idx % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
+                      >
+                          <div className="grid grid-cols-[80px_1fr] border-b border-[#E4E7EE] text-[12px]">
+                            <p className="border-r border-[#E4E7EE] px-3 py-2 text-[#0F172A]">{displayId}</p>
+                            <p className="px-3 py-2 font-semibold text-[#0F172A]">{row.name || "-"}</p>
+                          </div>
+                          <div className="flex items-stretch gap-3 px-3">
+                            <CabinetIsoPreview
+                              widthMm={widthMm}
+                              heightMm={heightMm}
+                              depthMm={depthMm}
+                              thicknessMm={thicknessMm}
+                              fixedShelfCount={fixedShelf}
+                              adjustableShelfCount={adjustableShelf}
+                            />
+                            <div className="grid min-w-0 flex-1 self-stretch grid-cols-2">
+                              <div className="min-w-0 self-stretch border-l border-[#E4E7EE] pt-2 pb-0 text-[12px] text-[#334155]">
+                                <div className="grid grid-cols-[120px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Material</p>
+                                  <p>{boardLabel || "-"}</p>
+                                </div>
+                                <div className="grid grid-cols-[120px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Quantity</p>
+                                  <p>{row.quantity || ""}</p>
+                                </div>
+                                <div className="grid grid-cols-[120px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">
+                                    Size <span className="italic">(H x W x D)</span>
+                                  </p>
+                                  <p>{renderDimsWithGrain(row.height, row.width, row.depth, String(row.grainValue ?? "")) || sizeLabel || "-"}</p>
+                                </div>
+                                <div className="grid grid-cols-[120px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">{fixedShelf === 1 ? "Fixed Shelf" : "Fixed Shelves"}</p>
+                                  <p>
+                                    {fixedShelf > 0
+                                      ? (
+                                        <>
+                                          {fixedShelf}{" "}
+                                          <span className="italic">
+                                            ({String(normalizeDrillingValue(row.fixedShelfDrilling || "No")).toLowerCase()} drilling)
+                                          </span>
+                                        </>
+                                      )
+                                      : ""}
+                                  </p>
+                                </div>
+                                <div className="grid grid-cols-[120px_1fr] items-start px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">{adjustableShelf === 1 ? "Adjustable Shelf" : "Adjustable Shelves"}</p>
+                                  <p>
+                                    {adjustableShelf > 0
+                                      ? (
+                                        <>
+                                          {adjustableShelf}{" "}
+                                          <span className="italic">
+                                            ({String(normalizeDrillingValue(row.adjustableShelfDrilling || "No")).toLowerCase()} drilling)
+                                          </span>
+                                        </>
+                                      )
+                                      : ""}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="min-w-0 self-stretch border-l border-[#E4E7EE] pt-2 pb-0 text-[12px] text-[#334155]">
+                                <div className="grid grid-cols-[160px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Top / Bottom</p>
+                                  <p>{renderPieceDimsWithQty(cabinetryPieces.top ?? cabinetryPieces.bottom, 2)}</p>
+                                </div>
+                                <div className="grid grid-cols-[160px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Left / Right Side</p>
+                                  <p>{renderPieceDimsWithQty(cabinetryPieces.left_side ?? cabinetryPieces.right_side, 2)}</p>
+                                </div>
+                                <div className="grid grid-cols-[160px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Back</p>
+                                  <p>{renderPieceDimsWithQty(cabinetryPieces.back)}</p>
+                                </div>
+                                <div className="grid grid-cols-[160px_1fr] items-start border-b border-[#E4E7EE] px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Fixed Shelf</p>
+                                  <p>{renderPieceDimsWithQty(cabinetryPieces.fixed_shelf)}</p>
+                                </div>
+                                <div className="grid grid-cols-[160px_1fr] items-start px-3 py-1">
+                                  <p className="font-bold text-[#0F172A]">Adjustable Shelf</p>
+                                  <p>{renderPieceDimsWithQty(cabinetryPieces.adjustable_shelf)}</p>
+                                </div>
+                              </div>
+                              <div className="col-span-2 min-w-0 border-l border-t border-[#E4E7EE] px-3 py-2 text-[12px] text-[#334155]">
+                                <div className="grid grid-cols-[120px_1fr] items-start">
+                                  <p className="font-bold text-[#0F172A]">Information</p>
+                                  <div className="space-y-1">
+                                    {infoLines.map((line, idx) => (
+                                      <p key={`cnc_cab_info_inline_${row.id}_${idx}`} className="min-h-[16px]">
+                                        {line}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                      </article>
+                    );
+                    })}
+                    </div>
+                    </div>
+                  </section>
+                )}
               </div>
             </section>
             <section
@@ -10547,7 +13071,7 @@ export default function ProjectDetailsPage() {
 
               <div
                 className={
-                  productionNav === "cutlist"
+                  productionNav === "cutlist" || productionNav === "order"
                     ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
                     : "isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
                 }
@@ -10748,7 +13272,7 @@ export default function ProjectDetailsPage() {
                                 <div style={cutlistEntryCellStyle("grain")}>
                                   <BoardPillDropdown
                                     value={String(cutlistEntry.grainValue ?? "")}
-                                    options={grainDimensionOptions(cutlistEntry.height, cutlistEntry.width, cutlistEntry.depth)}
+                                    options={grainDimensionOptionsForRow(cutlistEntry)}
                                     disabled={productionReadOnly}
                                     bg={activeCutlistEntryFieldBg}
                                     border={activeCutlistEntryFieldBorder}
@@ -10991,7 +13515,7 @@ export default function ProjectDetailsPage() {
                                             {!rowBoardAllowsGrain ? "" : editing ? (
                                               <BoardPillDropdown
                                                 value={editingCellValue}
-                                                options={grainDimensionOptions(row.height, row.width, row.depth)}
+                                                options={grainDimensionOptionsForRow(row)}
                                                 disabled={productionReadOnly}
                                                 bg="#FFFFFF"
                                                 border="#94A3B8"
@@ -11245,9 +13769,9 @@ export default function ProjectDetailsPage() {
                                       }
                                       const value = String(row[col.key] ?? "");
                                       const isGrainMatchedDimension =
-                                        (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height)) ||
-                                        (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width)) ||
-                                        (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth));
+                                        (key === "height" && matchesGrainDimension(String(row.grainValue ?? ""), row.height, "height")) ||
+                                        (key === "width" && matchesGrainDimension(String(row.grainValue ?? ""), row.width, "width")) ||
+                                        (key === "depth" && matchesGrainDimension(String(row.grainValue ?? ""), row.depth, "depth"));
                                       const drawerTextboxLift =
                                         isDrawerPartType(row.partType) && (key === "width" || key === "depth" || key === "quantity");
                                       return (
@@ -11475,6 +13999,67 @@ export default function ProjectDetailsPage() {
                       </div>
                     </section>
                   </div>
+                ) : productionNav === "order" ? (
+                  <div className="flex h-full min-h-[calc(100dvh-235px)] flex-col gap-3">
+                    <div className="sticky top-0 z-[20] flex h-[56px] items-center justify-between border border-[#D7DEE8] bg-white px-4">
+                      <div className="inline-flex items-center gap-2">
+                        <ShoppingCart size={15} className="text-[#12345B]" />
+                        <p className="text-[14px] font-bold uppercase tracking-[1px] text-[#12345B]">Order</p>
+                        <span className="text-[12px] font-bold text-[#6B7280]">|</span>
+                        <p className="text-[13px] font-bold text-[#334155]">{project?.name || "Project"}</p>
+                      </div>
+                      <div className="inline-flex items-center gap-4 text-[12px] font-semibold text-[#475569]">
+                        <span>{formatPartCount(cutlistRows.length)}</span>
+                        <span>{orderTotalSheetsRequired} Sheets Required</span>
+                      </div>
+                    </div>
+
+                    <div className="grid min-h-0 flex-1 gap-3">
+                      <section className="min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                        <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] bg-[#F8FAFC] px-4">
+                          <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Boards To Order</p>
+                          <span className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#3A506F]">
+                            {orderBoardSummary.length} Rows
+                          </span>
+                        </div>
+                        <div className="max-h-[calc(100dvh-390px)] overflow-auto">
+                          <table className="w-full text-left text-[12px]">
+                            <thead className="bg-[#FDF1C9] text-[#0F172A]">
+                              <tr>
+                                <th className="px-3 py-2">Board</th>
+                                <th className="px-2 py-2 text-center">Size</th>
+                                <th className="px-2 py-2 text-center">Thickness</th>
+                                <th className="px-2 py-2 text-center">Finish</th>
+                                <th className="px-2 py-2 text-center">Sheets</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {orderBoardSummary.map((row, idx) => (
+                                <tr key={`order_board_${row.id}`} className={`${idx % 2 ? "bg-[#F8FAFD]" : "bg-white"} border-t border-[#E4E7EE]`}>
+                                  <td className="px-3 py-[7px] font-semibold text-[#1F2937]">{row.boardLabel}</td>
+                                  <td className="px-2 py-[7px] text-center text-[#334155]">{row.boardSize}</td>
+                                  <td className="px-2 py-[7px] text-center text-[#334155]">{row.thickness}</td>
+                                  <td className="px-2 py-[7px] text-center text-[#334155]">{row.finish}</td>
+                                  <td className="px-2 py-[7px] text-center">
+                                    <span className="inline-flex min-w-[28px] justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] font-bold text-[#2F4E68]">
+                                      {row.sheetsRequired}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                              {orderBoardSummary.length === 0 && (
+                                <tr>
+                                  <td colSpan={5} className="px-3 py-8 text-center text-[12px] font-semibold text-[#64748B]">
+                                    No board order data yet.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
                 ) : (
                   <>
                 <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
@@ -11617,7 +14202,7 @@ export default function ProjectDetailsPage() {
                     <button disabled={productionReadOnly} onClick={() => void onAddBoardRow()} className="text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55">+ Add Board</button>
                   </div>
                   <div className="p-3 text-[12px]">
-                    <div className="grid grid-cols-[24px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2 text-[11px] font-bold text-[#8A97A8]">
+                    <div className="grid grid-cols-[28px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2 text-[11px] font-bold text-[#8A97A8]">
                       <p></p>
                       <p>Colour</p>
                       <p className="text-center">Thickness</p>
@@ -11631,7 +14216,7 @@ export default function ProjectDetailsPage() {
                     </div>
                     <div className="mt-2 space-y-2">
                       {productionForm.boardTypes.map((row) => (
-                        <div key={row.id} className="grid grid-cols-[24px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2">
+                        <div key={row.id} className="grid grid-cols-[28px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2">
                           {(() => {
                             const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
                             return (
@@ -11639,9 +14224,9 @@ export default function ProjectDetailsPage() {
                           <button
                             disabled={productionReadOnly}
                             onClick={() => void onRemoveBoardRow(row.id)}
-                            className="h-6 w-6 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
                           >
-                            x
+                            <X size={13} className="mx-auto" strokeWidth={2.8} />
                           </button>
                           <div className="relative">
                             <input
@@ -11753,7 +14338,9 @@ export default function ProjectDetailsPage() {
                             })}
                           </select>
                           <p className="text-center text-[12px] font-semibold text-[#344054]">{requiredSheets}</p>
-                          <p className="text-center text-[12px] font-semibold text-[#344054]">{row.edgetape}</p>
+                          <p className="text-center text-[12px] font-semibold text-[#344054]">
+                            {requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape}
+                          </p>
                               </>
                             );
                           })()}

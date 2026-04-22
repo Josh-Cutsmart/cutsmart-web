@@ -9,6 +9,7 @@ import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
 
 export default function HomePage() {
   const router = useRouter();
@@ -21,17 +22,16 @@ export default function HomePage() {
   const [registerFormMounted, setRegisterFormMounted] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberOnDevice, setRememberOnDevice] = useState(false);
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerMobile, setRegisterMobile] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState("");
-  const [registerUserColor, setRegisterUserColor] = useState("#2F6BFF");
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRegisterSubmitting, setIsRegisterSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
-  const [registerColorInputEl, setRegisterColorInputEl] = useState<HTMLInputElement | null>(null);
   const registerPasswordTimerRef = useRef<number | null>(null);
   const loginHideTimerRef = useRef<number | null>(null);
   const registerHideTimerRef = useRef<number | null>(null);
@@ -84,7 +84,7 @@ export default function HomePage() {
     setIsSubmitting(true);
     try {
       if (hasFirebaseConfig) {
-        await signIn(email, password);
+        await signIn(email, password, rememberOnDevice);
         const currentUid = String(auth?.currentUser?.uid || "").trim();
         if (currentUid) {
           const preferredCompanyId =
@@ -134,7 +134,7 @@ export default function HomePage() {
           await saveUserProfilePatchDetailed(uid, "", {
             email: String(registerEmail || "").trim(),
             mobile: String(registerMobile || "").trim(),
-            userColor: String(registerUserColor || "").trim(),
+            userColor: DEFAULT_REGISTER_USER_COLOR,
             displayName: fallbackName || "CutSmart User",
           });
         }
@@ -154,7 +154,7 @@ export default function HomePage() {
         }
       } else {
         signInDemo("owner");
-        setUserColorLocal(String(registerUserColor || "").trim());
+        setUserColorLocal(DEFAULT_REGISTER_USER_COLOR);
       }
       router.push("/dashboard");
     } catch {
@@ -214,15 +214,6 @@ export default function HomePage() {
       if (registerHideTimerRef.current) window.clearTimeout(registerHideTimerRef.current);
     };
   }, []);
-  const safeRegisterColor = /^#[0-9A-Fa-f]{6}$/.test(registerUserColor) ? registerUserColor : "#2F6BFF";
-  const registerColorText =
-    parseInt(safeRegisterColor.slice(1, 3), 16) * 0.299 +
-      parseInt(safeRegisterColor.slice(3, 5), 16) * 0.587 +
-      parseInt(safeRegisterColor.slice(5, 7), 16) * 0.114 >
-    160
-      ? "#111827"
-      : "#FFFFFF";
-
   return (
     <div
       className="relative flex min-h-screen flex-row overflow-hidden"
@@ -316,6 +307,15 @@ export default function HomePage() {
                   required={hasFirebaseConfig}
                   className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                 />
+                <label className="flex items-center justify-start gap-2 pl-[2px] text-left text-[13px] font-semibold text-[#0F172A]">
+                  <input
+                    type="checkbox"
+                    checked={rememberOnDevice}
+                    onChange={(e) => setRememberOnDevice(e.target.checked)}
+                    className="h-4 w-4 rounded border border-[#94A3B8]"
+                  />
+                  <span>Remember me on this device</span>
+                </label>
                 {error && <p className="text-[12px] font-semibold text-[#D32F2F]">{error}</p>}
                 <div className="grid grid-cols-1 gap-2 pt-1">
                   <button
@@ -323,7 +323,7 @@ export default function HomePage() {
                     disabled={isSubmitting}
                     className="h-[50px] w-full rounded-[12px] border border-[#2F6BFF] bg-[#2F6BFF] text-[14px] font-bold text-white disabled:opacity-60"
                   >
-                    {isSubmitting ? "Signing..." : "Sign In"}
+                {isSubmitting ? "Signing in..." : "Sign In"}
                   </button>
                   <button
                     type="button"
@@ -446,23 +446,6 @@ export default function HomePage() {
                   required={hasFirebaseConfig}
                   className="h-[50px] w-full min-w-0 rounded-[12px] border border-[#D7DEE8] bg-white px-5 text-[15px] text-[#12151A] outline-none focus:border-[#7EB0FF]"
                 />
-                <div
-                  className="flex h-[50px] items-center justify-between gap-3 rounded-[12px] border border-[#D7DEE8] px-5"
-                  style={{ backgroundColor: safeRegisterColor }}
-                  onClick={() => registerColorInputEl?.click()}
-                >
-                  <p className="whitespace-nowrap text-[15px] font-semibold" style={{ color: registerColorText }}>
-                    Icon Colour Picker
-                  </p>
-                  <input
-                    ref={setRegisterColorInputEl}
-                    type="color"
-                    value={safeRegisterColor}
-                    onChange={(e) => setRegisterUserColor(e.target.value)}
-                    className="pointer-events-none absolute h-0 w-0 opacity-0"
-                    title="Choose Icon Colour"
-                  />
-                </div>
                 {registerError && <p className="text-[12px] font-semibold text-[#D32F2F]">{registerError}</p>}
                 <div className="grid grid-cols-1 gap-2 pt-1">
                   <button

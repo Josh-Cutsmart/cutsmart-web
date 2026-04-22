@@ -9,7 +9,10 @@ import {
   type ReactNode,
 } from "react";
 import {
+  browserLocalPersistence,
+  browserSessionPersistence,
   onAuthStateChanged,
+  setPersistence,
   signInWithEmailAndPassword,
   signOut,
   type User,
@@ -22,7 +25,7 @@ interface AuthContextValue {
   user: AppUser | null;
   isLoading: boolean;
   isDemoMode: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string, rememberOnDevice?: boolean) => Promise<void>;
   signInDemo: (role: UserRole) => void;
   logout: () => Promise<void>;
   setUserColorLocal: (color: string) => void;
@@ -149,10 +152,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       isLoading,
       isDemoMode,
-      signIn: async (email, password) => {
+      signIn: async (email, password, rememberOnDevice = false) => {
         if (!auth) {
           throw new Error("Firebase is not configured.");
         }
+        await setPersistence(auth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
         await signInWithEmailAndPassword(auth, email, password);
       },
       signInDemo: (role) => {
