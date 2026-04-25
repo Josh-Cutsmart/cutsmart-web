@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bell, Building2, CircleDollarSign, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { AppShell } from "@/components/app-shell";
@@ -20,6 +21,7 @@ import {
   type UserNotificationRow,
 } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
+import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 
 type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
@@ -34,7 +36,7 @@ type TagUsageRow = { value: string; count: string };
 type ItemCategoryItemRow = { name: string; subcategory: string; price: string; markupPercent: string };
 type ItemCategoryRow = { name: string; color: string; subcategories: string; items: ItemCategoryItemRow[] };
 type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
-type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean };
+type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; grain: boolean };
 type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
 type PartTypeRow = {
   name: string;
@@ -47,7 +49,8 @@ type PartTypeRow = {
   inCutlists: boolean;
   inNesting: boolean;
 };
-type QuoteExtraRow = { name: string; price: string; defaultIncluded: boolean; templateContainerId: string; templatePlaceholderKey: string };
+type QuoteExtraRow = { id: string; name: string; price: string; defaultIncluded: boolean; templateContainerId: string; templateBlockId: string; templatePlaceholderKey: string };
+type QuoteHelperRow = { id: string; content: string };
 type DiscountTierRow = { low: string; high: string; discount: string };
 type HardwareRow = { name: string; color: string; default: boolean; drawersJson: string; hingesJson: string; otherJson: string };
 type BackupTemplateSettings = {
@@ -94,17 +97,6 @@ const deletedRetentionOptions: Array<{ label: string; days: string }> = [
 const cutlistColumnDefaults = ["Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
 const autoClashLeftOptions = ["1L", "2L"];
 const autoClashRightOptions = ["1S", "2S"];
-
-const defaultQuoteBaseLayoutHtml =
-  "<p><strong>Project:</strong> {{project_name}}</p>" +
-  "<p><strong>Client:</strong> {{client_name}}</p>" +
-  "<p><strong>Address:</strong> {{client_address}}</p>" +
-  "<p><strong>Quote Date:</strong> {{quote_generated_date}}</p>" +
-  "<p>Dear {{client_name}},</p>" +
-  "<p>Thank you for the opportunity to quote this project.</p>" +
-  "<p><strong>Total:</strong> {{total_price}}</p>" +
-  "<p><strong>Promotional Discount:</strong> {{promotional_discount_amount}}</p>" +
-  "<p>Kind regards, {{project_creator}}</p>";
 
 const sections: Array<{ key: SettingsSection; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { key: "company", label: "Company", icon: Building2 },
@@ -384,6 +376,7 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
               ? [{ sheetSize: fallbackSheetSize, pricePerSheet: fallbackPrice }]
               : [],
         showInSales: Boolean(row.showInSales ?? true),
+        grain: Boolean(row.grain ?? row.isGrain ?? false),
       };
     })
     .filter((r) => r.name);
@@ -452,13 +445,16 @@ function normalizeQuoteExtras(raw: unknown): QuoteExtraRow[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((item) => item && typeof item === "object")
-    .map((item) => {
+    .map((item, idx) => {
       const row = item as Record<string, unknown>;
+      const name = toStr(row.name);
       return {
-        name: toStr(row.name),
+        id: toStr(row.id, `quote_extra_${(name || "row").toLowerCase().replace(/[^a-z0-9]+/g, "_") || "row"}_${idx + 1}`),
+        name,
         price: toStr(row.price),
         defaultIncluded: Boolean(row.defaultIncluded ?? row.default),
         templateContainerId: toStr(row.templateContainerId),
+        templateBlockId: toStr(row.templateBlockId),
         templatePlaceholderKey: toStr(row.templatePlaceholderKey),
       };
     })
@@ -496,6 +492,186 @@ function normalizeHardware(raw: unknown): HardwareRow[] {
     })
     .filter((r) => r.name);
   return sanitizeHardwareRows(rows);
+}
+
+function escapeQuoteRichTextHtml(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function sanitizeAllowedQuoteInlineStyle(styleText: string): string {
+  const allowed: string[] = [];
+  for (const rawPart of String(styleText || "").split(";")) {
+    const [rawName, ...rawValueParts] = rawPart.split(":");
+    const name = String(rawName || "").trim().toLowerCase();
+    const value = rawValueParts.join(":").trim();
+    if (!name || !value) continue;
+    if (
+      name === "color" &&
+      (/^#[0-9a-fA-F]{3,8}$/.test(value) ||
+        /^[a-zA-Z]+$/.test(value) ||
+        /^rgba?\([\d\s.,%]+\)$/i.test(value))
+    ) {
+      allowed.push(`color:${value}`);
+      continue;
+    }
+    if (name === "font-family" && /^[a-zA-Z0-9\s,'"()-]+$/.test(value)) {
+      allowed.push(`font-family:${value}`);
+      continue;
+    }
+    if (name === "font-size" && /^\d+(px|pt|em|rem|%)$/.test(value)) {
+      allowed.push(`font-size:${value}`);
+      continue;
+    }
+    if (name === "text-align" && /^(left|center|right|justify)$/i.test(value)) {
+      allowed.push(`text-align:${value.toLowerCase()}`);
+    }
+  }
+  return allowed.join("; ");
+}
+
+function sanitizeQuoteRichTextMarkup(value: string): string {
+  if (typeof document === "undefined") {
+    return escapeQuoteRichTextHtml(value)
+      .replace(/\r\n/g, "\n")
+      .split(/\n{2,}/)
+      .map((paragraph) => `<p>${paragraph.replace(/\n/g, "<br />")}</p>`)
+      .join("");
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = String(value || "");
+
+  const renderNode = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeQuoteRichTextHtml(node.textContent || "").replace(/\r?\n/g, "<br />");
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    const children = Array.from(element.childNodes).map(renderNode).join("");
+
+    if (tag === "br") return "<br />";
+    if (tag === "div" || tag === "p") {
+      const safeStyle = sanitizeAllowedQuoteInlineStyle(element.getAttribute("style") || "");
+      return safeStyle
+        ? `<p style="${safeStyle}">${children || "<br />"}</p>`
+        : `<p>${children || "<br />"}</p>`;
+    }
+    if (tag === "strong" || tag === "b") return `<strong>${children}</strong>`;
+    if (tag === "em" || tag === "i") return `<em>${children}</em>`;
+    if (tag === "u") return `<u>${children}</u>`;
+    if (tag === "s" || tag === "strike" || tag === "del") return `<s>${children}</s>`;
+    if (tag === "span" || tag === "font") {
+      const rawStyle =
+        tag === "font"
+          ? [
+              element.getAttribute("color") ? `color:${element.getAttribute("color")}` : "",
+              element.getAttribute("face") ? `font-family:${element.getAttribute("face")}` : "",
+            ]
+              .filter(Boolean)
+              .join("; ")
+          : (element.getAttribute("style") || "");
+      const safeStyle = sanitizeAllowedQuoteInlineStyle(rawStyle);
+      return safeStyle ? `<span style="${safeStyle}">${children}</span>` : children;
+    }
+    return children;
+  };
+
+  return Array.from(template.content.childNodes)
+    .map(renderNode)
+    .join("")
+    .replace(/(?:<p><br \/><\/p>){3,}/gi, "<p><br /></p><p><br /></p>");
+}
+
+function renderQuoteRichTextHtml(value: string): string {
+  return sanitizeQuoteRichTextMarkup(value);
+}
+
+function applyQuoteRichTextCommand(
+  editor: HTMLDivElement | null,
+  command: "bold" | "italic" | "underline" | "strikeThrough",
+  onChange: (nextValue: string) => void,
+) {
+  if (!editor || typeof document === "undefined") return;
+  editor.focus();
+  document.execCommand(command);
+  onChange(sanitizeQuoteRichTextMarkup(editor.innerHTML));
+}
+
+function normalizeQuoteHelpers(raw: unknown): QuoteHelperRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item, idx) => {
+      const row = item as Record<string, unknown>;
+      const content = sanitizeQuoteRichTextMarkup(String(row.content ?? ""));
+      return {
+        id: toStr(row.id, `quote_helper_${idx + 1}`),
+        content,
+      };
+    })
+    .filter((row) => row.content);
+}
+
+function normalizeQuoteTemplateContainers(raw: unknown): Array<{ id: string; title: string }> {
+  if (!raw || typeof raw !== "object") return [];
+  const row = raw as Record<string, unknown>;
+  const containers = Array.isArray(row.containers) ? row.containers : [];
+  if (containers.length) {
+    return containers
+      .map((item, idx) => {
+        if (!item || typeof item !== "object") return null;
+        const container = item as Record<string, unknown>;
+        const id = toStr(container.id);
+        if (!id) return null;
+        return {
+          id,
+          title: toStr(container.title, `Container ${idx + 1}`),
+        };
+      })
+      .filter(Boolean) as Array<{ id: string; title: string }>;
+  }
+  const sections = Array.isArray(row.sections) ? row.sections : [];
+  return sections
+    .map((item, idx) => {
+      if (!item || typeof item !== "object") return null;
+      const section = item as Record<string, unknown>;
+      return {
+        id: toStr(section.id, `legacy_container_${idx + 1}`),
+        title: toStr(section.title, `Container ${idx + 1}`),
+      };
+    })
+    .filter(Boolean) as Array<{ id: string; title: string }>;
+}
+
+function normalizeQuoteTemplateBlocks(raw: unknown): Array<{ id: string; label: string }> {
+  if (!raw || typeof raw !== "object") return [];
+  const row = raw as Record<string, unknown>;
+  const containers = Array.isArray(row.containers) ? row.containers : [];
+  const out: Array<{ id: string; label: string }> = [];
+  containers.forEach((containerItem, containerIdx) => {
+    if (!containerItem || typeof containerItem !== "object") return;
+    const container = containerItem as Record<string, unknown>;
+    const columns = Array.isArray(container.columns) ? container.columns : [];
+    columns.forEach((columnItem) => {
+      if (!columnItem || typeof columnItem !== "object") return;
+      const column = columnItem as Record<string, unknown>;
+      const blocks = Array.isArray(column.blocks) ? column.blocks : [];
+      blocks.forEach((blockItem, blockIdx) => {
+        if (!blockItem || typeof blockItem !== "object") return;
+        const block = blockItem as Record<string, unknown>;
+        const id = toStr(block.id);
+        if (!id) return;
+        const label = toStr(block.label, `Element ${containerIdx + 1}.${blockIdx + 1}`);
+        out.push({ id, label });
+      });
+    });
+  });
+  return out;
 }
 
 function parseJsonList(value: string): unknown[] {
@@ -659,6 +835,7 @@ function writeDrawerField(item: Record<string, unknown>, field: string, value: s
 
 export default function CompanySettingsPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [active, setActive] = useState<SettingsSection>("company");
   const [search, setSearch] = useState("");
   const [company, setCompany] = useState<Record<string, unknown> | null>(null);
@@ -684,6 +861,8 @@ export default function CompanySettingsPage() {
   const [dashboardLegend, setDashboardLegend] = useState<DashboardLegendRow[]>([]);
   const [legendDragIndex, setLegendDragIndex] = useState<number | null>(null);
   const [legendDragOverIndex, setLegendDragOverIndex] = useState<number | null>(null);
+  const [statusDragIndex, setStatusDragIndex] = useState<number | null>(null);
+  const [statusDragOverIndex, setStatusDragOverIndex] = useState<number | null>(null);
   const [projectTagUsage, setProjectTagUsage] = useState<TagUsageRow[]>([]);
   const [boardColourMemory, setBoardColourMemory] = useState<BoardColourMemoryRow[]>([]);
   const [boardThicknesses, setBoardThicknesses] = useState<string[]>(["16", "18"]);
@@ -700,12 +879,16 @@ export default function CompanySettingsPage() {
   const [jobTypeDragIndex, setJobTypeDragIndex] = useState<number | null>(null);
   const [jobTypeDragOverIndex, setJobTypeDragOverIndex] = useState<number | null>(null);
   const [quoteExtras, setQuoteExtras] = useState<QuoteExtraRow[]>([]);
+  const [quoteHelpers, setQuoteHelpers] = useState<QuoteHelperRow[]>([]);
   const [quoteExtraDragIndex, setQuoteExtraDragIndex] = useState<number | null>(null);
   const [quoteExtraDragOverIndex, setQuoteExtraDragOverIndex] = useState<number | null>(null);
+  const [quoteHelperDragIndex, setQuoteHelperDragIndex] = useState<number | null>(null);
+  const [quoteHelperDragOverIndex, setQuoteHelperDragOverIndex] = useState<number | null>(null);
   const [discountTiers, setDiscountTiers] = useState<DiscountTierRow[]>([]);
   const [discountTierDragIndex, setDiscountTierDragIndex] = useState<number | null>(null);
   const [discountTierDragOverIndex, setDiscountTierDragOverIndex] = useState<number | null>(null);
   const [minusOffQuoteTotal, setMinusOffQuoteTotal] = useState(false);
+  const quoteHelperRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hardware, setHardware] = useState<HardwareRow[]>([]);
   const [hardwareExpanded, setHardwareExpanded] = useState<Record<number, boolean>>({});
   const [hardwareActiveTab, setHardwareActiveTab] = useState<Record<number, "drawers" | "hinges" | "other">>({});
@@ -729,8 +912,6 @@ export default function CompanySettingsPage() {
   const [edgebandingRoundNearestMeters, setEdgebandingRoundNearestMeters] = useState("");
   const [unlockSuffix, setUnlockSuffix] = useState("");
   const [unlockHours, setUnlockHours] = useState("6");
-  const [quoteBaseLayoutHtml, setQuoteBaseLayoutHtml] = useState(defaultQuoteBaseLayoutHtml);
-  const [quoteBaseLayoutVersion, setQuoteBaseLayoutVersion] = useState("1");
   const [backupTemplate, setBackupTemplate] = useState<BackupTemplateSettings>({
     quoteTemplateHeaderHtml: "",
     quoteTemplateFooterHtml: "",
@@ -738,12 +919,19 @@ export default function CompanySettingsPage() {
     quoteTemplateMarginMm: "10",
     quoteTemplateFooterPinBottom: false,
   });
+  const quoteTemplateContainerOptions = useMemo(
+    () => normalizeQuoteTemplateContainers((company as Record<string, unknown> | null)?.quoteLayoutTemplate),
+    [company],
+  );
+  const quoteTemplateBlockOptions = useMemo(
+    () => normalizeQuoteTemplateBlocks((company as Record<string, unknown> | null)?.quoteLayoutTemplate),
+    [company],
+  );
+  const quoteTemplatePlaceholderOptions = useMemo(() => QUOTE_TEMPLATE_PLACEHOLDERS, []);
   const [notificationsRows, setNotificationsRows] = useState<UserNotificationRow[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [isInvitingStaff, setIsInvitingStaff] = useState(false);
   const [showJoinKey, setShowJoinKey] = useState(false);
-  const [quotePresetEditorOpen, setQuotePresetEditorOpen] = useState(false);
-  const [quotePresetDraft, setQuotePresetDraft] = useState("");
   const [form, setForm] = useState({
     name: "",
     defaultCurrency: "NZD - New Zealand Dollar",
@@ -829,6 +1017,7 @@ export default function CompanySettingsPage() {
         setItemCategories(normalizeItemCategories(doc.itemCategories));
         setJobTypes(normalizeJobTypes(doc.salesJobTypes));
         setQuoteExtras(normalizeQuoteExtras(doc.quoteExtras));
+        setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
         setDiscountTiers(normalizeDiscountTiers(doc.salesQuoteDiscountTiers));
         setMinusOffQuoteTotal(Boolean(doc.salesMinusOffQuoteTotal));
         const hardwareRows = normalizeHardware(doc.hardwareSettings);
@@ -856,8 +1045,6 @@ export default function CompanySettingsPage() {
         setEdgebandingRoundNearestMeters(edgeSettings.roundNearestMeters);
         setUnlockSuffix(toStr(doc.productionUnlockPasswordSuffix));
         setUnlockHours(toStr(doc.productionUnlockDurationHours, "6"));
-        setQuoteBaseLayoutHtml(toStr(doc.quoteBaseLayoutHtml, defaultQuoteBaseLayoutHtml));
-        setQuoteBaseLayoutVersion(toStr(doc.quoteBaseLayoutVersion, "1"));
         setBackupTemplate({
           quoteTemplateHeaderHtml: toStr(doc.quoteTemplateHeaderHtml),
           quoteTemplateFooterHtml: toStr(doc.quoteTemplateFooterHtml),
@@ -1108,18 +1295,6 @@ export default function CompanySettingsPage() {
     );
   };
 
-  const openQuotePresetEditor = () => {
-    setQuotePresetDraft(quoteBaseLayoutHtml || defaultQuoteBaseLayoutHtml);
-    setQuotePresetEditorOpen(true);
-  };
-
-  const saveQuotePresetFromEditor = () => {
-    const next = toStr(quotePresetDraft, defaultQuoteBaseLayoutHtml);
-    setQuoteBaseLayoutHtml(next);
-    setQuoteBaseLayoutVersion((v) => String(Math.max(1, Number(v || 1) + 1)));
-    setQuotePresetEditorOpen(false);
-  };
-
   const downloadBackupSnapshot = () => {
     const snapshot = {
       companyId: activeCompanyId,
@@ -1136,10 +1311,9 @@ export default function CompanySettingsPage() {
         itemCategories,
         salesJobTypes: jobTypes,
         quoteExtras,
+        salesQuoteHelpers: quoteHelpers,
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
-        quoteBaseLayoutHtml,
-        quoteBaseLayoutVersion,
         backupTemplate,
         hardware,
         nesting,
@@ -1447,6 +1621,7 @@ export default function CompanySettingsPage() {
             sheetSize: toStr(sheetPrices[0]?.sheetSize),
             sheetPrices,
             showInSales: Boolean(row.showInSales),
+            grain: Boolean(row.grain),
           };
         })
         .filter(Boolean),
@@ -1455,11 +1630,23 @@ export default function CompanySettingsPage() {
           const name = toStr(row.name);
           if (!name) return null;
           return {
+            id: toStr(row.id),
             name,
             price: toStr(row.price),
             defaultIncluded: Boolean(row.defaultIncluded),
             templateContainerId: toStr(row.templateContainerId),
+            templateBlockId: toStr(row.templateBlockId),
             templatePlaceholderKey: toStr(row.templatePlaceholderKey),
+          };
+        })
+        .filter(Boolean),
+      salesQuoteHelpers: quoteHelpers
+        .map((row) => {
+          const content = sanitizeQuoteRichTextMarkup(toStr(row.content));
+          if (!content.trim()) return null;
+          return {
+            id: toStr(row.id),
+            content,
           };
         })
         .filter(Boolean),
@@ -1467,8 +1654,6 @@ export default function CompanySettingsPage() {
         .map((row) => ({ low: toStr(row.low), high: toStr(row.high), discount: toStr(row.discount) }))
         .filter((row) => row.low && row.high && row.discount),
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
-      quoteBaseLayoutHtml: toStr(quoteBaseLayoutHtml, defaultQuoteBaseLayoutHtml),
-      quoteBaseLayoutVersion: Number(quoteBaseLayoutVersion || 1),
       quoteTemplateHeaderHtml: toStr(backupTemplate.quoteTemplateHeaderHtml),
       quoteTemplateFooterHtml: toStr(backupTemplate.quoteTemplateFooterHtml),
       quoteTemplatePageSize: toStr(backupTemplate.quoteTemplatePageSize, "A4"),
@@ -1524,10 +1709,9 @@ export default function CompanySettingsPage() {
         itemCategories,
         salesJobTypes: jobTypes,
         quoteExtras,
+        salesQuoteHelpers: quoteHelpers,
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
-        quoteBaseLayoutHtml,
-        quoteBaseLayoutVersion,
         quoteTemplateHeaderHtml: backupTemplate.quoteTemplateHeaderHtml,
         quoteTemplateFooterHtml: backupTemplate.quoteTemplateFooterHtml,
         quoteTemplatePageSize: backupTemplate.quoteTemplatePageSize,
@@ -1604,10 +1788,9 @@ export default function CompanySettingsPage() {
     itemCategories,
     jobTypes,
     quoteExtras,
+    quoteHelpers,
     discountTiers,
     minusOffQuoteTotal,
-    quoteBaseLayoutHtml,
-    quoteBaseLayoutVersion,
     backupTemplate,
     hardware,
     nesting,
@@ -1904,52 +2087,23 @@ export default function CompanySettingsPage() {
 
               {active === "integrations" && (
                 <div className="space-y-3">
-                  <Panel title="Quote Preset">
-                    <div className="space-y-2 text-[12px]">
-                      <p className="text-[11px] text-[#6B7280]">Default layout used when opening a new quote.</p>
-                      <div className="flex items-center gap-2">
+                  <Panel title="Quote Layout Builder">
+                    <div className="space-y-3 text-[12px]">
+                      <p className="text-[11px] text-[#6B7280]">
+                        Build the company quote layout once, then use that same template across every project.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={openQuotePresetEditor}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467]"
+                          onClick={() => router.push("/company-settings/quote-layout")}
+                          className="h-8 rounded-[10px] bg-[#1EA44B] px-4 text-[12px] font-bold text-white shadow-[0_1px_2px_rgba(16,24,40,0.08)]"
                         >
-                          Open Preset Editor
+                          Open Quote Layout Builder
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setQuoteBaseLayoutHtml(defaultQuoteBaseLayoutHtml);
-                            setQuoteBaseLayoutVersion((v) => String(Math.max(1, Number(v || 1) + 1)));
-                          }}
-                          className="h-7 rounded-[8px] border border-[#F7C9CC] bg-[#FDECEC] px-3 text-[11px] font-bold text-[#B42318]"
-                        >
-                          Reset To Default
-                        </button>
+                        <span className="rounded-[8px] border border-[#D8DEE8] bg-white px-3 py-[6px] text-[11px] font-semibold text-[#475467]">
+                          Company-wide template
+                        </span>
                       </div>
-                      <p className="text-[11px] font-semibold text-[#44556D]">Preset v{quoteBaseLayoutVersion}</p>
-                      <textarea
-                        value={quoteBaseLayoutHtml}
-                        onChange={(e) => setQuoteBaseLayoutHtml(e.target.value)}
-                        className="min-h-[120px] w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] text-[#334155]"
-                      />
-                      <p className="text-[11px] text-[#6B7280]">Placeholders: {`{{client_name}}, {{client_address}}, {{total_price}}, {{quote_generated_date}}, {{promotional_discount_amount}}, {{project_creator}}`}</p>
-                    </div>
-                  </Panel>
-                  <Panel title="Project Statuses">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_1fr_120px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                        <p>Del</p>
-                        <p>Status Name</p>
-                        <p className="text-center">Color</p>
-                      </div>
-                      {statuses.map((row, idx) => (
-                        <div key={idx} className="grid grid-cols-[26px_1fr_120px] items-center gap-2">
-                          <button onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))} className="rounded-[8px] border border-[#F7C9CC] bg-[#FDECEC] text-[11px] font-bold text-[#B42318]">x</button>
-                          <input value={row.name} onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                          <input value={row.color} onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                        </div>
-                      ))}
-                      <button onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B" }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add</button>
                     </div>
                   </Panel>
                 </div>
@@ -2412,6 +2566,91 @@ export default function CompanySettingsPage() {
                       <button onClick={() => setDashboardLegend((prev) => [...prev, { id: `legend_${prev.length + 1}`, name: "", color: form.themeColor || "#2A7A3B" }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add</button>
                     </div>
                   </Panel>
+                  <Panel title="Project Statuses">
+                    <div className="space-y-2 text-[12px]">
+                      <div className="grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                        <p></p>
+                        <p>Del</p>
+                        <p>Status Name</p>
+                        <p className="text-center">Color</p>
+                      </div>
+                      {statuses.map((row, idx) => (
+                        <div
+                          key={`${row.name}_${idx}`}
+                          className={`grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 rounded-[8px] transition-all ${
+                            statusDragIndex === idx
+                              ? "z-10 bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
+                              : statusDragOverIndex === idx
+                                ? "bg-white"
+                                : ""
+                          }`}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (statusDragIndex == null || statusDragIndex === idx) return;
+                            setStatuses((prev) => moveRowTo(prev, statusDragIndex, idx));
+                            setStatusDragIndex(idx);
+                            setStatusDragOverIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setStatusDragIndex(null);
+                            setStatusDragOverIndex(null);
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setStatusDragIndex(idx);
+                              setStatusDragOverIndex(idx);
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                            }}
+                            onDragEnd={() => {
+                              setStatusDragIndex(null);
+                              setStatusDragOverIndex(null);
+                            }}
+                            className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                          >
+                            <X size={15} strokeWidth={2.8} />
+                          </button>
+                          <input
+                            value={row.name}
+                            onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                          <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#64748B"}>
+                            <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
+                            <input
+                              type="color"
+                              value={row.color || "#64748B"}
+                              onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
+                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                            />
+                          </label>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B" }])}
+                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                      >
+                        + Add
+                      </button>
+                    </div>
+                  </Panel>
                   <Panel title="Tags">
                     <div className="space-y-2 text-[12px]">
                       <div className="grid grid-cols-[26px_1fr_60px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
@@ -2624,18 +2863,19 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <Panel title="Product">
                     <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_26px_1fr_120px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                      <div className="grid grid-cols-[26px_26px_26px_1fr_120px_70px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
                         <p></p>
                         <p></p>
                         <p></p>
                         <p>Name</p>
-                        <p>Sheet Sizes</p>
-                        <p>INCL IN SALES</p>
+                        <p className="text-center">Sheet Sizes</p>
+                        <p className="text-center">Grain</p>
+                        <p className="text-center">INCL IN SALES</p>
                       </div>
                       {jobTypes.map((row, idx) => (
                         <div key={idx} className="space-y-2">
                           <div
-                            className={`grid grid-cols-[26px_26px_26px_1fr_120px_90px] items-center gap-2 rounded-[8px] transition-all ${
+                            className={`grid grid-cols-[26px_26px_26px_1fr_120px_70px_90px] items-center gap-2 rounded-[8px] transition-all ${
                               jobTypeDragIndex === idx
                                 ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
                               : jobTypeDragOverIndex === idx
@@ -2692,9 +2932,16 @@ export default function CompanySettingsPage() {
                               />
                             </button>
                             <input value={row.name} onChange={(e) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <div className="inline-flex h-7 items-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#475467]">
+                            <div className="inline-flex h-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#475467]">
                               {row.sheetPrices?.length || 0} options
                             </div>
+                            <label className="inline-flex items-center justify-center text-[11px] font-bold text-[#475467]">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(row.grain)}
+                                onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, grain: !v.grain } : v)))}
+                              />
+                            </label>
                             <label className="inline-flex items-center justify-center text-[11px] font-bold text-[#475467]"><input type="checkbox" checked={row.showInSales} onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: !v.showInSales } : v)))} /></label>
                           </div>
 
@@ -2749,78 +2996,306 @@ export default function CompanySettingsPage() {
                           )}
                         </div>
                       ))}
-                      <button onClick={() => setJobTypes((prev) => [...prev, { name: "", sheetPrices: [], showInSales: true }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Product</button>
+                      <button onClick={() => setJobTypes((prev) => [...prev, { name: "", sheetPrices: [], showInSales: true, grain: false }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Product</button>
                     </div>
                   </Panel>
                   <div className="grid gap-3 xl:grid-cols-[3fr_1fr]">
-                    <Panel title="Quote Extras">
-                      <div className="space-y-2 text-[12px]">
-                        <div className="grid grid-cols-[26px_1fr_90px_70px_1fr_1fr_26px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                          <p></p>
-                          <p>Name</p>
-                          <p>Price</p>
-                          <p>Default</p>
-                          <p>Container</p>
-                          <p>Placeholder</p>
-                          <p>Del</p>
-                        </div>
-                        {quoteExtras.map((row, idx) => (
-                          <div
-                            key={idx}
-                            className={`grid grid-cols-[26px_1fr_90px_70px_1fr_1fr_26px] items-center gap-2 rounded-[8px] transition-all ${
-                              quoteExtraDragIndex === idx
-                                ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                                : quoteExtraDragOverIndex === idx
-                                  ? "bg-white"
-                                  : ""
-                            }`}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = "move";
-                            }}
-                            onDragEnter={(e) => {
-                              e.preventDefault();
-                              if (quoteExtraDragIndex == null || quoteExtraDragIndex === idx) return;
-                              setQuoteExtras((prev) => moveRowTo(prev, quoteExtraDragIndex, idx));
-                              setQuoteExtraDragIndex(idx);
-                              setQuoteExtraDragOverIndex(idx);
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              setQuoteExtraDragIndex(null);
-                              setQuoteExtraDragOverIndex(null);
-                              triggerAutosaveAfterRowDrop();
-                            }}
-                          >
-                            <button
-                              type="button"
-                              draggable
-                              onDragStart={(e) => {
+                    <div className="space-y-3">
+                      <Panel title="Quote Extras">
+                        <div className="space-y-2 text-[12px]">
+                          <div className="grid grid-cols-[26px_26px_1fr_90px_70px_1fr_1fr_1fr] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                            <p>Del</p>
+                            <p></p>
+                            <p>Name</p>
+                            <p>Price</p>
+                            <p>Default</p>
+                            <p>Container</p>
+                            <p>Element</p>
+                            <p>Placeholder</p>
+                          </div>
+                          {quoteExtras.map((row, idx) => (
+                            <div
+                              key={row.id || idx}
+                              className={`grid grid-cols-[26px_26px_1fr_90px_70px_1fr_1fr_1fr] items-center gap-2 rounded-[8px] transition-all ${
+                                quoteExtraDragIndex === idx
+                                  ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
+                                  : quoteExtraDragOverIndex === idx
+                                    ? "bg-white"
+                                    : ""
+                              }`}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                              }}
+                              onDragEnter={(e) => {
+                                e.preventDefault();
+                                if (quoteExtraDragIndex == null || quoteExtraDragIndex === idx) return;
+                                setQuoteExtras((prev) => moveRowTo(prev, quoteExtraDragIndex, idx));
                                 setQuoteExtraDragIndex(idx);
                                 setQuoteExtraDragOverIndex(idx);
-                                e.dataTransfer.effectAllowed = "move";
-                                e.dataTransfer.setData("text/plain", `quoteextra_${idx}`);
                               }}
-                              onDragEnd={() => {
+                              onDrop={(e) => {
+                                e.preventDefault();
                                 setQuoteExtraDragIndex(null);
                                 setQuoteExtraDragOverIndex(null);
+                                triggerAutosaveAfterRowDrop();
                               }}
-                              className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
-                              title="Drag to reorder"
                             >
-                              <GripVertical size={14} />
-                            </button>
-                            <input value={row.name} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <input value={row.price} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, price: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]"><input type="checkbox" checked={row.defaultIncluded} onChange={() => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, defaultIncluded: !v.defaultIncluded } : v)))} />Default</label>
-                            <input value={row.templateContainerId} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, templateContainerId: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <input value={row.templatePlaceholderKey} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, templatePlaceholderKey: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <button onClick={() => setQuoteExtras((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
-                          </div>
-                        ))}
-                        <button onClick={() => setQuoteExtras((prev) => [...prev, { name: "", price: "", defaultIncluded: false, templateContainerId: "", templatePlaceholderKey: "" }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Extra</button>
-                      </div>
-                    </Panel>
+                              <button onClick={() => setQuoteExtras((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
+                              <button
+                                type="button"
+                                draggable
+                                onDragStart={(e) => {
+                                  setQuoteExtraDragIndex(idx);
+                                  setQuoteExtraDragOverIndex(idx);
+                                  e.dataTransfer.effectAllowed = "move";
+                                  e.dataTransfer.setData("text/plain", `quoteextra_${idx}`);
+                                }}
+                                onDragEnd={() => {
+                                  setQuoteExtraDragIndex(null);
+                                  setQuoteExtraDragOverIndex(null);
+                                }}
+                                className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                                title="Drag to reorder"
+                              >
+                                <GripVertical size={14} />
+                              </button>
+                              <input value={row.name} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                              <input value={row.price} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, price: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                              <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]"><input type="checkbox" checked={row.defaultIncluded} onChange={() => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, defaultIncluded: !v.defaultIncluded } : v)))} />Default</label>
+                              <select
+                                value={row.templateContainerId}
+                                onChange={(e) =>
+                                  setQuoteExtras((prev) =>
+                                    prev.map((v, i) =>
+                                      i === idx
+                                        ? {
+                                            ...v,
+                                            templateContainerId: e.target.value,
+                                            templateBlockId: e.target.value ? "" : v.templateBlockId,
+                                            templatePlaceholderKey: e.target.value ? "" : v.templatePlaceholderKey,
+                                          }
+                                        : v,
+                                    ),
+                                  )
+                                }
+                                disabled={Boolean(row.templateBlockId || row.templatePlaceholderKey)}
+                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                              >
+                                <option value=""></option>
+                                {quoteTemplateContainerOptions.map((option) => (
+                                  <option key={option.id} value={option.id}>
+                                    {option.title}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                value={row.templateBlockId}
+                                onChange={(e) =>
+                                  setQuoteExtras((prev) =>
+                                    prev.map((v, i) =>
+                                      i === idx
+                                        ? {
+                                            ...v,
+                                            templateBlockId: e.target.value,
+                                            templateContainerId: e.target.value ? "" : v.templateContainerId,
+                                            templatePlaceholderKey: e.target.value ? "" : v.templatePlaceholderKey,
+                                          }
+                                        : v,
+                                    ),
+                                  )
+                                }
+                                disabled={Boolean(row.templateContainerId || row.templatePlaceholderKey)}
+                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                              >
+                                <option value=""></option>
+                                {quoteTemplateBlockOptions.map((option) => (
+                                  <option key={option.id} value={option.id}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                value={row.templatePlaceholderKey}
+                                onChange={(e) =>
+                                  setQuoteExtras((prev) =>
+                                    prev.map((v, i) =>
+                                      i === idx
+                                        ? {
+                                            ...v,
+                                            templatePlaceholderKey: e.target.value,
+                                            templateContainerId: e.target.value ? "" : v.templateContainerId,
+                                            templateBlockId: e.target.value ? "" : v.templateBlockId,
+                                          }
+                                        : v,
+                                    ),
+                                  )
+                                }
+                                disabled={Boolean(row.templateContainerId || row.templateBlockId)}
+                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                              >
+                                <option value=""></option>
+                                {quoteTemplatePlaceholderOptions.map((option) => (
+                                  <option key={option.key} value={option.key}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                          <button
+                            onClick={() =>
+                              setQuoteExtras((prev) => [
+                                ...prev,
+                                {
+                                  id: `quote_extra_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                                  name: "",
+                                  price: "",
+                                  defaultIncluded: false,
+                                  templateContainerId: "",
+                                  templateBlockId: "",
+                                  templatePlaceholderKey: "",
+                                },
+                              ])
+                            }
+                            className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                          >
+                            + Add Extra
+                          </button>
+                        </div>
+                      </Panel>
+                      <Panel title="Quote Helpers">
+                        <div className="space-y-3">
+                          <p className="text-[12px] text-[#667085]">
+                            Add reusable helper snippets here. They will appear in the live quote sidebar under Quote Extras and insert at the current cursor position in the project text field.
+                          </p>
+                          {quoteHelpers.map((row, idx) => (
+                            <div
+                              key={row.id || idx}
+                              className={`rounded-[12px] border border-[#D8DEE8] bg-white p-3 transition-all ${
+                                quoteHelperDragIndex === idx
+                                  ? "opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
+                                  : quoteHelperDragOverIndex === idx
+                                    ? "shadow-[0_4px_14px_rgba(15,23,42,0.08)]"
+                                    : ""
+                              }`}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                              }}
+                              onDragEnter={(e) => {
+                                e.preventDefault();
+                                if (quoteHelperDragIndex == null || quoteHelperDragIndex === idx) return;
+                                setQuoteHelpers((prev) => moveRowTo(prev, quoteHelperDragIndex, idx));
+                                setQuoteHelperDragIndex(idx);
+                                setQuoteHelperDragOverIndex(idx);
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                setQuoteHelperDragIndex(null);
+                                setQuoteHelperDragOverIndex(null);
+                                triggerAutosaveAfterRowDrop();
+                              }}
+                            >
+                              <div className="grid grid-cols-[28px_auto_minmax(0,1fr)] items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setQuoteHelpers((prev) => prev.filter((_, helperIdx) => helperIdx !== idx))}
+                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                  title="Delete helper"
+                                >
+                                  <X size={15} strokeWidth={2.8} />
+                                </button>
+                                <div className="flex items-center gap-1 whitespace-nowrap">
+                                  <button
+                                    type="button"
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setQuoteHelperDragIndex(idx);
+                                      setQuoteHelperDragOverIndex(idx);
+                                      e.dataTransfer.effectAllowed = "move";
+                                      e.dataTransfer.setData("text/plain", `quotehelper_${idx}`);
+                                    }}
+                                    onDragEnd={() => {
+                                      setQuoteHelperDragIndex(null);
+                                      setQuoteHelperDragOverIndex(null);
+                                    }}
+                                    className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                                    title="Drag to reorder"
+                                  >
+                                    <GripVertical size={14} />
+                                  </button>
+                                  {[
+                                    { command: "bold" as const, label: "B" },
+                                    { command: "italic" as const, label: "I" },
+                                    { command: "underline" as const, label: "U" },
+                                    { command: "strikeThrough" as const, label: "S" },
+                                  ].map((item) => (
+                                    <button
+                                      key={`${row.id}_${item.command}`}
+                                      type="button"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        applyQuoteRichTextCommand(
+                                          quoteHelperRefs.current[row.id] ?? null,
+                                          item.command,
+                                          (nextValue) =>
+                                            setQuoteHelpers((prev) =>
+                                              prev.map((helper, helperIdx) =>
+                                                helperIdx === idx ? { ...helper, content: nextValue } : helper,
+                                              ),
+                                            ),
+                                        );
+                                      }}
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] text-[11px] font-bold text-[#344054]"
+                                    >
+                                      {item.label}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div
+                                  ref={(node) => {
+                                    quoteHelperRefs.current[row.id] = node;
+                                    if (node) {
+                                      const nextHtml = renderQuoteRichTextHtml(row.content);
+                                      if (document.activeElement !== node && node.innerHTML !== nextHtml) {
+                                        node.innerHTML = nextHtml;
+                                      }
+                                    }
+                                  }}
+                                  contentEditable
+                                  suppressContentEditableWarning
+                                  onInput={(e) => {
+                                    const nextValue = sanitizeQuoteRichTextMarkup(e.currentTarget.innerHTML);
+                                    setQuoteHelpers((prev) =>
+                                      prev.map((helper, helperIdx) =>
+                                        helperIdx === idx ? { ...helper, content: nextValue } : helper,
+                                      ),
+                                    );
+                                  }}
+                                  className="block min-h-[28px] min-w-0 overflow-hidden rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-1.5 text-[12px] leading-[1.5] outline-none empty:before:text-[#98A2B3] empty:before:content-['Type_helper_text_here...']"
+                                />
+                              </div>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setQuoteHelpers((prev) => [
+                                ...prev,
+                                {
+                                  id: `quote_helper_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                                  content: "",
+                                },
+                              ])
+                            }
+                            className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                          >
+                            + Add Helper
+                          </button>
+                        </div>
+                      </Panel>
+                    </div>
                     <Panel title="Quote Discount">
                       <div className="space-y-2 text-[12px]">
                         <label className="inline-flex items-center gap-2 font-bold text-[#334155]"><input type="checkbox" checked={minusOffQuoteTotal} onChange={() => setMinusOffQuoteTotal((v) => !v)} />minus off quote total</label>
@@ -3660,7 +4135,6 @@ export default function CompanySettingsPage() {
   projectStatuses: statuses,
   dashboardCompleteLegend: dashboardLegend,
   projectTagUsage,
-  quoteBaseLayoutVersion,
   quoteTemplatePageSize: backupTemplate.quoteTemplatePageSize,
   quoteTemplateMarginMm: backupTemplate.quoteTemplateMarginMm,
   quoteTemplateFooterPinBottom: backupTemplate.quoteTemplateFooterPinBottom,
@@ -3672,38 +4146,6 @@ export default function CompanySettingsPage() {
             </main>
           </div>
         </div>
-        {quotePresetEditorOpen && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/30 p-4">
-            <div className="w-full max-w-[980px] rounded-[12px] border border-[#D7DEE8] bg-white shadow-xl">
-              <div className="flex items-center justify-between border-b border-[#DCE3EC] px-3 py-2">
-                <p className="text-[14px] font-extrabold uppercase tracking-[0.7px] text-[#1E3A62]">Quote Preset Editor</p>
-                <button onClick={() => setQuotePresetEditorOpen(false)} className="rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">Close</button>
-              </div>
-              <div className="space-y-2 p-3">
-                <p className="text-[12px] text-[#667085]">Edit default quote layout HTML used by desktop/web quote generation.</p>
-                <textarea
-                  value={quotePresetDraft}
-                  onChange={(e) => setQuotePresetDraft(e.target.value)}
-                  className="min-h-[360px] w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[12px] text-[#334155]"
-                />
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    onClick={() => setQuotePresetEditorOpen(false)}
-                    className="h-8 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467]"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={saveQuotePresetFromEditor}
-                    className="h-8 rounded-[8px] bg-[#1EA44B] px-3 text-[11px] font-bold text-white"
-                  >
-                    Save Preset
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </AppShell>
     </ProtectedRoute>
   );

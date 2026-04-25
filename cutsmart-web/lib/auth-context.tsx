@@ -33,6 +33,7 @@ interface AuthContextValue {
 }
 
 const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
+const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -95,8 +96,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const firebaseAuth = auth;
     let active = true;
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    let unsubscribeAuth: (() => void) | null = null;
+
+    const boot = async () => {
+      try {
+        const rememberOnDevice =
+          typeof window !== "undefined" && window.localStorage.getItem(REMEMBER_DEVICE_STORAGE_KEY) === "1";
+        await setPersistence(firebaseAuth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
+      } catch {
+        // Ignore persistence bootstrap issues and continue with auth observer.
+      }
+
+      if (!active) return;
+      unsubscribeAuth = onAuthStateChanged(firebaseAuth, (firebaseUser) => {
       const loadMembership = async () => {
         if (!firebaseUser) {
           if (!active) {
@@ -139,11 +153,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
 
       void loadMembership();
-    });
+      });
+    };
+
+    void boot();
 
     return () => {
       active = false;
-      unsubscribe();
+      if (unsubscribeAuth) unsubscribeAuth();
     };
   }, []);
 
@@ -155,6 +172,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn: async (email, password, rememberOnDevice = false) => {
         if (!auth) {
           throw new Error("Firebase is not configured.");
+        }
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, rememberOnDevice ? "1" : "0");
         }
         await setPersistence(auth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
         await signInWithEmailAndPassword(auth, email, password);
@@ -212,3 +232,6 @@ export function useAuth() {
   }
   return ctx;
 }
+
+
+

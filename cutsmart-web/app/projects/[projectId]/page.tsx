@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FocusEvent as ReactFocusEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Great_Vibes } from "next/font/google";
 import { ArrowLeft, ChevronDown, ClipboardList, Cpu, FileSpreadsheet, GitBranch, ListChecks, Lock, Minus, Plus, Printer, Quote, Ruler, Scissors, ShoppingCart, Tag, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -31,10 +32,13 @@ import {
 import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
+import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
 import { storage } from "@/lib/firebase";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+const greatVibesFont = Great_Vibes({ subsets: ["latin"], weight: "400" });
+void greatVibesFont;
 
 const tabItems = [
   { value: "general", label: "General" },
@@ -122,6 +126,250 @@ function dashboardStyleDate(value: string) {
   return `${date} | ${time}`;
 }
 
+function dashboardStyleDateOnly(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return "-";
+  }
+  return new Intl.DateTimeFormat("en-NZ", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
+function quoteColumnWidthPercent(span: number): number {
+  const safeSpan = Math.max(1, Math.min(12, Number(span) || 12));
+  return (safeSpan / 12) * 100;
+}
+
+function quotePaperDimensionsFor(pageSize: string): { widthMm: number; heightMm: number } {
+  const key = String(pageSize || "").trim().toUpperCase();
+  switch (key) {
+    case "A3":
+      return { widthMm: 297, heightMm: 420 };
+    case "A5":
+      return { widthMm: 148, heightMm: 210 };
+    case "LETTER":
+      return { widthMm: 216, heightMm: 279 };
+    case "LEGAL":
+      return { widthMm: 216, heightMm: 356 };
+    case "A4":
+    default:
+      return { widthMm: 210, heightMm: 297 };
+  }
+}
+
+function quoteBlockCountsAsContent(block: QuoteTemplateBlock): boolean {
+  return block.type !== "divider" && block.type !== "spacer";
+}
+
+function normalizePersonLookup(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function normalizeSalesQuoteExtras(raw: unknown): SalesQuoteExtraRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item, idx) => {
+      const row = item as Record<string, unknown>;
+      const name = String(row.name ?? "").trim();
+      return {
+        id: String(row.id ?? `quote_extra_${(name || "row").toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${idx + 1}`).trim(),
+        name,
+        price: String(row.price ?? "").trim(),
+        defaultIncluded: Boolean(row.defaultIncluded ?? row.default),
+        templateContainerId: String(row.templateContainerId ?? "").trim(),
+        templateBlockId: String(row.templateBlockId ?? "").trim(),
+        templatePlaceholderKey: String(row.templatePlaceholderKey ?? "").trim(),
+      };
+    })
+    .filter((row) => row.name);
+}
+
+function normalizeSalesQuoteHelpers(raw: unknown): SalesQuoteHelperRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item, idx) => {
+      const row = item as Record<string, unknown>;
+      const content = sanitizeQuoteRichTextMarkup(String(row.content ?? ""));
+      return {
+        id: String(row.id ?? `quote_helper_${idx + 1}`).trim(),
+        content,
+      };
+    })
+    .filter((row) => row.content.trim());
+}
+
+function extractClientRegion(address: unknown, explicitRegion?: unknown): string {
+  const directRegion = String(explicitRegion ?? "").trim();
+  if (directRegion) return directRegion;
+
+  const rawAddress = String(address ?? "").replace(/\r/g, "").trim();
+  if (!rawAddress) return "";
+
+  const commaParts = rawAddress
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (commaParts.length >= 2) {
+    return commaParts[1] || "";
+  }
+
+  const lineParts = rawAddress
+    .split("\n")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (lineParts.length >= 2) {
+    return lineParts[1] || "";
+  }
+
+  return "";
+}
+
+function escapeQuoteRichTextHtml(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function sanitizeAllowedQuoteInlineStyle(styleText: string): string {
+  const allowed: string[] = [];
+  for (const rawPart of String(styleText || "").split(";")) {
+    const [rawName, ...rawValueParts] = rawPart.split(":");
+    const name = String(rawName || "").trim().toLowerCase();
+    const value = rawValueParts.join(":").trim();
+    if (!name || !value) continue;
+    if (
+      name === "color" &&
+      (/^#[0-9a-fA-F]{3,8}$/.test(value) ||
+        /^[a-zA-Z]+$/.test(value) ||
+        /^rgba?\([\d\s.,%]+\)$/i.test(value))
+    ) {
+      allowed.push(`color:${value}`);
+      continue;
+    }
+    if (name === "font-family" && /^[a-zA-Z0-9\s,'"()-]+$/.test(value)) {
+      allowed.push(`font-family:${value}`);
+      continue;
+    }
+    if (name === "font-size" && /^\d+(px|pt|em|rem|%)$/.test(value)) {
+      allowed.push(`font-size:${value}`);
+      continue;
+    }
+    if (name === "text-align" && /^(left|center|right|justify)$/i.test(value)) {
+      allowed.push(`text-align:${value.toLowerCase()}`);
+    }
+  }
+  return allowed.join("; ");
+}
+
+function sanitizeQuoteRichTextMarkup(value: string): string {
+  if (typeof document === "undefined") {
+    return escapeQuoteRichTextHtml(value)
+      .replace(/\r\n/g, "\n")
+      .split(/\n{2,}/)
+      .map((paragraph) => `<p>${paragraph.replace(/\n/g, "<br />")}</p>`)
+      .join("");
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = String(value || "");
+
+  const renderNode = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return escapeQuoteRichTextHtml(node.textContent || "").replace(/\r?\n/g, "<br />");
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    const children = Array.from(element.childNodes).map(renderNode).join("");
+
+    if (tag === "br") return "<br />";
+    if (tag === "div" || tag === "p") {
+      const safeStyle = sanitizeAllowedQuoteInlineStyle(element.getAttribute("style") || "");
+      return safeStyle
+        ? `<p style="${safeStyle}">${children || "<br />"}</p>`
+        : `<p>${children || "<br />"}</p>`;
+    }
+    if (tag === "strong" || tag === "b") return `<strong>${children}</strong>`;
+    if (tag === "em" || tag === "i") return `<em>${children}</em>`;
+    if (tag === "u") return `<u>${children}</u>`;
+    if (tag === "s" || tag === "strike" || tag === "del") return `<s>${children}</s>`;
+    if (tag === "span" || tag === "font") {
+      const rawStyle =
+        tag === "font"
+          ? [
+              element.getAttribute("color") ? `color:${element.getAttribute("color")}` : "",
+              element.getAttribute("face") ? `font-family:${element.getAttribute("face")}` : "",
+            ]
+              .filter(Boolean)
+              .join("; ")
+          : (element.getAttribute("style") || "");
+      const safeStyle = sanitizeAllowedQuoteInlineStyle(rawStyle);
+      return safeStyle ? `<span style="${safeStyle}">${children}</span>` : children;
+    }
+    return children;
+  };
+
+  return Array.from(template.content.childNodes)
+    .map(renderNode)
+    .join("")
+    .replace(/(?:<p><br \/><\/p>){3,}/gi, "<p><br /></p><p><br /></p>");
+}
+
+function renderQuoteRichTextHtml(value: string): string {
+  return sanitizeQuoteRichTextMarkup(value);
+}
+
+function applyQuoteRichTextCommand(
+  editor: HTMLDivElement | null,
+  command: "bold" | "italic" | "underline" | "strikeThrough",
+  onChange: (nextValue: string) => void,
+) {
+  if (!editor || typeof document === "undefined") return;
+  editor.focus();
+  document.execCommand(command);
+  onChange(sanitizeQuoteRichTextMarkup(editor.innerHTML));
+}
+
+function arraysEqualText(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function normalizeQuoteBoxStyle(raw: unknown): QuoteTemplateBoxStyle {
+  if (!raw || typeof raw !== "object") return {};
+  const item = raw as Record<string, unknown>;
+  return {
+    borderColor: toStr(item.borderColor),
+    borderWidthPx: toStr(item.borderWidthPx),
+    fillColor: toStr(item.fillColor),
+    paddingPx: toStr(item.paddingPx),
+    paddingTopPx: toStr(item.paddingTopPx),
+    paddingBottomPx: toStr(item.paddingBottomPx),
+    paddingLeftPx: toStr(item.paddingLeftPx),
+    paddingRightPx: toStr(item.paddingRightPx),
+    marginPx: toStr(item.marginPx),
+  };
+}
+
+function quoteSafePixelString(value: string | undefined): string | undefined {
+  const num = Number.parseInt(String(value ?? "").replace(/[^\d-]/g, ""), 10);
+  if (!Number.isFinite(num)) return undefined;
+  return `${num}px`;
+}
+
 type DrawerHeightOption = { token: string; value: string };
 type HardwareDrawerType = {
   name: string;
@@ -174,6 +422,7 @@ type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: b
 type OrderHingeRow = { id: string; name: string; qty: string };
 
 type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock";
+type SalesNav = "initial" | "items" | "quote" | "specifications";
 type CutlistRow = {
   id: string;
   room: string;
@@ -224,6 +473,75 @@ type CncDisplayRow = CutlistRow & {
   cncCabinetryRowKind?: "main" | "fixedShelf" | "adjustableShelf";
 };
 type SalesRoomRow = { name: string; included: boolean; totalPrice: string };
+type SalesProductRow = { name: string; selected: boolean };
+type SalesQuoteExtraRow = {
+  id: string;
+  name: string;
+  price: string;
+  defaultIncluded: boolean;
+  templateContainerId: string;
+  templateBlockId: string;
+  templatePlaceholderKey: string;
+};
+type SalesQuoteHelperRow = {
+  id: string;
+  content: string;
+};
+type QuoteTemplateBlockType =
+  | "text"
+  | "projectText"
+  | "logo"
+  | "companyDetails"
+  | "clientDetails"
+  | "quoteMeta"
+  | "roomBreakdown"
+  | "totals"
+  | "notes"
+  | "terms"
+  | "customText"
+  | "divider"
+  | "spacer";
+type QuoteTemplateBlock = {
+  id: string;
+  type: QuoteTemplateBlockType;
+  label: string;
+  enabled: boolean;
+  content: string;
+  heightMm?: string;
+  textColor?: string;
+};
+type QuoteTemplateBoxStyle = {
+  borderColor?: string;
+  borderWidthPx?: string;
+  fillColor?: string;
+  paddingPx?: string;
+  paddingTopPx?: string;
+  paddingBottomPx?: string;
+  paddingLeftPx?: string;
+  paddingRightPx?: string;
+  marginPx?: string;
+};
+type QuoteTemplateColumn = {
+  id: string;
+  span: number;
+  style?: QuoteTemplateBoxStyle;
+  blocks: QuoteTemplateBlock[];
+};
+type QuoteTemplateContainer = {
+  id: string;
+  title: string;
+  enabled: boolean;
+  mount: "flow" | "top" | "bottom";
+  style?: QuoteTemplateBoxStyle;
+  columns: QuoteTemplateColumn[];
+};
+type QuoteLayoutTemplate = {
+  version: number;
+  templateName: string;
+  pageSize: string;
+  marginMm: string;
+  containers: QuoteTemplateContainer[];
+};
 type CutlistEditableField =
   | "room"
   | "partType"
@@ -238,6 +556,7 @@ type CutlistEditableField =
   | "grain";
 type CutlistActivityEntry = {
   id: number;
+  scope?: "production" | "initial";
   message: string;
   action?: string;
   actionKind?: "clear" | "undo" | "";
@@ -248,6 +567,41 @@ type CutlistActivityEntry = {
   valueTo?: string;
 };
 
+function normalizeCutlistActivityEntries(raw: unknown): CutlistActivityEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => {
+      const item = entry as Record<string, unknown>;
+      const actionKindRaw = String(item.actionKind || "").trim().toLowerCase();
+      const actionKind: "" | "clear" | "undo" =
+        actionKindRaw === "clear" || actionKindRaw === "undo" ? actionKindRaw : "";
+      const scopeRaw = String(item.scope || "").trim().toLowerCase();
+      const scope: "production" | "initial" = scopeRaw === "initial" ? "initial" : "production";
+      return {
+        id: Number(item.id || 0),
+        scope,
+        message: String(item.message || "").trim(),
+        action: String(item.action || "").trim(),
+        actionKind,
+        dedupeKey: String(item.dedupeKey || "").trim(),
+        partType: String(item.partType || "").trim(),
+        partTypeTo: String(item.partTypeTo || "").trim(),
+        valueFrom: String(item.valueFrom || "").trim(),
+        valueTo: String(item.valueTo || "").trim(),
+      } satisfies CutlistActivityEntry;
+    })
+    .filter((entry) => entry.message)
+    .slice(-120);
+}
+
+function serializeCutlistActivityFeedForProject(feed: CutlistActivityEntry[]) {
+  return {
+    production: feed.filter((entry) => (entry.scope || "production") === "production").slice(-120),
+    initial: feed.filter((entry) => (entry.scope || "production") === "initial").slice(-120),
+  };
+}
+
 type CutlistValidationIssue = {
   field: "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity";
   message: string;
@@ -256,6 +610,20 @@ type CutlistValidationIssue = {
 function toStr(value: unknown, fallback = "") {
   const text = String(value ?? "").trim();
   return text || fallback;
+}
+
+function parseCurrencyNumber(value: unknown): number {
+  const parsed = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatCurrencyValue(value: number): string {
+  return new Intl.NumberFormat("en-NZ", {
+    style: "currency",
+    currency: "NZD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Math.max(0, value));
 }
 
 type ProjectFileEntry = {
@@ -485,6 +853,216 @@ function notesToDisplayHtml(value: unknown): string {
 function formatPartCount(value: number): string {
   const count = Math.max(0, Number.isFinite(value) ? Math.round(value) : 0);
   return `${count} ${count === 1 ? "Part" : "Parts"}`;
+}
+
+function createEmptyCutlistEntry(): Omit<CutlistRow, "id" | "room"> {
+  return {
+    partType: "",
+    board: "",
+    name: "",
+    height: "",
+    width: "",
+    depth: "",
+    quantity: "1",
+    clashing: "",
+    clashLeft: "",
+    clashRight: "",
+    fixedShelf: "",
+    adjustableShelf: "",
+    fixedShelfDrilling: "No",
+    adjustableShelfDrilling: "No",
+    information: "",
+    grain: false,
+    grainValue: "",
+  };
+}
+
+function makeQuoteTemplateId(prefix: string) {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createProjectQuoteTemplateBlock(type: QuoteTemplateBlockType): QuoteTemplateBlock {
+  const labelMap: Record<QuoteTemplateBlockType, string> = {
+    text: "Text",
+    projectText: "Project Text",
+    logo: "Logo",
+    companyDetails: "Company Details",
+    clientDetails: "Client Details",
+    quoteMeta: "Quote Meta",
+    roomBreakdown: "Room Breakdown",
+    totals: "Totals",
+    notes: "Notes",
+    terms: "Terms",
+    customText: "Custom Text",
+    divider: "Divider",
+    spacer: "Spacer",
+  };
+  return {
+    id: makeQuoteTemplateId("quote_block"),
+    type,
+    label: labelMap[type] ?? "Block",
+    enabled: true,
+    content:
+      type === "text"
+        ? "Type your quote text here."
+        : type === "projectText"
+          ? "Type project-specific quote text here."
+        : type === "customText"
+        ? "Dear {{client_name}},\n\nThank you for the opportunity to quote {{project_name}}.\n\nKind regards,\n{{project_creator}}"
+        : type === "notes"
+          ? "{{project_notes}}"
+          : type === "terms"
+            ? "Quote valid for 30 days.\nLead times and final details are confirmed on approval."
+            : "",
+    heightMm: type === "spacer" ? "12" : "",
+  };
+}
+
+function createProjectQuoteTemplateColumn(span: number, blocks: QuoteTemplateBlock[] = []): QuoteTemplateColumn {
+  return {
+    id: makeQuoteTemplateId("quote_col"),
+    span,
+    style: {},
+    blocks,
+  };
+}
+
+function createProjectQuoteTemplateContainer(
+  title: string,
+  columns: QuoteTemplateColumn[],
+): QuoteTemplateContainer {
+  return {
+    id: makeQuoteTemplateId("quote_container"),
+    title,
+    enabled: true,
+    mount: "flow",
+    style: {},
+    columns,
+  };
+}
+
+function defaultProjectQuoteTemplate(): QuoteLayoutTemplate {
+  return {
+    version: 1,
+    templateName: "Company Quote Layout",
+    pageSize: "A4",
+    marginMm: "12",
+    containers: [
+      createProjectQuoteTemplateContainer("Header", [
+        createProjectQuoteTemplateColumn(6, [createProjectQuoteTemplateBlock("quoteMeta")]),
+        createProjectQuoteTemplateColumn(6, [createProjectQuoteTemplateBlock("logo"), createProjectQuoteTemplateBlock("companyDetails")]),
+      ]),
+      createProjectQuoteTemplateContainer("Client", [
+        createProjectQuoteTemplateColumn(6, [createProjectQuoteTemplateBlock("clientDetails")]),
+        createProjectQuoteTemplateColumn(6, [createProjectQuoteTemplateBlock("customText")]),
+      ]),
+      createProjectQuoteTemplateContainer("Quote Body", [
+        createProjectQuoteTemplateColumn(12, [createProjectQuoteTemplateBlock("roomBreakdown"), createProjectQuoteTemplateBlock("totals")]),
+      ]),
+      createProjectQuoteTemplateContainer("Closing", [
+        createProjectQuoteTemplateColumn(12, [createProjectQuoteTemplateBlock("notes"), createProjectQuoteTemplateBlock("terms")]),
+      ]),
+    ],
+  };
+}
+
+function normalizeProjectQuoteTemplateColumn(raw: unknown): QuoteTemplateColumn | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const blocks = Array.isArray(item.blocks) ? item.blocks.map(normalizeProjectQuoteTemplateBlock).filter(Boolean) as QuoteTemplateBlock[] : [];
+  const span = Number(item.span || 0);
+  return {
+    id: toStr(item.id, makeQuoteTemplateId("quote_col")),
+    span: Number.isFinite(span) && span > 0 ? span : 12,
+    style: normalizeQuoteBoxStyle(item.style),
+    blocks,
+  };
+}
+
+function normalizeProjectQuoteTemplateContainer(raw: unknown): QuoteTemplateContainer | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const columns = Array.isArray(item.columns) ? item.columns.map(normalizeProjectQuoteTemplateColumn).filter(Boolean) as QuoteTemplateColumn[] : [];
+  return {
+    id: toStr(item.id, makeQuoteTemplateId("quote_container")),
+    title: toStr(item.title, "Container"),
+    enabled: item.enabled !== false,
+    mount: toStr(item.mount) === "top" ? "top" : toStr(item.mount) === "bottom" ? "bottom" : "flow",
+    style: normalizeQuoteBoxStyle(item.style),
+    columns: columns.length ? columns.slice(0, 6) : [createProjectQuoteTemplateColumn(12)],
+  };
+}
+
+function normalizeLegacyProjectQuoteTemplateSection(raw: unknown): QuoteTemplateContainer | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const layout = toStr(item.layout) === "two-column";
+  const leftBlocks = Array.isArray(item.leftBlocks) ? item.leftBlocks.map(normalizeProjectQuoteTemplateBlock).filter(Boolean) as QuoteTemplateBlock[] : [];
+  const rightBlocks = Array.isArray(item.rightBlocks) ? item.rightBlocks.map(normalizeProjectQuoteTemplateBlock).filter(Boolean) as QuoteTemplateBlock[] : [];
+    return {
+      id: toStr(item.id, makeQuoteTemplateId("quote_container")),
+      title: toStr(item.title, "Container"),
+      enabled: item.enabled !== false,
+      mount: "flow",
+      style: {},
+      columns: layout
+        ? [createProjectQuoteTemplateColumn(6, leftBlocks), createProjectQuoteTemplateColumn(6, rightBlocks)]
+        : [createProjectQuoteTemplateColumn(12, leftBlocks)],
+  };
+}
+
+function normalizeProjectQuoteTemplate(raw: unknown): QuoteLayoutTemplate {
+  const fallback = defaultProjectQuoteTemplate();
+  if (!raw || typeof raw !== "object") return fallback;
+  const item = raw as Record<string, unknown>;
+  const containers = Array.isArray(item.containers)
+    ? item.containers.map(normalizeProjectQuoteTemplateContainer).filter(Boolean) as QuoteTemplateContainer[]
+    : [];
+  const legacyContainers = !containers.length && Array.isArray(item.sections)
+    ? item.sections.map(normalizeLegacyProjectQuoteTemplateSection).filter(Boolean) as QuoteTemplateContainer[]
+    : [];
+  return {
+    version: Number(item.version || 1) || 1,
+    templateName: toStr(item.templateName, fallback.templateName),
+    pageSize: toStr(item.pageSize, fallback.pageSize),
+    marginMm: toStr(item.marginMm, fallback.marginMm),
+    containers: containers.length ? containers : legacyContainers.length ? legacyContainers : fallback.containers,
+  };
+}
+
+function normalizeProjectQuoteTemplateBlock(raw: unknown): QuoteTemplateBlock | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const type = toStr(item.type) as QuoteTemplateBlockType;
+  const validTypes: QuoteTemplateBlockType[] = ["text", "projectText", "logo", "companyDetails", "clientDetails", "quoteMeta", "roomBreakdown", "totals", "notes", "terms", "customText", "divider", "spacer"];
+  if (!validTypes.includes(type)) return null;
+  return {
+    id: toStr(item.id, makeQuoteTemplateId("quote_block")),
+    type,
+    label: toStr(item.label, createProjectQuoteTemplateBlock(type).label),
+    enabled: item.enabled !== false,
+    content: toStr(item.content),
+    heightMm: toStr(item.heightMm),
+    textColor: toStr(item.textColor),
+  };
+}
+
+function stripHtmlToPlainText(value: unknown): string {
+  const raw = String(value ?? "");
+  if (!raw.trim()) return "";
+  return raw
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function interpolateQuoteTemplateText(value: string, replacements: Record<string, string>): string {
+  return String(value || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key: string) => {
+    const lookup = replacements[key];
+    return lookup == null ? "" : String(lookup);
+  });
 }
 
 function cabinetPreviewRatioFromDims(widthMm: number, heightMm: number, depthMm: number): number {
@@ -1430,6 +2008,13 @@ type BoardPillDropdownProps = {
   onChange: (value: string) => void;
 };
 
+type PartNameSuggestionOption = {
+  name: string;
+  partType: string;
+  color: string;
+  textColor: string;
+};
+
 type CompactPlainDropdownProps = {
   value: string;
   options: readonly string[];
@@ -1711,6 +2296,189 @@ function BoardPillDropdown({
   );
 }
 
+type PartNameSuggestionInputProps = {
+  value: string;
+  options: readonly PartNameSuggestionOption[];
+  disabled?: boolean;
+  autoFocus?: boolean;
+  title?: string;
+  containerStyle?: React.CSSProperties;
+  className?: string;
+  style?: React.CSSProperties;
+  onChange: (value: string) => void;
+  onBlur?: () => void;
+  onCommit?: () => void;
+  onCancel?: () => void;
+};
+
+function PartNameSuggestionInput({
+  value,
+  options,
+  disabled,
+  autoFocus,
+  title,
+  containerStyle,
+  className,
+  style,
+  onChange,
+  onBlur,
+  onCommit,
+  onCancel,
+}: PartNameSuggestionInputProps) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const blurTimeoutRef = useRef<number | null>(null);
+
+  const refreshRect = () => {
+    if (!inputRef.current) return;
+    const r = inputRef.current.getBoundingClientRect();
+    setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+  };
+
+  const filteredOptions = useMemo(() => {
+    const normalizedValue = String(value ?? "").trim().toLowerCase();
+    if (!normalizedValue) return options.slice(0, 10);
+    const starts = options.filter((option) => option.name.toLowerCase().startsWith(normalizedValue));
+    const contains = options.filter(
+      (option) =>
+        !option.name.toLowerCase().startsWith(normalizedValue) &&
+        option.name.toLowerCase().includes(normalizedValue),
+    );
+    return [...starts, ...contains].slice(0, 10);
+  }, [options, value]);
+
+  useEffect(() => {
+    return () => {
+      if (blurTimeoutRef.current != null) {
+        window.clearTimeout(blurTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    refreshRect();
+    const onDocDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inHost = Boolean(hostRef.current?.contains(target));
+      const inMenu = Boolean(menuRef.current?.contains(target));
+      if (!inHost && !inMenu) {
+        setOpen(false);
+      }
+    };
+    const onWin = () => refreshRect();
+    document.addEventListener("mousedown", onDocDown);
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [open]);
+
+  const selectOption = (nextValue: string) => {
+    onChange(nextValue);
+    setOpen(false);
+  };
+
+  const hoverColorForOption = (color: string) => (isLightHex(color) ? darkenHex(color, 0.08) : lightenHex(color, 0.08));
+
+  return (
+    <div ref={hostRef} className="relative w-full min-w-0" style={containerStyle}>
+      <input
+        ref={inputRef}
+        disabled={disabled}
+        autoFocus={autoFocus}
+        title={title}
+        value={value}
+        onFocus={() => {
+          if (blurTimeoutRef.current != null) {
+            window.clearTimeout(blurTimeoutRef.current);
+            blurTimeoutRef.current = null;
+          }
+          if (filteredOptions.length > 0) {
+            setOpen(true);
+            refreshRect();
+          }
+        }}
+        onChange={(e) => {
+          onChange(e.target.value);
+          if (!open) setOpen(true);
+        }}
+        onBlur={() => {
+          blurTimeoutRef.current = window.setTimeout(() => {
+            setOpen(false);
+            onBlur?.();
+          }, 120);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setOpen(false);
+            onCommit?.();
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setOpen(false);
+            onCancel?.();
+          }
+        }}
+        className={`w-full min-w-0 ${className ?? ""}`}
+        style={style}
+      />
+      {open && filteredOptions.length > 0 && rect && !disabled && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
+          <div
+            ref={menuRef}
+            className="pointer-events-auto fixed max-h-[240px] overflow-auto rounded-[10px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
+            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {filteredOptions.map((option) => (
+              <button
+                key={`${option.partType}_${option.name}`}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (blurTimeoutRef.current != null) {
+                    window.clearTimeout(blurTimeoutRef.current);
+                    blurTimeoutRef.current = null;
+                  }
+                  selectOption(option.name);
+                }}
+                className="flex h-8 w-full items-center rounded-[8px] border px-2 text-left transition-colors"
+                style={{
+                  backgroundColor: lightenHex(option.color, 0.14),
+                  borderColor: darkenHex(option.color, 0.18),
+                  color: option.textColor,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = hoverColorForOption(option.color);
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = lightenHex(option.color, 0.14);
+                }}
+              >
+                <span className="inline-flex w-full min-w-0 items-center text-[11px] font-semibold">
+                  <span className="truncate">{option.name}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 function normalizeSalesRooms(raw: unknown): SalesRoomRow[] {
   if (!Array.isArray(raw)) return [];
   const out: SalesRoomRow[] = [];
@@ -1730,6 +2498,84 @@ function normalizeSalesRooms(raw: unknown): SalesRoomRow[] {
   return out;
 }
 
+function normalizeSalesProducts(raw: unknown): SalesProductRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SalesProductRow[] = [];
+  const seen = new Set<string>();
+  for (const row of raw) {
+    const item = (row ?? {}) as Record<string, unknown>;
+    const name = String((typeof row === "string" ? row : item.name) ?? "").trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      name,
+      selected:
+        typeof row === "string"
+          ? true
+          : Boolean(
+              item.selected ??
+                item.included ??
+                item.checked ??
+                item.enabled ??
+                item.active ??
+                item.tick ??
+                false,
+            ),
+    });
+  }
+  return out;
+}
+
+function serializeCutlistRowsForStorage(
+  rows: CutlistRow[],
+  isCabinetryPartTypeFn: (partType: string) => boolean,
+) {
+  return rows.map((row, idx) => {
+    const isCabinetry = isCabinetryPartTypeFn(row.partType);
+    return {
+      __id: idx + 1,
+      __cutlist_key: row.id,
+      Room: row.room,
+      partType: row.partType,
+      Board: row.board,
+      Name: row.name,
+      Height: row.height,
+      Width: row.width,
+      Depth: row.depth,
+      Quantity: row.quantity,
+      Clashing: isCabinetry
+        ? ""
+        : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing,
+      fixedShelf: isCabinetry ? String(row.fixedShelf ?? "") : "",
+      adjustableShelf: isCabinetry ? String(row.adjustableShelf ?? "") : "",
+      fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
+      adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
+      Information: row.information,
+      Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
+      includeInNesting: row.includeInNesting !== false,
+    };
+  });
+}
+
+function normalizeCompanySalesProducts(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const name = String(item.name ?? "").trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    const showInSales = Boolean(item.showInSales ?? true);
+    if (!showInSales) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 export default function ProjectDetailsPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
@@ -1744,6 +2590,35 @@ export default function ProjectDetailsPage() {
   const [projectImageUploadProgress, setProjectImageUploadProgress] = useState(0);
   const [isDeletingProjectImage, setIsDeletingProjectImage] = useState(false);
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
+  const [quoteProjectTextDrafts, setQuoteProjectTextDrafts] = useState<Record<string, string>>({});
+  const [isSavingQuoteProjectText, setIsSavingQuoteProjectText] = useState(false);
+  const quoteProjectTextRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const quoteProjectTextToolbarRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const quotePrintSheetRef = useRef<HTMLDivElement | null>(null);
+  const quoteContainerRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const quotePreviewPageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const quotePreviewScrollRef = useRef<HTMLDivElement | null>(null);
+  const [quoteProjectTextPagination, setQuoteProjectTextPagination] = useState<{ blockId: string; chunks: string[] } | null>(null);
+  const [quoteContainerPagination, setQuoteContainerPagination] = useState<{ pageContainerIds: string[][] } | null>(null);
+  const [activeQuotePreviewPageId, setActiveQuotePreviewPageId] = useState("quote_page_1");
+  const [quoteProjectTextPreviewMode, setQuoteProjectTextPreviewMode] = useState<{
+    blockId: string;
+    mode: "single" | "textSplit" | "trailingOnly";
+  } | null>(null);
+  const [activeQuoteProjectTextEditBlockId, setActiveQuoteProjectTextEditBlockId] = useState<string | null>(null);
+  const [quoteProjectTextMetrics, setQuoteProjectTextMetrics] = useState<{
+    blockId: string;
+    pageHeight: number;
+    firstTextTop: number;
+    topHeight: number;
+    beforeHeight: number;
+    afterHeight: number;
+    bottomHeight: number;
+    overheadFirst: number;
+    overheadContinuation: number;
+    totalSinglePageOverflow: number;
+    textOnlyOverflow: number;
+  } | null>(null);
   const [selectedProjectFileIndex, setSelectedProjectFileIndex] = useState(0);
   const [selectedProjectFileIds, setSelectedProjectFileIds] = useState<string[]>([]);
   const [openProjectFilePreviewId, setOpenProjectFilePreviewId] = useState("");
@@ -1775,7 +2650,11 @@ export default function ProjectDetailsPage() {
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [activeBoardColourSuggestionsRowId, setActiveBoardColourSuggestionsRowId] = useState<string | null>(null);
   const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
+  const [editingSalesRoomName, setEditingSalesRoomName] = useState("");
+  const [editingSalesRoomDraftName, setEditingSalesRoomDraftName] = useState("");
   const [salesRoomDeleteBlocked, setSalesRoomDeleteBlocked] = useState<{ roomName: string } | null>(null);
+  const [isAddRoomModalOpen, setIsAddRoomModalOpen] = useState(false);
+  const [addRoomName, setAddRoomName] = useState("");
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [lockMessage, setLockMessage] = useState("");
@@ -1783,9 +2662,11 @@ export default function ProjectDetailsPage() {
   const [unlockTick, setUnlockTick] = useState(0);
   const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
   const [unlockMembers, setUnlockMembers] = useState<CompanyMemberOption[]>([]);
+  const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
   const [unlockTargetUid, setUnlockTargetUid] = useState("");
   const [companyAccess, setCompanyAccess] = useState<CompanyAccessInfo | null>(null);
   const [companyDoc, setCompanyDoc] = useState<Record<string, unknown> | null>(null);
+  const [salesNav, setSalesNav] = useState<SalesNav>("initial");
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [nestingFullscreen, setNestingFullscreen] = useState(false);
   const boardColourEditStartRef = useRef<Record<string, string>>({});
@@ -1794,6 +2675,15 @@ export default function ProjectDetailsPage() {
   const [cutlistSearch, setCutlistSearch] = useState("");
   const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
   const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
+  const [initialCutlistRows, setInitialCutlistRows] = useState<CutlistRow[]>([]);
+  const [initialCutlistSearch, setInitialCutlistSearch] = useState("");
+  const [initialCutlistPartTypeFilter, setInitialCutlistPartTypeFilter] = useState("All Part Types");
+  const [initialCutlistRoomFilter, setInitialCutlistRoomFilter] = useState("Project Cutlist");
+  const [initialCutlistEntryRoom, setInitialCutlistEntryRoom] = useState("Project Cutlist");
+  const [initialCutlistEntry, setInitialCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>(createEmptyCutlistEntry());
+  const [initialActiveCutlistPartType, setInitialActiveCutlistPartType] = useState("");
+  const [initialCutlistDraftRows, setInitialCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
+  const [initialCutlistDraftInitialized, setInitialCutlistDraftInitialized] = useState(false);
   const [cncSearch, setCncSearch] = useState("");
   const [cncPartTypeFilter, setCncPartTypeFilter] = useState("All Part Types");
   const [cncExportMenuOpen, setCncExportMenuOpen] = useState(false);
@@ -1814,25 +2704,7 @@ export default function ProjectDetailsPage() {
   const [nestingVisibilityMap, setNestingVisibilityMap] = useState<Record<string, boolean>>({});
   const [nestingCollapsedGroups, setNestingCollapsedGroups] = useState<Record<string, boolean>>({});
   const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
-  const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>({
-    partType: "",
-    board: "",
-    name: "",
-    height: "",
-    width: "",
-    depth: "",
-    quantity: "1",
-    clashing: "",
-    clashLeft: "",
-    clashRight: "",
-    fixedShelf: "",
-    adjustableShelf: "",
-    fixedShelfDrilling: "No",
-    adjustableShelfDrilling: "No",
-    information: "",
-    grain: false,
-    grainValue: "",
-  });
+  const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>(createEmptyCutlistEntry());
   const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
   const [cutlistDraftRows, setCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
   const [cutlistDraftInitialized, setCutlistDraftInitialized] = useState(false);
@@ -1857,11 +2729,20 @@ export default function ProjectDetailsPage() {
   const cutlistActivityMaxOffsetRef = useRef(0);
   const cutlistActivityRafRef = useRef<number | null>(null);
   const cutlistActivityPendingOffsetRef = useRef<number | null>(null);
-  const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
-  const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
-  const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
-  const [editingCell, setEditingCell] = useState<{ rowId: string; key: CutlistEditableField } | null>(null);
+  const cutlistActivityPersistTimeoutRef = useRef<number | null>(null);
+  const cutlistActivityProjectHydratedRef = useRef(false);
+  const lastPersistedCutlistActivityJsonRef = useRef("");
+    const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
+    const [initialCollapsedCutlistGroups, setInitialCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
+    const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
+    const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
+    const [initialPendingDeleteRowsByGroup, setInitialPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
+    const [initialDeleteConfirmArmedGroups, setInitialDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
+    const [initialDeleteAllArmed, setInitialDeleteAllArmed] = useState(false);
+    const [editingCell, setEditingCell] = useState<{ rowId: string; key: CutlistEditableField } | null>(null);
+  const [initialEditingCell, setInitialEditingCell] = useState<{ rowId: string; key: CutlistEditableField } | null>(null);
   const cncExportMenuRef = useRef<HTMLDivElement | null>(null);
+  const [initialEditingCellValue, setInitialEditingCellValue] = useState("");
   const [editingCellValue, setEditingCellValue] = useState("");
   const [editingClashLeft, setEditingClashLeft] = useState("");
   const [editingClashRight, setEditingClashRight] = useState("");
@@ -1869,6 +2750,11 @@ export default function ProjectDetailsPage() {
   const [editingAdjustableShelf, setEditingAdjustableShelf] = useState("");
   const [editingFixedShelfDrilling, setEditingFixedShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
   const [editingAdjustableShelfDrilling, setEditingAdjustableShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
+  const editingFixedShelfRef = useRef("");
+  const editingAdjustableShelfRef = useRef("");
+  const editingFixedShelfDrillingRef = useRef<"No" | "Even Spacing" | "Centre">("No");
+  const editingAdjustableShelfDrillingRef = useRef<"No" | "Even Spacing" | "Centre">("No");
+  const isCommittingCutlistCellRef = useRef(false);
   const [editingInfoFocusLine, setEditingInfoFocusLine] = useState<{ rowId: string; lineIndex: number } | null>(null);
   const [expandedCabinetryRows, setExpandedCabinetryRows] = useState<Record<string, boolean>>({});
   const [expandedDrawerRows, setExpandedDrawerRows] = useState<Record<string, boolean>>({});
@@ -2018,11 +2904,263 @@ export default function ProjectDetailsPage() {
     }
     return {};
   }, [project?.projectSettings]);
+  const projectCutlistActivityFeed = useMemo(() => {
+    const settings = (project?.projectSettings ?? {}) as Record<string, unknown>;
+    const raw =
+      settings.cutlistActivityFeeds ??
+      settings.cutlistActivities ??
+      settings.activityFeeds ??
+      null;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const item = raw as Record<string, unknown>;
+      const production = normalizeCutlistActivityEntries(item.production).map((entry) => ({
+        ...entry,
+        scope: "production" as const,
+      }));
+      const initial = normalizeCutlistActivityEntries(item.initial).map((entry) => ({
+        ...entry,
+        scope: "initial" as const,
+      }));
+      return [...production, ...initial]
+        .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+        .slice(-120);
+    }
+    return normalizeCutlistActivityEntries(raw);
+  }, [project?.projectSettings]);
   const salesRoomRows = useMemo(
     () => normalizeSalesRooms((salesPayload as Record<string, unknown>).rooms),
     [salesPayload],
   );
   const salesRoomNames = useMemo(() => salesRoomRows.map((row) => row.name), [salesRoomRows]);
+  const companyQuoteExtras = useMemo(
+    () => normalizeSalesQuoteExtras((companyDoc as Record<string, unknown> | null)?.quoteExtras),
+    [companyDoc],
+  );
+  const salesQuoteExtrasIncluded = useMemo(() => {
+    const raw = (salesPayload as Record<string, unknown>).quoteExtrasIncluded;
+    if (!Array.isArray(raw)) return [] as string[];
+    return raw.map((item) => String(item ?? "").trim()).filter(Boolean);
+  }, [salesPayload]);
+  const activeSalesQuoteExtraSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const key of salesQuoteExtrasIncluded) {
+      set.add(key);
+      const matchedById = companyQuoteExtras.find((row) => row.id === key);
+      if (matchedById?.name) set.add(matchedById.name);
+      const matchedByName = companyQuoteExtras.find((row) => row.name === key);
+      if (matchedByName?.id) set.add(matchedByName.id);
+    }
+    return set;
+  }, [companyQuoteExtras, salesQuoteExtrasIncluded]);
+  const displayedSalesQuoteExtras = useMemo(
+    () =>
+      companyQuoteExtras.map((row) => ({
+        ...row,
+        included: activeSalesQuoteExtraSet.has(row.id) || activeSalesQuoteExtraSet.has(row.name),
+      })),
+    [activeSalesQuoteExtraSet, companyQuoteExtras],
+  );
+  const salesQuoteHelpers = useMemo(
+    () => normalizeSalesQuoteHelpers((companyDoc as Record<string, unknown> | null)?.salesQuoteHelpers),
+    [companyDoc],
+  );
+  const quoteExtraContainerVisibility = useMemo(() => {
+    const grouped = new Map<string, boolean[]>();
+    displayedSalesQuoteExtras.forEach((row) => {
+      const key = String(row.templateContainerId || "").trim();
+      if (!key) return;
+      const list = grouped.get(key) ?? [];
+      list.push(Boolean(row.included));
+      grouped.set(key, list);
+    });
+    return grouped;
+  }, [displayedSalesQuoteExtras]);
+  const hiddenQuoteContainerIdSet = useMemo(() => {
+    const hidden = new Set<string>();
+    quoteExtraContainerVisibility.forEach((states, key) => {
+      if (states.length > 0 && !states.some(Boolean)) hidden.add(key);
+    });
+    return hidden;
+  }, [quoteExtraContainerVisibility]);
+  const quoteExtraBlockVisibility = useMemo(() => {
+    const grouped = new Map<string, boolean[]>();
+    displayedSalesQuoteExtras.forEach((row) => {
+      const key = String(row.templateBlockId || "").trim();
+      if (!key) return;
+      const list = grouped.get(key) ?? [];
+      list.push(Boolean(row.included));
+      grouped.set(key, list);
+    });
+    return grouped;
+  }, [displayedSalesQuoteExtras]);
+  const hiddenQuoteBlockIdSet = useMemo(() => {
+    const hidden = new Set<string>();
+    quoteExtraBlockVisibility.forEach((states, key) => {
+      if (states.length > 0 && !states.some(Boolean)) hidden.add(key);
+    });
+    return hidden;
+  }, [quoteExtraBlockVisibility]);
+  const quoteExtraPlaceholderVisibility = useMemo(() => {
+    const grouped = new Map<string, boolean[]>();
+    displayedSalesQuoteExtras.forEach((row) => {
+      const key = String(row.templatePlaceholderKey || "").trim();
+      if (!key) return;
+      const list = grouped.get(key) ?? [];
+      list.push(Boolean(row.included));
+      grouped.set(key, list);
+    });
+    return grouped;
+  }, [displayedSalesQuoteExtras]);
+  const disabledQuotePlaceholderKeySet = useMemo(() => {
+    const hidden = new Set<string>();
+    quoteExtraPlaceholderVisibility.forEach((states, key) => {
+      if (states.length > 0 && !states.some(Boolean)) hidden.add(key);
+    });
+    return hidden;
+  }, [quoteExtraPlaceholderVisibility]);
+  const rawSalesProductRows = useMemo(() => {
+    const payload = salesPayload as Record<string, unknown>;
+    const candidates = [
+      payload.products,
+      payload.productRows,
+      payload.productSelections,
+      payload.salesProducts,
+      payload.jobTypes,
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeSalesProducts(candidate);
+      if (normalized.length) return normalized;
+    }
+    return [];
+  }, [salesPayload]);
+  const companySalesProductConfigs = useMemo(() => {
+    const raw = Array.isArray((companyDoc as Record<string, unknown> | null)?.salesJobTypes)
+      ? (((companyDoc as Record<string, unknown> | null)?.salesJobTypes) as unknown[])
+      : [];
+    const defaultSheet = sheetSizeOptions.find((row) => row.isDefault) ?? sheetSizeOptions[0] ?? null;
+    const defaultSheetLabel = defaultSheet ? `${defaultSheet.h} x ${defaultSheet.w}` : "";
+    const canonicalSizeKey = (value: string) => {
+      const pair = parseSheetSizePair(value);
+      if (!pair) return "";
+      const [a, b] = pair;
+      return `${Math.max(a, b)}x${Math.min(a, b)}`;
+    };
+    return raw
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const item = row as Record<string, unknown>;
+        const name = String(item.name ?? "").trim();
+        const showInSales = Boolean(item.showInSales ?? true);
+        const sheetPriceRows = Array.isArray(item.sheetPrices) ? (item.sheetPrices as Record<string, unknown>[]) : [];
+        const parsedOptions = sheetPriceRows
+          .map((sheetRow) => {
+            const sheetSize = String(sheetRow?.sheetSize ?? "").trim();
+            const pair = parseSheetSizePair(sheetSize);
+            if (!pair) return null;
+            const [a, b] = pair;
+            return {
+              sheetSize,
+              width: Math.max(a, b),
+              height: Math.min(a, b),
+              price: toNum(sheetRow?.pricePerSheet),
+              canonicalKey: canonicalSizeKey(sheetSize),
+            };
+          })
+          .filter((option): option is { sheetSize: string; width: number; height: number; price: number; canonicalKey: string } => Boolean(option))
+          .sort((a, b) => a.width * a.height - b.width * b.height);
+        const defaultKey = canonicalSizeKey(defaultSheetLabel);
+        const defaultOption =
+          parsedOptions.find((option) => option.canonicalKey === defaultKey) ??
+          parsedOptions[0] ??
+          null;
+        return {
+          name,
+          showInSales,
+          grain: Boolean(item.grain ?? item.isGrain ?? false),
+          options: parsedOptions,
+          defaultOption,
+        };
+      })
+      .filter((row) => row.name && row.showInSales);
+  }, [companyDoc, sheetSizeOptions]);
+  const companySalesProductNames = useMemo(
+    () => companySalesProductConfigs.map((row) => row.name),
+    [companySalesProductConfigs],
+  );
+  const salesProductRows = useMemo(() => {
+    const selectedByName = new Map(
+      rawSalesProductRows.map((row) => [String(row.name || "").trim().toLowerCase(), Boolean(row.selected)]),
+    );
+    const merged = companySalesProductNames.map((name) => ({
+      name,
+      selected: Boolean(selectedByName.get(name.toLowerCase())),
+    }));
+    return merged;
+  }, [companySalesProductNames, rawSalesProductRows]);
+  const salesQuoteProjectText = useMemo(() => {
+    const raw = (salesPayload as Record<string, unknown>).quoteProjectText;
+    if (!raw || typeof raw !== "object") return {} as Record<string, string>;
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).map(([key, value]) => [key, String(value ?? "")]),
+    );
+  }, [salesPayload]);
+  const selectedSalesProductNames = useMemo(
+    () => salesProductRows.filter((row) => row.selected).map((row) => row.name),
+    [salesProductRows],
+  );
+  const quoteLayoutTemplate = useMemo(
+    () => normalizeProjectQuoteTemplate(companyDoc?.quoteLayoutTemplate),
+    [companyDoc],
+  );
+  const initialMeasureBoardOptions = useMemo(
+    () => salesProductRows.filter((row) => row.selected).map((row) => row.name),
+    [salesProductRows],
+  );
+  useEffect(() => {
+    setQuoteProjectTextDrafts(salesQuoteProjectText);
+  }, [salesQuoteProjectText]);
+  useEffect(() => {
+    const rawCutlist = (salesPayload as Record<string, unknown>).initialCutlist;
+    const rawRows =
+      rawCutlist && typeof rawCutlist === "object" && Array.isArray((rawCutlist as Record<string, unknown>).rows)
+        ? ((rawCutlist as Record<string, unknown>).rows as unknown[])
+        : [];
+    const mapped = rawRows
+      .filter((row) => row && typeof row === "object")
+      .map((row, idx) => {
+        const item = row as Record<string, unknown>;
+        const grainParsed = parseCutlistGrainFields(item.Grain ?? item.grain, item.grain);
+        const clashing = String(item.Clashing ?? item.clashing ?? "").trim();
+        const split = splitClashing(clashing);
+        return {
+          id: String(item.__cutlist_key ?? item.__id ?? `im_row_${idx + 1}`),
+          room: String(item.Room ?? item.room ?? "Project Cutlist"),
+          partType: String(item.partType ?? item.PartType ?? ""),
+          board: String(item.Board ?? item.board ?? ""),
+          name: String(item.Name ?? item.name ?? ""),
+          height: normalizeCutlistDimensionValue(item.Height ?? item.height),
+          width: normalizeCutlistDimensionValue(item.Width ?? item.width),
+          depth: normalizeCutlistDimensionValue(item.Depth ?? item.depth),
+          quantity: String(item.Quantity ?? item.quantity ?? "1"),
+          clashing,
+          clashLeft: String(item.clashLeft ?? split.left ?? "").trim().toUpperCase(),
+          clashRight: String(item.clashRight ?? split.right ?? "").trim().toUpperCase(),
+          fixedShelf: String(item.fixedShelf ?? item.FixedShelf ?? ""),
+          adjustableShelf: String(item.adjustableShelf ?? item.AdjustableShelf ?? ""),
+          fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item.FixedShelfDrilling ?? "No"),
+          adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item.AdjustableShelfDrilling ?? "No"),
+          information: String(item.Information ?? item.information ?? ""),
+          grain: grainParsed.grain,
+          grainValue: grainParsed.grainValue,
+          includeInNesting:
+            !(
+              item.includeInNesting === false ||
+              String(item.includeInNesting ?? "").trim().toLowerCase() === "false"
+            ),
+        } satisfies CutlistRow;
+      });
+    setInitialCutlistRows(mapped);
+  }, [salesPayload]);
   const boardBaseLabelFromRow = (row: ProductionBoardRow) => {
     const colour = String(row.colour || "").trim();
     const thicknessRaw = String(row.thickness || "").trim();
@@ -2102,6 +3240,17 @@ export default function ProjectDetailsPage() {
   const boardLacquerFor = (value: string) => Boolean(boardLacquerByLabel[resolveBoardKey(value)]);
   const boardThicknessFor = (value: string) => boardThicknessByLabel[resolveBoardKey(value)] ?? 0;
   const boardGrainFor = (value: string) => Boolean(boardGrainByLabel[resolveBoardKey(value)]);
+  const initialMeasureBoardGrainMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    for (const row of companySalesProductConfigs) {
+      const key = String(row.name || "").trim().toLowerCase();
+      if (!key) continue;
+      out[key] = Boolean(row.grain);
+    }
+    return out;
+  }, [companySalesProductConfigs]);
+  const initialMeasureBoardGrainFor = (value: string) =>
+    Boolean(initialMeasureBoardGrainMap[String(value || "").trim().toLowerCase()]);
   const boardDisplayLabel = (value: string) => {
     const key = resolveBoardKey(value);
     return boardMetaByKey[key]?.label ?? String(value || "").trim();
@@ -2115,6 +3264,15 @@ export default function ProjectDetailsPage() {
   const showCutlistGrainColumn = useMemo(
     () => productionForm.boardTypes.some((row) => Boolean(row.grain)),
     [productionForm.boardTypes],
+  );
+  const showInitialCutlistGrainColumn = useMemo(
+    () =>
+      salesProductRows.some((row) => row.selected && initialMeasureBoardGrainFor(row.name)) ||
+      initialCutlistRows.some((row) => initialMeasureBoardGrainFor(String(row.board || "").trim()) || String(row.grainValue ?? "").trim().length > 0) ||
+      initialCutlistDraftRows.some((row) => initialMeasureBoardGrainFor(String(row.board || "").trim()) || String(row.grainValue ?? "").trim().length > 0) ||
+      initialMeasureBoardGrainFor(String(initialCutlistEntry.board || "").trim()) ||
+      String(initialCutlistEntry.grainValue ?? "").trim().length > 0,
+    [salesProductRows, initialCutlistRows, initialCutlistDraftRows, initialCutlistEntry, initialMeasureBoardGrainMap],
   );
   const grainDimensionOptions = (height: string, width: string, depth: string) => {
     const h = String(height ?? "").trim();
@@ -2156,6 +3314,28 @@ export default function ProjectDetailsPage() {
       return out;
     }
     return grainDimensionOptions(String(rowLike.height ?? ""), String(rowLike.width ?? ""), String(rowLike.depth ?? ""));
+  };
+  const initialMeasureGrainDimensionOptionsForRow = (
+    rowLike: Pick<CutlistRow, "partType" | "height" | "width" | "depth">,
+  ) => {
+    const out: string[] = [];
+    const pushUnique = (value: string) => {
+      const normalized = String(value ?? "").trim();
+      if (!normalized || out.includes(normalized)) return;
+      out.push(normalized);
+    };
+    const h = String(rowLike.height ?? "").trim();
+    const w = String(rowLike.width ?? "").trim();
+    const d = String(rowLike.depth ?? "").trim();
+    if (isCabinetryPartType(String(rowLike.partType || ""))) {
+      pushUnique(h);
+      pushUnique(w);
+      return out;
+    }
+    pushUnique(h);
+    pushUnique(w);
+    pushUnique(d);
+    return out;
   };
   const cabinetryPieceGrainValue = (row: CutlistRow, piece: CabinetryDerivedPiece): string => {
     const rowGrainValue = String(row.grainValue ?? "").trim();
@@ -2265,6 +3445,9 @@ export default function ProjectDetailsPage() {
   const prevResolvedTabRef = useRef<string>(resolvedTab);
   useEffect(() => {
     const prev = prevResolvedTabRef.current;
+    if (resolvedTab === "sales" && prev !== "sales") {
+      setSalesNav("items");
+    }
     if (resolvedTab === "production" && prev !== "production") {
       setProductionNav("overview");
       setNestingFullscreen(false);
@@ -2364,6 +3547,12 @@ export default function ProjectDetailsPage() {
     const cleaned = production.map((v) => String(v ?? "").trim()).filter(Boolean);
     return cleaned.length ? cleaned : ["Part Type", "Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
   }, [companyDoc?.cutlistColumnsByContext]);
+  const initialCutlistColumns = useMemo(() => {
+    const raw = (companyDoc?.cutlistColumnsByContext ?? {}) as Record<string, unknown>;
+    const initial = Array.isArray(raw.initialMeasure) ? raw.initialMeasure : [];
+    const cleaned = initial.map((v) => String(v ?? "").trim()).filter(Boolean);
+    return cleaned.length ? cleaned : ["Part Type", "Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
+  }, [companyDoc?.cutlistColumnsByContext]);
 
   const partTypeOptions = useMemo(() => {
     const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc?.partTypes : [];
@@ -2372,6 +3561,26 @@ export default function ProjectDetailsPage() {
       .map((row) => toStr((row as Record<string, unknown>).name))
       .filter(Boolean);
     return parsed.length ? parsed : ["Cabinet", "Drawer", "Panel", "Front"];
+  }, [companyDoc?.partTypes]);
+  const initialMeasurePartTypeOptions = useMemo(() => {
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc?.partTypes : [];
+    const parsed = raw
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const item = row as Record<string, unknown>;
+        const name = toStr(item.name);
+        const initialMeasure = Boolean(
+          item.initialMeasure ??
+          item.inInitialMeasure ??
+          item["Initial Measure"] ??
+          item["initial measure"] ??
+          false,
+        );
+        return { name, initialMeasure };
+      })
+      .filter((row) => row.name && row.initialMeasure)
+      .map((row) => row.name);
+    return parsed.length ? parsed : [];
   }, [companyDoc?.partTypes]);
   const cutlistUiStateStorageKey = useMemo(() => {
     if (!project?.id) return "";
@@ -2562,13 +3771,16 @@ export default function ProjectDetailsPage() {
   ) => {
     const msg = String(message || "").trim();
     if (!msg) return;
-    const newId = cutlistActivityNextIdRef.current++;
+    const scope: "production" | "initial" = opts?.scope === "initial" ? "initial" : "production";
+    const newId = Math.max(Date.now(), cutlistActivityNextIdRef.current + 1);
+    cutlistActivityNextIdRef.current = newId;
     setCutlistActivityFeed((prev) => {
       const key = String(opts?.dedupeKey || "").trim();
       let next = [...prev];
-      if (key) next = next.filter((item) => String(item.dedupeKey || "") !== key);
+      if (key) next = next.filter((item) => !(String(item.dedupeKey || "") === key && (item.scope || "production") === scope));
       next.push({
         id: newId,
+        scope,
         message: msg,
         action: String(opts?.action || "").trim(),
         actionKind: (String(opts?.actionKind || "").trim().toLowerCase() as "clear" | "undo" | "") || "",
@@ -2625,10 +3837,12 @@ export default function ProjectDetailsPage() {
     if (key === "depth") return "Depth";
     if (key === "quantity") return "Quantity";
     if (key === "clashing") return "Clashing";
+    if (key === "grain") return "Grain";
     return key;
   };
   const cutlistValueForActivity = (row: CutlistRow, key: CutlistEditableField) => {
     if (key === "board") return boardDisplayLabel(String(row.board || "").trim());
+    if (key === "grain") return String(row.grainValue || "").trim();
     if (key === "clashing") {
       if (isCabinetryPartType(row.partType)) {
         const fs = String(row.fixedShelf || "").trim();
@@ -2785,25 +3999,44 @@ export default function ProjectDetailsPage() {
     window.setTimeout(scrollCutlistActivityToLatest, 0);
     window.setTimeout(scrollCutlistActivityToLatest, 80);
   };
+  const isAnyFullscreenCutlistActivityView =
+    (resolvedTab === "production" && productionAccess.view && productionNav === "cutlist") ||
+    (resolvedTab === "sales" && salesAccess.view && salesNav === "initial");
+  const activeFullscreenCutlistActivityFeedLength =
+    resolvedTab === "production" && productionAccess.view && productionNav === "cutlist"
+      ? cutlistActivityFeed.filter((entry) => (entry.scope || "production") === "production").length
+      : resolvedTab === "sales" && salesAccess.view && salesNav === "initial"
+        ? cutlistActivityFeed.filter((entry) => (entry.scope || "production") === "initial").length
+        : 0;
   useEffect(() => {
-    const isFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
-    if (!isFullscreen) return;
+    if (!isAnyFullscreenCutlistActivityView) return;
     ensureCutlistActivityLatestVisible();
-  }, [cutlistActivityFeed, resolvedTab, productionAccess.view, productionNav]);
+  }, [isAnyFullscreenCutlistActivityView, activeFullscreenCutlistActivityFeedLength]);
   useEffect(() => {
-    const isFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
-    if (!isFullscreen) return;
+    if (!isAnyFullscreenCutlistActivityView) return;
     const onResize = () => {
       recalcCutlistActivityBounds(false);
     };
     window.addEventListener("resize", onResize);
     onResize();
     return () => window.removeEventListener("resize", onResize);
-  }, [resolvedTab, productionAccess.view, productionNav]);
+  }, [isAnyFullscreenCutlistActivityView]);
   const activeCutlistEntryColor = partTypeColors[cutlistEntry.partType] ?? "#CBD5E1";
   const activeCutlistEntryTextColor = isLightHex(activeCutlistEntryColor) ? "#1F2937" : "#F8FAFC";
   const activeCutlistEntryFieldBg = lightenHex(activeCutlistEntryColor, 0.12);
   const activeCutlistEntryFieldBorder = darkenHex(activeCutlistEntryColor, 0.2);
+  const activeInitialCutlistEntryColor = partTypeColors[initialCutlistEntry.partType] ?? "#CBD5E1";
+  const activeInitialCutlistEntryTextColor = isLightHex(activeInitialCutlistEntryColor) ? "#1F2937" : "#F8FAFC";
+  const activeInitialCutlistEntryFieldBg = lightenHex(activeInitialCutlistEntryColor, 0.12);
+  const activeInitialCutlistEntryFieldBorder = darkenHex(activeInitialCutlistEntryColor, 0.2);
+  const productionCutlistActivityFeed = useMemo(
+    () => cutlistActivityFeed.filter((entry) => (entry.scope || "production") === "production"),
+    [cutlistActivityFeed],
+  );
+  const initialCutlistActivityFeed = useMemo(
+    () => cutlistActivityFeed.filter((entry) => (entry.scope || "production") === "initial"),
+    [cutlistActivityFeed],
+  );
 
   const salesRooms = useMemo(() => {
     const base = salesRoomNames.length ? salesRoomNames : [];
@@ -2829,10 +4062,88 @@ export default function ProjectDetailsPage() {
     () => Array.from(new Set(cutlistRoomTabs.map((tab) => tab.filter))),
     [cutlistRoomTabs],
   );
+  const initialCutlistRoomTabs = useMemo(() => {
+    const fromRows = initialCutlistRows
+      .map((row) => String(row.room || "").trim())
+      .filter((v) => v && v !== "Project Cutlist");
+    const mergedRooms = Array.from(new Set([...salesRooms, ...fromRows]));
+    const tabs = mergedRooms.map((room) => ({ label: room, filter: room }));
+    tabs.push({ label: "Project Cutlist", filter: "Project Cutlist" });
+    return tabs;
+  }, [initialCutlistRows, salesRooms]);
+  const initialCutlistAddedRoomTabs = useMemo(
+    () => initialCutlistRoomTabs.filter((tab) => tab.filter !== "Project Cutlist"),
+    [initialCutlistRoomTabs],
+  );
+  const initialCutlistEntryRoomOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          initialCutlistRoomTabs
+            .map((tab) => tab.filter)
+            .filter((value) => value && value !== "Project Cutlist"),
+        ),
+      ),
+    [initialCutlistRoomTabs],
+  );
+  const productionPartNameSuggestionsByRoom = useMemo(() => {
+    const out: Record<string, PartNameSuggestionOption[]> = {};
+    const seenByRoom = new Map<string, Set<string>>();
+    for (const row of initialCutlistRows) {
+      const roomKey = String(row.room || "Project Cutlist").trim().toLowerCase() || "project cutlist";
+      const name = String(row.name || "").trim();
+      if (!name) continue;
+      const nameKey = name.toLowerCase();
+      const seen = seenByRoom.get(roomKey) ?? new Set<string>();
+      if (seen.has(nameKey)) continue;
+      seen.add(nameKey);
+      seenByRoom.set(roomKey, seen);
+      const partType = String(row.partType || "").trim();
+      const color = partTypeColors[partType] ?? "#CBD5E1";
+      const textColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
+      if (!out[roomKey]) out[roomKey] = [];
+      out[roomKey].push({ name, partType, color, textColor });
+    }
+    for (const key of Object.keys(out)) {
+      out[key].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return out;
+  }, [initialCutlistRows, partTypeColors]);
+  const productionUsedPartNamesByRoom = useMemo(() => {
+    const out: Record<string, Set<string>> = {};
+    const add = (room: string, name: string) => {
+      const roomKey = String(room || "").trim().toLowerCase() || "project cutlist";
+      const normalizedName = String(name || "").trim().toLowerCase();
+      if (!normalizedName) return;
+      if (!out[roomKey]) out[roomKey] = new Set<string>();
+      out[roomKey].add(normalizedName);
+    };
+    for (const row of cutlistRows) {
+      add(row.room, row.name);
+    }
+    for (const row of cutlistDraftRows) {
+      add(row.room, row.name);
+    }
+    add(cutlistEntryRoom, cutlistEntry.name);
+    return out;
+  }, [cutlistDraftRows, cutlistEntry.name, cutlistEntryRoom, cutlistRows]);
+  const productionPartNameSuggestionsForRoom = (room: string, currentName?: string) => {
+    const roomKey = String(room || "").trim().toLowerCase() || "project cutlist";
+    const currentKey = String(currentName || "").trim().toLowerCase();
+    const used = new Set(productionUsedPartNamesByRoom[roomKey] ?? []);
+    if (currentKey) used.delete(currentKey);
+    return (productionPartNameSuggestionsByRoom[roomKey] ?? []).filter(
+      (option) => !used.has(option.name.trim().toLowerCase()),
+    );
+  };
 
   const defaultCutlistRoom = useMemo(
     () => cutlistEntryRoomOptions[0] ?? "Project Cutlist",
     [cutlistEntryRoomOptions],
+  );
+  const defaultInitialCutlistRoom = useMemo(
+    () => initialCutlistEntryRoomOptions[0] ?? "Project Cutlist",
+    [initialCutlistEntryRoomOptions],
   );
 
   const defaultClashingForPartType = (partType: string, boardLabel: string) => {
@@ -3055,6 +4366,581 @@ export default function ProjectDetailsPage() {
     return pieces;
   };
 
+  const salesRoomSheetAnalysis = useMemo(() => {
+    type FlatPiece = {
+      id: string;
+      row: CutlistRow;
+      room: string;
+      productName: string;
+      width: number;
+      height: number;
+      area: number;
+    };
+    type SheetOption = {
+      sheetSize: string;
+      width: number;
+      height: number;
+      price: number;
+    };
+    type SheetPlacement = {
+      piece: FlatPiece;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    };
+    type SheetLayout = { index: number; placements: SheetPlacement[] };
+    type RoomSheetBucket = {
+      room: string;
+      productName: string;
+      option: SheetOption;
+      pieces: FlatPiece[];
+      usedLargerThanDefault: boolean;
+    };
+    type LargerSheetWarningEntry = {
+      room: string;
+      productName: string;
+      sheetSize: string;
+      sheetCount: number;
+      addedToQuote: boolean;
+    };
+
+    const toPositiveNum = (v: unknown) => {
+      const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+    const formatCurrencyValue = (value: number) =>
+      new Intl.NumberFormat("en-NZ", {
+        style: "currency",
+        currency: "NZD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(Math.max(0, value));
+    const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
+    const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
+    const settings = {
+      sheetHeight: Math.max(100, toNum(rawNested.sheetHeight ?? rawNested.h ?? 2440) || 2440),
+      sheetWidth: Math.max(100, toNum(rawNested.sheetWidth ?? rawNested.w ?? 1220) || 1220),
+      kerf: Math.max(0, toNum(rawNested.kerf ?? 5) || 5),
+      margin: Math.max(0, toNum(rawNested.margin ?? 10) || 10),
+    };
+    const productMap = new Map(
+      companySalesProductConfigs.map((row) => [
+        row.name.trim().toLowerCase(),
+        {
+          defaultOption: row.defaultOption
+            ? {
+                sheetSize: row.defaultOption.sheetSize,
+                width: row.defaultOption.width,
+                height: row.defaultOption.height,
+                price: row.defaultOption.price,
+              }
+            : null,
+          options: row.options.map((option) => ({
+            sheetSize: option.sheetSize,
+            width: option.width,
+            height: option.height,
+            price: option.price,
+          })),
+        },
+      ]),
+    );
+
+    const expandedRows: CutlistRow[] = [];
+    for (const row of initialCutlistRows) {
+      if (isCabinetryPartType(row.partType)) {
+        const pieces = buildCabinetryDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          expandedRows.push({
+            ...row,
+            id: `${row.id}__cab__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      if (isDrawerPartType(row.partType)) {
+        const pieces = buildDrawerDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          expandedRows.push({
+            ...row,
+            id: `${row.id}__drw__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      expandedRows.push(row);
+    }
+
+    const piecesByRoomAndSheet = new Map<string, RoomSheetBucket>();
+    for (const row of expandedRows) {
+      const room = String(row.room || "").trim();
+      const productName = String(row.board || "").trim();
+      if (!room || !productName) continue;
+      const product = productMap.get(productName.toLowerCase());
+      if (!product || !product.options.length) continue;
+
+      const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+      const dimH = toPositiveNum(row.height);
+      const dimW = toPositiveNum(row.width);
+      const dimD = toPositiveNum(row.depth);
+      const grainDim = toPositiveNum(row.grainValue);
+      let width = dimW || dimD || 120;
+      let height = dimH || dimD || 80;
+
+      if (grainDim > 0) {
+        const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
+        const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
+        if (hasGrainMatch) {
+          const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
+          const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
+          width = grainDim;
+          height = cross;
+        }
+      }
+
+      const fitsSheet = (option: SheetOption) => {
+        const innerW = Math.max(80, option.width - settings.margin * 2);
+        const innerH = Math.max(80, option.height - settings.margin * 2);
+        return (width <= innerW && height <= innerH) || (height <= innerW && width <= innerH);
+      };
+
+      const defaultOption = product.defaultOption;
+      const requiresLargerThanDefault = defaultOption ? !fitsSheet(defaultOption) : false;
+      const chosenOption =
+        (defaultOption && fitsSheet(defaultOption) ? defaultOption : null) ??
+        product.options.find((option) => fitsSheet(option)) ??
+        product.options[product.options.length - 1];
+      if (!chosenOption) continue;
+
+      const key = `${room.toLowerCase()}__${productName.toLowerCase()}__${chosenOption.sheetSize}`;
+      const bucket = piecesByRoomAndSheet.get(key) ?? {
+        room,
+        productName,
+        option: chosenOption,
+        pieces: [],
+        usedLargerThanDefault: requiresLargerThanDefault,
+      };
+      bucket.usedLargerThanDefault = bucket.usedLargerThanDefault || requiresLargerThanDefault;
+      for (let i = 0; i < qty; i += 1) {
+        bucket.pieces.push({
+          id: `${row.id}_${i + 1}`,
+          row,
+          room,
+          productName,
+          width: Math.max(30, width),
+          height: Math.max(24, height),
+          area: Math.max(1, width * height),
+        });
+      }
+      piecesByRoomAndSheet.set(key, bucket);
+    }
+
+    const priceByRoom: Record<string, number> = {};
+    const largerSheetWarningEntries: LargerSheetWarningEntry[] = [];
+    for (const bucket of piecesByRoomAndSheet.values()) {
+      const sheetWidth = Math.max(200, bucket.option.width);
+      const sheetHeight = Math.max(150, bucket.option.height);
+      const innerW = Math.max(80, sheetWidth - settings.margin * 2);
+      const innerH = Math.max(80, sheetHeight - settings.margin * 2);
+      const kerf = Math.max(0, settings.kerf);
+      const sorted = [...bucket.pieces].sort((a, b) => b.area - a.area);
+
+      const sheets: SheetLayout[] = [];
+      let current: SheetLayout = { index: 1, placements: [] };
+      let x = 0;
+      let y = 0;
+      let rowMax = 0;
+
+      const startNewSheet = () => {
+        if (current.placements.length > 0) sheets.push(current);
+        current = { index: sheets.length + 1, placements: [] };
+        x = 0;
+        y = 0;
+        rowMax = 0;
+      };
+
+      for (const piece of sorted) {
+        let w = piece.width;
+        let h = piece.height;
+        const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
+
+        if (!grainLocked) {
+          const canNormalFit = w <= innerW && h <= innerH;
+          const canRotatedFit = h <= innerW && w <= innerH;
+          const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
+
+          if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
+            const nextW = h;
+            const nextH = w;
+            w = nextW;
+            h = nextH;
+          } else if (!canNormalFit && !canRotatedFit) {
+            const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
+            const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
+            if (rotatedOverflow < normalOverflow) {
+              const nextW = h;
+              const nextH = w;
+              w = nextW;
+              h = nextH;
+            }
+          }
+        }
+
+        w = Math.min(w, innerW);
+        h = Math.min(h, innerH);
+
+        if (x > 0 && x + w > innerW) {
+          x = 0;
+          y += rowMax + kerf;
+          rowMax = 0;
+        }
+        if (y > 0 && y + h > innerH) {
+          startNewSheet();
+        }
+        if (x > 0 && x + w > innerW) {
+          x = 0;
+          y += rowMax + kerf;
+          rowMax = 0;
+        }
+        if (y > 0 && y + h > innerH) {
+          startNewSheet();
+        }
+
+        current.placements.push({ piece, x, y, w, h });
+        x += w + kerf;
+        rowMax = Math.max(rowMax, h);
+      }
+
+      if (current.placements.length > 0) sheets.push(current);
+      const bucketCost = sheets.length * bucket.option.price;
+      priceByRoom[bucket.room.toLowerCase()] = (priceByRoom[bucket.room.toLowerCase()] ?? 0) + bucketCost;
+      if (bucket.usedLargerThanDefault && sheets.length > 0) {
+        largerSheetWarningEntries.push({
+          room: bucket.room,
+          productName: bucket.productName,
+          sheetSize: bucket.option.sheetSize,
+          sheetCount: sheets.length,
+          addedToQuote: true,
+        });
+      }
+    }
+
+    const out: Record<string, string> = {};
+    for (const row of salesRoomRows) {
+      const roomName = String(row.name || "").trim();
+      const lower = roomName.toLowerCase();
+      out[lower] = formatCurrencyValue(priceByRoom[lower] ?? 0);
+    }
+    return {
+      pricingByRoom: out,
+      largerSheetWarningEntries,
+      largerSheetPricingAddedToQuote:
+        largerSheetWarningEntries.length > 0 && largerSheetWarningEntries.every((entry) => entry.addedToQuote),
+    };
+  }, [
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+    companySalesProductConfigs,
+    initialCutlistRows,
+    isCabinetryPartType,
+    isDrawerPartType,
+    companyDoc,
+    salesRoomRows,
+  ]);
+  const salesRoomPricingByName = salesRoomSheetAnalysis.pricingByRoom;
+  const initialMeasureLargerSheetWarningsByRoom = useMemo(() => {
+    const grouped = new Map<string, Array<{ productName: string; sheetSize: string; sheetCount: number }>>();
+    for (const entry of salesRoomSheetAnalysis.largerSheetWarningEntries) {
+      const roomName = String(entry.room || "").trim() || "Project Cutlist";
+      const list = grouped.get(roomName) ?? [];
+      list.push({
+        productName: String(entry.productName || "").trim(),
+        sheetSize: String(entry.sheetSize || "").trim(),
+        sheetCount: Math.max(0, Number(entry.sheetCount) || 0),
+      });
+      grouped.set(roomName, list);
+    }
+    return Array.from(grouped.entries()).map(([room, entries]) => ({
+      room,
+      entries,
+    }));
+  }, [salesRoomSheetAnalysis.largerSheetWarningEntries]);
+  const displayedSalesRoomRows = useMemo(
+    () =>
+      salesRoomRows.map((row) => ({
+        ...row,
+        totalPrice: salesRoomPricingByName[String(row.name || "").trim().toLowerCase()] ?? "$0.00",
+      })),
+    [salesRoomPricingByName, salesRoomRows],
+  );
+  const displayedSalesRoomsTotal = useMemo(
+    () =>
+      displayedSalesRoomRows.reduce((sum, row) => {
+        if (!row.included) return sum;
+        const parsed = Number.parseFloat(String(row.totalPrice ?? "").replace(/[^0-9.-]/g, ""));
+        return sum + (Number.isFinite(parsed) ? parsed : 0);
+      }, 0),
+    [displayedSalesRoomRows],
+  );
+  const displayedSalesQuoteExtrasTotal = useMemo(
+    () =>
+      displayedSalesQuoteExtras.reduce((sum, row) => {
+        if (!row.included) return sum;
+        const parsed = Number.parseFloat(String(row.price ?? "").replace(/[^0-9.-]/g, ""));
+        return sum + (Number.isFinite(parsed) ? parsed : 0);
+      }, 0),
+    [displayedSalesQuoteExtras],
+  );
+  const displayedSalesQuoteGrandTotal = useMemo(
+    () => displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal,
+    [displayedSalesQuoteExtrasTotal, displayedSalesRoomsTotal],
+  );
+  const displayedSalesQuoteDiscountTotal = useMemo(() => {
+    const rawTiers = Array.isArray((companyDoc as Record<string, unknown> | null)?.salesQuoteDiscountTiers)
+      ? (((companyDoc as Record<string, unknown> | null)?.salesQuoteDiscountTiers) as Record<string, unknown>[])
+      : [];
+    for (const tier of rawTiers) {
+      const low = parseCurrencyNumber(tier?.low);
+      const high = parseCurrencyNumber(tier?.high);
+      const discount = parseCurrencyNumber(tier?.discount);
+      if (high <= 0 || discount <= 0) continue;
+      if (displayedSalesQuoteGrandTotal >= low && displayedSalesQuoteGrandTotal <= high) {
+        return formatCurrencyValue(discount);
+      }
+    }
+    return formatCurrencyValue(0);
+  }, [companyDoc, displayedSalesQuoteGrandTotal]);
+  const salesMinusOffQuoteTotalEnabled = useMemo(
+    () => Boolean((companyDoc as Record<string, unknown> | null)?.salesMinusOffQuoteTotal),
+    [companyDoc],
+  );
+  const displayedSalesQuoteFinalTotal = useMemo(() => {
+    if (!salesMinusOffQuoteTotalEnabled) return displayedSalesQuoteGrandTotal;
+    return Math.max(0, displayedSalesQuoteGrandTotal - parseCurrencyNumber(displayedSalesQuoteDiscountTotal));
+  }, [displayedSalesQuoteDiscountTotal, displayedSalesQuoteGrandTotal, salesMinusOffQuoteTotalEnabled]);
+  const includedSalesRoomsForQuote = useMemo(
+    () => displayedSalesRoomRows.filter((row) => Boolean(row.included)),
+    [displayedSalesRoomRows],
+  );
+  const projectCreatorMember = useMemo(() => {
+    if (!project) return null;
+
+    const creatorUid = String(project.createdByUid ?? "").trim();
+    if (creatorUid) {
+      const byUid = companyMembers.find((member) => String(member.uid || "").trim() === creatorUid);
+      if (byUid) return byUid;
+    }
+
+    const creatorNameKey = normalizePersonLookup(project.createdByName);
+    if (!creatorNameKey) return null;
+
+    return (
+      companyMembers.find((member) => {
+        const displayKey = normalizePersonLookup(member.displayName);
+        const membershipKey = normalizePersonLookup(member.membershipDisplayName);
+        const emailKey = normalizePersonLookup(String(member.email || "").split("@")[0] || "");
+        return displayKey === creatorNameKey || membershipKey === creatorNameKey || emailKey === creatorNameKey;
+      }) ?? null
+    );
+  }, [companyMembers, project]);
+  const projectAssignedMember = useMemo(() => {
+    if (!project) return null;
+
+    const assignedUid = String(project.assignedToUid ?? "").trim();
+    if (assignedUid) {
+      const byUid = companyMembers.find((member) => String(member.uid || "").trim() === assignedUid);
+      if (byUid) return byUid;
+    }
+
+    const assignedNameKey = normalizePersonLookup(project.assignedToName ?? project.assignedTo);
+    if (!assignedNameKey) return null;
+
+    return (
+      companyMembers.find((member) => {
+        const displayKey = normalizePersonLookup(member.displayName);
+        const membershipKey = normalizePersonLookup(member.membershipDisplayName);
+        const emailKey = normalizePersonLookup(String(member.email || "").split("@")[0] || "");
+        return displayKey === assignedNameKey || membershipKey === assignedNameKey || emailKey === assignedNameKey;
+      }) ?? null
+    );
+  }, [companyMembers, project]);
+  const isCurrentProjectCreator = useMemo(
+    () =>
+      Boolean(
+        user?.uid &&
+          project?.createdByUid &&
+          String(user.uid).trim() === String(project.createdByUid).trim(),
+      ),
+    [project?.createdByUid, user?.uid],
+  );
+  const quoteTemplateReplacements = useMemo<Record<string, string>>(() => {
+    const companyName = toStr(
+      companyDoc?.companyName ??
+        companyDoc?.name ??
+        ((companyDoc?.applicationPreferences as Record<string, unknown> | undefined)?.companyName ?? ""),
+      "Company",
+    );
+    const clientAddress = toStr(project?.clientAddress, "-");
+    const creatorName =
+      toStr(projectCreatorMember?.displayName, "") || toStr(project?.createdByName, "-");
+    const rawAssignedName = toStr(projectAssignedMember?.displayName, "") || toStr(project?.assignedToName, "");
+    const fallbackAssignedName = toStr(project?.assignedTo, "");
+    const assignedName =
+      rawAssignedName ||
+      (fallbackAssignedName && normalizePersonLookup(fallbackAssignedName) !== normalizePersonLookup(project?.createdByName)
+        ? fallbackAssignedName
+        : "");
+    return {
+      company_name: companyName,
+      project_name: toStr(project?.name, "-"),
+      client_name: toStr(project?.customer, "-"),
+      client_first_name: toStr(project?.customer, "-").split(/\s+/).filter(Boolean)[0] || "-",
+      client_phone: toStr(project?.clientPhone, "-"),
+      client_email: toStr(project?.clientEmail, "-"),
+      client_address: clientAddress,
+      client_region: toStr(extractClientRegion(project?.clientAddress, project?.region), "-"),
+      quote_generated_date: dashboardStyleDateOnly(new Date().toISOString()),
+      date_generated: dashboardStyleDateOnly(new Date().toISOString()),
+      project_creator: creatorName,
+      project_creator_mobile: toStr(projectCreatorMember?.mobile, "-"),
+      project_creator_email: toStr(projectCreatorMember?.email, "-"),
+      project_assigned: toStr(assignedName, "-"),
+      project_assigned_mobile: toStr(projectAssignedMember?.mobile, "-"),
+      project_assigned_email: toStr(projectAssignedMember?.email, "-"),
+      total_price: formatCurrencyValue(displayedSalesQuoteFinalTotal),
+      quote_total: formatCurrencyValue(displayedSalesQuoteFinalTotal),
+      discount_total: displayedSalesQuoteDiscountTotal,
+      incl_gst: "(inc. G.S.T.)",
+      project_notes: stripHtmlToPlainText(project?.notes),
+      included_rooms: includedSalesRoomsForQuote.map((row) => row.name).join(", "),
+      room_count: String(includedSalesRoomsForQuote.length),
+      selected_products: selectedSalesProductNames.join(", "),
+      product_count: String(selectedSalesProductNames.length),
+    };
+  }, [companyDoc, displayedSalesQuoteDiscountTotal, displayedSalesQuoteFinalTotal, includedSalesRoomsForQuote, project, projectAssignedMember, projectCreatorMember, selectedSalesProductNames]);
+  const effectiveQuoteTemplateReplacements = useMemo(() => {
+    const next = { ...quoteTemplateReplacements };
+    disabledQuotePlaceholderKeySet.forEach((key) => {
+      next[key] = "";
+    });
+    return next;
+  }, [disabledQuotePlaceholderKeySet, quoteTemplateReplacements]);
+  const persistQuoteProjectText = async (blockId: string, fullValue: string) => {
+    if (!project) return;
+    const trimmedValue = String(fullValue ?? "");
+    const nextQuoteProjectText = { ...salesQuoteProjectText };
+    if (trimmedValue.trim()) nextQuoteProjectText[blockId] = trimmedValue;
+    else delete nextQuoteProjectText[blockId];
+    const nextSales = {
+      ...salesPayload,
+      quoteProjectText: nextQuoteProjectText,
+    } as Record<string, unknown>;
+    const nextProjectSettings = {
+      ...((project.projectSettings ?? {}) as Record<string, unknown>),
+      sales: nextSales,
+    };
+    setIsSavingQuoteProjectText(true);
+    const ok = await updateProjectPatch(project, {
+      sales: nextSales,
+      salesJson: JSON.stringify(nextSales),
+      projectSettings: nextProjectSettings,
+      projectSettingsJson: JSON.stringify(nextProjectSettings),
+    });
+    setIsSavingQuoteProjectText(false);
+    if (!ok) return;
+    setProject((prevProject) =>
+      prevProject
+        ? {
+            ...prevProject,
+            sales: nextSales as never,
+            projectSettings: {
+              ...(prevProject.projectSettings ?? {}),
+              sales: nextSales,
+            },
+          }
+        : prevProject,
+    );
+  };
+
+  const insertSalesQuoteHelperAtCursor = (helper: SalesQuoteHelperRow) => {
+    const activeBlockId = String(activeQuoteProjectTextEditBlockId ?? "").trim();
+    if (!activeBlockId) return;
+    const editor = quoteProjectTextRefs.current[activeBlockId];
+    if (!editor || typeof document === "undefined") return;
+    editor.focus();
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return;
+
+    const helperMarker = document.createElement("span");
+    helperMarker.setAttribute("data-helper-insert-end", "true");
+    helperMarker.style.display = "inline-block";
+    helperMarker.style.width = "0";
+    helperMarker.style.overflow = "hidden";
+    const template = document.createElement("template");
+    template.innerHTML = `${sanitizeQuoteRichTextMarkup(helper.content)}${helperMarker.outerHTML}`;
+    const fragment = template.content;
+    const nextLine = document.createElement("div");
+    nextLine.setAttribute("data-helper-caret", "true");
+
+    range.deleteContents();
+    range.insertNode(fragment);
+    const insertedMarker = editor.querySelector("[data-helper-insert-end='true']") as HTMLSpanElement | null;
+    if (insertedMarker?.parentNode) {
+      insertedMarker.parentNode.insertBefore(nextLine, insertedMarker.nextSibling);
+      insertedMarker.remove();
+    } else {
+      editor.appendChild(nextLine);
+    }
+
+    if (nextLine) {
+      const nextRange = document.createRange();
+      nextRange.setStart(nextLine, 0);
+      nextRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(nextRange);
+      window.requestAnimationFrame(() => {
+        const liveSelection = window.getSelection();
+        if (!liveSelection) return;
+        const liveRange = document.createRange();
+        liveRange.setStart(nextLine, 0);
+        liveRange.collapse(true);
+        liveSelection.removeAllRanges();
+        liveSelection.addRange(liveRange);
+      });
+    }
+
+    const nextValue = sanitizeQuoteRichTextMarkup(editor.innerHTML);
+    setQuoteProjectTextDrafts((prev) => ({ ...prev, [activeBlockId]: nextValue }));
+  };
+
   const toggleDrawerRowExpand = (rowId: string) => {
     setExpandedDrawerRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
   };
@@ -3201,6 +5087,18 @@ export default function ProjectDetailsPage() {
       setCompanyDoc(hit);
     };
     void loadCompanyDoc();
+  }, [project?.companyId]);
+
+  useEffect(() => {
+    const loadCompanyMembers = async () => {
+      if (!project?.companyId) {
+        setCompanyMembers([]);
+        return;
+      }
+      const members = await fetchCompanyMembers(project.companyId);
+      setCompanyMembers(members);
+    };
+    void loadCompanyMembers();
   }, [project?.companyId]);
 
   useEffect(() => {
@@ -4008,9 +5906,6 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     if (!cutlistUiStateStorageKey) {
       setCutlistUiStateReady(false);
-      setCutlistActivityFeed([]);
-      setCutlistActivityEnteringIds({});
-      cutlistActivityNextIdRef.current = 1;
       return;
     }
     try {
@@ -4020,6 +5915,13 @@ export default function ProjectDetailsPage() {
           cutlistRoomFilter?: string;
           cutlistPartTypeFilter?: string;
           cutlistSearch?: string;
+          initialCutlistRoomFilter?: string;
+          initialCutlistPartTypeFilter?: string;
+          initialCutlistSearch?: string;
+          initialCutlistEntryRoom?: string;
+          initialActiveCutlistPartType?: string;
+          initialCutlistEntry?: Partial<Omit<CutlistRow, "id" | "room">>;
+          initialCutlistDraftRows?: Array<Partial<CutlistDraftRow>>;
           nestingSearch?: string;
           nestingVisibilityMap?: Record<string, boolean>;
           nestingCollapsedGroups?: Record<string, boolean>;
@@ -4036,6 +5938,62 @@ export default function ProjectDetailsPage() {
         }
         if (typeof parsed.cutlistSearch === "string") {
           setCutlistSearch(parsed.cutlistSearch);
+        }
+        if (typeof parsed.initialCutlistRoomFilter === "string" && parsed.initialCutlistRoomFilter.trim()) {
+          setInitialCutlistRoomFilter(parsed.initialCutlistRoomFilter);
+        }
+        if (typeof parsed.initialCutlistPartTypeFilter === "string" && parsed.initialCutlistPartTypeFilter.trim()) {
+          setInitialCutlistPartTypeFilter(parsed.initialCutlistPartTypeFilter);
+        }
+        if (typeof parsed.initialCutlistSearch === "string") {
+          setInitialCutlistSearch(parsed.initialCutlistSearch);
+        }
+        if (typeof parsed.initialCutlistEntryRoom === "string" && parsed.initialCutlistEntryRoom.trim()) {
+          setInitialCutlistEntryRoom(parsed.initialCutlistEntryRoom);
+        }
+        if (typeof parsed.initialActiveCutlistPartType === "string") {
+          setInitialActiveCutlistPartType(parsed.initialActiveCutlistPartType);
+        }
+        if (parsed.initialCutlistEntry && typeof parsed.initialCutlistEntry === "object") {
+          const savedEntry = parsed.initialCutlistEntry;
+          setInitialCutlistEntry({
+            ...createEmptyCutlistEntry(),
+            partType: String(savedEntry.partType ?? ""),
+            board: String(savedEntry.board ?? ""),
+            name: String(savedEntry.name ?? ""),
+            height: String(savedEntry.height ?? ""),
+            width: String(savedEntry.width ?? ""),
+            depth: String(savedEntry.depth ?? ""),
+            quantity: String(savedEntry.quantity ?? "1"),
+            clashing: String(savedEntry.clashing ?? ""),
+            clashLeft: String(savedEntry.clashLeft ?? ""),
+            clashRight: String(savedEntry.clashRight ?? ""),
+            fixedShelf: String(savedEntry.fixedShelf ?? ""),
+            adjustableShelf: String(savedEntry.adjustableShelf ?? ""),
+            fixedShelfDrilling: normalizeDrillingValue(savedEntry.fixedShelfDrilling),
+            adjustableShelfDrilling: normalizeDrillingValue(savedEntry.adjustableShelfDrilling),
+            information: String(savedEntry.information ?? ""),
+            grain: Boolean(savedEntry.grain ?? false),
+            grainValue: String(savedEntry.grainValue ?? ""),
+          });
+        }
+        if (Array.isArray(parsed.initialCutlistDraftRows)) {
+          const restoredDrafts = parsed.initialCutlistDraftRows
+            .filter((row) => row && typeof row === "object")
+            .map((row, idx) => {
+              const item = row as Partial<CutlistDraftRow>;
+              const partType = String(item.partType ?? "").trim();
+              const room = String(item.room ?? "Project Cutlist").trim() || "Project Cutlist";
+              const restored = createDraftCutlistRow(partType, room, item);
+              return {
+                ...restored,
+                id: String(item.id ?? `draft_restored_${idx + 1}`),
+                room,
+                partType,
+              };
+            });
+          setInitialCutlistDraftRows(restoredDrafts);
+          setInitialCutlistDraftInitialized(true);
         }
         if (typeof parsed.nestingSearch === "string") {
           setNestingSearch(parsed.nestingSearch);
@@ -4055,42 +6013,9 @@ export default function ProjectDetailsPage() {
         if (parsed.expandedDrawerRows && typeof parsed.expandedDrawerRows === "object") {
           setExpandedDrawerRows(parsed.expandedDrawerRows);
         }
-        if (Array.isArray(parsed.cutlistActivityFeed)) {
-          const restored = parsed.cutlistActivityFeed
-            .filter((entry) => entry && typeof entry === "object")
-            .map((entry) => {
-              const actionKindRaw = String((entry as CutlistActivityEntry).actionKind || "").trim().toLowerCase();
-              const actionKind: "" | "clear" | "undo" =
-                actionKindRaw === "clear" || actionKindRaw === "undo" ? actionKindRaw : "";
-              return {
-                id: Number((entry as CutlistActivityEntry).id || 0),
-                message: String((entry as CutlistActivityEntry).message || "").trim(),
-                action: String((entry as CutlistActivityEntry).action || "").trim(),
-                actionKind,
-                dedupeKey: String((entry as CutlistActivityEntry).dedupeKey || "").trim(),
-                partType: String((entry as CutlistActivityEntry).partType || "").trim(),
-                partTypeTo: String((entry as CutlistActivityEntry).partTypeTo || "").trim(),
-                valueFrom: String((entry as CutlistActivityEntry).valueFrom || "").trim(),
-                valueTo: String((entry as CutlistActivityEntry).valueTo || "").trim(),
-              };
-            })
-            .filter((entry) => entry.message)
-            .slice(-120);
-          setCutlistActivityFeed(restored);
-          setCutlistActivityEnteringIds({});
-          const maxId = restored.reduce((m, e) => Math.max(m, Number(e.id || 0)), 0);
-          cutlistActivityNextIdRef.current = maxId + 1;
-        }
-      } else {
-        setCutlistActivityFeed([]);
-        setCutlistActivityEnteringIds({});
-        cutlistActivityNextIdRef.current = 1;
       }
     } catch {
       // Ignore invalid local state and continue with defaults.
-      setCutlistActivityFeed([]);
-      setCutlistActivityEnteringIds({});
-      cutlistActivityNextIdRef.current = 1;
     } finally {
       setCutlistUiStateReady(true);
     }
@@ -4102,13 +6027,19 @@ export default function ProjectDetailsPage() {
       cutlistRoomFilter,
       cutlistPartTypeFilter,
       cutlistSearch,
+      initialCutlistRoomFilter,
+      initialCutlistPartTypeFilter,
+      initialCutlistSearch,
+      initialCutlistEntryRoom,
+      initialActiveCutlistPartType,
+      initialCutlistEntry,
+      initialCutlistDraftRows,
       nestingSearch,
       nestingVisibilityMap,
       nestingCollapsedGroups,
       collapsedCutlistGroups,
       expandedCabinetryRows,
       expandedDrawerRows,
-      cutlistActivityFeed: cutlistActivityFeed.slice(-120),
     };
     try {
       window.localStorage.setItem(cutlistUiStateStorageKey, JSON.stringify(payload));
@@ -4121,14 +6052,80 @@ export default function ProjectDetailsPage() {
     cutlistRoomFilter,
     cutlistPartTypeFilter,
     cutlistSearch,
+    initialCutlistRoomFilter,
+    initialCutlistPartTypeFilter,
+    initialCutlistSearch,
+    initialCutlistEntryRoom,
+    initialActiveCutlistPartType,
+    initialCutlistEntry,
+    initialCutlistDraftRows,
     nestingSearch,
     nestingVisibilityMap,
     nestingCollapsedGroups,
     collapsedCutlistGroups,
     expandedCabinetryRows,
     expandedDrawerRows,
-    cutlistActivityFeed,
   ]);
+
+  useEffect(() => {
+    if (!project) {
+      cutlistActivityProjectHydratedRef.current = false;
+      lastPersistedCutlistActivityJsonRef.current = "";
+      setCutlistActivityFeed([]);
+      setCutlistActivityEnteringIds({});
+      cutlistActivityNextIdRef.current = 1;
+      return;
+    }
+    const restored = projectCutlistActivityFeed.slice(-120);
+    const serialized = JSON.stringify(serializeCutlistActivityFeedForProject(restored));
+    lastPersistedCutlistActivityJsonRef.current = serialized;
+    cutlistActivityProjectHydratedRef.current = true;
+    setCutlistActivityFeed(restored);
+    setCutlistActivityEnteringIds({});
+    const maxId = restored.reduce((m, e) => Math.max(m, Number(e.id || 0)), 0);
+    cutlistActivityNextIdRef.current = Math.max(maxId + 1, Date.now());
+  }, [project, projectCutlistActivityFeed]);
+
+  useEffect(() => {
+    if (!project || !cutlistActivityProjectHydratedRef.current) return;
+    const nextSerialized = JSON.stringify(serializeCutlistActivityFeedForProject(cutlistActivityFeed));
+    if (nextSerialized === lastPersistedCutlistActivityJsonRef.current) return;
+    if (cutlistActivityPersistTimeoutRef.current != null) {
+      window.clearTimeout(cutlistActivityPersistTimeoutRef.current);
+    }
+    cutlistActivityPersistTimeoutRef.current = window.setTimeout(() => {
+      cutlistActivityPersistTimeoutRef.current = null;
+      const nextFeeds = serializeCutlistActivityFeedForProject(cutlistActivityFeed);
+      const nextSerializedInner = JSON.stringify(nextFeeds);
+      if (nextSerializedInner === lastPersistedCutlistActivityJsonRef.current) return;
+      const nextProjectSettings = {
+        ...((project.projectSettings ?? {}) as Record<string, unknown>),
+        cutlistActivityFeeds: nextFeeds,
+      };
+      void (async () => {
+        const ok = await updateProjectPatch(project, {
+          projectSettings: nextProjectSettings,
+          projectSettingsJson: JSON.stringify(nextProjectSettings),
+        });
+        if (!ok) return;
+        lastPersistedCutlistActivityJsonRef.current = nextSerializedInner;
+        setProject((prev) =>
+          prev
+            ? {
+                ...prev,
+                projectSettings: nextProjectSettings,
+              }
+            : prev,
+        );
+      })();
+    }, 300);
+    return () => {
+      if (cutlistActivityPersistTimeoutRef.current != null) {
+        window.clearTimeout(cutlistActivityPersistTimeoutRef.current);
+        cutlistActivityPersistTimeoutRef.current = null;
+      }
+    };
+  }, [project, cutlistActivityFeed]);
 
   useEffect(() => {
     setNestingVisibilityMap((prev) => {
@@ -4169,6 +6166,39 @@ export default function ProjectDetailsPage() {
       })),
     );
   }, [cutlistRoomFilter]);
+  useEffect(() => {
+    const filters = initialCutlistRoomTabs.map((tab) => tab.filter);
+    const onlyProjectCutlistAvailable = filters.length === 1 && filters[0] === "Project Cutlist";
+    if (isLoading && onlyProjectCutlistAvailable && initialCutlistRoomFilter && initialCutlistRoomFilter !== "Project Cutlist") {
+      return;
+    }
+    if (!filters.includes(initialCutlistRoomFilter)) {
+      setInitialCutlistRoomFilter(defaultInitialCutlistRoom);
+    }
+    if (!initialCutlistEntryRoomOptions.includes(initialCutlistEntryRoom)) {
+      const fallback = defaultInitialCutlistRoom;
+      setInitialCutlistEntryRoom(fallback);
+    }
+  }, [
+    defaultInitialCutlistRoom,
+    isLoading,
+    initialCutlistEntryRoom,
+    initialCutlistEntryRoomOptions,
+    initialCutlistRoomFilter,
+    initialCutlistRoomTabs,
+  ]);
+  useEffect(() => {
+    if (!initialCutlistRoomFilter || initialCutlistRoomFilter === "Project Cutlist") {
+      return;
+    }
+    setInitialCutlistEntryRoom(initialCutlistRoomFilter);
+    setInitialCutlistDraftRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        room: initialCutlistRoomFilter,
+      })),
+    );
+  }, [initialCutlistRoomFilter]);
 
   useEffect(() => {
     const firstType = partTypeOptions[0] ?? "Part";
@@ -4183,6 +6213,30 @@ export default function ProjectDetailsPage() {
       setCutlistDraftInitialized(true);
     }
   }, [activeCutlistPartType, partTypeOptions, defaultCutlistRoom, cutlistBoardOptions, cutlistDraftInitialized]);
+  useEffect(() => {
+    if (!initialMeasurePartTypeOptions.length) {
+      setInitialCutlistEntry((prev) => ({ ...prev, partType: "" }));
+      return;
+    }
+    const current = String(initialCutlistEntry.partType || "").trim().toLowerCase();
+    if (initialMeasurePartTypeOptions.some((name) => name.toLowerCase() === current)) {
+      return;
+    }
+    setInitialCutlistEntry((prev) => ({ ...prev, partType: initialMeasurePartTypeOptions[0] ?? "" }));
+  }, [initialCutlistEntry.partType, initialMeasurePartTypeOptions]);
+  useEffect(() => {
+    const firstType = initialMeasurePartTypeOptions[0] ?? "Part";
+    if (!initialActiveCutlistPartType) {
+      setInitialActiveCutlistPartType(firstType);
+    }
+    if (!initialCutlistDraftInitialized) {
+      setInitialCutlistDraftInitialized(true);
+    }
+  }, [
+    initialActiveCutlistPartType,
+    initialCutlistDraftInitialized,
+    initialMeasurePartTypeOptions,
+  ]);
 
   const projectStatusRows = useMemo(
     () => normalizeProjectStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses),
@@ -4240,6 +6294,38 @@ export default function ProjectDetailsPage() {
     }
     setIsSavingGeneralDetails(false);
     return ok;
+  };
+
+  const onChangeAssignedProjectUser = async (uidValue: string) => {
+    if (!project || !settingsAccess.edit) return;
+    const nextUid = String(uidValue || "").trim();
+    const nextMember =
+      companyMembers.find((member) => String(member.uid || "").trim() === nextUid) ?? null;
+    const patch: Partial<Project> = {
+      assignedToUid: nextUid || "",
+      assignedToName: nextMember?.displayName || "",
+      assignedTo: nextMember?.displayName || "",
+    };
+    await saveGeneralDetailsPatch(patch);
+  };
+
+  const onChangeProjectCreatorUser = async (uidValue: string) => {
+    if (!project || !isCurrentProjectCreator) return;
+    const nextUid = String(uidValue || "").trim();
+    const nextMember =
+      companyMembers.find((member) => String(member.uid || "").trim() === nextUid) ?? null;
+    if (!nextUid || !nextMember) return;
+    if (
+      nextUid === String(project.createdByUid ?? "").trim() &&
+      nextMember.displayName === String(project.createdByName ?? "").trim()
+    ) {
+      return;
+    }
+    const patch: Partial<Project> = {
+      createdByUid: nextUid,
+      createdByName: nextMember.displayName,
+    };
+    await saveGeneralDetailsPatch(patch);
   };
 
   const commitClientDetails = async () => {
@@ -4629,13 +6715,24 @@ export default function ProjectDetailsPage() {
     if (!project || isSavingSalesRooms || !salesAccess.edit) {
       return;
     }
-    const existingLower = new Set(salesRoomRows.map((row) => String(row.name || "").trim().toLowerCase()));
-    let next = "New Room";
-    let seq = 2;
-    while (existingLower.has(next.toLowerCase())) {
-      next = `New Room ${seq}`;
-      seq += 1;
+    setAddRoomName("");
+    setIsAddRoomModalOpen(true);
+  };
+
+  const onConfirmAddCutlistRoom = async () => {
+    if (!project || isSavingSalesRooms || !salesAccess.edit) {
+      return;
     }
+    const existingLower = new Set(salesRoomRows.map((row) => String(row.name || "").trim().toLowerCase()));
+    const next = String(addRoomName || "").trim();
+    if (!next) {
+      return;
+    }
+    if (existingLower.has(next.toLowerCase())) {
+      setLockMessage("A room with that name already exists.");
+      return;
+    }
+    setLockMessage("");
     const nextRooms = [...salesRoomRows, { name: next, included: true, totalPrice: "0.00" }];
     const nextSales = {
       ...salesPayload,
@@ -4667,8 +6764,12 @@ export default function ProjectDetailsPage() {
     }
     setIsSavingSalesRooms(false);
     if (ok) {
+      setIsAddRoomModalOpen(false);
+      setAddRoomName("");
       setCutlistRoomFilter(next);
       setCutlistEntryRoom(next);
+      setInitialCutlistRoomFilter(next);
+      setInitialCutlistEntryRoom(next);
     }
   };
 
@@ -4681,6 +6782,79 @@ export default function ProjectDetailsPage() {
     const nextSales = {
       ...salesPayload,
       rooms: nextRooms,
+    } as Record<string, unknown>;
+    const nextProjectSettings = {
+      ...((project.projectSettings ?? {}) as Record<string, unknown>),
+      sales: nextSales,
+    };
+    setIsSavingSalesRooms(true);
+    const ok = await updateProjectPatch(project, {
+      sales: nextSales,
+      salesJson: JSON.stringify(nextSales),
+      projectSettings: nextProjectSettings,
+      projectSettingsJson: JSON.stringify(nextProjectSettings),
+    });
+    if (ok) {
+      setProject((prevProject) =>
+        prevProject
+          ? {
+              ...prevProject,
+              projectSettings: {
+                ...(prevProject.projectSettings ?? {}),
+                sales: nextSales,
+              },
+            }
+          : prevProject,
+      );
+    }
+    setIsSavingSalesRooms(false);
+  };
+
+  const onToggleSalesProductSelected = async (productName: string, selected: boolean) => {
+    if (!project || isSavingSalesRooms || !salesAccess.edit) return;
+    const key = String(productName || "").trim().toLowerCase();
+    const nextProducts = salesProductRows.map((row) =>
+      String(row.name || "").trim().toLowerCase() === key ? { ...row, selected } : row,
+    );
+    const nextSales = {
+      ...salesPayload,
+      products: nextProducts,
+    } as Record<string, unknown>;
+    const nextProjectSettings = {
+      ...((project.projectSettings ?? {}) as Record<string, unknown>),
+      sales: nextSales,
+    };
+    setIsSavingSalesRooms(true);
+    const ok = await updateProjectPatch(project, {
+      sales: nextSales,
+      salesJson: JSON.stringify(nextSales),
+      projectSettings: nextProjectSettings,
+      projectSettingsJson: JSON.stringify(nextProjectSettings),
+    });
+    if (ok) {
+      setProject((prevProject) =>
+        prevProject
+          ? {
+              ...prevProject,
+              projectSettings: {
+                ...(prevProject.projectSettings ?? {}),
+                sales: nextSales,
+              },
+            }
+          : prevProject,
+      );
+    }
+    setIsSavingSalesRooms(false);
+  };
+
+  const onToggleSalesQuoteExtraIncluded = async (extra: SalesQuoteExtraRow, included: boolean) => {
+    if (!project || isSavingSalesRooms || !salesAccess.edit) return;
+    const targetIds = new Set([String(extra.id || "").trim(), String(extra.name || "").trim()].filter(Boolean));
+    const nextIncluded = salesQuoteExtrasIncluded.filter((item) => !targetIds.has(String(item || "").trim()));
+    if (included) nextIncluded.push(String(extra.id || extra.name || "").trim());
+    const nextSales = {
+      ...salesPayload,
+      quoteExtrasIncluded: Array.from(new Set(nextIncluded.filter(Boolean))),
     } as Record<string, unknown>;
     const nextProjectSettings = {
       ...((project.projectSettings ?? {}) as Record<string, unknown>),
@@ -4751,8 +6925,28 @@ export default function ProjectDetailsPage() {
       );
       if (cutlistRoomFilter === prev) setCutlistRoomFilter(next);
       if (cutlistEntryRoom === prev) setCutlistEntryRoom(next);
+      if (initialCutlistRoomFilter === prev) setInitialCutlistRoomFilter(next);
+      if (initialCutlistEntryRoom === prev) setInitialCutlistEntryRoom(next);
     }
     setIsSavingSalesRooms(false);
+  };
+
+  const startEditingSalesRoom = (roomName: string) => {
+    setEditingSalesRoomName(roomName);
+    setEditingSalesRoomDraftName(roomName);
+  };
+
+  const cancelEditingSalesRoom = () => {
+    setEditingSalesRoomName("");
+    setEditingSalesRoomDraftName("");
+  };
+
+  const commitEditingSalesRoom = async () => {
+    const oldName = String(editingSalesRoomName || "").trim();
+    const nextName = String(editingSalesRoomDraftName || "").trim();
+    cancelEditingSalesRoom();
+    if (!oldName) return;
+    await onRenameSalesRoom(oldName, nextName);
   };
 
   const onDeleteSalesRoom = async (roomName: string) => {
@@ -4760,7 +6954,7 @@ export default function ProjectDetailsPage() {
     const normalized = String(roomName || "").trim();
     if (!normalized) return;
     const lower = normalized.toLowerCase();
-    const room = salesRoomRows.find((row) => String(row.name || "").trim().toLowerCase() === lower);
+      const room = displayedSalesRoomRows.find((row) => String(row.name || "").trim().toLowerCase() === lower);
     const parsedValue = Number.parseFloat(String(room?.totalPrice ?? "").replace(/[^0-9.-]/g, ""));
     const hasValue = Number.isFinite(parsedValue) ? Math.abs(parsedValue) > 0 : String(room?.totalPrice ?? "").trim().length > 0;
     if (hasValue) {
@@ -4799,6 +6993,8 @@ export default function ProjectDetailsPage() {
       );
       if (cutlistRoomFilter.toLowerCase() === lower) setCutlistRoomFilter("Project Cutlist");
       if (cutlistEntryRoom.toLowerCase() === lower) setCutlistEntryRoom(defaultCutlistRoom);
+      if (initialCutlistRoomFilter.toLowerCase() === lower) setInitialCutlistRoomFilter("Project Cutlist");
+      if (initialCutlistEntryRoom.toLowerCase() === lower) setInitialCutlistEntryRoom(defaultInitialCutlistRoom);
     }
     setIsSavingSalesRooms(false);
   };
@@ -5283,32 +7479,49 @@ export default function ProjectDetailsPage() {
 
   const persistCutlistRows = async (nextRows: CutlistRow[]) => {
     if (!project) return;
-    const rows = nextRows.map((row, idx) => {
-      const isCabinetry = isCabinetryPartType(row.partType);
-      return {
-        __id: idx + 1,
-        __cutlist_key: row.id,
-        Room: row.room,
-        partType: row.partType,
-        Board: row.board,
-        Name: row.name,
-        Height: row.height,
-        Width: row.width,
-        Depth: row.depth,
-        Quantity: row.quantity,
-        Clashing: isCabinetry
-          ? ""
-          : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing,
-        fixedShelf: isCabinetry ? String(row.fixedShelf ?? "") : "",
-        adjustableShelf: isCabinetry ? String(row.adjustableShelf ?? "") : "",
-        fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
-        adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
-        Information: row.information,
-        Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
-        includeInNesting: row.includeInNesting !== false,
-      };
+    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
+    const ok = await updateProjectPatch(project, { cutlist: { rows } });
+    if (ok) {
+      setProject((prevProject) =>
+        prevProject
+          ? {
+              ...prevProject,
+              cutlist: { rows },
+            }
+          : prevProject,
+      );
+    }
+  };
+  const persistInitialCutlistRows = async (nextRows: CutlistRow[]) => {
+    if (!project) return;
+    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
+    const nextSales = {
+      ...salesPayload,
+      initialCutlist: { rows },
+    } as Record<string, unknown>;
+    const nextProjectSettings = {
+      ...((project.projectSettings ?? {}) as Record<string, unknown>),
+      sales: nextSales,
+    };
+    const ok = await updateProjectPatch(project, {
+      sales: nextSales,
+      salesJson: JSON.stringify(nextSales),
+      projectSettings: nextProjectSettings,
+      projectSettingsJson: JSON.stringify(nextProjectSettings),
     });
-    await updateProjectPatch(project, { cutlist: { rows } });
+    if (ok) {
+      setProject((prevProject) =>
+        prevProject
+          ? {
+              ...prevProject,
+              projectSettings: {
+                ...(prevProject.projectSettings ?? {}),
+                sales: nextSales,
+              },
+            }
+          : prevProject,
+      );
+    }
   };
 
   const addCutlistRow = async () => {
@@ -5627,6 +7840,141 @@ export default function ProjectDetailsPage() {
     }
     await persistCutlistRows(next);
   };
+  const removeInitialCutlistRow = async (id: string) => {
+    if (!salesAccess.edit) return;
+    const removed = initialCutlistRows.find((row) => row.id === id);
+    const next = initialCutlistRows.filter((row) => row.id !== id);
+    setInitialCutlistRows(next);
+    if (removed) {
+      logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
+    }
+    await persistInitialCutlistRows(next);
+  };
+
+  const toggleInitialPendingCutlistRowDelete = (partType: string, rowId: string) => {
+    const groupKey = String(partType || "Unassigned").trim() || "Unassigned";
+    const id = String(rowId || "").trim();
+    if (!id) return;
+    if (!salesAccess.edit) return;
+    setInitialPendingDeleteRowsByGroup((prev) => {
+      const existing = Array.isArray(prev[groupKey]) ? prev[groupKey] : [];
+      const has = existing.includes(id);
+      const next = has ? existing.filter((v) => v !== id) : [...existing, id];
+      if (!next.length) {
+        const { [groupKey]: _removed, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [groupKey]: next };
+    });
+    setInitialDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
+  };
+
+  const deletePendingInitialCutlistRowsForGroup = async (partType: string) => {
+    const groupKey = String(partType || "Unassigned").trim() || "Unassigned";
+    const pending = Array.isArray(initialPendingDeleteRowsByGroup[groupKey]) ? initialPendingDeleteRowsByGroup[groupKey] : [];
+    if (!pending.length) return;
+    if (!initialDeleteConfirmArmedGroups[groupKey]) {
+      setInitialDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: true }));
+      return;
+    }
+    if (!salesAccess.edit) return;
+
+    const pendingSet = new Set(pending);
+    const removedRows = initialCutlistRows.filter((row) => pendingSet.has(row.id));
+    const next = initialCutlistRows.filter((row) => !pendingSet.has(row.id));
+    setInitialCutlistRows(next);
+    for (const removed of removedRows) {
+      logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
+    }
+    setInitialPendingDeleteRowsByGroup((prev) => {
+      const { [groupKey]: _removed, ...rest } = prev;
+      return rest;
+    });
+    setInitialDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
+    await persistInitialCutlistRows(next);
+  };
+
+  const deletePendingInitialCutlistRows = async () => {
+    const groupKeys = Object.keys(initialPendingDeleteRowsByGroup);
+    const allPending = new Set<string>();
+    for (const ids of Object.values(initialPendingDeleteRowsByGroup)) {
+      for (const id of ids || []) {
+        allPending.add(String(id || ""));
+      }
+    }
+    const allPendingRows = Array.from(allPending).filter(Boolean);
+    if (!allPendingRows.length) return;
+    if (!initialDeleteAllArmed) {
+      setInitialDeleteAllArmed(true);
+      return;
+    }
+    if (!salesAccess.edit) return;
+    const pendingSet = new Set(allPendingRows);
+    const removedRows = initialCutlistRows.filter((row) => pendingSet.has(row.id));
+    const next = initialCutlistRows.filter((row) => !pendingSet.has(row.id));
+    setInitialCutlistRows(next);
+    for (const removed of removedRows) {
+      logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
+    }
+    setInitialPendingDeleteRowsByGroup({});
+    setInitialDeleteAllArmed(false);
+    setInitialDeleteConfirmArmedGroups({});
+    await persistInitialCutlistRows(next);
+  };
+
+  const addInitialCutlistRow = async () => {
+    if (!project || !salesAccess.edit) return;
+    const partType = String(initialCutlistEntry.partType || "").trim();
+    if (!partType) return;
+    const isCabinetry = isCabinetryPartType(partType);
+    const isDrawer = isDrawerPartType(partType);
+    const drawerTokens = parseDrawerHeightTokens(String(initialCutlistEntry.height ?? ""));
+    const defaults = defaultClashingForPartType(partType, initialCutlistEntry.board);
+    const left = String(initialCutlistEntry.clashLeft ?? "").trim().toUpperCase() || defaults.left;
+    const right = String(initialCutlistEntry.clashRight ?? "").trim().toUpperCase() || defaults.right;
+    const row: CutlistRow = {
+      id: `im_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      room: initialCutlistEntryRoom || "Project Cutlist",
+      ...initialCutlistEntry,
+      partType,
+      height: isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(initialCutlistEntry.height ?? ""),
+      quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(initialCutlistEntry.quantity ?? "1"),
+      clashing: isCabinetry ? "" : joinClashing(left, right),
+      clashLeft: isCabinetry ? "" : left,
+      clashRight: isCabinetry ? "" : right,
+      fixedShelf: isCabinetry ? String(initialCutlistEntry.fixedShelf ?? "") : "",
+      adjustableShelf: isCabinetry ? String(initialCutlistEntry.adjustableShelf ?? "") : "",
+      fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(initialCutlistEntry.fixedShelfDrilling) : "No",
+      adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(initialCutlistEntry.adjustableShelfDrilling) : "No",
+      includeInNesting: false,
+    };
+    const next = [...initialCutlistRows, row];
+    setInitialCutlistRows(next);
+    setInitialCutlistEntry(createEmptyCutlistEntry());
+    logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, { partType: row.partType, scope: "initial" });
+    await persistInitialCutlistRows(next);
+  };
+
+  const onInitialCutlistEntryBoardChange = (board: string) => {
+    setInitialCutlistEntry((prev) => {
+      const defaults = defaultClashingForPartType(prev.partType, board);
+      const currentLeft = String(prev.clashLeft ?? "").trim().toUpperCase();
+      const currentRight = String(prev.clashRight ?? "").trim().toUpperCase();
+      const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
+      const grainAllowed = !!(board && initialMeasureBoardGrainFor(String(board).trim()));
+      const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
+      const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
+      return {
+        ...prev,
+        board,
+        grainValue: grainAllowed ? String(prev.grainValue ?? "") : "",
+        grain: grainAllowed ? Boolean(String(prev.grainValue ?? "").trim()) : false,
+        clashLeft,
+        clashRight,
+        clashing: joinClashing(clashLeft, clashRight),
+      };
+    });
+  };
 
   const togglePendingCutlistRowDelete = (partType: string, rowId: string) => {
     const groupKey = String(partType || "Unassigned").trim() || "Unassigned";
@@ -5667,6 +8015,163 @@ export default function ProjectDetailsPage() {
     });
     setDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
     await persistCutlistRows(nextRows);
+  };
+
+  const addInitialDraftRowForPartType = (partType: string) => {
+    setInitialActiveCutlistPartType(partType);
+    setInitialCutlistDraftRows((prev) => {
+      const last = prev[prev.length - 1];
+      const seed = last
+        ? { board: last.board, room: last.room, quantity: "" }
+        : { board: initialMeasureBoardOptions[0] ?? "", quantity: "" };
+      return [...prev, createDraftCutlistRow(partType, initialCutlistEntryRoom || defaultInitialCutlistRoom, seed)];
+    });
+  };
+
+  const onInitialDraftBoardChange = (id: string, board: string) => {
+    setInitialCutlistDraftRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const defaults = defaultClashingForPartType(row.partType, board);
+        const currentLeft = String(row.clashLeft ?? "").trim().toUpperCase();
+        const currentRight = String(row.clashRight ?? "").trim().toUpperCase();
+        const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
+        const grainAllowed = !!(board && initialMeasureBoardGrainFor(String(board).trim()));
+        const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
+        const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
+        return {
+          ...row,
+          board,
+          grainValue: grainAllowed ? String(row.grainValue ?? "") : "",
+          grain: grainAllowed ? Boolean(String(row.grainValue ?? "").trim()) : false,
+          clashLeft,
+          clashRight,
+          clashing: joinClashing(clashLeft, clashRight),
+        };
+      }),
+    );
+  };
+
+  const updateInitialDraftCutlistRow = (id: string, patch: Partial<CutlistDraftRow>) => {
+    setInitialCutlistDraftRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const next = { ...row, ...patch };
+        if (isDrawerPartType(next.partType)) {
+          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
+          next.height = formatDrawerHeightTokens(tokens);
+          next.quantity = String(Math.max(1, tokens.length));
+        }
+        return next;
+      }),
+    );
+  };
+
+  const updateInitialDraftDrawerHeightTokens = (id: string, tokens: string[]) => {
+    const formatted = formatDrawerHeightTokens(tokens);
+    setInitialCutlistDraftRows((prev) =>
+      prev.map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              height: formatted,
+              quantity: String(Math.max(1, parseDrawerHeightTokens(formatted).length)),
+            }
+          : row,
+      ),
+    );
+  };
+
+  const addInitialDraftDrawerHeightToken = (id: string, token: string) => {
+    const row = initialCutlistDraftRows.find((r) => r.id === id);
+    if (!row) return;
+    const next = [...parseDrawerHeightTokens(String(row.height ?? "")), String(token || "").trim()].filter(Boolean);
+    updateInitialDraftDrawerHeightTokens(id, next);
+  };
+
+  const removeInitialDraftDrawerHeightToken = (id: string, token: string) => {
+    const row = initialCutlistDraftRows.find((r) => r.id === id);
+    if (!row) return;
+    const current = parseDrawerHeightTokens(String(row.height ?? ""));
+    const idx = current.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
+    if (idx < 0) return;
+    current.splice(idx, 1);
+    updateInitialDraftDrawerHeightTokens(id, current);
+  };
+
+  const setInitialDraftInformationLines = (id: string, lines: string[]) => {
+    const value = informationValueFromLines(lines);
+    updateInitialDraftCutlistRow(id, { information: value });
+  };
+
+  const onInitialDraftInformationLineChange = (id: string, index: number, value: string) => {
+    const row = initialCutlistDraftRows.find((r) => r.id === id);
+    const lines = informationLinesFromValue(String(row?.information ?? ""));
+    const next = [...lines];
+    while (next.length <= index) next.push("");
+    next[index] = value;
+    setInitialDraftInformationLines(id, next);
+  };
+
+  const onInitialDraftAddInformationLine = (id: string) => {
+    const row = initialCutlistDraftRows.find((r) => r.id === id);
+    const lines = informationLinesFromValue(String(row?.information ?? ""));
+    setInitialDraftInformationLines(id, [...lines, ""]);
+  };
+
+  const onInitialDraftRemoveInformationLine = (id: string, index: number) => {
+    const row = initialCutlistDraftRows.find((r) => r.id === id);
+    const lines = informationLinesFromValue(String(row?.information ?? ""));
+    if (lines.length <= 1) {
+      setInitialDraftInformationLines(id, [""]);
+      return;
+    }
+    const next = lines.filter((_, i) => i !== index);
+    setInitialDraftInformationLines(id, next.length ? next : [""]);
+  };
+
+  const removeInitialDraftCutlistRow = (id: string) => {
+    setInitialCutlistDraftRows((prev) => prev.filter((row) => row.id !== id));
+  };
+
+  const addInitialDraftRowsToCutlist = async () => {
+    if (!project || !salesAccess.edit) return;
+    const accepted = initialCutlistDraftRows
+      .map((row) => {
+        const partType = String(row.partType || initialActiveCutlistPartType || "").trim();
+        if (!partType) return null;
+        const isCabinetry = isCabinetryPartType(partType);
+        const isDrawer = isDrawerPartType(partType);
+        const drawerTokens = parseDrawerHeightTokens(String(row.height ?? ""));
+        const defaults = defaultClashingForPartType(partType, row.board);
+        const left = String(row.clashLeft ?? "").trim().toUpperCase() || defaults.left;
+        const right = String(row.clashRight ?? "").trim().toUpperCase() || defaults.right;
+        return {
+          ...row,
+          id: `im_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          room: String(row.room || initialCutlistEntryRoom || defaultInitialCutlistRoom || "Project Cutlist"),
+          partType,
+          height: isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(row.height ?? ""),
+          quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(row.quantity ?? "1"),
+          clashing: isCabinetry ? "" : joinClashing(left, right),
+          clashLeft: isCabinetry ? "" : left,
+          clashRight: isCabinetry ? "" : right,
+          fixedShelf: isCabinetry ? String(row.fixedShelf ?? "") : "",
+          adjustableShelf: isCabinetry ? String(row.adjustableShelf ?? "") : "",
+          fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
+          adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
+          includeInNesting: false,
+        } satisfies CutlistRow;
+      })
+      .filter(Boolean) as CutlistRow[];
+    if (!accepted.length) return;
+    const next = [...initialCutlistRows, ...accepted];
+    setInitialCutlistRows(next);
+    setInitialCutlistDraftRows([]);
+    for (const row of accepted) {
+      logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, { partType: row.partType, scope: "initial" });
+    }
+    await persistInitialCutlistRows(next);
   };
 
   const onCutlistEntryInformationLineChange = (index: number, value: string) => {
@@ -5749,10 +8254,10 @@ export default function ProjectDetailsPage() {
             updated.clashing = "";
             updated.clashLeft = "";
             updated.clashRight = "";
-            updated.fixedShelf = String(editingFixedShelf ?? "").trim();
-            updated.adjustableShelf = String(editingAdjustableShelf ?? "").trim();
-            updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrilling);
-            updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrilling);
+            updated.fixedShelf = String(editingFixedShelfRef.current ?? "").trim();
+            updated.adjustableShelf = String(editingAdjustableShelfRef.current ?? "").trim();
+            updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrillingRef.current);
+            updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrillingRef.current);
           } else {
             updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
             const split = splitClashing(updated.clashing);
@@ -5829,6 +8334,27 @@ export default function ProjectDetailsPage() {
       return roomOk && typeOk && searchOk;
     });
   }, [effectiveCutlistRows, cutlistPartTypeFilter, cutlistSearch, cutlistRoomFilter]);
+  const visibleInitialCutlistRows = useMemo(() => {
+    const search = initialCutlistSearch.trim().toLowerCase();
+    return initialCutlistRows.filter((row) => {
+      const roomOk = initialCutlistRoomFilter === "Project Cutlist" ? true : row.room === initialCutlistRoomFilter;
+      const typeOk = initialCutlistPartTypeFilter === "All Part Types" || row.partType === initialCutlistPartTypeFilter;
+      const searchOk =
+        !search ||
+        [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(search));
+      return roomOk && typeOk && searchOk;
+    });
+  }, [initialCutlistPartTypeFilter, initialCutlistRoomFilter, initialCutlistRows, initialCutlistSearch]);
+  const initialPendingDeleteRowsSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const ids of Object.values(initialPendingDeleteRowsByGroup || {})) {
+      for (const id of ids || []) {
+        const normalized = String(id || "").trim();
+        if (normalized) set.add(normalized);
+      }
+    }
+    return set;
+  }, [initialPendingDeleteRowsByGroup]);
 
   const visibleRowsAllCabinetry = useMemo(
     () => visibleCutlistRows.length > 0 && visibleCutlistRows.every((row) => isCabinetryPartType(row.partType)),
@@ -5848,6 +8374,12 @@ export default function ProjectDetailsPage() {
     }
     return isCabinetryPartType(activeCutlistPartType || cutlistEntry.partType);
   }, [activeCutlistPartType, cutlistDraftRows, cutlistEntry.partType]);
+  const initialDraftEntryShowsShelvesHeader = useMemo(() => {
+    if (initialCutlistDraftRows.length) {
+      return initialCutlistDraftRows.every((row) => isCabinetryPartType(row.partType));
+    }
+    return isCabinetryPartType(initialActiveCutlistPartType || initialCutlistEntry.partType);
+  }, [initialActiveCutlistPartType, initialCutlistDraftRows, initialCutlistEntry.partType]);
 
   const singleEntryShowsShelvesHeader = useMemo(
     () => isCabinetryPartType(cutlistEntry.partType),
@@ -5872,6 +8404,12 @@ export default function ProjectDetailsPage() {
     if (cutlistEntry.quantity === qty) return;
     setCutlistEntry((prev) => ({ ...prev, quantity: qty }));
   }, [cutlistEntry.height, cutlistEntry.partType, cutlistEntry.quantity, isDrawerPartType]);
+  useEffect(() => {
+    if (!isDrawerPartType(initialCutlistEntry.partType)) return;
+    const qty = String(Math.max(1, parseDrawerHeightTokens(String(initialCutlistEntry.height ?? "")).length));
+    if (initialCutlistEntry.quantity === qty) return;
+    setInitialCutlistEntry((prev) => ({ ...prev, quantity: qty }));
+  }, [initialCutlistEntry.height, initialCutlistEntry.partType, initialCutlistEntry.quantity, isDrawerPartType]);
 
   const groupedCutlistRows = useMemo(() => {
     const grouped = new Map<string, CutlistRow[]>();
@@ -5888,6 +8426,21 @@ export default function ProjectDetailsPage() {
       })
       .map(([partType, rows]) => ({ partType, rows }));
   }, [visibleCutlistRows, partTypeOptions]);
+  const groupedInitialCutlistRows = useMemo(() => {
+    const grouped = new Map<string, CutlistRow[]>();
+    for (const row of visibleInitialCutlistRows) {
+      const key = String(row.partType || "Unassigned");
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    const rank = new Map(initialMeasurePartTypeOptions.map((name, idx) => [name, idx]));
+    return Array.from(grouped.entries())
+      .sort((a, b) => {
+        const ar = rank.has(a[0]) ? Number(rank.get(a[0])) : 999;
+        const br = rank.has(b[0]) ? Number(rank.get(b[0])) : 999;
+        return ar - br || a[0].localeCompare(b[0]);
+      })
+      .map(([partType, rows]) => ({ partType, rows }));
+  }, [initialMeasurePartTypeOptions, visibleInitialCutlistRows]);
 
   useEffect(() => {
     setPendingDeleteRowsByGroup((prev) => {
@@ -5913,7 +8466,31 @@ export default function ProjectDetailsPage() {
       }
       return changed ? next : prev;
     });
-  }, [cutlistRows, pendingDeleteRowsByGroup]);
+
+    setInitialPendingDeleteRowsByGroup((prev) => {
+      const validRowIds = new Set(initialCutlistRows.map((row) => row.id));
+      let changed = false;
+      const next: Record<string, string[]> = {};
+      for (const [groupKey, ids] of Object.entries(prev)) {
+        const filtered = (ids || []).filter((id) => validRowIds.has(id));
+        if (filtered.length) next[groupKey] = filtered;
+        if (filtered.length !== (ids || []).length) changed = true;
+      }
+      return changed ? next : prev;
+    });
+    setInitialDeleteConfirmArmedGroups((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [groupKey, armed] of Object.entries(prev)) {
+        if ((initialPendingDeleteRowsByGroup[groupKey] || []).length > 0) {
+          next[groupKey] = armed;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [cutlistRows, pendingDeleteRowsByGroup, initialCutlistRows, initialPendingDeleteRowsByGroup]);
 
   const cncSourceRows = useMemo(() => {
     return effectiveCutlistRows.filter((row) => isPartTypeIncludedInCnc(row.partType));
@@ -7025,13 +9602,16 @@ export default function ProjectDetailsPage() {
   const toggleCutlistGroup = (groupKey: string) => {
     setCollapsedCutlistGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
   };
+  const toggleInitialCutlistGroup = (groupKey: string) => {
+    setInitialCollapsedCutlistGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }));
+  };
 
   const cutlistColumnDefs = useMemo(
     () =>
       cutlistColumns
       .map((label) => {
         const key = label.toLowerCase().replace(/\s+/g, "");
-        if (key.includes("parttype")) return { label, key: "partType" as const };
+        if (key.includes("parttype") || key === "part") return { label, key: "partType" as const };
         if (key === "board") return { label, key: "board" as const };
         if (key.includes("partname") || key === "name") return { label, key: "name" as const };
         if (key.includes("height")) return { label, key: "height" as const };
@@ -7046,22 +9626,57 @@ export default function ProjectDetailsPage() {
       .filter((col) => (col.key === "grain" ? showCutlistGrainColumn : true)),
     [cutlistColumns, showCutlistGrainColumn],
   );
+  const initialCutlistColumnDefs = useMemo(
+    () =>
+      initialCutlistColumns
+        .map((label) => {
+          const key = label.toLowerCase().replace(/\s+/g, "");
+          if (key.includes("parttype") || key === "part") return { label, key: "partType" as const };
+          if (key === "board") return { label, key: "board" as const };
+          if (key.includes("partname") || key === "name") return { label, key: "name" as const };
+          if (key.includes("height")) return { label, key: "height" as const };
+          if (key.includes("width")) return { label, key: "width" as const };
+          if (key.includes("depth")) return { label, key: "depth" as const };
+          if (key.includes("quantity")) return { label, key: "quantity" as const };
+          if (key.includes("clashing")) return { label, key: "clashing" as const };
+          if (key.includes("information")) return { label, key: "information" as const };
+          if (key.includes("grain")) return { label, key: "grain" as const };
+          return { label, key: "information" as const };
+        })
+        .filter((col) => (col.key === "grain" ? showInitialCutlistGrainColumn : true)),
+    [initialCutlistColumns, showInitialCutlistGrainColumn],
+  );
   const showRoomColumnInList = cutlistRoomFilter === "Project Cutlist";
+  const showRoomColumnInInitialList = initialCutlistRoomFilter === "Project Cutlist";
   const cutlistListColumnDefs = useMemo(() => {
     if (showRoomColumnInList) return cutlistColumnDefs;
     const hasPartType = cutlistColumnDefs.some((col) => col.key === "partType");
     if (hasPartType) return cutlistColumnDefs;
     return [{ label: "Part", key: "partType" as const }, ...cutlistColumnDefs];
   }, [cutlistColumnDefs, showRoomColumnInList]);
+  const initialCutlistListColumnDefs = useMemo(() => {
+    const hasPartType = initialCutlistColumnDefs.some((col) => col.key === "partType");
+    if (hasPartType) return initialCutlistColumnDefs;
+    return [{ label: "Part", key: "partType" as const }, ...initialCutlistColumnDefs];
+  }, [initialCutlistColumnDefs]);
   const cutlistEntryColumnDefs = useMemo(
     () => cutlistColumnDefs.filter((col) => col.key !== "partType"),
     [cutlistColumnDefs],
+  );
+  const initialCutlistEntryColumnDefs = useMemo(
+    () => initialCutlistColumnDefs.filter((col) => col.key !== "partType"),
+    [initialCutlistColumnDefs],
   );
   const cutlistEntryOrderMap = useMemo(() => {
     const map = new Map<CutlistEditableField, number>();
     cutlistEntryColumnDefs.forEach((col, idx) => map.set(col.key, idx + 1));
     return map;
   }, [cutlistEntryColumnDefs]);
+  const initialCutlistEntryOrderMap = useMemo(() => {
+    const map = new Map<CutlistEditableField, number>();
+    initialCutlistEntryColumnDefs.forEach((col, idx) => map.set(col.key, idx + 1));
+    return map;
+  }, [initialCutlistEntryColumnDefs]);
   const cutlistEntryGridTemplate = useMemo(() => {
     const cols = ["28px"];
     cutlistEntryColumnDefs.forEach((col) => {
@@ -7079,6 +9694,23 @@ export default function ProjectDetailsPage() {
     });
     return cols.join(" ");
   }, [cutlistEntryColumnDefs]);
+  const initialCutlistEntryGridTemplate = useMemo(() => {
+    const cols = ["28px"];
+    initialCutlistEntryColumnDefs.forEach((col) => {
+      if (col.key === "board" || col.key === "name") {
+        cols.push("230px");
+      } else if (col.key === "height" || col.key === "width" || col.key === "depth" || col.key === "quantity") {
+        cols.push("70px");
+      } else if (col.key === "clashing") {
+        cols.push("84px", "84px");
+      } else if (col.key === "information") {
+        cols.push("minmax(216px,1fr)");
+      } else if (col.key === "grain") {
+        cols.push("96px");
+      }
+    });
+    return cols.join(" ");
+  }, [initialCutlistEntryColumnDefs]);
   const cutlistEntryCellStyle = (key: CutlistEditableField, span = 1) => {
     const order = cutlistEntryOrderMap.get(key);
     if (order == null) return { display: "none" };
@@ -7093,23 +9725,23 @@ export default function ProjectDetailsPage() {
     return { order: order * 10 + offset };
   };
 
-  const cutlistListColumnStyle = (key: CutlistEditableField) => {
-    switch (key) {
-      case "partType":
-        return { width: 116, minWidth: 116 };
-      case "board":
-        return { width: 230, minWidth: 230 };
-      case "name":
-        return { width: 230, minWidth: 230 };
-      case "height":
-      case "width":
-      case "depth":
-      case "quantity":
-        return { width: 70, minWidth: 70 };
-      case "clashing":
-        return { width: 168, minWidth: 168 };
-      case "grain":
-        return { width: 96, minWidth: 96 };
+const cutlistListColumnStyle = (key: CutlistEditableField) => {
+  switch (key) {
+    case "partType":
+      return { width: 116, minWidth: 116, maxWidth: 116 };
+    case "board":
+      return { width: 230, minWidth: 230, maxWidth: 230 };
+    case "name":
+      return { width: 230, minWidth: 230, maxWidth: 230 };
+    case "height":
+    case "width":
+    case "depth":
+    case "quantity":
+      return { width: 70, minWidth: 70, maxWidth: 70 };
+    case "clashing":
+      return { width: 168, minWidth: 168, maxWidth: 168 };
+    case "grain":
+      return { width: 96, minWidth: 96, maxWidth: 96 };
       case "information":
         return { minWidth: 216 };
       default:
@@ -7137,10 +9769,18 @@ export default function ProjectDetailsPage() {
     }
     if (key === "clashing") {
       if (isCabinetryPartType(row.partType)) {
-        setEditingFixedShelf(String(row.fixedShelf ?? ""));
-        setEditingAdjustableShelf(String(row.adjustableShelf ?? ""));
-        setEditingFixedShelfDrilling(normalizeDrillingValue(row.fixedShelfDrilling));
-        setEditingAdjustableShelfDrilling(normalizeDrillingValue(row.adjustableShelfDrilling));
+        const nextFixedShelf = String(row.fixedShelf ?? "");
+        const nextAdjustableShelf = String(row.adjustableShelf ?? "");
+        const nextFixedShelfDrilling = normalizeDrillingValue(row.fixedShelfDrilling);
+        const nextAdjustableShelfDrilling = normalizeDrillingValue(row.adjustableShelfDrilling);
+        editingFixedShelfRef.current = nextFixedShelf;
+        editingAdjustableShelfRef.current = nextAdjustableShelf;
+        editingFixedShelfDrillingRef.current = nextFixedShelfDrilling;
+        editingAdjustableShelfDrillingRef.current = nextAdjustableShelfDrilling;
+        setEditingFixedShelf(nextFixedShelf);
+        setEditingAdjustableShelf(nextAdjustableShelf);
+        setEditingFixedShelfDrilling(nextFixedShelfDrilling);
+        setEditingAdjustableShelfDrilling(nextAdjustableShelfDrilling);
         setEditingCellValue("");
       } else {
         const split = splitClashing(row.clashing);
@@ -7163,6 +9803,10 @@ export default function ProjectDetailsPage() {
     setEditingCellValue("");
     setEditingClashLeft("");
     setEditingClashRight("");
+    editingFixedShelfRef.current = "";
+    editingAdjustableShelfRef.current = "";
+    editingFixedShelfDrillingRef.current = "No";
+    editingAdjustableShelfDrillingRef.current = "No";
     setEditingFixedShelf("");
     setEditingAdjustableShelf("");
     setEditingFixedShelfDrilling("No");
@@ -7172,6 +9816,9 @@ export default function ProjectDetailsPage() {
 
   const commitCellEdit = async (overrideValue?: string) => {
     if (!editingCell) return;
+    if (isCommittingCutlistCellRef.current) return;
+    isCommittingCutlistCellRef.current = true;
+    try {
     const target = editingCell;
     const previousRow = cutlistRows.find((row) => row.id === target.rowId) ?? null;
     const rawValue = overrideValue ?? editingCellValue;
@@ -7306,12 +9953,19 @@ export default function ProjectDetailsPage() {
     setEditingCellValue("");
     setEditingClashLeft("");
     setEditingClashRight("");
+    editingFixedShelfRef.current = "";
+    editingAdjustableShelfRef.current = "";
+    editingFixedShelfDrillingRef.current = "No";
+    editingAdjustableShelfDrillingRef.current = "No";
     setEditingFixedShelf("");
     setEditingAdjustableShelf("");
     setEditingFixedShelfDrilling("No");
     setEditingAdjustableShelfDrilling("No");
     setEditingInfoFocusLine(null);
     await persistCutlistRows(next);
+    } finally {
+      isCommittingCutlistCellRef.current = false;
+    }
   };
 
   const isEditing = (rowId: string, key: CutlistEditableField) =>
@@ -7325,6 +9979,32 @@ export default function ProjectDetailsPage() {
       void commitCellEdit();
     }, 0);
   };
+
+  const onCabinetryShelfInputBlur = (event: ReactFocusEvent<HTMLInputElement>, rowId: string) => {
+    const editorRoot = event.currentTarget.closest(`[data-cutlist-cabinetry-edit="${rowId}"]`);
+    window.setTimeout(() => {
+      const activeElement = document.activeElement as HTMLElement | null;
+      if (!editingCell || editingCell.rowId !== rowId || editingCell.key !== "clashing") return;
+      if (editorRoot && activeElement && editorRoot.contains(activeElement)) return;
+      void commitCellEdit();
+    }, 0);
+  };
+
+  useEffect(() => {
+    editingFixedShelfRef.current = editingFixedShelf;
+  }, [editingFixedShelf]);
+
+  useEffect(() => {
+    editingAdjustableShelfRef.current = editingAdjustableShelf;
+  }, [editingAdjustableShelf]);
+
+  useEffect(() => {
+    editingFixedShelfDrillingRef.current = editingFixedShelfDrilling;
+  }, [editingFixedShelfDrilling]);
+
+  useEffect(() => {
+    editingAdjustableShelfDrillingRef.current = editingAdjustableShelfDrilling;
+  }, [editingAdjustableShelfDrilling]);
 
   const jumpToCutlistFromDerivedRowId = (rowId: string) => {
     const parsed = parseDerivedNestingRowId(rowId);
@@ -7388,8 +10068,74 @@ export default function ProjectDetailsPage() {
   const isCutlistFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cutlist";
   const isCncFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "cnc";
   const isOrderFullscreen = resolvedTab === "production" && productionAccess.view && productionNav === "order";
+  const isSalesInitialFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "initial";
   const isNestingFullscreen =
     resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
+  const addRoomModalPortal =
+    isAddRoomModalOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+            <button
+              type="button"
+              aria-label="Close add room dialog backdrop"
+              onClick={() => {
+                setIsAddRoomModalOpen(false);
+                setAddRoomName("");
+              }}
+              className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px]"
+            />
+            <div className="relative w-[min(720px,96vw)] overflow-hidden rounded-[14px] border border-[#D6DEE9] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]" style={{ zIndex: 2147483647 }}>
+              <div className="border-b border-[#D7DEE8] px-5 py-4">
+                <p className="text-[14px] font-bold uppercase tracking-[1px] text-[#12345B]">Add Room</p>
+              </div>
+              <div className="space-y-4 px-5 py-4">
+                <div className="space-y-2">
+                  <p className="text-[12px] font-semibold text-[#475467]">Room Name</p>
+                  <input
+                    autoFocus
+                    value={addRoomName}
+                    onChange={(e) => setAddRoomName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void onConfirmAddCutlistRoom();
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        setIsAddRoomModalOpen(false);
+                        setAddRoomName("");
+                      }
+                    }}
+                    placeholder="Enter room name"
+                    className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] px-3 text-[13px] text-[#111827] outline-none"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddRoomModalOpen(false);
+                      setAddRoomName("");
+                    }}
+                    className="h-9 rounded-[9px] border border-[#D8DEE8] bg-white px-4 text-[12px] font-bold text-[#334155]"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingSalesRooms}
+                    onClick={() => void onConfirmAddCutlistRoom()}
+                    className="h-9 rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                  >
+                    Add Room
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
   useEffect(() => {
     if (!cncExportMenuOpen) return;
     const onDocPointerDown = (event: PointerEvent) => {
@@ -7415,6 +10161,140 @@ export default function ProjectDetailsPage() {
   const showCncGrainColumn =
     showCutlistGrainColumn || filteredCncRows.some((row) => String(row.grainValue ?? "").trim().length > 0);
   const cncTotalQty = filteredCncRows.reduce((sum, row) => sum + (Number.parseInt(String(row.quantity || "0"), 10) || 0), 0);
+  const enabledQuoteContainers = useMemo(
+    () =>
+      quoteLayoutTemplate.containers.filter((container) => {
+        if (!container.enabled) return false;
+        if (hiddenQuoteContainerIdSet.has(String(container.id || "").trim())) return false;
+        return container.columns.some((column) =>
+          column.blocks.some(
+            (block) =>
+              block.enabled &&
+              !hiddenQuoteBlockIdSet.has(String(block.id || "").trim()) &&
+              quoteBlockCountsAsContent(block),
+          ),
+        );
+      }),
+    [hiddenQuoteBlockIdSet, hiddenQuoteContainerIdSet, quoteLayoutTemplate.containers],
+  );
+  const quotePreviewPaper = useMemo(
+    () => quotePaperDimensionsFor(quoteLayoutTemplate.pageSize),
+    [quoteLayoutTemplate.pageSize],
+  );
+  const topQuoteContainers = useMemo(
+    () => enabledQuoteContainers.filter((container) => container.mount === "top"),
+    [enabledQuoteContainers],
+  );
+  const flowQuoteContainers = useMemo(
+    () => enabledQuoteContainers.filter((container) => container.mount === "flow"),
+    [enabledQuoteContainers],
+  );
+  const bottomQuoteContainers = useMemo(
+    () => enabledQuoteContainers.filter((container) => container.mount === "bottom"),
+    [enabledQuoteContainers],
+  );
+  const paginatedQuoteProjectTextTarget = useMemo(() => {
+    for (let i = 0; i < flowQuoteContainers.length; i += 1) {
+      const container = flowQuoteContainers[i];
+      for (const column of container.columns) {
+        const block = column.blocks.find(
+          (item) => item.enabled && !hiddenQuoteBlockIdSet.has(String(item.id || "").trim()) && item.type === "projectText",
+        );
+        if (block) {
+          return { container, block, flowIndex: i };
+        }
+      }
+    }
+    return null;
+  }, [flowQuoteContainers, hiddenQuoteBlockIdSet]);
+  useEffect(() => {
+    if (salesNav !== "quote") return;
+    const sheet = quotePrintSheetRef.current;
+    const inner = sheet?.querySelector(".quote-print-sheet-inner") as HTMLDivElement | null;
+    if (!sheet || !inner) return;
+
+    const pageHeight = inner.clientHeight;
+    if (pageHeight <= 0) return;
+
+    const orderedContainers = [...topQuoteContainers, ...flowQuoteContainers, ...bottomQuoteContainers];
+    if (!orderedContainers.length) {
+      setQuoteContainerPagination(null);
+      setQuoteProjectTextPagination(null);
+      setQuoteProjectTextMetrics(null);
+      setQuoteProjectTextPreviewMode(null);
+      return;
+    }
+
+    const gap = 16;
+    const heights = orderedContainers.map((container) => ({
+      id: container.id,
+      height: quoteContainerRefs.current[container.id]?.offsetHeight ?? 0,
+    }));
+    if (heights.some((item) => item.height <= 0)) return;
+
+    const totalHeight =
+      heights.reduce((sum, item) => sum + item.height, 0) + Math.max(0, heights.length - 1) * gap;
+
+    if (totalHeight <= pageHeight + 2) {
+      setQuoteContainerPagination((prev) => (prev ? null : prev));
+      setQuoteProjectTextPagination((prev) => (prev ? null : prev));
+      setQuoteProjectTextMetrics(null);
+      setQuoteProjectTextPreviewMode(null);
+      return;
+    }
+
+    const pages: string[][] = [];
+    let currentPage: string[] = [];
+    let currentHeight = 0;
+    heights.forEach(({ id, height }) => {
+      const nextHeight = currentPage.length === 0 ? height : currentHeight + gap + height;
+      if (currentPage.length > 0 && nextHeight > pageHeight + 2) {
+        pages.push(currentPage);
+        currentPage = [id];
+        currentHeight = height;
+      } else {
+        currentPage.push(id);
+        currentHeight = nextHeight;
+      }
+    });
+    if (currentPage.length > 0) pages.push(currentPage);
+
+    setQuoteContainerPagination((prev) => {
+      if (prev && prev.pageContainerIds.length === pages.length && prev.pageContainerIds.every((pageIds, idx) => arraysEqualText(pageIds, pages[idx] ?? []))) {
+        return prev;
+      }
+      return { pageContainerIds: pages };
+    });
+    setQuoteProjectTextPagination((prev) => (prev ? null : prev));
+    setQuoteProjectTextMetrics(null);
+    setQuoteProjectTextPreviewMode(null);
+  }, [
+    bottomQuoteContainers,
+    flowQuoteContainers,
+    quoteProjectTextDrafts,
+    salesNav,
+    salesQuoteProjectText,
+    topQuoteContainers,
+  ]);
+  const quoteLayoutBoxStyle = (style: QuoteTemplateBoxStyle | undefined) => ({
+    borderColor: toStr(style?.borderColor) || undefined,
+    borderWidth: quoteSafePixelString(style?.borderWidthPx),
+    borderStyle: toStr(style?.borderColor) || toStr(style?.borderWidthPx) ? "solid" : undefined,
+    backgroundColor: toStr(style?.fillColor) || undefined,
+    paddingTop: quoteSafePixelString(style?.paddingTopPx || style?.paddingPx),
+    paddingBottom: quoteSafePixelString(style?.paddingBottomPx || style?.paddingPx),
+    paddingLeft: quoteSafePixelString(style?.paddingLeftPx || style?.paddingPx),
+    paddingRight: quoteSafePixelString(style?.paddingRightPx || style?.paddingPx),
+    margin: quoteSafePixelString(style?.marginPx),
+  });
+  const quotePrintMarginMm = Math.max(10, Number(quoteLayoutTemplate.marginMm || 12));
+  const quotePreviewWidthCss = "min(100%, 860px)";
+  const quotePreviewMarginScale = quotePrintMarginMm / Math.max(1, quotePreviewPaper.widthMm);
+  const quotePreviewPaddingCss = `calc(${quotePreviewWidthCss} * ${quotePreviewMarginScale})`;
+  const onPrintSalesQuote = () => {
+    if (typeof window === "undefined" || !quotePrintSheetRef.current) return;
+    window.print();
+  };
   if (isLoading) {
     return (
       <ProtectedRoute>
@@ -7440,6 +10320,610 @@ export default function ProjectDetailsPage() {
   }
 
   const roomTags = salesRoomRows.map((row) => row.name);
+  const quoteCompanyName = toStr(
+    companyDoc?.companyName ??
+      companyDoc?.name ??
+      ((companyDoc?.applicationPreferences as Record<string, unknown> | undefined)?.companyName ?? ""),
+    "Company",
+  );
+  const quoteCompanyLogoPath = toStr(
+    companyDoc?.logoPath ??
+      ((companyDoc?.theme as Record<string, unknown> | undefined)?.logoPath ?? ""),
+  );
+  const renderQuoteTemplateBlock = (
+    block: QuoteTemplateBlock,
+    keyPrefix: string,
+    options?: {
+      projectTextValueOverride?: string;
+      projectTextChunkIndex?: number;
+      projectTextChunkCount?: number;
+      thumbnailMode?: boolean;
+    },
+  ) => {
+      if (!block.enabled) return null;
+      if (hiddenQuoteBlockIdSet.has(String(block.id || "").trim())) return null;
+      if (block.type === "divider") {
+        return <div key={`${keyPrefix}_${block.id}`} className="my-1 h-px w-full bg-[#CBD5E1]" />;
+      }
+    if (block.type === "spacer") {
+      const height = Math.max(6, Math.min(40, Number(block.heightMm || 12)));
+      return <div key={`${keyPrefix}_${block.id}`} style={{ height: `${height}px` }} />;
+    }
+      if (block.type === "logo") {
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="flex h-[84px] items-center justify-center bg-transparent text-[12px] font-semibold text-[#52637A]">
+            {quoteCompanyLogoPath ? (
+              <img
+                src={quoteCompanyLogoPath}
+                alt={quoteCompanyName}
+                className="max-h-full max-w-full object-contain"
+              />
+            ) : (
+              quoteCompanyName ? `${quoteCompanyName} Logo` : "Company Logo"
+            )}
+          </div>
+        );
+      }
+      if (block.type === "projectText") {
+        const fullValue = Object.prototype.hasOwnProperty.call(quoteProjectTextDrafts, block.id)
+          ? quoteProjectTextDrafts[block.id] ?? ""
+          : salesQuoteProjectText[block.id] ?? "";
+        const value = options?.projectTextValueOverride ?? fullValue;
+        const chunkIndex = options?.projectTextChunkIndex ?? 0;
+        const chunkCount = options?.projectTextChunkCount ?? 1;
+        const isContinuationChunk = chunkCount > 1 && chunkIndex > 0;
+        if (isContinuationChunk || options?.thumbnailMode) {
+          return (
+            <div key={`${keyPrefix}_${block.id}`} className="py-3">
+              <div
+                className="text-[12px] leading-[1.5]"
+                style={{ color: toStr(block.textColor) || undefined, whiteSpace: "pre-wrap" }}
+                dangerouslySetInnerHTML={{
+                  __html: renderQuoteRichTextHtml(interpolateQuoteTemplateText(value, effectiveQuoteTemplateReplacements)),
+                }}
+              />
+            </div>
+          );
+        }
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="py-3">
+            <div
+              ref={(node) => {
+                if (chunkIndex === 0) quoteProjectTextToolbarRefs.current[block.id] = node;
+              }}
+              className={`quote-project-text-toolbar mb-2 flex items-center gap-1 print:hidden ${chunkIndex > 0 ? "hidden" : ""}`}
+            >
+              {[
+                { command: "bold" as const, label: "B" },
+                { command: "italic" as const, label: "I" },
+                { command: "underline" as const, label: "U" },
+                { command: "strikeThrough" as const, label: "S" },
+              ].map((item) => (
+                <button
+                  key={`${block.id}_${item.command}`}
+                  type="button"
+                  disabled={salesReadOnly || isSavingQuoteProjectText}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    applyQuoteRichTextCommand(
+                      quoteProjectTextRefs.current[block.id] ?? null,
+                      item.command,
+                      (nextValue) => setQuoteProjectTextDrafts((prev) => ({ ...prev, [block.id]: nextValue })),
+                    );
+                  }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] text-[12px] font-bold text-[#344054] disabled:opacity-60"
+                  title={item.label}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div
+              ref={(node) => {
+                if (chunkIndex === 0) quoteProjectTextRefs.current[block.id] = node;
+                if (node) {
+                  const nextHtml = renderQuoteRichTextHtml(value);
+                  if (document.activeElement !== node && node.innerHTML !== nextHtml) {
+                    node.innerHTML = nextHtml;
+                  }
+                }
+              }}
+              contentEditable={!salesReadOnly && !isSavingQuoteProjectText}
+              suppressContentEditableWarning
+              onInput={(e) => {
+                const nextValue = sanitizeQuoteRichTextMarkup(e.currentTarget.innerHTML);
+                if (chunkCount > 1 && quoteProjectTextPagination?.blockId === block.id) {
+                  const nextChunks = [...quoteProjectTextPagination.chunks];
+                  nextChunks[chunkIndex] = nextValue;
+                  setQuoteProjectTextDrafts((prev) => ({ ...prev, [block.id]: nextChunks.join("\n") }));
+                } else {
+                  setQuoteProjectTextDrafts((prev) => ({ ...prev, [block.id]: nextValue }));
+                }
+              }}
+              onFocus={() => {
+                setActiveQuoteProjectTextEditBlockId(block.id);
+              }}
+              onBlur={() => {
+                setActiveQuoteProjectTextEditBlockId((prev) => (prev === block.id ? null : prev));
+                void persistQuoteProjectText(block.id, String(quoteProjectTextDrafts[block.id] ?? fullValue ?? ""));
+              }}
+              className="min-h-[24px] w-full border-0 bg-transparent px-0 py-0 text-[12px] leading-[1.5] outline-none empty:before:text-[#98A2B3] print:hidden"
+              style={{ color: toStr(block.textColor) || undefined, whiteSpace: "pre-wrap" }}
+            />
+            <div
+              className="hidden text-[12px] leading-[1.5] print:block"
+              dangerouslySetInnerHTML={{
+                __html: renderQuoteRichTextHtml(interpolateQuoteTemplateText(value, effectiveQuoteTemplateReplacements)),
+              }}
+            />
+          </div>
+        );
+      }
+      if (block.type === "companyDetails") {
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="space-y-1 text-[12px] text-[#0F172A]">
+            <p className="font-semibold">{quoteCompanyName}</p>
+            <p>Currency: {toStr(companyDoc?.defaultCurrency, "-")}</p>
+            <p>Units: {toStr(companyDoc?.measurementUnit, "-")}</p>
+          </div>
+        );
+      }
+      if (block.type === "clientDetails") {
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="space-y-1 text-[12px] text-[#0F172A]">
+            <p><span className="font-semibold">Name:</span> {toStr(project.customer, "-")}</p>
+            <p><span className="font-semibold">Phone:</span> {toStr(project.clientPhone, "-")}</p>
+            <p><span className="font-semibold">Email:</span> {toStr(project.clientEmail, "-")}</p>
+            <p><span className="font-semibold">Address:</span> {toStr(project.clientAddress, "-")}</p>
+          </div>
+        );
+      }
+      if (block.type === "quoteMeta") {
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="space-y-1 text-[12px] text-[#0F172A]">
+            <p className="text-[18px] font-semibold text-[#12345B]">{toStr(project.name, "Untitled Project")}</p>
+            <p><span className="font-semibold">Client:</span> {toStr(project.customer, "-")}</p>
+            <p><span className="font-semibold">Date:</span> {dashboardStyleDate(new Date().toISOString())}</p>
+            <p><span className="font-semibold">Prepared by:</span> {toStr(project.createdByName, "-")}</p>
+          </div>
+        );
+      }
+      if (block.type === "roomBreakdown") {
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="space-y-2">
+            <div className="grid grid-cols-[1fr_120px] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.8px] text-[#475467]">
+              <p>Room</p>
+              <p className="text-right">Price</p>
+            </div>
+            {includedSalesRoomsForQuote.length > 0 ? (
+              includedSalesRoomsForQuote.map((room) => (
+                <div key={`${keyPrefix}_${block.id}_${room.name}`} className="grid grid-cols-[1fr_120px] px-3 py-2 text-[12px] text-[#0F172A]">
+                  <p className="font-medium">{room.name}</p>
+                  <p className="text-right font-semibold">{room.totalPrice}</p>
+                </div>
+              ))
+            ) : (
+              <div className="px-3 py-3 text-[12px] text-[#667085]">No included rooms yet.</div>
+            )}
+          </div>
+        );
+      }
+      if (block.type === "totals") {
+        return (
+          <div key={`${keyPrefix}_${block.id}`} className="space-y-2 px-3 py-3">
+            <div className="flex items-center justify-between text-[12px] text-[#0F172A]">
+              <span>Included Rooms</span>
+              <span className="font-semibold">{includedSalesRoomsForQuote.length}</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-[#D7DEE8] pt-2 text-[14px] font-semibold text-[#12345B]">
+              <span>Total</span>
+              <span>{formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span>
+            </div>
+          </div>
+        );
+      }
+      const interpolated = interpolateQuoteTemplateText(block.content, effectiveQuoteTemplateReplacements);
+      return (
+        <div
+          key={`${keyPrefix}_${block.id}`}
+          className="text-[12px] leading-[1.45]"
+          dangerouslySetInnerHTML={{ __html: renderQuoteRichTextHtml(interpolated) }}
+        />
+      );
+    };
+  const renderQuoteContainer = (
+    container: QuoteTemplateContainer,
+    keyPrefix: string,
+    options?: {
+      projectTextBlockId?: string;
+      projectTextValueOverride?: string;
+      projectTextChunkIndex?: number;
+      projectTextChunkCount?: number;
+      attachRef?: boolean;
+      thumbnailMode?: boolean;
+    },
+  ) => (
+    <div
+      key={`${keyPrefix}_${container.id}`}
+      ref={options?.attachRef ? (node) => { quoteContainerRefs.current[container.id] = node; } : undefined}
+      className="space-y-3"
+      style={{ minHeight: "20px", ...quoteLayoutBoxStyle(container.style) }}
+      data-quote-container-id={container.id}
+    >
+      <div className="flex flex-wrap">
+        {container.columns.map((column) => (
+          <div
+            key={`quote_col_${keyPrefix}_${container.id}_${column.id}`}
+            className="space-y-0"
+            style={{
+              flex: `0 0 ${quoteColumnWidthPercent(column.span)}%`,
+              maxWidth: `${quoteColumnWidthPercent(column.span)}%`,
+              ...quoteLayoutBoxStyle(column.style),
+            }}
+          >
+            {column.blocks.map((block) =>
+              renderQuoteTemplateBlock(block, `col_${keyPrefix}_${container.id}_${column.id}`, {
+                projectTextValueOverride:
+                  options?.projectTextBlockId === block.id ? options.projectTextValueOverride : undefined,
+                projectTextChunkIndex:
+                  options?.projectTextBlockId === block.id ? options.projectTextChunkIndex : undefined,
+                projectTextChunkCount:
+                  options?.projectTextBlockId === block.id ? options.projectTextChunkCount : undefined,
+                thumbnailMode: options?.thumbnailMode,
+              }),
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  const quotePreviewPages = (() => {
+    const containerById = new Map(enabledQuoteContainers.map((container) => [container.id, container] as const));
+    if (!quoteContainerPagination || quoteContainerPagination.pageContainerIds.length <= 1) {
+      return [
+        {
+          id: "quote_page_1",
+          containers: [...topQuoteContainers, ...flowQuoteContainers],
+          bottomContainers: bottomQuoteContainers,
+          pinBottomToPage: true,
+        },
+      ];
+    }
+    return quoteContainerPagination.pageContainerIds.map((pageIds, idx) => ({
+      id: `quote_page_${idx + 1}`,
+      containers: pageIds.map((id) => containerById.get(id)).filter(Boolean) as QuoteTemplateContainer[],
+      bottomContainers: [] as QuoteTemplateContainer[],
+      pinBottomToPage: false,
+    }));
+  })();
+  const onQuotePreviewScroll = () => {
+    const scroller = quotePreviewScrollRef.current;
+    if (!scroller || quotePreviewPages.length <= 1) return;
+    const top = scroller.scrollTop;
+    let bestId = quotePreviewPages[0]?.id || "quote_page_1";
+    let bestDistance = Number.POSITIVE_INFINITY;
+    quotePreviewPages.forEach((page) => {
+      const node = quotePreviewPageRefs.current[page.id];
+      if (!node) return;
+      const distance = Math.abs(node.offsetTop - top);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestId = page.id;
+      }
+    });
+    setActiveQuotePreviewPageId((prev) => (prev === bestId ? prev : bestId));
+  };
+  const jumpToQuotePreviewPage = (pageId: string) => {
+    const node = quotePreviewPageRefs.current[pageId];
+    if (!node) return;
+    setActiveQuotePreviewPageId(pageId);
+    node.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const renderQuotePreviewPageBody = (
+    page: (typeof quotePreviewPages)[number],
+    keyPrefix: string,
+    options?: { attachRef?: boolean; thumbnailMode?: boolean },
+  ) => (
+    <div className="quote-print-sheet-inner flex h-full min-h-0 flex-col">
+      <div className="space-y-4">
+        {page.containers.map((container, containerIndex) =>
+          renderQuoteContainer(container, `${keyPrefix}_container_${containerIndex}`, {
+            attachRef: options?.attachRef,
+            thumbnailMode: options?.thumbnailMode,
+          }),
+        )}
+      </div>
+      {page.bottomContainers.length > 0 && (
+        <div className={`${page.pinBottomToPage ? "mt-auto" : ""} space-y-4 pt-4`}>
+          {page.bottomContainers.map((container, containerIndex) =>
+            renderQuoteContainer(container, `${keyPrefix}_bottom_${containerIndex}`, {
+              attachRef: options?.attachRef,
+              thumbnailMode: options?.thumbnailMode,
+            }),
+          )}
+        </div>
+      )}
+    </div>
+  );
+  const salesQuotePreviewContent = (
+    <div className="quote-preview-shell">
+      <section className="quote-preview-stage rounded-[18px] border border-[#D7DEE8] bg-[#EDEFF4] p-4 shadow-[inset_0_1px_2px_rgba(16,24,40,0.04)]">
+        <div className="space-y-4">
+          {quotePreviewPages.map((page, pageIndex) => (
+            <div
+              key={page.id}
+              ref={(node) => {
+                quotePreviewPageRefs.current[page.id] = node;
+                if (pageIndex === 0) quotePrintSheetRef.current = node;
+              }}
+              data-quote-print-sheet="true"
+              className="quote-print-sheet mx-auto flex flex-col rounded-[18px] border border-[#D7DEE8] bg-white shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
+              style={{
+                width: quotePreviewWidthCss,
+                aspectRatio: `${quotePreviewPaper.widthMm} / ${quotePreviewPaper.heightMm}`,
+                padding: quotePreviewPaddingCss,
+              }}
+            >
+              {renderQuotePreviewPageBody(page, page.id, { attachRef: true })}
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+  const salesQuoteExtrasSidebar = (
+    <aside className="quote-extras-live-panel w-full shrink-0 self-start rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)] lg:sticky lg:top-[72px] lg:max-h-[calc(100dvh-96px)] lg:w-[280px] lg:overflow-auto">
+      <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
+        <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
+      </div>
+      <div className="space-y-4 p-4 text-[12px]">
+        {displayedSalesQuoteExtras.length > 0 ? (
+          <div className="space-y-2">
+            {displayedSalesQuoteExtras.map((item) => (
+              <label key={`quote_preview_extra_${item.id}`} className="flex items-center gap-2 text-[#1F2937]">
+                <input
+                  type="checkbox"
+                  checked={item.included}
+                  disabled={salesReadOnly || isSavingSalesRooms}
+                  onChange={(e) => void onToggleSalesQuoteExtraIncluded(item, e.target.checked)}
+                  className="h-[12px] w-[12px]"
+                />
+                <span className="font-semibold">{item.name}</span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-[#667085]">No quote extras configured.</p>
+        )}
+        <div className="border-t border-[#E5E7EB] pt-4">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-[13px] font-medium tracking-[1px] text-[#0F2A4A]">QUOTE HELPERS</p>
+            {!activeQuoteProjectTextEditBlockId ? (
+              <span className="text-[10px] font-semibold uppercase tracking-[0.8px] text-[#98A2B3]">Select text field</span>
+            ) : null}
+          </div>
+          {salesQuoteHelpers.length > 0 ? (
+            <div className="space-y-2">
+              {salesQuoteHelpers.map((helper) => (
+                <button
+                  key={`quote_helper_${helper.id}`}
+                  type="button"
+                  disabled={!activeQuoteProjectTextEditBlockId || salesReadOnly || isSavingQuoteProjectText}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertSalesQuoteHelperAtCursor(helper);
+                  }}
+                  className="w-full rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2 text-left transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <div
+                    className="text-[12px] leading-[1.45] text-[#1F2937]"
+                    dangerouslySetInnerHTML={{ __html: renderQuoteRichTextHtml(helper.content) }}
+                  />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[12px] text-[#667085]">No quote helpers configured.</p>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+  const salesQuoteFullscreenPortal =
+    resolvedTab === "sales" && salesAccess.view && salesNav === "quote" && typeof document !== "undefined"
+      ? createPortal(
+          <div className="quote-print-root fixed inset-0 z-[2147483640] flex min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+            <style>{`
+              @media print {
+                @page {
+                  size: ${quotePreviewPaper.widthMm}mm ${quotePreviewPaper.heightMm}mm;
+                  margin: 0;
+                }
+                html, body {
+                  margin: 0 !important;
+                  padding: 0 !important;
+                  background: #ffffff !important;
+                  -webkit-print-color-adjust: exact;
+                  print-color-adjust: exact;
+                }
+                body > * {
+                  display: none !important;
+                }
+                .quote-print-root {
+                  display: block !important;
+                  position: static !important;
+                  inset: auto !important;
+                  overflow: visible !important;
+                  min-height: 0 !important;
+                  background: #ffffff !important;
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                  color-adjust: exact !important;
+                  forced-color-adjust: none !important;
+                }
+                .quote-print-root,
+                .quote-print-root * {
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                  color-adjust: exact !important;
+                  forced-color-adjust: none !important;
+                }
+                .quote-print-content {
+                  overflow: visible !important;
+                  padding: 0 !important;
+                }
+                .quote-print-content-shell {
+                  max-width: none !important;
+                  width: ${quotePreviewPaper.widthMm}mm !important;
+                  margin: 0 auto !important;
+                }
+                .quote-extras-live-panel {
+                  display: none !important;
+                }
+                .quote-preview-shell {
+                  margin: 0 !important;
+                }
+                .quote-preview-shell > :not(.quote-preview-stage) {
+                  display: none !important;
+                }
+                .quote-print-chrome,
+                .quote-preview-meta {
+                  display: none !important;
+                }
+                .quote-preview-stage {
+                  display: block !important;
+                  border: none !important;
+                  background: transparent !important;
+                  box-shadow: none !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
+                }
+                .quote-print-sheet {
+                  width: ${quotePreviewPaper.widthMm}mm !important;
+                  min-height: 0 !important;
+                  height: ${quotePreviewPaper.heightMm}mm !important;
+                  margin: 0 !important;
+                  border: none !important;
+                  box-shadow: none !important;
+                  border-radius: 0 !important;
+                  background: #ffffff !important;
+                  aspect-ratio: auto !important;
+                  padding: ${quotePrintMarginMm}mm !important;
+                  box-sizing: border-box !important;
+                }
+                .quote-print-sheet-inner {
+                  min-height: 100% !important;
+                  height: 100% !important;
+                }
+                .quote-print-sheet * {
+                  -webkit-print-color-adjust: exact;
+                  print-color-adjust: exact;
+                }
+                .quote-print-sheet [style*="background"] {
+                  background-clip: padding-box !important;
+                }
+                .quote-print-sheet [style*="background-color"] {
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                  color-adjust: exact !important;
+                  forced-color-adjust: none !important;
+                }
+                .quote-print-sheet [style*="border-color"] {
+                  border-style: solid !important;
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                  color-adjust: exact !important;
+                  forced-color-adjust: none !important;
+                }
+              }
+            `}</style>
+            <div className="quote-print-chrome sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+              <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+                <Quote size={14} />
+                <span>Quote</span>
+                <span className="text-[#6B7280]">|</span>
+                <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onPrintSalesQuote}
+                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 text-[12px] font-bold text-[#475467] hover:bg-[#EEF2F7]"
+                >
+                  <Printer size={14} />
+                  Print
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSalesNav("items")}
+                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+                >
+                  <ArrowLeft size={14} />
+                  Save & Back
+                </button>
+              </div>
+            </div>
+            <div
+              ref={quotePreviewScrollRef}
+              onScroll={onQuotePreviewScroll}
+              className="quote-print-content min-h-0 flex-1 overflow-auto px-4 py-4 md:px-5"
+            >
+              <div className="quote-print-content-shell mx-auto flex w-full max-w-[1440px] flex-col gap-4 lg:flex-row lg:items-start">
+                {quotePreviewPages.length > 1 ? (
+                  <aside className="hidden lg:sticky lg:top-[72px] lg:flex lg:w-[120px] lg:shrink-0 lg:flex-col lg:gap-3">
+                    {quotePreviewPages.map((page, index) => {
+                      const isActive = activeQuotePreviewPageId === page.id;
+                      return (
+                        <button
+                          key={`quote_thumb_${page.id}`}
+                          type="button"
+                          onClick={() => jumpToQuotePreviewPage(page.id)}
+                          className={`group flex flex-col items-center gap-2 rounded-[12px] border px-3 py-3 text-left transition ${
+                            isActive
+                              ? "border-[#8FB4FF] bg-[#EAF1FF] shadow-[0_8px_20px_rgba(47,107,255,0.12)]"
+                              : "border-[#D7DEE8] bg-white hover:border-[#B9C7DA] hover:bg-[#F8FAFD]"
+                          }`}
+                        >
+                          <div
+                            className="relative w-full overflow-hidden rounded-[6px] border border-[#D7DEE8] bg-white shadow-[0_6px_14px_rgba(15,23,42,0.08)]"
+                            style={{
+                              aspectRatio: `${quotePreviewPaper.widthMm} / ${quotePreviewPaper.heightMm}`,
+                            }}
+                          >
+                            <div
+                              className="absolute left-0 top-0 origin-top-left"
+                              style={{
+                                width: "625%",
+                                height: "625%",
+                                transform: "scale(0.16)",
+                                transformOrigin: "top left",
+                                padding: quotePreviewPaddingCss,
+                                boxSizing: "border-box",
+                                background: "#ffffff",
+                              }}
+                            >
+                              {renderQuotePreviewPageBody(page, `thumb_${page.id}`, { thumbnailMode: true })}
+                            </div>
+                          </div>
+                          <span className={`text-[11px] font-bold ${isActive ? "text-[#24589A]" : "text-[#475467]"}`}>
+                            Page {index + 1}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </aside>
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  {salesQuotePreviewContent}
+                </div>
+                {salesQuoteExtrasSidebar}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
   const permissionRows = [
     {
       uid: user?.uid ?? "current",
@@ -7451,7 +10935,21 @@ export default function ProjectDetailsPage() {
       displayName: member.displayName,
       role: member.role,
     })),
-  ].slice(0, 8);
+  ]
+    .slice(0, 8)
+    .map((row) => {
+      const isCreatorUser =
+        String(project.createdByUid ?? "").trim() !== "" &&
+        String(row.uid || "").trim() === String(project.createdByUid ?? "").trim();
+      const isAssignedUser =
+        String(project.assignedToUid ?? "").trim() !== "" &&
+        String(row.uid || "").trim() === String(project.assignedToUid ?? "").trim();
+      const accessLabel = isCreatorUser || isAssignedUser ? "Edit" : "No Access";
+      return {
+        ...row,
+        accessLabel,
+      };
+    });
 
   const selectedNestingSheet = (() => {
     if (!nestingSheetPreview) return null;
@@ -7653,6 +11151,124 @@ export default function ProjectDetailsPage() {
         ],
       };
     });
+  };
+
+  const startInitialCellEdit = (row: CutlistRow, key: CutlistEditableField) => {
+    if (key === "grain") {
+      if (!initialMeasureBoardGrainFor(String(row.board ?? "").trim())) return;
+      setInitialEditingCell({ rowId: row.id, key });
+      setInitialEditingCellValue(String(row.grainValue ?? "").trim());
+      return;
+    }
+    setInitialEditingCell({ rowId: row.id, key });
+    if (key === "clashing") {
+      setInitialEditingCellValue(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")));
+      return;
+    }
+    setInitialEditingCellValue(String(row[key] ?? ""));
+  };
+
+  const cancelInitialCellEdit = () => {
+    setInitialEditingCell(null);
+    setInitialEditingCellValue("");
+  };
+
+  const commitInitialCellEdit = async (overrideValue?: string) => {
+    if (!initialEditingCell) return;
+    const target = initialEditingCell;
+    const value = String(overrideValue ?? initialEditingCellValue ?? "");
+    const previousRow = initialCutlistRows.find((row) => row.id === target.rowId) ?? null;
+    const next = initialCutlistRows.map((row) => {
+      if (row.id !== target.rowId) return row;
+      const updated: CutlistRow = { ...row };
+      switch (target.key) {
+        case "board":
+          updated.board = value;
+          if (!initialMeasureBoardGrainFor(String(updated.board ?? "").trim())) {
+            updated.grainValue = "";
+            updated.grain = false;
+          }
+          break;
+        case "grain":
+          if (!initialMeasureBoardGrainFor(String(updated.board ?? "").trim())) {
+            updated.grainValue = "";
+            updated.grain = false;
+            break;
+          }
+          updated.grainValue = String(value ?? "").trim();
+          updated.grain = Boolean(updated.grainValue);
+          break;
+        case "clashing": {
+          const split = splitClashing(value);
+          updated.clashLeft = split.left;
+          updated.clashRight = split.right;
+          updated.clashing = joinClashing(split.left, split.right);
+          break;
+        }
+        case "room":
+          updated.room = value || "Project Cutlist";
+          break;
+        case "partType":
+          updated.partType = value;
+          break;
+        case "height":
+        case "width":
+        case "depth":
+        case "quantity":
+          updated[target.key] = numericOnlyText(value);
+          break;
+        default:
+          updated[target.key] = value;
+          break;
+      }
+      return updated;
+    });
+    const updatedRow = next.find((row) => row.id === target.rowId) ?? null;
+    if (previousRow && updatedRow && target.key === "partType" && previousRow.partType !== updatedRow.partType) {
+      const changedRowName = String(updatedRow.name || previousRow.name || "Unnamed Row").trim();
+      logCutlistActivity(`${changedRowName} | Part Type:`, {
+        partType: previousRow.partType,
+        partTypeTo: updatedRow.partType,
+        scope: "initial",
+      });
+    }
+    if (previousRow && updatedRow && target.key !== "partType") {
+      const trackedKeys = new Set<CutlistEditableField>(["board", "name", "height", "width", "depth", "quantity", "clashing", "grain", "room"]);
+      if (trackedKeys.has(target.key)) {
+        const before = cutlistValueForActivity(previousRow, target.key);
+        const after = cutlistValueForActivity(updatedRow, target.key);
+        if (before !== after) {
+          const changedRowName = String(updatedRow.name || previousRow.name || "Unnamed Row").trim();
+          logCutlistActivity(`${changedRowName} | ${cutlistFieldLabel(target.key)}:`, {
+            partType: updatedRow.partType || previousRow.partType,
+            valueFrom: before,
+            valueTo: after,
+            dedupeKey: `initial:change:${updatedRow.id}:${target.key}:${before}->${after}`,
+            scope: "initial",
+          });
+        }
+      }
+    }
+    setInitialCutlistRows(next);
+    setInitialEditingCell(null);
+    setInitialEditingCellValue("");
+    await persistInitialCutlistRows(next);
+  };
+
+  const isInitialEditing = (rowId: string, key: CutlistEditableField) =>
+    initialEditingCell?.rowId === rowId && initialEditingCell.key === key;
+  const initialCutlistEntryCellStyle = (key: CutlistEditableField, span = 1) => {
+    const order = initialCutlistEntryOrderMap.get(key);
+    if (order == null) return { display: "none" };
+    return {
+      order: order * 10,
+      gridColumn: `span ${span} / span ${span}`,
+    };
+  };
+  const initialCutlistEntrySubCellStyle = (key: CutlistEditableField, offset: number) => {
+    const order = initialCutlistEntryOrderMap.get(key);
+    if (order == null) return { display: "none" };
+    return { order: order * 10 + offset };
   };
   const onUpdateOrderHingeRow = (rowId: string, patch: Partial<OrderHingeRow>) => {
     setOrderHingeRowsByCategory((prev) => {
@@ -9468,6 +13084,937 @@ export default function ProjectDetailsPage() {
               </div>
             </div>
           </div>
+          {addRoomModalPortal}
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
+  if (isSalesInitialFullscreen) {
+    return (
+      <ProtectedRoute>
+        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+              <Ruler size={14} />
+              <span>Initial Measure</span>
+              <span className="text-[#6B7280]">|</span>
+              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSalesNav("items")}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+            >
+              <ArrowLeft size={14} />
+              Save & Back
+            </button>
+          </div>
+          <div className="shrink-0 overflow-hidden border-b border-[#DCE3EC] bg-white px-3 py-1">
+            <div
+              ref={cutlistActivityScrollRef}
+              className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
+              dir="ltr"
+              style={{ userSelect: "none", touchAction: "none" }}
+              onDragStart={(e) => e.preventDefault()}
+            >
+              <div
+                ref={cutlistActivityInnerRef}
+                className="inline-flex w-max cursor-grab items-center gap-[10px] pr-2"
+                dir="ltr"
+                style={{
+                  userSelect: "none",
+                  touchAction: "none",
+                  transform: `translate3d(${cutlistActivityOffset}px, 0, 0)`,
+                  willChange: "transform",
+                  transition: cutlistActivityIsDragging ? "none" : "transform 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                }}
+                onPointerDown={onCutlistActivityPointerDown}
+                onPointerUp={endCutlistActivityPointerDrag}
+                onPointerCancel={endCutlistActivityPointerDrag}
+              >
+                {initialCutlistActivityFeed.map((entry, idx) => {
+                  const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
+                  const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
+                  const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
+                  const isEntering = Boolean(cutlistActivityEnteringIds[entry.id]);
+                  const rawMessage = String(entry.message || "");
+                  const messageLower = rawMessage.toLowerCase();
+                  let messagePrefix = rawMessage;
+                  let actionText = "";
+                  let messageSuffix = "";
+                  if (!isPartTypeMove && !isValueMove) {
+                    const addedToken = " added to ";
+                    const addedIdx = messageLower.indexOf(addedToken);
+                    if (addedIdx > 0) {
+                      messagePrefix = rawMessage.slice(0, addedIdx).trim();
+                      actionText = "added to";
+                      messageSuffix = rawMessage.slice(addedIdx + addedToken.length).trim();
+                    } else if (messageLower.endsWith(" removed")) {
+                      messagePrefix = rawMessage.slice(0, rawMessage.length - " removed".length).trim();
+                      actionText = "removed";
+                      messageSuffix = "";
+                    }
+                  }
+                  return (
+                    <div
+                      key={entry.id}
+                      className="inline-flex items-center gap-[10px] rounded-[9px] border px-2 py-[2px]"
+                      style={{
+                        backgroundColor: colors.chipBg,
+                        borderColor: colors.chipBorder,
+                        marginRight: idx < initialCutlistActivityFeed.length - 1 ? 10 : 0,
+                        opacity: isEntering ? 0 : 1,
+                        transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
+                        transition: "opacity 240ms ease, transform 240ms ease",
+                      }}
+                    >
+                      {!!messagePrefix && !!actionText && (
+                        <span
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: colors.pillBg,
+                            borderColor: colors.pillBorder,
+                            color: colors.pillText,
+                          }}
+                        >
+                          {messagePrefix}
+                        </span>
+                      )}
+                      {!!messagePrefix && !actionText && (
+                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingRight: 5 }}>
+                          {messagePrefix}
+                        </span>
+                      )}
+                      {!!actionText && (
+                        <span className="text-[11px] font-bold" style={{ color: colors.chipText }}>
+                          {actionText}
+                        </span>
+                      )}
+                      {!!messageSuffix && (
+                        <span className="text-[11px] font-bold" style={{ color: colors.chipText, paddingLeft: 5 }}>
+                          {messageSuffix}
+                        </span>
+                      )}
+                      {isPartTypeMove && !!entry.partType && (
+                        <>
+                          <span
+                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                            style={{
+                              backgroundColor: colors.pillBg,
+                              borderColor: colors.pillBorder,
+                              color: colors.pillText,
+                            }}
+                          >
+                            {entry.partType}
+                          </span>
+                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
+                            <img
+                              src="/arrow-right.png"
+                              alt="to"
+                              className="shrink-0 object-contain opacity-90"
+                              style={{ width: 20, height: 20 }}
+                            />
+                          </span>
+                        </>
+                      )}
+                      {isValueMove && !isPartTypeMove && (
+                        <>
+                          <span
+                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                            style={{
+                              backgroundColor: colors.pillBg,
+                              borderColor: colors.pillBorder,
+                              color: colors.pillText,
+                            }}
+                          >
+                            {entry.valueFrom || "-"}
+                          </span>
+                          <span className="inline-flex items-center" style={{ paddingLeft: 5, paddingRight: 5 }}>
+                            <img
+                              src="/arrow-right.png"
+                              alt="to"
+                              className="shrink-0 object-contain opacity-90"
+                              style={{ width: 20, height: 20 }}
+                            />
+                          </span>
+                        </>
+                      )}
+                      {!!entry.partTypeTo && (
+                        <span
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: activityColorsForPart(entry.partTypeTo || "").pillBg,
+                            borderColor: activityColorsForPart(entry.partTypeTo || "").pillBorder,
+                            color: activityColorsForPart(entry.partTypeTo || "").pillText,
+                          }}
+                        >
+                          {entry.partTypeTo}
+                        </span>
+                      )}
+                      {isValueMove && !isPartTypeMove && (
+                        <span
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[11px] font-bold"
+                          style={{
+                            backgroundColor: colors.pillBg,
+                            borderColor: colors.pillBorder,
+                            color: colors.pillText,
+                          }}
+                        >
+                          {entry.valueTo || "-"}
+                        </span>
+                      )}
+                      {String(entry.actionKind || "") === "clear" && (
+                        <button
+                          type="button"
+                          onClick={() => removeCutlistActivity(entry.id)}
+                          data-cutlist-activity-control="true"
+                          className="inline-flex h-[18px] items-center rounded-[8px] border border-[#F2A7A7] bg-[#FFECEC] px-2 text-[10px] font-extrabold text-[#991B1B] hover:bg-[#FFDCDC]"
+                        >
+                          {entry.action || "Clear"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="grid min-h-0 flex-1 gap-0 xl:grid-cols-[190px_1fr]">
+            <aside className="border-r border-[#DCE3EC] bg-white">
+              <div className="flex h-full flex-col p-2">
+                <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
+                <div className="flex flex-1 flex-col">
+                <div className="space-y-1">
+                  {initialCutlistAddedRoomTabs.map((roomTab) => {
+                    const active = initialCutlistRoomFilter === roomTab.filter;
+                    return (
+                      <button
+                        key={`${roomTab.label}_${roomTab.filter}`}
+                        type="button"
+                        onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
+                        className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                          active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                        }`}
+                      >
+                        {roomTab.label}
+                      </button>
+                    );
+                  })}
+                  <div className="my-2 h-px bg-[#DCE3EC]" />
+                  {initialCutlistRoomTabs
+                    .filter((tab) => tab.filter === "Project Cutlist")
+                    .map((roomTab) => {
+                      const active = initialCutlistRoomFilter === roomTab.filter;
+                      return (
+                        <button
+                          key={`${roomTab.label}_${roomTab.filter}`}
+                          type="button"
+                          onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
+                          className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                            active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                          }`}
+                        >
+                          {roomTab.label}
+                        </button>
+                      );
+                    })}
+                  <button
+                    type="button"
+                    disabled={!salesAccess.edit || isSavingSalesRooms}
+                    onClick={() => void onAddCutlistRoom()}
+                    className="mt-2 w-full rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-2 py-2 text-left text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                  >
+                    + Add Room
+                  </button>
+                </div>
+                  {initialMeasureLargerSheetWarningsByRoom.length > 0 && (
+                    <div className="mt-auto pt-3">
+                    <div className="rounded-[10px] border border-[#F2D06B] bg-[#FFF4BF] px-2 py-2 text-[#7A5600]">
+                      <div className="flex items-center gap-1">
+                        <img
+                          src="/danger.png"
+                          alt="Warning"
+                          className="h-[13px] w-[13px] object-contain"
+                          style={{ filter: "brightness(0) saturate(100%) invert(31%) sepia(27%) saturate(1683%) hue-rotate(14deg) brightness(93%) contrast(101%)" }}
+                        />
+                        <p className="text-[12px] font-semibold">Large sheets used</p>
+                      </div>
+                      <div className="mt-2 border-t border-[rgba(122,86,0,0.18)] pt-2 space-y-2">
+                        {initialMeasureLargerSheetWarningsByRoom.map((roomBlock) => (
+                          <div key={`im_warn_full_${roomBlock.room}`} className="border-b border-[rgba(122,86,0,0.18)] pb-2 last:border-b-0 last:pb-0">
+                            <p className="text-[10px] font-bold">{roomBlock.room}:</p>
+                            <div className="mt-1 space-y-1">
+                              {roomBlock.entries.map((entry, idx) => (
+                                        <p key={`im_warn_full_${roomBlock.room}_${entry.productName}_${entry.sheetSize}_${idx}`} className="text-[10px] font-medium text-[#8A6A16]">
+                                          {entry.productName} {" | "} {entry.sheetSize} {" | "} {entry.sheetCount > 0 ? `${entry.sheetCount}` : ""} {entry.sheetCount === 1 ? "Sheet" : "Sheets"}
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex items-center justify-between border-t border-[rgba(122,86,0,0.18)] pt-2">
+                        <span className="text-[10px] font-semibold">Added to quote</span>
+                        <img
+                          src={salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "/tick.png" : "/cross-small.png"}
+                          alt={salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "Added to quote" : "Not added to quote"}
+                          className="h-4 w-4 object-contain"
+                          style={{ filter: salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "none" : "brightness(0) saturate(100%) invert(18%) sepia(89%) saturate(2660%) hue-rotate(348deg) brightness(92%) contrast(89%)" }}
+                        />
+                      </div>
+                    </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </aside>
+
+            <div className="flex min-h-full flex-col gap-4 overflow-auto p-4">
+              {initialCutlistRoomFilter !== "Project Cutlist" && (
+                <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible">
+                  <div className="flex h-[50px] items-center px-1">
+                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                  </div>
+                  <div className="space-y-3 px-0 pb-0">
+                    <div className="flex flex-wrap items-center gap-2 rounded-[8px] px-1">
+                      {initialMeasurePartTypeOptions.map((v) => {
+                        const color = partTypeColors[v] ?? "#CBD5E1";
+                        return (
+                          <button
+                            key={`im_pt_full_${v}`}
+                            type="button"
+                            disabled={salesReadOnly}
+                            onClick={() => addInitialDraftRowForPartType(v)}
+                            style={{
+                              backgroundColor: color,
+                              borderColor: color,
+                              color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                            }}
+                            className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                          >
+                            {v}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate }}>
+                      <p></p>
+                      {initialCutlistEntryColumnDefs.map((col) => (
+                        <p
+                          key={`im_entry_full_header_${col.key}`}
+                          className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                          style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
+                        >
+                          {col.key === "clashing" ? (initialDraftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                        </p>
+                      ))}
+                    </div>
+                    <div className="space-y-1">
+                      {initialCutlistDraftRows.map((draft) => {
+                        const color = partTypeColors[draft.partType] ?? "#CBD5E1";
+                        const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
+                        const draftFieldBg = lightenHex(color, 0.12);
+                        const draftFieldBorder = darkenHex(color, 0.2);
+                        const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                        const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
+                        return (
+                          <div
+                            key={draft.id}
+                            className="relative grid items-center gap-2 overflow-visible border-y px-1 py-1"
+                            style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                          >
+                            <button
+                              type="button"
+                              disabled={salesReadOnly}
+                              onClick={() => removeInitialDraftCutlistRow(draft.id)}
+                              className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                            >
+                              <X size={15} className="mx-auto" strokeWidth={2.8} />
+                            </button>
+                            <div className="relative z-[120] pointer-events-auto" style={initialCutlistEntryCellStyle("board")}>
+                              <BoardPillDropdown
+                                value={draft.board}
+                                options={initialMeasureBoardOptions}
+                                disabled={salesReadOnly}
+                                bg={draftFieldBg}
+                                border={draftFieldBorder}
+                                text={draftTextColor}
+                                getSize={boardSizeFor}
+                                getLabel={boardDisplayLabel}
+                                onChange={(next) => onInitialDraftBoardChange(draft.id, next)}
+                              />
+                            </div>
+                            <input
+                              disabled={salesReadOnly}
+                              value={draft.name}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { name: e.target.value })}
+                              className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                              style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("name") }}
+                            />
+                            {isDrawerPartType(draft.partType) ? (
+                              <div style={initialCutlistEntryCellStyle("height")}>
+                                <DrawerHeightDropdown
+                                  value={String(draft.height || "")}
+                                  options={drawerHeightLetterOptions}
+                                  disabled={salesReadOnly}
+                                  bg={draftFieldBg}
+                                  border={draftFieldBorder}
+                                  text={draftTextColor}
+                                  onAdd={(token) => addInitialDraftDrawerHeightToken(draft.id, token)}
+                                  onRemove={(token) => removeInitialDraftDrawerHeightToken(draft.id, token)}
+                                />
+                              </div>
+                            ) : (
+                              <input
+                                disabled={salesReadOnly}
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                value={draft.height}
+                                onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericOnlyText(e.target.value) })}
+                                className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center"
+                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("height") }}
+                              />
+                            )}
+                            <input
+                              disabled={salesReadOnly}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={draft.width}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericOnlyText(e.target.value) })}
+                              className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center"
+                              style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("width") }}
+                            />
+                            <input
+                              disabled={salesReadOnly}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={draft.depth}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericOnlyText(e.target.value) })}
+                              className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center"
+                              style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("depth") }}
+                            />
+                            <input
+                              disabled={salesReadOnly || isDrawerPartType(draft.partType)}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={draft.quantity}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })}
+                              className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90"
+                              style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("quantity") }}
+                            />
+                            {draftIsCabinetry ? (
+                              <div className="grid content-start gap-[1px]" style={initialCutlistEntryCellStyle("clashing", 2)}>
+                                <div className="grid content-start gap-0">
+                                  <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                    <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Fixed Shelf</span>
+                                    <input
+                                      disabled={salesReadOnly}
+                                      value={draft.fixedShelf ?? ""}
+                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { fixedShelf: numericOnlyText(e.target.value) })}
+                                      className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                      style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                    />
+                                  </div>
+                                  {hasShelfQuantity(draft.fixedShelf) && (
+                                    <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
+                                        <DrillingArrowIcon color={draftTextColor} />
+                                        Drilling
+                                      </span>
+                                      <div className="w-full min-w-0">
+                                        <BoardPillDropdown
+                                          value={normalizeDrillingValue(draft.fixedShelfDrilling)}
+                                          options={DRILLING_OPTIONS}
+                                          disabled={salesReadOnly}
+                                          bg={draftFieldBg}
+                                          border={draftFieldBorder}
+                                          text={draftTextColor}
+                                          size="compact"
+                                          className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                          getSize={() => ""}
+                                          getLabel={(v) => v}
+                                          onChange={(v) => updateInitialDraftCutlistRow(draft.id, { fixedShelfDrilling: normalizeDrillingValue(v) })}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="grid content-start gap-0">
+                                  <div className="grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                    <span className="block pr-[3px] text-right text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>Adjustable Shelf</span>
+                                    <input
+                                      disabled={salesReadOnly}
+                                      value={draft.adjustableShelf ?? ""}
+                                      onChange={(e) => updateInitialDraftCutlistRow(draft.id, { adjustableShelf: numericOnlyText(e.target.value) })}
+                                      className="h-[18px] w-full min-w-0 rounded-[5px] border bg-transparent px-1 text-[9px]"
+                                      style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                    />
+                                  </div>
+                                  {hasShelfQuantity(draft.adjustableShelf) && (
+                                    <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                      <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
+                                        <DrillingArrowIcon color={draftTextColor} />
+                                        Drilling
+                                      </span>
+                                      <div className="w-full min-w-0">
+                                        <BoardPillDropdown
+                                          value={normalizeDrillingValue(draft.adjustableShelfDrilling)}
+                                          options={DRILLING_OPTIONS}
+                                          disabled={salesReadOnly}
+                                          bg={draftFieldBg}
+                                          border={draftFieldBorder}
+                                          text={draftTextColor}
+                                          size="compact"
+                                          className="!h-[18px] !rounded-[5px] !text-[9px]"
+                                          getSize={() => ""}
+                                          getLabel={(v) => v}
+                                          onChange={(v) => updateInitialDraftCutlistRow(draft.id, { adjustableShelfDrilling: normalizeDrillingValue(v) })}
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
+                                  <BoardPillDropdown
+                                    value={draft.clashLeft ?? ""}
+                                    options={CLASH_LEFT_OPTIONS}
+                                    disabled={salesReadOnly || isDrawerPartType(draft.partType)}
+                                    bg={draftFieldBg}
+                                    border={draftFieldBorder}
+                                    text={draftTextColor}
+                                    size="default"
+                                    getSize={() => ""}
+                                    getLabel={(v) => v}
+                                    onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashLeft: v })}
+                                  />
+                                </div>
+                                <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
+                                  <BoardPillDropdown
+                                    value={draft.clashRight ?? ""}
+                                    options={CLASH_RIGHT_OPTIONS}
+                                    disabled={salesReadOnly || isDrawerPartType(draft.partType)}
+                                    bg={draftFieldBg}
+                                    border={draftFieldBorder}
+                                    text={draftTextColor}
+                                    size="default"
+                                    getSize={() => ""}
+                                    getLabel={(v) => v}
+                                    onChange={(v) => updateInitialDraftCutlistRow(draft.id, { clashRight: v })}
+                                  />
+                                </div>
+                              </>
+                            )}
+                            <div className="grid gap-[2px]" style={initialCutlistEntryCellStyle("information")}>
+                              {informationLinesFromValue(draft.information).map((line, idx) => (
+                                <div key={`${draft.id}_im_info_${idx}`} className="flex items-center gap-[3px]">
+                                  <button
+                                    type="button"
+                                    disabled={salesReadOnly}
+                                    onClick={() => (idx === 0 ? onInitialDraftAddInformationLine(draft.id) : onInitialDraftRemoveInformationLine(draft.id, idx))}
+                                    className={
+                                      idx === 0
+                                        ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                                        : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                    }
+                                  >
+                                    {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                  </button>
+                                  <input
+                                    disabled={salesReadOnly}
+                                    value={line}
+                                    onChange={(e) => onInitialDraftInformationLineChange(draft.id, idx, e.target.value)}
+                                    placeholder="Information"
+                                    className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            {showInitialCutlistGrainColumn && (
+                              draftBoardAllowsGrain ? (
+                                <div style={initialCutlistEntryCellStyle("grain")}>
+                                  <BoardPillDropdown
+                                    value={String(draft.grainValue ?? "")}
+                                    options={initialMeasureGrainDimensionOptionsForRow(draft)}
+                                    disabled={salesReadOnly}
+                                    bg={draftFieldBg}
+                                    border={draftFieldBorder}
+                                    text={draftTextColor}
+                                    size="default"
+                                    getSize={() => ""}
+                                    getLabel={(v) => v}
+                                    onChange={(v) =>
+                                      updateInitialDraftCutlistRow(draft.id, {
+                                        grainValue: v,
+                                        grain: Boolean(String(v).trim()),
+                                      })
+                                    }
+                                  />
+                                </div>
+                              ) : (
+                                <div style={initialCutlistEntryCellStyle("grain")} />
+                              )
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={salesReadOnly}
+                      onClick={() => void addInitialDraftRowsToCutlist()}
+                      className="inline-flex h-[50px] w-full items-center justify-center border-y border-[#BFE8CF] bg-[#DDF2E7] text-[24px] font-extrabold text-[#14532D] disabled:opacity-55"
+                    >
+                      Add to Cutlist
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible">
+                <div className="flex h-[50px] items-center justify-between px-1">
+                  <div className="inline-flex items-center gap-2">
+                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                      {formatPartCount(visibleInitialCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0))}
+                    </p>
+                  </div>
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-2 pr-1">
+                    <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[180px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px] sm:w-[240px] md:w-[280px]" />
+                    <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]">
+                      <option>All Part Types</option>
+                      {initialMeasurePartTypeOptions.map((v) => (
+                        <option key={`im_full_filter_${v}`} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex flex-col space-y-2 px-0 pb-0">
+                  <div className="overflow-visible bg-transparent">
+                    {groupedInitialCutlistRows.length === 0 && (
+                      <div className="px-3 py-6 text-center text-[12px] text-[#7A8798]">No cutlist rows yet.</div>
+                    )}
+                    {groupedInitialCutlistRows.map((group) => {
+                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const palette = groupColorPalette(color);
+                      const groupTextColor = palette.text;
+                      const collapsed = Boolean(initialCollapsedCutlistGroups[group.partType]);
+                      const groupPartCount = group.rows.reduce((sum, row) => {
+                        const qty = Number(row.quantity);
+                        return sum + (Number.isFinite(qty) ? qty : 0);
+                      }, 0);
+                      const pendingGroupRows = Array.isArray(initialPendingDeleteRowsByGroup[group.partType])
+                        ? initialPendingDeleteRowsByGroup[group.partType]
+                        : [];
+                      const pendingGroupCount = pendingGroupRows.length;
+                      const groupDeleteConfirmArmed = Boolean(initialDeleteConfirmArmedGroups[group.partType]);
+                      return (
+                        <section
+                          key={`im_group_${group.partType}`}
+                          className="mb-2 w-full border-y last:mb-0"
+                          style={{ borderTopColor: color, borderBottomColor: color }}
+                        >
+                          <div
+                            className="flex h-[50px] items-center justify-between border-b pl-0"
+                            style={{
+                              backgroundColor: palette.titleBarBg,
+                              color: groupTextColor,
+                              borderBottomColor: color,
+                            }}
+                          >
+                            <div className="flex h-full items-center gap-3">
+                              <span
+                                className="inline-flex h-full items-center px-3 text-[24px] font-medium leading-none"
+                                style={{
+                                  backgroundColor: palette.titleChipBg,
+                                  color: groupTextColor,
+                                }}
+                              >
+                                {group.partType}
+                              </span>
+                              <span className="text-[12px] font-bold">{formatPartCount(groupPartCount)}</span>
+                              {pendingGroupCount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => void deletePendingInitialCutlistRowsForGroup(group.partType)}
+                                  className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold"
+                                  style={{
+                                    borderColor: groupDeleteConfirmArmed ? "#8AC0A0" : "#F2A7A7",
+                                    backgroundColor: groupDeleteConfirmArmed ? "#DFF3E7" : "#FFECEC",
+                                    color: groupDeleteConfirmArmed ? "#1E6A43" : "#991B1B",
+                                  }}
+                                  title={groupDeleteConfirmArmed ? "Confirm delete selected rows" : "Delete selected rows"}
+                                >
+                                  {groupDeleteConfirmArmed ? `Confirm (${pendingGroupCount})` : `Delete (${pendingGroupCount})`}
+                                </button>
+                              )}
+                            </div>
+                            <div className="flex h-full items-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleInitialCutlistGroup(group.partType)}
+                                className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
+                                style={{
+                                  borderLeftColor: palette.divider,
+                                  backgroundColor: palette.titleBarBg,
+                                }}
+                              >
+                                {collapsed ? <Plus size={24} strokeWidth={2.6} /> : <Minus size={24} strokeWidth={2.6} />}
+                              </button>
+                            </div>
+                          </div>
+                          {!collapsed && (
+                          <table className="w-full table-fixed text-left text-[12px]">
+                            <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
+                              <tr>
+                                <th className="px-2 py-2" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></th>
+                                {showRoomColumnInInitialList && <th className="px-2 py-2" style={{ color: groupTextColor, width: 150, minWidth: 150 }}>Room</th>}
+                                {initialCutlistListColumnDefs.map((col) => (
+                                  <th
+                                    key={`im_full_list_h_${group.partType}_${col.key}`}
+                                    className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`}
+                                    style={{ ...cutlistListColumnStyle(col.key as CutlistEditableField), color: groupTextColor }}
+                                  >
+                                    {col.key === "clashing" && isCabinetryPartType(group.partType) ? "Shelves" : col.label}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.rows.map((row, idx) => {
+                                const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                                const rowPartTextColor = isLightHex(rowPartColor) ? "#000000" : "#FFFFFF";
+                                return (
+                                  <tr
+                                    key={`im_full_row_${group.partType}_${row.id}_${idx}`}
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.rowBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                <td className="px-2 py-[3px] align-middle" style={{ width: 78, minWidth: 78, maxWidth: 78 }}>
+                                      {(() => {
+                                        const rowPendingDelete = pendingGroupRows.includes(row.id);
+                                        return (
+                                          <button
+                                            type="button"
+                                            disabled={salesReadOnly}
+                                            onClick={() => toggleInitialPendingCutlistRowDelete(group.partType, row.id)}
+                                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border disabled:opacity-55"
+                                            style={{
+                                              borderColor: rowPendingDelete ? "#8AC0A0" : "#F4B5B5",
+                                              backgroundColor: rowPendingDelete ? "#DFF3E7" : "#FCEAEA",
+                                              color: rowPendingDelete ? "#1E6A43" : "#C62828",
+                                            }}
+                                          >
+                                            {rowPendingDelete ? (
+                                              <img src="/tick.png" alt="Selected" className="h-[11px] w-[11px] object-contain" />
+                                            ) : (
+                                              <X size={11} strokeWidth={2.5} />
+                                            )}
+                                          </button>
+                                        );
+                                      })()}
+                                    </td>
+                                    {showRoomColumnInInitialList && (
+                                      <td
+                                        className="px-2 py-[3px] align-middle"
+                                        style={{ width: 150, minWidth: 150, color: groupTextColor }}
+                                        onDoubleClick={() => startInitialCellEdit(row, "room")}
+                                      >
+                                        {isInitialEditing(row.id, "room") ? (
+                                          <select
+                                            autoFocus
+                                            value={initialEditingCellValue}
+                                            onChange={(e) => setInitialEditingCellValue(e.target.value)}
+                                            onBlur={() => void commitInitialCellEdit()}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") {
+                                                e.preventDefault();
+                                                void commitInitialCellEdit();
+                                              }
+                                              if (e.key === "Escape") cancelInitialCellEdit();
+                                            }}
+                                            className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                          >
+                                            {initialCutlistEntryRoomOptions.map((opt) => (
+                                              <option key={`im_room_${opt}`} value={opt}>{opt}</option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          row.room
+                                        )}
+                                      </td>
+                                    )}
+                                    {initialCutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      if (key === "partType") {
+                                        const options = Array.from(new Set([row.partType, ...initialMeasurePartTypeOptions].filter(Boolean)));
+                                        return (
+                                          <td
+                                            key={`im_full_list_c_${row.id}_${key}`}
+                                            className={`px-2 py-[3px] align-middle ${cutlistCellAlignClass(key)}`}
+                                            style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                            onDoubleClick={() => startInitialCellEdit(row, key)}
+                                          >
+                                            {isInitialEditing(row.id, key) ? (
+                                              <select
+                                                autoFocus
+                                                value={initialEditingCellValue}
+                                                onChange={(e) => setInitialEditingCellValue(e.target.value)}
+                                                onBlur={() => void commitInitialCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitInitialCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelInitialCellEdit();
+                                                }}
+                                                className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              >
+                                                <option value=""></option>
+                                                {options.map((opt) => (
+                                                  <option key={`im_pt_${opt}`} value={opt}>{opt}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                disabled={salesReadOnly}
+                                                onClick={() => startInitialCellEdit(row, key)}
+                                                className="inline-flex rounded-[8px] border px-2 py-[2px] text-[11px] font-medium disabled:opacity-60"
+                                                style={{
+                                                  borderColor: rowPartColor,
+                                                  backgroundColor: rowPartColor,
+                                                  color: rowPartTextColor,
+                                                }}
+                                              >
+                                                {row.partType || "Unassigned"}
+                                              </button>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      if (key === "board") {
+                                        const options = Array.from(new Set([row.board, ...initialMeasureBoardOptions].filter(Boolean)));
+                                        return (
+                                          <td
+                                            key={`im_full_list_c_${row.id}_${key}`}
+                                            className={`px-2 py-[3px] align-middle ${cutlistCellAlignClass(key)}`}
+                                            style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                            onDoubleClick={() => startInitialCellEdit(row, key)}
+                                          >
+                                            {isInitialEditing(row.id, key) ? (
+                                              <select
+                                                autoFocus
+                                                value={initialEditingCellValue}
+                                                onChange={(e) => setInitialEditingCellValue(e.target.value)}
+                                                onBlur={() => void commitInitialCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitInitialCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelInitialCellEdit();
+                                                }}
+                                                className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              >
+                                                {options.map((opt) => (
+                                                  <option key={`im_board_${opt}`} value={opt}>{boardDisplayLabel(opt)}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <div className="inline-flex items-center gap-2">
+                                                {boardSizeFor(row.board) && (
+                                                  <span
+                                                    className="inline-flex h-5 min-w-[28px] items-center justify-center rounded-[999px] px-2 text-[10px] font-bold"
+                                                    style={{ backgroundColor: darkenHex(rowPartColor, 0.15), color: rowPartTextColor }}
+                                                  >
+                                                    {boardSizeFor(row.board)}
+                                                  </span>
+                                                )}
+                                                <span>{boardDisplayLabel(row.board)}</span>
+                                              </div>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+                                      const value =
+                                        key === "name" ? row.name :
+                                        key === "height" ? row.height :
+                                        key === "width" ? row.width :
+                                        key === "depth" ? row.depth :
+                                        key === "quantity" ? row.quantity :
+                                        key === "clashing" ? joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) :
+                                        key === "grain" ? String(row.grainValue ?? "") :
+                                        row.information;
+                                      return (
+                                        <td
+                                          key={`im_full_list_c_${row.id}_${key}`}
+                                          className={`px-2 py-[3px] align-middle ${cutlistCellAlignClass(key)}`}
+                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                          onDoubleClick={() => startInitialCellEdit(row, key)}
+                                        >
+                                          {isInitialEditing(row.id, key) ? (
+                                            key === "grain" ? (
+                                              <select
+                                                autoFocus
+                                                value={initialEditingCellValue}
+                                                onChange={(e) => setInitialEditingCellValue(e.target.value)}
+                                                onBlur={() => void commitInitialCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitInitialCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelInitialCellEdit();
+                                                }}
+                                                className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              >
+                                                <option value="">-</option>
+                                                {initialMeasureGrainDimensionOptionsForRow(row).map((opt) => (
+                                                  <option key={`im_grain_${row.id}_${opt}`} value={opt}>{opt}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <input
+                                                autoFocus
+                                                value={initialEditingCellValue}
+                                                onChange={(e) => setInitialEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
+                                                onBlur={() => void commitInitialCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitInitialCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelInitialCellEdit();
+                                                }}
+                                                className={`h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${cutlistCellAlignClass(key) === "text-center" ? "text-center" : "text-left"}`}
+                                              />
+                                            )
+                                          ) : (
+                                            String(value ?? "")
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                          )}
+                        </section>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+          {addRoomModalPortal}
         </div>
       </ProtectedRoute>
     );
@@ -9516,7 +14063,7 @@ export default function ProjectDetailsPage() {
                 onPointerUp={endCutlistActivityPointerDrag}
                 onPointerCancel={endCutlistActivityPointerDrag}
               >
-                {cutlistActivityFeed.map((entry, idx) => {
+                {productionCutlistActivityFeed.map((entry, idx) => {
                   const colors = activityColorsForPart(entry.partType || "", entry.actionKind || "");
                   const isPartTypeMove = Boolean(entry.partType && entry.partTypeTo);
                   const isValueMove = Boolean(entry.valueFrom || entry.valueTo);
@@ -9546,7 +14093,7 @@ export default function ProjectDetailsPage() {
                       style={{
                         backgroundColor: colors.chipBg,
                         borderColor: colors.chipBorder,
-                        marginRight: idx < cutlistActivityFeed.length - 1 ? 10 : 0,
+                        marginRight: idx < productionCutlistActivityFeed.length - 1 ? 10 : 0,
                         opacity: isEntering ? 0 : 1,
                         transform: isEntering ? "translate3d(12px,0,0)" : "translate3d(0,0,0)",
                         transition: "opacity 240ms ease, transform 240ms ease",
@@ -9761,7 +14308,7 @@ export default function ProjectDetailsPage() {
                       const draftFieldBg = lightenHex(color, 0.12);
                       const draftFieldBorder = darkenHex(color, 0.2);
                       const draftIsCabinetry = isCabinetryPartType(draft.partType);
-                      const draftBoardAllowsGrain = boardGrainFor(String(draft.board ?? "").trim());
+                      const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
                       const draftGrainValue = String(draft.grainValue ?? "").trim();
                       const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
                       const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
@@ -9801,7 +14348,16 @@ export default function ProjectDetailsPage() {
                               onChange={(next) => onDraftBoardChange(draft.id, next)}
                             />
                           </div>
-                          <input disabled={productionReadOnly} title={nameWarn || undefined} value={draft.name} onChange={(e) => updateDraftCutlistRow(draft.id, { name: e.target.value })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`} style={{ ...warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("name") }} />
+                          <PartNameSuggestionInput
+                            disabled={productionReadOnly}
+                            title={nameWarn || undefined}
+                            value={draft.name}
+                            options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                            onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                            containerStyle={cutlistEntryCellStyle("name")}
+                            className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                            style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                          />
                           {isDrawerPartType(draft.partType) ? (
                             <div style={cutlistEntryCellStyle("height")}>
                             <DrawerHeightDropdown
@@ -10219,7 +14775,7 @@ export default function ProjectDetailsPage() {
                                             }
                                             if (e.key === "Escape") cancelCellEdit();
                                           }}
-                                          className={`h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${warningClassForCell(row.id, "room")}`}
+                                          className={`h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${warningClassForCell(row.id, "room")}`}
                                           style={warningStyleForCell(row.id, "room", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" })}
                                         >
                                           {cutlistEntryRoomOptions.map((opt) => (
@@ -10261,7 +14817,7 @@ export default function ProjectDetailsPage() {
                                                 }
                                                 if (e.key === "Escape") cancelCellEdit();
                                               }}
-                                              className="h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
                                             >
                                                <option value=""></option>
                                                {options.map((opt) => (
@@ -10439,7 +14995,7 @@ export default function ProjectDetailsPage() {
                                         >
                                           {editing ? (
                                             rowIsCabinetry ? (
-                                              <div className="grid min-h-[78px] content-center gap-[1px] text-left">
+                                              <div data-cutlist-cabinetry-edit={row.id} className="grid min-h-[78px] content-center gap-[1px] text-left">
                                                 <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                                   <span className="block pr-[3px] text-right text-[9px] font-bold leading-none">Fixed Shelf</span>
                                                   <input
@@ -10447,10 +15003,21 @@ export default function ProjectDetailsPage() {
                                                     value={editingFixedShelf}
                                                     inputMode="numeric"
                                                     pattern="[0-9]*"
-                                                    onChange={(e) => setEditingFixedShelf(numericOnlyText(e.target.value))}
+                                                    onChange={(e) => {
+                                                      const next = numericOnlyText(e.target.value);
+                                                      editingFixedShelfRef.current = next;
+                                                      setEditingFixedShelf(next);
+                                                    }}
+                                                    onBlur={(e) => onCabinetryShelfInputBlur(e, row.id)}
                                                     onKeyDown={(e) => {
                                                       if (e.key === "Enter") {
                                                         e.preventDefault();
+                                                        const nextRoot = e.currentTarget.closest(`[data-cutlist-cabinetry-edit="${row.id}"]`) as HTMLElement | null;
+                                                        const nextTarget = nextRoot?.querySelector('[data-cutlist-drilling="fixed"] button') as HTMLButtonElement | null;
+                                                        if (hasShelfQuantity(editingFixedShelf) && nextTarget) {
+                                                          nextTarget.focus();
+                                                          return;
+                                                        }
                                                         void commitCellEdit();
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
@@ -10465,7 +15032,7 @@ export default function ProjectDetailsPage() {
                                                         <DrillingArrowIcon color={groupTextColor} />
                                                         Drilling
                                                       </span>
-                                                      <div className="w-full min-w-0">
+                                                      <div data-cutlist-drilling="fixed" className="w-full min-w-0">
                                                         <BoardPillDropdown
                                                           value={editingFixedShelfDrilling}
                                                           options={DRILLING_OPTIONS}
@@ -10477,7 +15044,14 @@ export default function ProjectDetailsPage() {
                                                           className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                           getSize={() => ""}
                                                           getLabel={(v) => v}
-                                                          onChange={(v) => setEditingFixedShelfDrilling(normalizeDrillingValue(v))}
+                                                          onChange={(v) => {
+                                                            const next = normalizeDrillingValue(v);
+                                                            editingFixedShelfDrillingRef.current = next;
+                                                            setEditingFixedShelfDrilling(next);
+                                                            window.setTimeout(() => {
+                                                              void commitCellEdit();
+                                                            }, 0);
+                                                          }}
                                                         />
                                                       </div>
                                                     </>
@@ -10494,11 +15068,21 @@ export default function ProjectDetailsPage() {
                                                     value={editingAdjustableShelf}
                                                     inputMode="numeric"
                                                     pattern="[0-9]*"
-                                                    onChange={(e) => setEditingAdjustableShelf(numericOnlyText(e.target.value))}
-                                                    onBlur={() => void commitCellEdit()}
+                                                    onChange={(e) => {
+                                                      const next = numericOnlyText(e.target.value);
+                                                      editingAdjustableShelfRef.current = next;
+                                                      setEditingAdjustableShelf(next);
+                                                    }}
+                                                    onBlur={(e) => onCabinetryShelfInputBlur(e, row.id)}
                                                     onKeyDown={(e) => {
                                                       if (e.key === "Enter") {
                                                         e.preventDefault();
+                                                        const nextRoot = e.currentTarget.closest(`[data-cutlist-cabinetry-edit="${row.id}"]`) as HTMLElement | null;
+                                                        const nextTarget = nextRoot?.querySelector('[data-cutlist-drilling="adjustable"] button') as HTMLButtonElement | null;
+                                                        if (hasShelfQuantity(editingAdjustableShelf) && nextTarget) {
+                                                          nextTarget.focus();
+                                                          return;
+                                                        }
                                                         void commitCellEdit();
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
@@ -10513,7 +15097,7 @@ export default function ProjectDetailsPage() {
                                                         <DrillingArrowIcon color={groupTextColor} />
                                                         Drilling
                                                       </span>
-                                                      <div className="w-full min-w-0">
+                                                      <div data-cutlist-drilling="adjustable" className="w-full min-w-0">
                                                         <BoardPillDropdown
                                                           value={editingAdjustableShelfDrilling}
                                                           options={DRILLING_OPTIONS}
@@ -10525,7 +15109,14 @@ export default function ProjectDetailsPage() {
                                                           className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                           getSize={() => ""}
                                                           getLabel={(v) => v}
-                                                          onChange={(v) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(v))}
+                                                          onChange={(v) => {
+                                                            const next = normalizeDrillingValue(v);
+                                                            editingAdjustableShelfDrillingRef.current = next;
+                                                            setEditingAdjustableShelfDrilling(next);
+                                                            window.setTimeout(() => {
+                                                              void commitCellEdit();
+                                                            }, 0);
+                                                          }}
                                                         />
                                                       </div>
                                                     </>
@@ -10852,6 +15443,7 @@ export default function ProjectDetailsPage() {
               </section>
             </div>
           </div>
+          {addRoomModalPortal}
         </div>
       </ProtectedRoute>
     );
@@ -12038,6 +16630,9 @@ export default function ProjectDetailsPage() {
                 </div>
                 <p className="pt-2 text-[13px] text-[#8A97A8]">Client: {project.customer || "-"}</p>
                 <p className="text-[13px] text-[#8A97A8]">Created: {project.createdByName || "Unknown"}</p>
+                <p className="text-[13px] text-[#8A97A8]">
+                  Assigned: {projectAssignedMember?.displayName || project.assignedToName || project.assignedTo || "Unassigned"}
+                </p>
               </div>
 
               <div className="w-full text-left md:w-auto md:text-right">
@@ -12868,18 +17463,22 @@ export default function ProjectDetailsPage() {
               <aside className="h-full overflow-hidden border-b border-[#DCE3EC] px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0">
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
-                  { label: "Initial Measure", icon: Ruler },
-                  { label: "Items", icon: ListChecks },
-                  { label: "Quote", icon: Quote },
-                  { label: "Specifications", icon: ClipboardList },
+                  { label: "Initial Measure", icon: Ruler, key: "initial" as const },
+                  { label: "Items", icon: ListChecks, key: "items" as const },
+                  { label: "Quote", icon: Quote, key: "quote" as const },
+                  { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
                 ].map((item, idx, arr) => {
                   const Icon = item.icon;
+                  const active = salesNav === item.key;
                   return (
                     <div key={item.label} className="w-full sm:w-auto xl:w-full">
                     <button
                       type="button"
                       disabled={salesReadOnly}
-                      className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold text-[#243B58] hover:bg-[#EEF2F7] disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                      onClick={() => setSalesNav(item.key)}
+                      className={`inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal ${
+                        active ? "bg-[#EEF2F7] text-[#12345B]" : "text-[#243B58] hover:bg-[#EEF2F7]"
+                      }`}
                     >
                       <span className="pl-4">
                         <Icon size={13} />
@@ -12895,132 +17494,490 @@ export default function ProjectDetailsPage() {
                 </div>
               </aside>
 
-              <div className="isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0">
-              {salesReadOnly && (
-                <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
-                  Sales is in read-only mode for your account.
-                </div>
-              )}
-                <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
-                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
-                      <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">ROOMS</p>
-                      <button
-                        type="button"
-                        disabled={salesReadOnly || isSavingSalesRooms}
-                        onClick={() => void onAddCutlistRoom()}
-                        className="text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55"
-                      >
-                        + Add Room
-                      </button>
-                    </div>
-                    <div className="p-3">
-                      <div className="mb-2 grid grid-cols-[24px_1fr_100px_64px] gap-2 text-[11px] font-bold text-[#8A97A8]">
-                        <p></p><p>Room</p><p className="text-right">Price</p><p className="text-center">Included</p>
+              <div
+                className={
+                  salesNav === "initial"
+                    ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
+                    : "isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
+                }
+              >
+                {salesReadOnly && (
+                  <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
+                    Sales is in read-only mode for your account.
+                  </div>
+                )}
+                {salesNav === "initial" ? (
+                  <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
+                    <aside className="border-r border-[#DCE3EC]">
+                      <div className="flex h-full flex-col p-2">
+                        <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
+                        <div className="flex flex-1 flex-col">
+                        <div className="space-y-1">
+                          {initialCutlistAddedRoomTabs.map((roomTab) => {
+                            const active = initialCutlistRoomFilter === roomTab.filter;
+                            return (
+                              <button
+                                key={`${roomTab.label}_${roomTab.filter}`}
+                                type="button"
+                                onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
+                                className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                                  active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                                }`}
+                              >
+                                {roomTab.label}
+                              </button>
+                            );
+                          })}
+                          <div className="my-2 h-px bg-[#DCE3EC]" />
+                          {initialCutlistRoomTabs
+                            .filter((tab) => tab.filter === "Project Cutlist")
+                            .map((roomTab) => {
+                              const active = initialCutlistRoomFilter === roomTab.filter;
+                              return (
+                                <button
+                                  key={`${roomTab.label}_${roomTab.filter}`}
+                                  type="button"
+                                  onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
+                                  className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                                    active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                                  }`}
+                                >
+                                  {roomTab.label}
+                                </button>
+                              );
+                            })}
+                          <button
+                            type="button"
+                            disabled={!salesAccess.edit || isSavingSalesRooms}
+                            onClick={() => void onAddCutlistRoom()}
+                            className="mt-2 w-full rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-2 py-2 text-left text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                          >
+                            + Add Room
+                          </button>
+                        </div>
+                          {initialMeasureLargerSheetWarningsByRoom.length > 0 && (
+                            <div className="mt-auto pt-3">
+                            <div className="rounded-[10px] border border-[#F2D06B] bg-[#FFF4BF] px-2 py-2 text-[#7A5600]">
+                              <div className="flex items-center gap-1">
+                                <img
+                                  src="/danger.png"
+                                  alt="Warning"
+                                  className="h-[13px] w-[13px] object-contain"
+                                  style={{ filter: "brightness(0) saturate(100%) invert(31%) sepia(27%) saturate(1683%) hue-rotate(14deg) brightness(93%) contrast(101%)" }}
+                                />
+                                <p className="text-[12px] font-semibold">Large sheets used</p>
+                              </div>
+                              <div className="mt-2 border-t border-[rgba(122,86,0,0.18)] pt-2 space-y-2">
+                                {initialMeasureLargerSheetWarningsByRoom.map((roomBlock) => (
+                                  <div key={`im_warn_tab_${roomBlock.room}`} className="border-b border-[rgba(122,86,0,0.18)] pb-2 last:border-b-0 last:pb-0">
+                                    <p className="text-[10px] font-bold">{roomBlock.room}:</p>
+                                    <div className="mt-1 space-y-1">
+                                      {roomBlock.entries.map((entry, idx) => (
+                                        <p key={`im_warn_tab_${roomBlock.room}_${entry.productName}_${entry.sheetSize}_${idx}`} className="text-[10px] font-medium text-[#8A6A16]">
+                                          {entry.productName} {" | "} {entry.sheetSize} {" | "} {entry.sheetCount > 0 ? `${entry.sheetCount}` : ""} {entry.sheetCount === 1 ? "Sheet" : "Sheets"}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-2 flex items-center justify-between border-t border-[rgba(122,86,0,0.18)] pt-2">
+                                <span className="text-[10px] font-semibold">Added to quote</span>
+                                <img
+                                  src={salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "/tick.png" : "/cross-small.png"}
+                                  alt={salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "Added to quote" : "Not added to quote"}
+                                  className="h-4 w-4 object-contain"
+                                  style={{ filter: salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "none" : "brightness(0) saturate(100%) invert(18%) sepia(89%) saturate(2660%) hue-rotate(348deg) brightness(92%) contrast(89%)" }}
+                                />
+                              </div>
+                            </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="space-y-1">
-                        {salesRoomRows.map((room) => (
-                          <div key={room.name} className="grid grid-cols-[24px_1fr_100px_64px] items-center gap-2 border-b border-[#DDE4EE] py-2">
+                    </aside>
+
+                    <div className="flex min-h-full flex-col gap-4 pl-4">
+                      {initialCutlistRoomFilter !== "Project Cutlist" && (
+                        <section className="relative z-10 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
+                          <div className="flex h-[50px] items-center px-1">
+                            <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                          </div>
+                          <div className="space-y-3 px-0 pb-0">
+                            <div className="flex flex-wrap items-center gap-2 rounded-[8px] px-1">
+                              {initialMeasurePartTypeOptions.map((v) => {
+                                const color = partTypeColors[v] ?? "#CBD5E1";
+                                return (
+                                  <button
+                                    key={`im_pt_${v}`}
+                                    type="button"
+                                    disabled={salesReadOnly}
+                                    onClick={() => setInitialCutlistEntry((prev) => ({ ...prev, partType: v }))}
+                                    style={{
+                                      backgroundColor: color,
+                                      borderColor: color,
+                                      color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                    }}
+                                    className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                                  >
+                                    {v}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate }}>
+                              <p></p>
+                              {initialCutlistEntryColumnDefs.map((col) => (
+                                <p
+                                  key={`im_entry_header_${col.key}`}
+                                  className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                                  style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
+                                >
+                                  {col.label}
+                                </p>
+                              ))}
+                            </div>
+                            <div className="grid gap-2 border-y px-1 py-1" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, backgroundColor: activeInitialCutlistEntryColor, color: activeInitialCutlistEntryTextColor, borderColor: activeInitialCutlistEntryFieldBorder }}>
+                              <p></p>
+                              <div style={initialCutlistEntryCellStyle("board")}>
+                                <BoardPillDropdown
+                                  value={initialCutlistEntry.board}
+                                  options={initialMeasureBoardOptions}
+                                  disabled={salesReadOnly}
+                                  bg={activeInitialCutlistEntryFieldBg}
+                                  border={activeInitialCutlistEntryFieldBorder}
+                                  text={activeInitialCutlistEntryTextColor}
+                                  getSize={boardSizeFor}
+                                  getLabel={boardDisplayLabel}
+                                  onChange={onInitialCutlistEntryBoardChange}
+                                />
+                              </div>
+                              <input disabled={salesReadOnly} value={initialCutlistEntry.name} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("name") }} />
+                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
+                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
+                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
+                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
+                              <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
+                                <BoardPillDropdown value={initialCutlistEntry.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashLeft: v }))} />
+                              </div>
+                              <div style={initialCutlistEntrySubCellStyle("clashing", 1)}>
+                                <BoardPillDropdown value={initialCutlistEntry.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashRight: v }))} />
+                              </div>
+                              <input disabled={salesReadOnly} value={initialCutlistEntry.information} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, information: e.target.value }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" placeholder="Information" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("information") }} />
+                              {showInitialCutlistGrainColumn && (
+                                initialMeasureBoardGrainFor(String(initialCutlistEntry.board ?? "").trim()) ? (
+                                  <div style={initialCutlistEntryCellStyle("grain")}>
+                                    <BoardPillDropdown value={String(initialCutlistEntry.grainValue ?? "")} options={initialMeasureGrainDimensionOptionsForRow(initialCutlistEntry)} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, grainValue: v, grain: Boolean(String(v || "").trim()) }))} />
+                                  </div>
+                                ) : (
+                                  <div style={initialCutlistEntryCellStyle("grain")} />
+                                )
+                              )}
+                            </div>
                             <button
                               type="button"
-                              disabled={salesReadOnly || isSavingSalesRooms}
-                              onClick={() => void onDeleteSalesRoom(room.name)}
-                              className="h-6 w-6 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:cursor-not-allowed disabled:opacity-55"
+                              disabled={salesReadOnly}
+                              onClick={() => void addInitialCutlistRow()}
+                              className="w-full border border-[#BFDCCD] bg-[#CCE8D8] py-3 text-[40px] font-black leading-none text-[#0F5132] disabled:opacity-55"
                             >
-                              x
+                              Add to Cutlist
                             </button>
-                            {salesAccess.edit ? (
-                              <input
-                                disabled={salesReadOnly || isSavingSalesRooms}
-                                defaultValue={room.name}
-                                onBlur={(e) => void onRenameSalesRoom(room.name, e.currentTarget.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    e.currentTarget.blur();
-                                  }
-                                }}
-                                className="h-7 w-full rounded-[8px] border border-[#D7DEE8] bg-white px-2 text-[12px] font-semibold text-[#0F172A] disabled:opacity-60"
-                              />
-                            ) : (
-                              <p className="text-[12px] font-semibold text-[#0F172A]">{room.name}</p>
-                            )}
-                            <p className="text-right text-[12px] font-semibold italic text-[#0F172A]">${room.totalPrice}</p>
-                            <label className="inline-flex items-center justify-center gap-1 text-[12px] font-bold">
-                              <input
-                                type="checkbox"
-                                disabled={salesReadOnly || isSavingSalesRooms}
-                                checked={Boolean(room.included)}
-                                onChange={(e) => void onToggleSalesRoomIncluded(room.name, e.target.checked)}
-                                className="h-[12px] w-[12px]"
-                              />
-                              <span style={{ color: room.included ? "#16A34A" : "#DC2626" }}>
-                                {room.included ? "Yes" : "No"}
-                              </span>
-                            </label>
                           </div>
-                        ))}
-                      </div>
-                      <div className="mt-3 flex items-center justify-between">
+                        </section>
+                      )}
+
+                      <section className="w-full overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
+                          <div className="flex items-center justify-between px-1 py-2">
+                            <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                            <div className="flex items-center gap-2">
+                              {initialPendingDeleteRowsSet.size > 0 && (
+                                <button
+                                  type="button"
+                                  disabled={salesReadOnly}
+                                  onClick={() => void deletePendingInitialCutlistRows()}
+                                  className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold"
+                                  style={{
+                                    borderColor: initialDeleteAllArmed ? "#8AC0A0" : "#F2A7A7",
+                                    backgroundColor: initialDeleteAllArmed ? "#DFF3E7" : "#FFECEC",
+                                    color: initialDeleteAllArmed ? "#1E6A43" : "#991B1B",
+                                  }}
+                                  title={initialDeleteAllArmed ? "Confirm delete selected rows" : "Delete selected rows"}
+                                >
+                                  {initialDeleteAllArmed ? `Confirm (${initialPendingDeleteRowsSet.size})` : `Delete (${initialPendingDeleteRowsSet.size})`}
+                                </button>
+                              )}
+                              <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[240px] rounded-[8px] border border-[#D8DEE8] bg-[#F3F5F8] px-2 text-[12px] text-[#243B58]" />
+                              <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-[8px] border border-[#D8DEE8] bg-[#F3F5F8] px-2 text-[12px] text-[#243B58]">
+                                <option>All Part Types</option>
+                                {initialMeasurePartTypeOptions.map((v) => (
+                                  <option key={`im_filter_${v}`} value={v}>{v}</option>
+                                ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="rounded-[10px] border border-[#D8DEE8] bg-white">
+                          <table className="w-full text-[12px]">
+                            <thead>
+                              <tr className="border-b border-[#D8DEE8] bg-[#EEF2F7]">
+                                <th className="px-2 py-2"></th>
+                                {showRoomColumnInInitialList && <th className="px-2 py-2 text-left">Room</th>}
+                                {initialCutlistListColumnDefs.map((col) => (
+                                  <th key={`im_list_h_${col.key}`} className={`px-2 py-2 ${cutlistHeaderAlignClass(col.key as CutlistEditableField)}`} style={cutlistListColumnStyle(col.key as CutlistEditableField)}>
+                                    {col.label}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visibleInitialCutlistRows.map((row, idx) => {
+                                const rowColor = partTypeColors[row.partType] ?? "#E2E8F0";
+                                const rowTextColor = isLightHex(rowColor) ? "#1F2937" : "#F8FAFC";
+                                const rowPendingDelete = initialPendingDeleteRowsSet.has(row.id);
+                                return (
+                                  <tr key={`im_row_${row.id}_${idx}`} className="border-b border-[#DDE4EE] last:border-b-0" style={{ backgroundColor: lightenHex(rowColor, 0.2) }}>
+                                    <td className="px-2 py-2">
+                                      <button
+                                        type="button"
+                                        disabled={salesReadOnly}
+                                        onClick={() => toggleInitialPendingCutlistRowDelete(row.partType, row.id)}
+                                        className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border disabled:opacity-55"
+                                        style={{
+                                          borderColor: rowPendingDelete ? "#8AC0A0" : "#F4B5B5",
+                                          backgroundColor: rowPendingDelete ? "#DFF3E7" : "#FCEAEA",
+                                          color: rowPendingDelete ? "#1E6A43" : "#C62828",
+                                        }}
+                                      >
+                                        {rowPendingDelete ? (
+                                          <img src="/tick.png" alt="Selected" className="h-[11px] w-[11px] object-contain" />
+                                        ) : (
+                                          <X size={11} strokeWidth={2.5} />
+                                        )}
+                                      </button>
+                                    </td>
+                                    {showRoomColumnInInitialList && <td className="px-2 py-2 text-left text-[#334155]">{row.room}</td>}
+                                    {initialCutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      const value =
+                                        key === "partType" ? row.partType :
+                                        key === "board" ? row.board :
+                                        key === "name" ? row.name :
+                                        key === "height" ? row.height :
+                                        key === "width" ? row.width :
+                                        key === "depth" ? row.depth :
+                                        key === "quantity" ? row.quantity :
+                                        key === "clashing" ? joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) :
+                                        key === "grain" ? String(row.grainValue ?? "") :
+                                        row.information;
+                                      return (
+                                        <td key={`im_list_c_${row.id}_${key}`} className={`px-2 py-2 ${cutlistCellAlignClass(key)}`} style={{ ...cutlistListColumnStyle(key), color: key === "partType" ? rowTextColor : "#0F172A" }}>
+                                          {String(value ?? "")}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                );
+                              })}
+                              {visibleInitialCutlistRows.length === 0 && (
+                                <tr>
+                                  <td colSpan={initialCutlistListColumnDefs.length + (showRoomColumnInInitialList ? 2 : 1)} className="px-3 py-6 text-center text-[12px] text-[#7A8798]">
+                                    No cutlist rows yet.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+                ) : salesNav === "quote" ? (
+                  salesQuoteFullscreenPortal
+                ) : (
+                  <>
+                  <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
+                    <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                      <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
+                        <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">ROOMS</p>
                         <button
                           type="button"
                           disabled={salesReadOnly || isSavingSalesRooms}
                           onClick={() => void onAddCutlistRoom()}
-                          className="text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] text-[16px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                          title="Add room"
                         >
-                          + Add Room
+                          <img
+                            src="/plus.png"
+                            alt="Add room"
+                            className="block object-contain"
+                            style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                            }}
+                          />
                         </button>
-                        <p className="text-[36px] font-extrabold text-[#7E9EBB]">Total $0.00</p>
                       </div>
-                    </div>
-                  </section>
-
-                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
-                      <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">PRODUCT</p>
-                    </div>
-                    <div className="space-y-2 p-4 text-[12px]">
-                      {["Melteca", "Woodgrain", "Lacquer (1 side)", "Lacquer (2 side)"].map((item) => (
-                        <label key={item} className="flex items-center gap-2 text-[#1F2937]">
-                          <input type="checkbox" disabled={salesReadOnly} className="h-[12px] w-[12px]" />
-                          <span className="font-semibold">{item}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
-                      <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
-                    </div>
-                    <div className="space-y-2 p-4 text-[12px]">
-                      {["Dear Client....", "Removal of small appliances", "Include Sundries", "Include Colour Consultation", "Include Promotional Discount", "Include GST"].map((item) => (
-                        <label key={item} className="flex items-center gap-2 text-[#1F2937]">
-                          <input type="checkbox" disabled={salesReadOnly} className="h-[12px] w-[12px]" />
-                          <span className="font-semibold">{item}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </section>
-                </div>
-
-              {quotes.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Saved Quotes</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2 text-[12px]">
-                    {quotes.map((quote) => (
-                      <div key={quote.id} className="rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
-                        <p className="font-bold text-[#111827]">{quote.currency} {quote.value.toLocaleString()}</p>
-                        <p className="text-[#5B6472]">Stage: {quote.stage}</p>
-                        <p className="text-[#5B6472]">Updated: {shortDate(quote.updatedAt)}</p>
+                      <div className="p-3">
+                        <div className="mb-2 grid grid-cols-[24px_28px_1fr_100px_64px] gap-2 text-[11px] font-bold text-[#8A97A8]">
+                          <p></p><p></p><p>Room</p><p className="text-right">Price</p><p className="text-center">Included</p>
+                        </div>
+                        <div className="space-y-1">
+                          {displayedSalesRoomRows.map((room) => (
+                            <div key={room.name} className="grid grid-cols-[24px_28px_1fr_100px_64px] items-center gap-2 border-b border-[#DDE4EE] py-2">
+                              <button
+                                type="button"
+                                disabled={salesReadOnly || isSavingSalesRooms}
+                                onClick={() => void onDeleteSalesRoom(room.name)}
+                                className="h-6 w-6 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:cursor-not-allowed disabled:opacity-55"
+                              >
+                                <X size={11} className="mx-auto" strokeWidth={2.5} />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={salesReadOnly || isSavingSalesRooms}
+                                onClick={() => startEditingSalesRoom(room.name)}
+                                className="inline-flex h-6 w-6 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-60"
+                                style={{ backgroundColor: "#7E9EBB", borderColor: "#2F4E68" }}
+                                title="Edit room name"
+                              >
+                                <img
+                                  src="/Edit.png"
+                                  alt="Edit"
+                                  className="block object-contain"
+                                  style={{ width: 13, height: 13, filter: "brightness(0) invert(1)" }}
+                                  onError={(e) => {
+                                    e.currentTarget.src = "/file.svg";
+                                  }}
+                                />
+                              </button>
+                              {salesAccess.edit && editingSalesRoomName === room.name ? (
+                                <input
+                                  disabled={salesReadOnly || isSavingSalesRooms}
+                                  autoFocus
+                                  value={editingSalesRoomDraftName}
+                                  onChange={(e) => setEditingSalesRoomDraftName(e.currentTarget.value)}
+                                  onBlur={() => void commitEditingSalesRoom()}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      void commitEditingSalesRoom();
+                                    }
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      cancelEditingSalesRoom();
+                                    }
+                                  }}
+                                  className="h-7 w-full rounded-[8px] border border-[#D7DEE8] bg-white px-2 text-[12px] font-semibold text-[#0F172A] disabled:opacity-60"
+                                />
+                              ) : (
+                                <p className="text-[12px] font-semibold text-[#0F172A]">{room.name}</p>
+                              )}
+                              <p className="text-right text-[12px] font-semibold italic text-[#0F172A]">{room.totalPrice}</p>
+                              <label className="inline-flex items-center justify-center gap-1 text-[12px] font-bold">
+                                <input
+                                  type="checkbox"
+                                  disabled={salesReadOnly || isSavingSalesRooms}
+                                  checked={Boolean(room.included)}
+                                  onChange={(e) => void onToggleSalesRoomIncluded(room.name, e.target.checked)}
+                                  className="h-[12px] w-[12px]"
+                                />
+                                <span style={{ color: room.included ? "#16A34A" : "#DC2626" }}>
+                                  {room.included ? "Yes" : "No"}
+                                </span>
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-3 flex items-center justify-between">
+                          <button
+                            type="button"
+                            disabled={salesReadOnly || isSavingSalesRooms}
+                            onClick={() => void onAddCutlistRoom()}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] text-[16px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                            title="Add room"
+                          >
+                            <img
+                              src="/plus.png"
+                              alt="Add room"
+                              className="block object-contain"
+                              style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
+                              onError={(e) => {
+                                e.currentTarget.style.display = "none";
+                              }}
+                            />
+                          </button>
+                          <p className="text-[36px] font-extrabold text-[#7E9EBB]">{formatCurrencyValue(displayedSalesQuoteFinalTotal)}</p>
+                        </div>
                       </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
-            </div>
+                    </section>
+
+                    <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                      <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
+                        <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">PRODUCT</p>
+                      </div>
+                      <div className="space-y-2 p-4 text-[12px]">
+                        {salesProductRows.length > 0 ? (
+                          salesProductRows.map((row) => (
+                            <label key={row.name} className="flex items-center gap-2 text-[#1F2937]">
+                              <input
+                                type="checkbox"
+                                disabled={salesReadOnly || isSavingSalesRooms}
+                                checked={row.selected}
+                                onChange={(e) => void onToggleSalesProductSelected(row.name, e.target.checked)}
+                                className="h-[12px] w-[12px]"
+                              />
+                              <span className="font-semibold">{row.name}</span>
+                            </label>
+                          ))
+                        ) : (
+                          <p className="text-[12px] text-[#667085]">No products available.</p>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
+                      <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
+                        <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
+                      </div>
+                      <div className="space-y-2 p-4 text-[12px]">
+                        {displayedSalesQuoteExtras.length > 0 ? (
+                          displayedSalesQuoteExtras.map((item) => (
+                            <label key={item.id} className="flex items-center gap-2 text-[#1F2937]">
+                              <input
+                                type="checkbox"
+                                checked={item.included}
+                                disabled={salesReadOnly || isSavingSalesRooms}
+                                onChange={(e) => void onToggleSalesQuoteExtraIncluded(item, e.target.checked)}
+                                className="h-[12px] w-[12px]"
+                              />
+                              <span className="font-semibold">{item.name}</span>
+                            </label>
+                          ))
+                        ) : (
+                          <p className="text-[12px] text-[#667085]">No quote extras configured.</p>
+                        )}
+                      </div>
+                    </section>
+                  </div>
+
+                  {quotes.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Saved Quotes</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2 text-[12px]">
+                        {quotes.map((quote) => (
+                          <div key={quote.id} className="rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
+                            <p className="font-bold text-[#111827]">{quote.currency} {quote.value.toLocaleString()}</p>
+                            <p className="text-[#5B6472]">Stage: {quote.stage}</p>
+                            <p className="text-[#5B6472]">Updated: {shortDate(quote.updatedAt)}</p>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
+                  </>
+                )}
+              </div>
             </div>
           )}
 
@@ -13085,8 +18042,9 @@ export default function ProjectDetailsPage() {
                 {productionNav === "cutlist" ? (
                   <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
                     <aside className="border-r border-[#DCE3EC]">
-                      <div className="p-2">
+                      <div className="flex h-full flex-col p-2">
                         <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
+                        <div className="flex flex-1 flex-col">
                         <div className="space-y-1">
                           {cutlistAddedRoomTabs.map((roomTab) => {
                             const active = cutlistRoomFilter === roomTab.filter;
@@ -13129,6 +18087,45 @@ export default function ProjectDetailsPage() {
                           >
                             + Add Room
                           </button>
+                        </div>
+                          {initialMeasureLargerSheetWarningsByRoom.length > 0 && (
+                            <div className="mt-auto pt-3">
+                            <div className="rounded-[10px] border border-[#F2D06B] bg-[#FFF4BF] px-2 py-2 text-[#7A5600]">
+                              <div className="flex items-center gap-1">
+                                <img
+                                  src="/danger.png"
+                                  alt="Warning"
+                                  className="h-[13px] w-[13px] object-contain"
+                                  style={{ filter: "brightness(0) saturate(100%) invert(31%) sepia(27%) saturate(1683%) hue-rotate(14deg) brightness(93%) contrast(101%)" }}
+                                />
+                                <p className="text-[12px] font-semibold">Large sheets used</p>
+                              </div>
+                              <div className="mt-2 border-t border-[rgba(122,86,0,0.18)] pt-2 space-y-2">
+                                {initialMeasureLargerSheetWarningsByRoom.map((roomBlock) => (
+                                  <div key={`im_warn_prodtab_${roomBlock.room}`} className="border-b border-[rgba(122,86,0,0.18)] pb-2 last:border-b-0 last:pb-0">
+                                    <p className="text-[10px] font-bold">{roomBlock.room}:</p>
+                                    <div className="mt-1 space-y-1">
+                                      {roomBlock.entries.map((entry, idx) => (
+                                        <p key={`im_warn_prodtab_${roomBlock.room}_${entry.productName}_${entry.sheetSize}_${idx}`} className="text-[10px] font-medium text-[#8A6A16]">
+                                          {entry.productName} {" | "} {entry.sheetSize} {" | "} {entry.sheetCount > 0 ? `${entry.sheetCount}` : ""} {entry.sheetCount === 1 ? "Sheet" : "Sheets"}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-2 flex items-center justify-between border-t border-[rgba(122,86,0,0.18)] pt-2">
+                                <span className="text-[10px] font-semibold">Added to quote</span>
+                                <img
+                                  src={salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "/tick.png" : "/cross-small.png"}
+                                  alt={salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "Added to quote" : "Not added to quote"}
+                                  className="h-4 w-4 object-contain"
+                                  style={{ filter: salesRoomSheetAnalysis.largerSheetPricingAddedToQuote ? "none" : "brightness(0) saturate(100%) invert(18%) sepia(89%) saturate(2660%) hue-rotate(348deg) brightness(92%) contrast(89%)" }}
+                                />
+                              </div>
+                            </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </aside>
@@ -13191,7 +18188,16 @@ export default function ProjectDetailsPage() {
                                 onChange={onCutlistEntryBoardChange}
                               />
                             </div>
-                            <input disabled={productionReadOnly} title={warningForCell("single", "name") || undefined} value={cutlistEntry.name} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`} style={{ ...warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("name") }} />
+                            <PartNameSuggestionInput
+                              disabled={productionReadOnly}
+                              title={warningForCell("single", "name") || undefined}
+                              value={cutlistEntry.name}
+                              options={productionPartNameSuggestionsForRoom(cutlistEntryRoom, cutlistEntry.name)}
+                              onChange={(next) => setCutlistEntry((prev) => ({ ...prev, name: next }))}
+                              containerStyle={cutlistEntryCellStyle("name")}
+                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
+                              style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
+                            />
                             {isDrawerPartType(cutlistEntry.partType) ? (
                               <div style={cutlistEntryCellStyle("height")}>
                                 <DrawerHeightDropdown
@@ -13392,7 +18398,7 @@ export default function ProjectDetailsPage() {
                                               }
                                               if (e.key === "Escape") cancelCellEdit();
                                             }}
-                                            className="h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                            className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
                                           >
                                             {cutlistEntryRoomOptions.map((opt) => (
                                               <option key={opt} value={opt}>{opt}</option>
@@ -13431,7 +18437,7 @@ export default function ProjectDetailsPage() {
                                                   }
                                                   if (e.key === "Escape") cancelCellEdit();
                                                 }}
-                                                className="h-6 min-w-[130px] rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                                className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
                                               >
                                                 <option value=""></option>
                                                 {options.map((opt) => (
@@ -13545,7 +18551,7 @@ export default function ProjectDetailsPage() {
                                           >
                                             {editing ? (
                                               rowIsCabinetry ? (
-                                                <div className="grid min-h-[78px] content-center gap-[1px] text-left">
+                                                <div data-cutlist-cabinetry-edit={row.id} className="grid min-h-[78px] content-center gap-[1px] text-left">
                                                   <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                                     <span className="block pr-[3px] text-right text-[9px] font-bold leading-none">Fixed Shelf</span>
                                                     <input
@@ -13553,10 +18559,21 @@ export default function ProjectDetailsPage() {
                                                       value={editingFixedShelf}
                                                       inputMode="numeric"
                                                       pattern="[0-9]*"
-                                                      onChange={(e) => setEditingFixedShelf(numericOnlyText(e.target.value))}
+                                                      onChange={(e) => {
+                                                        const next = numericOnlyText(e.target.value);
+                                                        editingFixedShelfRef.current = next;
+                                                        setEditingFixedShelf(next);
+                                                      }}
+                                                      onBlur={(e) => onCabinetryShelfInputBlur(e, row.id)}
                                                       onKeyDown={(e) => {
                                                         if (e.key === "Enter") {
                                                           e.preventDefault();
+                                                          const nextRoot = e.currentTarget.closest(`[data-cutlist-cabinetry-edit="${row.id}"]`) as HTMLElement | null;
+                                                          const nextTarget = nextRoot?.querySelector('[data-cutlist-drilling="fixed"] button') as HTMLButtonElement | null;
+                                                          if (hasShelfQuantity(editingFixedShelf) && nextTarget) {
+                                                            nextTarget.focus();
+                                                            return;
+                                                          }
                                                           void commitCellEdit();
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
@@ -13571,7 +18588,7 @@ export default function ProjectDetailsPage() {
                                                           <DrillingArrowIcon color={rowTextColor} />
                                                           Drilling
                                                         </span>
-                                                        <div className="w-full min-w-0">
+                                                        <div data-cutlist-drilling="fixed" className="w-full min-w-0">
                                                           <BoardPillDropdown
                                                             value={editingFixedShelfDrilling}
                                                             options={DRILLING_OPTIONS}
@@ -13583,7 +18600,14 @@ export default function ProjectDetailsPage() {
                                                             className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                             getSize={() => ""}
                                                             getLabel={(v) => v}
-                                                            onChange={(v) => setEditingFixedShelfDrilling(normalizeDrillingValue(v))}
+                                                            onChange={(v) => {
+                                                              const next = normalizeDrillingValue(v);
+                                                              editingFixedShelfDrillingRef.current = next;
+                                                              setEditingFixedShelfDrilling(next);
+                                                              window.setTimeout(() => {
+                                                                void commitCellEdit();
+                                                              }, 0);
+                                                            }}
                                                           />
                                                         </div>
                                                       </>
@@ -13600,11 +18624,21 @@ export default function ProjectDetailsPage() {
                                                       value={editingAdjustableShelf}
                                                       inputMode="numeric"
                                                       pattern="[0-9]*"
-                                                      onChange={(e) => setEditingAdjustableShelf(numericOnlyText(e.target.value))}
-                                                      onBlur={() => void commitCellEdit()}
+                                                      onChange={(e) => {
+                                                        const next = numericOnlyText(e.target.value);
+                                                        editingAdjustableShelfRef.current = next;
+                                                        setEditingAdjustableShelf(next);
+                                                      }}
+                                                      onBlur={(e) => onCabinetryShelfInputBlur(e, row.id)}
                                                       onKeyDown={(e) => {
                                                         if (e.key === "Enter") {
                                                           e.preventDefault();
+                                                          const nextRoot = e.currentTarget.closest(`[data-cutlist-cabinetry-edit="${row.id}"]`) as HTMLElement | null;
+                                                          const nextTarget = nextRoot?.querySelector('[data-cutlist-drilling="adjustable"] button') as HTMLButtonElement | null;
+                                                          if (hasShelfQuantity(editingAdjustableShelf) && nextTarget) {
+                                                            nextTarget.focus();
+                                                            return;
+                                                          }
                                                           void commitCellEdit();
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
@@ -13619,7 +18653,7 @@ export default function ProjectDetailsPage() {
                                                           <DrillingArrowIcon color={rowTextColor} />
                                                           Drilling
                                                         </span>
-                                                        <div className="w-full min-w-0">
+                                                        <div data-cutlist-drilling="adjustable" className="w-full min-w-0">
                                                           <BoardPillDropdown
                                                             value={editingAdjustableShelfDrilling}
                                                             options={DRILLING_OPTIONS}
@@ -13631,7 +18665,14 @@ export default function ProjectDetailsPage() {
                                                             className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                             getSize={() => ""}
                                                             getLabel={(v) => v}
-                                                            onChange={(v) => setEditingAdjustableShelfDrilling(normalizeDrillingValue(v))}
+                                                            onChange={(v) => {
+                                                              const next = normalizeDrillingValue(v);
+                                                              editingAdjustableShelfDrillingRef.current = next;
+                                                              setEditingAdjustableShelfDrilling(next);
+                                                              window.setTimeout(() => {
+                                                                void commitCellEdit();
+                                                              }, 0);
+                                                            }}
                                                           />
                                                         </div>
                                                       </>
@@ -13786,23 +18827,36 @@ export default function ProjectDetailsPage() {
                                           }}
                                         >
                                           {editing ? (
-                                            <input
-                                              autoFocus
-                                              value={editingCellValue}
-                                              inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
-                                              pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
-                                              onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
-                                              onBlur={() => void commitCellEdit()}
-                                              onKeyDown={(e) => {
-                                                if (e.key === "Enter") {
-                                                  e.preventDefault();
-                                                  void commitCellEdit();
-                                                }
-                                                if (e.key === "Escape") cancelCellEdit();
-                                              }}
-                                              style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
-                                              className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
-                                            />
+                                            key === "name" ? (
+                                              <PartNameSuggestionInput
+                                                autoFocus
+                                                value={editingCellValue}
+                                                options={productionPartNameSuggestionsForRoom(row.room, row.name)}
+                                                onChange={(next) => setEditingCellValue(next)}
+                                                onBlur={() => void commitCellEdit()}
+                                                onCommit={() => void commitCellEdit()}
+                                                onCancel={cancelCellEdit}
+                                                className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                              />
+                                            ) : (
+                                              <input
+                                                autoFocus
+                                                value={editingCellValue}
+                                                inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
+                                                pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
+                                                onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
+                                                onBlur={() => void commitCellEdit()}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.preventDefault();
+                                                    void commitCellEdit();
+                                                  }
+                                                  if (e.key === "Escape") cancelCellEdit();
+                                                }}
+                                                style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
+                                                className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                              />
+                                            )
                                           ) : (
                                             isGrainMatchedDimension ? (
                                               <span>{value}</span>
@@ -14359,18 +19413,60 @@ export default function ProjectDetailsPage() {
           {resolvedTab === "settings" && settingsAccess.view && (
             <div className="grid gap-4 xl:grid-cols-2">
               <Card>
-                <CardHeader className="flex-row items-center justify-between border-b border-[#D7DEE8] pb-2">
+                <CardHeader className="border-b border-[#D7DEE8] pb-2">
+                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Project Assignment</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 pt-3 text-[12px]">
+                  <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
+                    <p className="font-semibold text-[#334155]">Project Creator</p>
+                    <select
+                      value={String(project.createdByUid ?? "").trim()}
+                      onChange={(e) => void onChangeProjectCreatorUser(e.target.value)}
+                      disabled={!isCurrentProjectCreator || isSavingGeneralDetails}
+                      className="h-9 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155] outline-none disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                    >
+                      {companyMembers.map((member) => (
+                        <option key={member.uid} value={member.uid}>
+                          {member.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
+                    <p className="font-semibold text-[#334155]">Assigned User</p>
+                    <select
+                      value={String(project.assignedToUid ?? "").trim()}
+                      onChange={(e) => void onChangeAssignedProjectUser(e.target.value)}
+                      disabled={!settingsAccess.edit || isSavingGeneralDetails}
+                      className="h-9 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155] outline-none disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                    >
+                      <option value="">Unassigned</option>
+                      {companyMembers.map((member) => (
+                        <option key={member.uid} value={member.uid}>
+                          {member.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="text-[11px] font-medium text-[#8A97A8]">
+                    Only the current project creator can hand creator ownership to another staff member.
+                  </p>
+                  <p className="text-[11px] font-medium text-[#8A97A8]">
+                    The assigned user becomes the project manager and receives edit access to this project.
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="border-b border-[#D7DEE8] pb-2">
                   <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Project Permissions</CardTitle>
-                  <button className="rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 py-1 text-[12px] font-bold text-[#44688F]">
-                    Change Ownership
-                  </button>
                 </CardHeader>
                 <CardContent className="pt-1 text-[12px]">
                   {permissionRows.map((row) => (
                     <div key={row.uid} className="grid grid-cols-[1fr_120px_120px] items-center gap-2 border-b border-[#DCE3EC] py-[8px]">
                       <p className="font-semibold text-[#334155]">{row.displayName}</p>
                       <select className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFC] px-2 text-[12px] font-semibold text-[#475467]">
-                        <option>{row.role === "owner" || row.role === "admin" ? "Edit" : "View"}</option>
+                        <option>{row.accessLabel}</option>
                         <option>View</option>
                         <option>No Access</option>
                       </select>
@@ -14475,11 +19571,74 @@ export default function ProjectDetailsPage() {
               </div>
             </div>
           )}
+          {isAddRoomModalOpen && typeof document !== "undefined" && createPortal(
+            <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+              <button
+                type="button"
+                aria-label="Close add room dialog backdrop"
+                onClick={() => {
+                  setIsAddRoomModalOpen(false);
+                  setAddRoomName("");
+                }}
+                className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px]"
+              />
+              <div className="relative z-[1701] w-[min(720px,96vw)] overflow-hidden rounded-[14px] border border-[#D6DEE9] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+                <div className="border-b border-[#D7DEE8] px-5 py-4">
+                  <p className="text-[14px] font-bold uppercase tracking-[1px] text-[#12345B]">Add Room</p>
+                </div>
+                <div className="space-y-4 px-5 py-4">
+                  <div className="space-y-2">
+                    <p className="text-[12px] font-semibold text-[#475467]">Room Name</p>
+                    <input
+                      autoFocus
+                      value={addRoomName}
+                      onChange={(e) => setAddRoomName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void onConfirmAddCutlistRoom();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setIsAddRoomModalOpen(false);
+                          setAddRoomName("");
+                        }
+                      }}
+                      placeholder="Enter room name"
+                      className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] px-3 text-[13px] text-[#111827] outline-none"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddRoomModalOpen(false);
+                        setAddRoomName("");
+                      }}
+                      className="h-9 rounded-[9px] border border-[#D8DEE8] bg-white px-4 text-[12px] font-bold text-[#334155]"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingSalesRooms}
+                      onClick={() => void onConfirmAddCutlistRoom()}
+                      className="h-9 rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                    >
+                      Add Room
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )}
         </div>
       </AppShell>
     </ProtectedRoute>
   );
 }
+
 
 
 

@@ -24,6 +24,8 @@ export interface Project {
   createdAt: string;
   createdByUid?: string;
   createdByName: string;
+  assignedToUid?: string;
+  assignedToName?: string;
   status: "draft" | "quoted" | "approved" | "in-production" | "complete";
   statusLabel: string;
   priority: "low" | "medium" | "high";

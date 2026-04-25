@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./quote-fonts.css";
 
 :root {
   --brand: #007aff;

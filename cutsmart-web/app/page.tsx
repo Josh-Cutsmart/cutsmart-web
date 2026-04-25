@@ -10,10 +10,11 @@ import { useAuth } from "@/lib/auth-context";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
+const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 
 export default function HomePage() {
   const router = useRouter();
-  const { signIn, signInDemo, setUserColorLocal } = useAuth();
+  const { signIn, signInDemo, setUserColorLocal, user, isLoading } = useAuth();
   const [hoveredSide, setHoveredSide] = useState<"login" | "register" | null>(null);
   const [lockedPreview, setLockedPreview] = useState<"login" | "register" | null>(null);
   const [loginFieldsVisible, setLoginFieldsVisible] = useState(false);
@@ -22,7 +23,9 @@ export default function HomePage() {
   const [registerFormMounted, setRegisterFormMounted] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [rememberOnDevice, setRememberOnDevice] = useState(false);
+  const [rememberOnDevice, setRememberOnDevice] = useState(() =>
+    typeof window !== "undefined" && window.localStorage.getItem(REMEMBER_DEVICE_STORAGE_KEY) === "1",
+  );
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerMobile, setRegisterMobile] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
@@ -84,6 +87,9 @@ export default function HomePage() {
     setIsSubmitting(true);
     try {
       if (hasFirebaseConfig) {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, rememberOnDevice ? "1" : "0");
+        }
         await signIn(email, password, rememberOnDevice);
         const currentUid = String(auth?.currentUser?.uid || "").trim();
         if (currentUid) {
@@ -214,6 +220,37 @@ export default function HomePage() {
       if (registerHideTimerRef.current) window.clearTimeout(registerHideTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasFirebaseConfig || isLoading || !user?.uid) {
+      return;
+    }
+    let cancelled = false;
+    const routeRememberedUser = async () => {
+      const preferredCompanyId =
+        typeof window !== "undefined"
+          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+          : "";
+      const companyId = await resolveCompanyIdForUid(
+        String(user.uid || "").trim(),
+        preferredCompanyId ? [preferredCompanyId] : [],
+      );
+      if (cancelled) return;
+      if (companyId) {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
+        }
+        router.replace("/dashboard");
+        return;
+      }
+      router.replace("/company-onboarding");
+    };
+    void routeRememberedUser();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoading, router, user?.uid]);
+
   return (
     <div
       className="relative flex min-h-screen flex-row overflow-hidden"
@@ -311,7 +348,13 @@ export default function HomePage() {
                   <input
                     type="checkbox"
                     checked={rememberOnDevice}
-                    onChange={(e) => setRememberOnDevice(e.target.checked)}
+                    onChange={(e) => {
+                    const checked = e.target.checked;
+                    setRememberOnDevice(checked);
+                    if (typeof window !== "undefined") {
+                      window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, checked ? "1" : "0");
+                    }
+                  }}
                     className="h-4 w-4 rounded border border-[#94A3B8]"
                   />
                   <span>Remember me on this device</span>
@@ -471,4 +514,5 @@ export default function HomePage() {
     </div>
   );
 }
+
 

@@ -50,13 +50,28 @@ export function projectTabAccess(
   uid?: string,
   permissionKeys?: string[],
 ) {
+  const userId = String(uid ?? "").trim();
+  const creatorUid = String(project?.createdByUid ?? "").trim();
+  const assignedToUid = String(project?.assignedToUid ?? "").trim();
+  const isProjectCreator = Boolean(userId && creatorUid && userId === creatorUid);
+  const isAssignedProjectManager = Boolean(userId && assignedToUid && userId === assignedToUid);
+  const isPrivilegedCompanyRole = role === "owner" || role === "admin";
+
   if (tab === "general") {
-    const canEdit = role !== "viewer" || hasPermission(permissionKeys, "projects.edit");
+    const canEdit =
+      isPrivilegedCompanyRole ||
+      isProjectCreator ||
+      isAssignedProjectManager ||
+      hasPermission(permissionKeys, "projects.edit");
     return { view: true, edit: canEdit };
   }
 
   if (tab === "settings") {
-    const canEdit = role === "owner" || role === "admin" || hasPermission(permissionKeys, "company.settings");
+    const canEdit =
+      isPrivilegedCompanyRole ||
+      isProjectCreator ||
+      isAssignedProjectManager ||
+      hasPermission(permissionKeys, "company.settings");
     return { view: true, edit: canEdit };
   }
 
@@ -72,11 +87,16 @@ export function projectTabAccess(
   };
 
   let canView = defaults[tab].view.includes(role);
-  let canEdit = defaults[tab].edit.includes(role);
+  let canEdit = false;
 
   if (tab === "sales") {
     canView = canView || hasPermission(permissionKeys, "sales.view") || hasPermission(permissionKeys, "sales.edit");
-    canEdit = canEdit || hasPermission(permissionKeys, "sales.edit");
+    canEdit =
+      canEdit ||
+      isPrivilegedCompanyRole ||
+      isProjectCreator ||
+      isAssignedProjectManager ||
+      hasPermission(permissionKeys, "sales.edit");
   }
 
   if (tab === "production") {
@@ -85,7 +105,13 @@ export function projectTabAccess(
       hasPermission(permissionKeys, "production.view") ||
       hasPermission(permissionKeys, "production.edit");
     canView = canView || hasProdPerm;
-    canEdit = canEdit || hasPermission(permissionKeys, "production.edit") || hasPermission(permissionKeys, "production.key");
+    canEdit =
+      canEdit ||
+      isPrivilegedCompanyRole ||
+      isProjectCreator ||
+      isAssignedProjectManager ||
+      hasPermission(permissionKeys, "production.edit") ||
+      hasPermission(permissionKeys, "production.key");
   }
 
   const settings = (project?.projectSettings ?? {}) as Record<string, unknown>;
@@ -111,6 +137,11 @@ export function projectTabAccess(
       canView = true;
       canEdit = true;
     }
+  }
+
+  if (isProjectCreator || isAssignedProjectManager || isPrivilegedCompanyRole) {
+    canView = true;
+    canEdit = true;
   }
 
   return { view: canView, edit: canEdit };

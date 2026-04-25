@@ -205,6 +205,8 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     createdAt: toIsoString(data.createdAtIso ?? data.createdAt, new Date().toISOString()),
     createdByUid: String(data.createdByUid ?? data.ownerUid ?? ""),
     createdByName: createdByName || "Unknown",
+    assignedToUid: pickFirstString(data, ["assignedToUid", "assignedUid", "projectAssignedUid"]) || undefined,
+    assignedToName: pickFirstString(data, ["assignedToName", "assignedName", "projectAssignedName"]) || undefined,
     status: toProjectStatus(data.status),
     statusLabel: String(data.status ?? "New"),
     priority: (String(data.priority ?? "medium") as Project["priority"]),
@@ -212,7 +214,12 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     deletedAt: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
     dueDate: String(data.dueDate ?? data.due ?? ""),
     estimatedSheets: Number(data.estimatedSheets ?? rows.length ?? 0),
-    assignedTo: String(data.assignedTo ?? createdByName ?? "Unassigned"),
+    assignedTo: String(
+      data.assignedTo ??
+        data.assignedToName ??
+        data.assignedName ??
+        "Unassigned",
+    ),
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     notes,
     clientPhone,

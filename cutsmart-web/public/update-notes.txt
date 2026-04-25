@@ -1,23 +1,21 @@
-Version: v0.1.6
+Version: v0.1.7
 
 whatsNew: [
 <u><b>General:</u></b>
-- Users can now use "Remember me on this device" on log in for automatic log in.
+- Added custom font "Signature"
 
 <u><b>Production:</u></b>
-- Added "Order" window.
-- Edgetape is now calcualted per board type.
-- Changed [X] button in board settings to match other row deletion buttons.
-- CNC Cutlist now separated Cabinety part types and draws a 3D model of the cabinet for better production flow.
-- CNC Cutlist [.PDF] Export now has a new layout showing the new cabinet cards and Drawer Rows properly.
-- CNC Cutlist [.xlxs] Export now has a new layout showing the new cabinet cards and Drawer Rows properly.
-- Fixed Grain column width and made it underline the correct dimensions IF 2 dimensions are the same value.
-- Added helper text for grain direction in the headers of the board tables in CNC Cutlist.
-- Grain direction can now be selected for cabinets, this will show in the grain direction in the cabinet break down for CNC Cutlist.
-- "Print" now works correctly in CNC Cutlist, title page and copies the layout of the new PDF Export.
-- Information rows are now stacked in the CNC Cutlist rather than inline.
+- Cutlist: Linked "Part Name" to the sales cutlist part names to carry over names for consistency.
+
+<u><b>Sales:</u></b>
+- "Quote" tab now uses the quote template from settings to generate a premade quote.
+- Users can now edit the quote tab with tickboxes to add/remove specific sections.
+- Users can now edit the quote tab with custom text in the body per project.
 
 <u><b>Company Settings:</u></b>
-- Company Admins can now use a rounding up/down system for edgetape counts in the "Production" tab.
+- "Product" Sales settings now transfer to the sales tab for pricing and sheet sizing/type.
+- Added quote template builder in "Integrations" tab.
+- Linked "Quote Extras" to quote template builder so that unticking in the Sales tab will remove unticked rows from the quote.
+- Linked "Quote Discount" container rows to the quote template so that it automatically shows discount amount based off tiers from settings.
 ]
 

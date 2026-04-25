@@ -441,7 +441,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>) : null))
         .filter((item) => !!item)
         .filter((item) => Boolean(item?.defaultIncluded ?? item?.default))
-        .map((item) => String(item?.name ?? "").trim())
+        .map((item) => String(item?.id ?? item?.name ?? "").trim())
         .filter(Boolean);
       setDefaultQuoteExtras(Array.from(new Set(defaultExtras)));
 

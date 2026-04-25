@@ -1,0 +1,25 @@
+/*
+  Custom quote fonts
+  ------------------
+  Drop font files into /public/fonts, then register them here.
+
+  Example:
+
+  @font-face {
+    font-family: "My Signature Font";
+    src:
+      url("/fonts/my-signature-font.woff2") format("woff2"),
+      url("/fonts/my-signature-font.woff") format("woff");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+  }
+*/
+
+@font-face {
+  font-family: "Signature";
+  src: url("/fonts/Signature.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
