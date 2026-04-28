@@ -1,0 +1,22 @@
+Version: v0.1.8
+
+whatsNew: [
+<u><b>General:</u></b>
+- Added company Roles & Permissions.
+- Converted applicaiton to web-based only.
+- Straighted Tag pills with Project title in the header bar.
+
+<u><b>Dashboard:</u></b>
+- Added staff card for users to view current staff within their current company.
+
+<u><b>Production:</u></b>
+- If users have no edit permissions, they can click to unlock and type in a password for temp edit access.
+
+<u><b>Sales:</u></b>
+- Quote window now saves snapshots so users can see older quote versions
+- Quote window now uses a proper engine for text editing.
+- Quote window now has a fixed print layout.
+- Added "Items" window for adding products to each room under the project.
+- Initial Cutlist now saves on "Save & Back" button.
+]
+
