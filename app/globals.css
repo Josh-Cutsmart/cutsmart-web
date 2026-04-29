@@ -14,6 +14,19 @@
   --text-muted: #6e6e73;
 }
 
+:root[data-theme="dark"] {
+  --brand: #3ea6ff;
+  --brand-strong: #65b8ff;
+  --brand-soft: #233447;
+  --ink: #f1f1f1;
+  --bg-app: #0f0f0f;
+  --panel-bg: #212121;
+  --panel-border: #3f3f46;
+  --panel-muted: #272727;
+  --text-main: #f1f1f1;
+  --text-muted: #aaaaaa;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -152,4 +165,108 @@ body.new-project-open .project-image-nav-arrow {
   background: #5b6577 !important;
   border: 2px solid #d5dde8 !important;
   border-radius: 999px !important;
+}
+
+body[data-theme="dark"] {
+  background: var(--bg-app);
+  color: var(--text-main);
+}
+
+body[data-theme="dark"] h1,
+body[data-theme="dark"] h2,
+body[data-theme="dark"] h3,
+body[data-theme="dark"] h4,
+body[data-theme="dark"] h5,
+body[data-theme="dark"] h6,
+body[data-theme="dark"] p,
+body[data-theme="dark"] label,
+body[data-theme="dark"] th,
+body[data-theme="dark"] td,
+body[data-theme="dark"] li {
+  color: inherit;
+}
+
+body[data-theme="dark"] .cs-app {
+  color: var(--text-main);
+}
+
+body[data-theme="dark"] .cs-app .bg-white {
+  background-color: var(--panel-bg) !important;
+}
+
+body[data-theme="dark"] .cs-app .bg-\[\#F8FAFC\],
+body[data-theme="dark"] .cs-app .bg-\[\#F7F8FC\],
+body[data-theme="dark"] .cs-app .bg-\[\#F8FAFD\],
+body[data-theme="dark"] .cs-app .bg-\[\#EEF2F7\],
+body[data-theme="dark"] .cs-app .bg-\[\#EEF1F5\],
+body[data-theme="dark"] .cs-app .bg-\[\#F1F5F9\],
+body[data-theme="dark"] .cs-app .bg-\[\#EAF1FF\],
+body[data-theme="dark"] .cs-app .bg-\[\#EAF2FF\],
+body[data-theme="dark"] .cs-app .bg-\[\#FBFBFD\] {
+  background-color: var(--panel-muted) !important;
+}
+
+body[data-theme="dark"] .cs-app .border-\[\#D7DEE8\],
+body[data-theme="dark"] .cs-app .border-\[\#D8DEE8\],
+body[data-theme="dark"] .cs-app .border-\[\#D6DEE9\],
+body[data-theme="dark"] .cs-app .border-\[\#DCE3EC\],
+body[data-theme="dark"] .cs-app .border-\[\#E4E7EC\],
+body[data-theme="dark"] .cs-app .border-\[\#E4E8EF\],
+body[data-theme="dark"] .cs-app .border-\[\#E2E8F0\],
+body[data-theme="dark"] .cs-app .border-\[\#D7E1EE\],
+body[data-theme="dark"] .cs-app .border-\[\#CBD5E1\],
+body[data-theme="dark"] .cs-app .border-\[\#C8DAFF\],
+body[data-theme="dark"] .cs-app .border-\[\#D5DDE8\] {
+  border-color: var(--panel-border) !important;
+}
+
+body[data-theme="dark"] .cs-app .text-\[\#12345B\],
+body[data-theme="dark"] .cs-app .text-\[\#0F2A4A\],
+body[data-theme="dark"] .cs-app .text-\[\#0F172A\],
+body[data-theme="dark"] .cs-app .text-\[\#111827\],
+body[data-theme="dark"] .cs-app .text-\[\#1F2937\],
+body[data-theme="dark"] .cs-app .text-\[\#244A9A\],
+body[data-theme="dark"] .cs-app .text-\[\#24589A\],
+body[data-theme="dark"] .cs-app .text-\[\#334155\],
+body[data-theme="dark"] .cs-app .text-\[\#344054\],
+body[data-theme="dark"] .cs-app .text-\[\#475467\] {
+  color: var(--text-main) !important;
+}
+
+body[data-theme="dark"] .cs-app .text-\[\#64748B\],
+body[data-theme="dark"] .cs-app .text-\[\#667085\],
+body[data-theme="dark"] .cs-app .text-\[\#6B7280\],
+body[data-theme="dark"] .cs-app .text-\[\#7B8798\],
+body[data-theme="dark"] .cs-app .text-\[\#8A97A8\],
+body[data-theme="dark"] .cs-app .text-\[\#98A2B3\] {
+  color: var(--text-muted) !important;
+}
+
+body[data-theme="dark"] .cs-app input:not([type="color"]):not([type="checkbox"]):not([type="radio"]),
+body[data-theme="dark"] .cs-app select,
+body[data-theme="dark"] .cs-app textarea {
+  background: #303134 !important;
+  border-color: #4b5563 !important;
+  color: #f1f1f1 !important;
+}
+
+body[data-theme="dark"] .cs-app input::placeholder,
+body[data-theme="dark"] .cs-app textarea::placeholder {
+  color: #aaaaaa !important;
+}
+
+body[data-theme="dark"] .cs-app .shadow-xl,
+body[data-theme="dark"] .cs-app [class*="shadow-"] {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35) !important;
+}
+
+body[data-theme="dark"] .cs-app button:not([style*="background-color"]),
+body[data-theme="dark"] .cs-app a[class] {
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+body[data-theme="dark"] .cs-app .notes-rich ul,
+body[data-theme="dark"] .cs-app .notes-rich ol,
+body[data-theme="dark"] .cs-app .notes-rich li {
+  color: var(--text-main);
 }

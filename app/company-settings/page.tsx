@@ -25,6 +25,7 @@ import {
 import { storage } from "@/lib/firebase";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
+import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 
 type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
@@ -1169,11 +1170,40 @@ export default function CompanySettingsPage() {
         setStaffIconColorByUid({});
         return;
       }
-      const colorMap = await fetchUserColorMapByUids(uids);
+      const colorMap = await fetchUserColorMapByUids(uids, activeCompanyId);
       setStaffIconColorByUid(colorMap);
     };
     void run();
-  }, [staff]);
+  }, [activeCompanyId, staff]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUserColorUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserColorUpdatedDetail>).detail;
+      const uid = String(detail?.uid || "").trim();
+      const color = String(detail?.color || "").trim();
+      const companyId = String(detail?.companyId || "").trim();
+      if (!uid) return;
+      if (companyId && activeCompanyId && companyId !== activeCompanyId) return;
+      setStaffIconColorByUid((prev) => {
+        const next = { ...prev };
+        if (color) next[uid] = color;
+        else delete next[uid];
+        return next;
+      });
+      setStaff((prev) =>
+        prev.map((member) =>
+          String(member.uid || "").trim() === uid
+            ? { ...member, badgeColor: color || undefined, userColor: color || undefined }
+            : member,
+        ),
+      );
+    };
+    window.addEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    return () => {
+      window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    };
+  }, [activeCompanyId]);
 
   useEffect(() => {
     if (active !== "hardware") return;
@@ -2838,7 +2868,12 @@ export default function CompanySettingsPage() {
                                 parts.length >= 2
                                   ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`.toUpperCase()
                                   : `${parts[0]?.[0] ?? name[0] ?? ""}`.toUpperCase();
+                              const currentUserRowColor =
+                                String(row.uid || "").trim() === String(user?.uid || "").trim()
+                                  ? toStr(user?.userColor)
+                                  : "";
                               const iconColor =
+                                currentUserRowColor ||
                                 toStr(staffIconColorByUid[row.uid]) ||
                                 toStr(row.badgeColor) ||
                                 toStr(row.userColor) ||

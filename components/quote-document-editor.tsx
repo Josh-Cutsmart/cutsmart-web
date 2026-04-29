@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import "ckeditor5/ckeditor5.css";
 
 type QuoteDocumentEditorProps = {
@@ -8,6 +9,11 @@ type QuoteDocumentEditorProps = {
   onChange: (value: string) => void;
   readOnly?: boolean;
   mode?: "page" | "embedded";
+  toolbarPlacement?: "sheet-side" | "inline";
+  toolbarHost?: HTMLElement | null;
+  embeddedChrome?: "card" | "flat";
+  embeddedMinHeight?: number;
+  embeddedEditableMinHeight?: number;
   autoFocus?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
@@ -19,6 +25,11 @@ export function QuoteDocumentEditor({
   onChange,
   readOnly = false,
   mode = "page",
+  toolbarPlacement = "sheet-side",
+  toolbarHost = null,
+  embeddedChrome = "card",
+  embeddedMinHeight = 48,
+  embeddedEditableMinHeight = 18,
   autoFocus = false,
   onFocus,
   onBlur,
@@ -49,6 +60,7 @@ export function QuoteDocumentEditor({
         DecoupledEditor,
         Essentials,
         Italic,
+        List,
         Paragraph,
         Strikethrough,
         Underline,
@@ -64,6 +76,7 @@ export function QuoteDocumentEditor({
           Italic,
           Underline,
           Strikethrough,
+          List,
           Alignment,
           Undo,
         ],
@@ -76,6 +89,7 @@ export function QuoteDocumentEditor({
             "italic",
             "underline",
             "strikethrough",
+            "bulletedList",
             "|",
             "alignment",
           ],
@@ -146,7 +160,7 @@ export function QuoteDocumentEditor({
       toolbarNode.replaceChildren();
       hostNode.replaceChildren();
     };
-  }, []);
+  }, [toolbarHost]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -190,6 +204,13 @@ export function QuoteDocumentEditor({
 
   useEffect(() => {
     if (mode !== "embedded" || typeof window === "undefined") {
+      setEmbeddedToolbarStyle(undefined);
+      setIsEmbeddedToolbarReady(true);
+      embeddedToolbarTopRef.current = null;
+      return;
+    }
+
+    if (toolbarPlacement !== "sheet-side") {
       setEmbeddedToolbarStyle(undefined);
       setIsEmbeddedToolbarReady(true);
       embeddedToolbarTopRef.current = null;
@@ -243,7 +264,7 @@ export function QuoteDocumentEditor({
       window.cancelAnimationFrame(frameId);
       window.removeEventListener("resize", scheduleUpdate);
     };
-  }, [mode, readOnly, autoFocus]);
+  }, [mode, toolbarPlacement, readOnly, autoFocus]);
 
   return (
     <div
@@ -252,12 +273,17 @@ export function QuoteDocumentEditor({
         onFocus?.();
       }}
       onBlurCapture={(e) => {
-        if (shellRef.current?.contains(e.relatedTarget as Node | null)) return;
+        const nextTarget = e.relatedTarget as Node | null;
+        if (shellRef.current?.contains(nextTarget)) return;
+        if (toolbarHost?.contains(nextTarget)) return;
+        if (toolbarRef.current?.contains(nextTarget)) return;
         onBlur?.();
       }}
       className={
         mode === "embedded"
-          ? "rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
+          ? embeddedChrome === "flat"
+            ? "border-0 bg-transparent shadow-none"
+            : "rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
           : "rounded-[18px] border border-[#D7DEE8] bg-[#EEF3FA] shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
       }
     >
@@ -298,7 +324,7 @@ export function QuoteDocumentEditor({
         }
         .cutsmart-quote-document-shell[data-mode="embedded"] .ck.ck-content.ck-editor__editable,
         .cutsmart-quote-document-shell[data-mode="embedded"] .cutsmart-quote-document-editable {
-          min-height: 18px;
+          min-height: var(--cutsmart-embedded-editable-min-height, 18px);
           padding: 12px 0 !important;
           font-size: 12px;
           line-height: 1.5;
@@ -316,6 +342,22 @@ export function QuoteDocumentEditor({
         .cutsmart-quote-document-shell[data-mode="embedded"] .cutsmart-quote-document-editable p {
           margin: 0 !important;
         }
+        .cutsmart-quote-document-shell .ck.ck-content.ck-editor__editable ul,
+        .cutsmart-quote-document-shell .cutsmart-quote-document-editable ul {
+          list-style: disc !important;
+          margin: 4px 0 !important;
+          padding-left: 20px !important;
+        }
+        .cutsmart-quote-document-shell .ck.ck-content.ck-editor__editable ol,
+        .cutsmart-quote-document-shell .cutsmart-quote-document-editable ol {
+          list-style: decimal !important;
+          margin: 4px 0 !important;
+          padding-left: 20px !important;
+        }
+        .cutsmart-quote-document-shell .ck.ck-content.ck-editor__editable li,
+        .cutsmart-quote-document-shell .cutsmart-quote-document-editable li {
+          margin: 2px 0 !important;
+        }
         .cutsmart-quote-document-shell[data-mode="embedded"] .cutsmart-quote-document-layout {
           position: relative;
         }
@@ -325,7 +367,39 @@ export function QuoteDocumentEditor({
         }
         .cutsmart-quote-document-shell[data-mode="embedded"] .cutsmart-quote-document-host {
           min-width: 0;
-          min-height: 48px;
+          min-height: var(--cutsmart-embedded-min-height, 48px);
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] {
+          border: none !important;
+          background: transparent !important;
+          box-shadow: none !important;
+          border-radius: 0 !important;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] .ck.ck-editor,
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] .ck.ck-editor__main,
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] .ck.ck-content.ck-editor__editable,
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] .cutsmart-quote-document-editable {
+          border: none !important;
+          background: transparent !important;
+          box-shadow: none !important;
+          border-radius: 0 !important;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] .cutsmart-quote-document-host {
+          min-height: 0;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"] .ck.ck-toolbar {
+          position: static;
+          max-width: none;
+          border: 1px solid #d7dee8;
+          border-radius: 12px;
+          box-shadow: none;
+          backdrop-filter: none;
+          padding: 6px 8px;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"] .cutsmart-quote-document-toolbar {
+          position: static;
+          max-width: none;
+          width: 100%;
         }
         .cutsmart-quote-document-shell .quote-document-page,
         .cutsmart-quote-document-shell .quote-print-sheet {
@@ -368,21 +442,53 @@ export function QuoteDocumentEditor({
           }
         }
       `}</style>
-      <div className="cutsmart-quote-document-shell" data-mode={mode}>
+      <div
+        className="cutsmart-quote-document-shell"
+        data-mode={mode}
+        data-toolbar-placement={toolbarPlacement}
+        data-embedded-chrome={embeddedChrome}
+        style={
+          mode === "embedded"
+            ? ({
+                ["--cutsmart-embedded-min-height" as string]: `${embeddedMinHeight}px`,
+                ["--cutsmart-embedded-editable-min-height" as string]: `${embeddedEditableMinHeight}px`,
+              } as CSSProperties)
+            : undefined
+        }
+      >
         <div className={mode === "embedded" ? "cutsmart-quote-document-layout" : undefined}>
-          <div
-            ref={toolbarRef}
-            className={mode === "embedded" ? "cutsmart-quote-document-toolbar" : undefined}
-            style={
-              mode === "embedded"
-                ? {
-                    ...(embeddedToolbarStyle ?? {}),
-                    opacity: isEmbeddedToolbarReady ? 1 : 0,
-                    pointerEvents: isEmbeddedToolbarReady ? "auto" : "none",
+          {toolbarHost
+            ? createPortal(
+                <div
+                  ref={toolbarRef}
+                  className={mode === "embedded" ? "cutsmart-quote-document-toolbar" : undefined}
+                  style={
+                    mode === "embedded"
+                      ? {
+                          ...(embeddedToolbarStyle ?? {}),
+                          opacity: isEmbeddedToolbarReady ? 1 : 0,
+                          pointerEvents: isEmbeddedToolbarReady ? "auto" : "none",
+                        }
+                      : undefined
                   }
-                : undefined
-            }
-          />
+                />,
+                toolbarHost,
+              )
+            : (
+                <div
+                  ref={toolbarRef}
+                  className={mode === "embedded" ? "cutsmart-quote-document-toolbar" : undefined}
+                  style={
+                    mode === "embedded"
+                      ? {
+                          ...(embeddedToolbarStyle ?? {}),
+                          opacity: isEmbeddedToolbarReady ? 1 : 0,
+                          pointerEvents: isEmbeddedToolbarReady ? "auto" : "none",
+                        }
+                      : undefined
+                  }
+                />
+              )}
           <div
             ref={hostRef}
             className={

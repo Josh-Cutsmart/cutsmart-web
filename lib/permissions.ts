@@ -168,7 +168,7 @@ export function projectTabAccess(
 
   if (tab === "production") {
     const remaining = getProductionUnlockRemainingSeconds(project, uid);
-    if (!canView && remaining > 0) {
+    if (remaining > 0) {
       canView = true;
       canEdit = true;
     }

@@ -17,7 +17,9 @@ import {
 } from "@/lib/firestore-data";
 import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { projectTabAccess } from "@/lib/permissions";
+import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { Project } from "@/lib/types";
+import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type StatusRow = { name: string; color: string };
 type RoleRow = { id: string; name: string; color: string };
@@ -206,6 +208,7 @@ function initials(text: string) {
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [search, setSearch] = useState("");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
   const [allProjects, setAllProjects] = useState<Project[]>([]);
@@ -234,6 +237,38 @@ export default function DashboardPage() {
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
+  const isDarkMode = themeMode === "dark";
+  const dashboardPalette = isDarkMode
+    ? {
+        pageBg: "#0f0f0f",
+        sectionBg: "#181818",
+        panelBg: "#212121",
+        panelMuted: "#272727",
+        panelAlt: "#303030",
+        border: "#3f3f46",
+        text: "#f1f1f1",
+        textMuted: "#aaaaaa",
+        textSoft: "#c9d1d9",
+        inputBg: "#303134",
+        inputText: "#f1f1f1",
+        rowHover: "#2a2a2a",
+        strongShadow: "0 10px 30px rgba(0,0,0,0.38)",
+      }
+    : {
+        pageBg: "#ffffff",
+        sectionBg: "#ffffff",
+        panelBg: "#ffffff",
+        panelMuted: "#F5F7FA",
+        panelAlt: "#EEF2F7",
+        border: "#D7DEE8",
+        text: "#111827",
+        textMuted: "#64748B",
+        textSoft: "#475467",
+        inputBg: "#F3F5F8",
+        inputText: "#5B6472",
+        rowHover: "#F2F6FC",
+        strongShadow: "0 10px 30px rgba(15,23,42,0.08)",
+      };
   const canAccessDashboard = useMemo(() => {
     const role = String(effectiveCompanyRole || user?.role || "").trim().toLowerCase();
     if (role === "owner" || role === "admin") {
@@ -243,6 +278,19 @@ export default function DashboardPage() {
       (permission) => String(permission || "").trim().toLowerCase() === "company.dashboard.view",
     );
   }, [effectiveCompanyPermissions, effectiveCompanyRole, user?.permissions, user?.role]);
+
+  useEffect(() => {
+    setThemeMode(readThemeMode());
+    if (typeof window === "undefined") return;
+    const onThemeUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ mode?: ThemeMode }>).detail;
+      setThemeMode(detail?.mode === "dark" ? "dark" : "light");
+    };
+    window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
+    return () => {
+      window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,12 +334,11 @@ export default function DashboardPage() {
       const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
       const items = await fetchProjects(user?.uid, preferredCompanyIds);
       setAllProjects(items);
-      const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
-      const userColorMap = await fetchUserColorMapByUids(creatorUids);
-      setCreatorColorByUid(userColorMap);
-
       const fallbackCompanyId = String(items[0]?.companyId || "").trim();
       const companyId = storedCompanyId || fallbackCompanyId;
+      const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
+      const userColorMap = await fetchUserColorMapByUids(creatorUids, companyId);
+      setCreatorColorByUid(userColorMap);
       if (companyId) {
         const [companyDoc, members] = await Promise.all([
           fetchCompanyDoc(companyId),
@@ -313,6 +360,33 @@ export default function DashboardPage() {
     };
     void load();
   }, [user?.uid]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUserColorUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserColorUpdatedDetail>).detail;
+      const uid = String(detail?.uid || "").trim();
+      const color = String(detail?.color || "").trim();
+      if (!uid) return;
+      setCreatorColorByUid((prev) => {
+        const next = { ...prev };
+        if (color) next[uid] = color;
+        else delete next[uid];
+        return next;
+      });
+      setCompanyMembers((prev) =>
+        prev.map((member) =>
+          String(member.uid || "").trim() === uid
+            ? { ...member, badgeColor: color || undefined, userColor: color || undefined }
+            : member,
+        ),
+      );
+    };
+    window.addEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    return () => {
+      window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    };
+  }, []);
 
   const openNewProjectModal = () => {
     window.dispatchEvent(new Event("cutsmart:new-project"));
@@ -694,7 +768,13 @@ export default function DashboardPage() {
                 >
                   <div
                     className="absolute inset-0 rounded-[14px] border border-[#ECECF0] bg-white px-4 py-3 shadow-sm"
-                    style={{ backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden" }}
+                    style={{
+                      backfaceVisibility: "hidden",
+                      WebkitBackfaceVisibility: "hidden",
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelBg,
+                      boxShadow: dashboardPalette.strongShadow,
+                    }}
                   >
                     <div className="mb-2 flex items-center gap-2">
                       <div
@@ -703,9 +783,9 @@ export default function DashboardPage() {
                       >
                         <CheckCircle2 size={16} strokeWidth={2.4} />
                       </div>
-                      <p className="text-[14px] font-semibold text-[#2A3441] sm:text-[16px] lg:text-[17px]">Completed</p>
+                      <p className="text-[14px] font-semibold sm:text-[16px] lg:text-[17px]" style={{ color: dashboardPalette.textSoft }}>Completed</p>
                     </div>
-                    <p className="text-[34px] font-medium leading-none text-[#111111] sm:text-[40px] lg:text-[46px]">{stats.completed}</p>
+                    <p className="text-[34px] font-medium leading-none sm:text-[40px] lg:text-[46px]" style={{ color: dashboardPalette.text }}>{stats.completed}</p>
                     {stats.weekly.completed > 0 && (
                       <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
                         + {stats.weekly.completed} this week
@@ -722,30 +802,33 @@ export default function DashboardPage() {
                       opacity: completedProjectsModalExpanded ? 1 : 0,
                       pointerEvents: completedProjectsModalExpanded ? "auto" : "none",
                       transition: "opacity 180ms ease",
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelMuted,
                     }}
                   >
                     <div className="p-3">
-                      <div className="flex min-h-[46px] flex-wrap items-center gap-3 rounded-[14px] border border-[#D7DEE8] bg-white px-3 py-2">
-                        <p className="text-[13px] font-extrabold uppercase tracking-[1px] text-[#0F2A4A]">Completed Projects</p>
+                      <div className="flex min-h-[46px] flex-wrap items-center gap-3 rounded-[14px] border px-3 py-2" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
+                        <p className="text-[13px] font-extrabold uppercase tracking-[1px]" style={{ color: dashboardPalette.text }}>Completed Projects</p>
                         {dashboardLegendRows.length > 0 ? (
                           <div className="flex flex-wrap items-center gap-3">
                             {dashboardLegendRows.map((item) => (
                               <div key={item.id} className="flex items-center gap-1">
                                 <span
-                                  className="inline-block h-[10px] w-[10px] rounded-[2px] border border-[#64748B]"
-                                  style={{ backgroundColor: item.color }}
+                                  className="inline-block h-[10px] w-[10px] rounded-[2px] border"
+                                  style={{ borderColor: dashboardPalette.textMuted, backgroundColor: item.color }}
                                 />
-                                <span className="text-[11px] font-bold text-[#334155]">= {item.name}</span>
+                                <span className="text-[11px] font-bold" style={{ color: dashboardPalette.textSoft }}>= {item.name}</span>
                               </div>
                             ))}
                           </div>
                         ) : null}
                         <div className="ml-auto flex flex-wrap items-center gap-2">
-                          <span className="text-[11px] font-bold text-[#64748B]">From</span>
+                          <span className="text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>From</span>
                           <select
                             value={completedMonthFrom}
                             onChange={(e) => setCompletedMonthFrom(e.target.value)}
                             className="h-7 min-w-[140px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px] font-semibold text-[#334155]"
+                            style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelAlt, color: dashboardPalette.textSoft }}
                           >
                             {completedMonthOptions.map((monthKey) => (
                               <option key={`completed_from_${monthKey}`} value={monthKey}>
@@ -753,11 +836,12 @@ export default function DashboardPage() {
                               </option>
                             ))}
                           </select>
-                          <span className="text-[11px] font-bold text-[#64748B]">To</span>
+                          <span className="text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>To</span>
                           <select
                             value={completedMonthTo}
                             onChange={(e) => setCompletedMonthTo(e.target.value)}
                             className="h-7 min-w-[140px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px] font-semibold text-[#334155]"
+                            style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelAlt, color: dashboardPalette.textSoft }}
                           >
                             {completedMonthOptions.map((monthKey) => (
                               <option key={`completed_to_${monthKey}`} value={monthKey}>
@@ -769,6 +853,7 @@ export default function DashboardPage() {
                             type="button"
                             onClick={onCloseCompletedProjectsModal}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#64748B] hover:bg-[#F8FAFC]"
+                            style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted }}
                           >
                             <X size={16} />
                           </button>
@@ -777,16 +862,16 @@ export default function DashboardPage() {
                     </div>
                     <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
                       {!completedProjectsByMonth.length ? (
-                        <div className="rounded-[14px] border border-[#D7DEE8] bg-white px-4 py-6 text-[13px] font-semibold text-[#6B7280]">
+                        <div className="rounded-[14px] border px-4 py-6 text-[13px] font-semibold" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted }}>
                           No completed projects yet.
                         </div>
                       ) : (
                         <div className="space-y-3">
                           {completedProjectsByMonth.map(([monthKey, rows]) => (
-                            <section key={`completed_month_${monthKey}`} className="overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD]">
-                              <div className="flex h-[42px] items-center justify-between border-b border-[#D7DEE8] bg-white px-3">
-                                <p className="text-[13px] font-extrabold text-[#0F2A4A]">{monthLabelFromKey(monthKey)}</p>
-                                <span className="inline-flex rounded-[10px] border border-[#D8DEE8] bg-[#EEF1F5] px-3 py-1 text-[11px] font-bold text-[#5B6472]">
+                            <section key={`completed_month_${monthKey}`} className="overflow-hidden rounded-[14px] border" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelAlt }}>
+                              <div className="flex h-[42px] items-center justify-between border-b px-3" style={{ borderBottomColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
+                                <p className="text-[13px] font-extrabold" style={{ color: dashboardPalette.text }}>{monthLabelFromKey(monthKey)}</p>
+                                <span className="inline-flex rounded-[10px] border px-3 py-1 text-[11px] font-bold" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted, color: dashboardPalette.textSoft }}>
                                   {rows.length} Projects
                                 </span>
                               </div>
@@ -892,7 +977,13 @@ export default function DashboardPage() {
                 >
                   <div
                     className="absolute inset-0 rounded-[14px] border border-[#ECECF0] bg-white px-4 py-3 shadow-sm"
-                    style={{ backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden" }}
+                    style={{
+                      backfaceVisibility: "hidden",
+                      WebkitBackfaceVisibility: "hidden",
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelBg,
+                      boxShadow: dashboardPalette.strongShadow,
+                    }}
                   >
                     <div className="mb-2 flex items-center gap-2">
                       <div
@@ -901,9 +992,9 @@ export default function DashboardPage() {
                       >
                         <Users2 size={16} strokeWidth={2.4} />
                       </div>
-                      <p className="text-[14px] font-semibold text-[#2A3441] sm:text-[16px] lg:text-[17px]">Staff Members</p>
+                      <p className="text-[14px] font-semibold sm:text-[16px] lg:text-[17px]" style={{ color: dashboardPalette.textSoft }}>Staff Members</p>
                     </div>
-                    <p className="text-[34px] font-medium leading-none text-[#111111] sm:text-[40px] lg:text-[46px]">{stats.staff}</p>
+                    <p className="text-[34px] font-medium leading-none sm:text-[40px] lg:text-[46px]" style={{ color: dashboardPalette.text }}>{stats.staff}</p>
                     {stats.weekly.staff > 0 && (
                       <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
                         + {stats.weekly.staff} this week
@@ -920,12 +1011,14 @@ export default function DashboardPage() {
                       opacity: staffModalExpanded ? 1 : 0,
                       pointerEvents: staffModalExpanded ? "auto" : "none",
                       transition: "opacity 180ms ease",
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelMuted,
                     }}
                   >
                     <div className="p-3">
-                      <div className="flex min-h-[46px] items-center gap-3 rounded-[14px] border border-[#D7DEE8] bg-white px-3 py-2">
-                        <p className="text-[13px] font-extrabold uppercase tracking-[1px] text-[#0F2A4A]">Staff Members</p>
-                        <span className="inline-flex rounded-[10px] border border-[#D8DEE8] bg-[#EEF1F5] px-3 py-1 text-[11px] font-bold text-[#5B6472]">
+                      <div className="flex min-h-[46px] items-center gap-3 rounded-[14px] border px-3 py-2" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
+                        <p className="text-[13px] font-extrabold uppercase tracking-[1px]" style={{ color: dashboardPalette.text }}>Staff Members</p>
+                        <span className="inline-flex rounded-[10px] border px-3 py-1 text-[11px] font-bold" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted, color: dashboardPalette.textSoft }}>
                           {companyMembers.length} Total
                         </span>
                         <div className="ml-auto">
@@ -933,6 +1026,7 @@ export default function DashboardPage() {
                             type="button"
                             onClick={onCloseStaffModal}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#64748B] hover:bg-[#F8FAFC]"
+                            style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted }}
                           >
                             <X size={16} />
                           </button>
@@ -941,7 +1035,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
                       {!companyMembers.length ? (
-                        <div className="rounded-[14px] border border-[#D7DEE8] bg-white px-4 py-6 text-[13px] font-semibold text-[#6B7280]">
+                        <div className="rounded-[14px] border px-4 py-6 text-[13px] font-semibold" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textMuted }}>
                           No staff members found.
                         </div>
                       ) : (
@@ -954,7 +1048,8 @@ export default function DashboardPage() {
                             return (
                               <div
                                 key={`staff_member_${member.uid}`}
-                                className="flex items-center gap-3 rounded-[14px] border border-[#D7DEE8] bg-white px-3 py-3"
+                                className="flex items-center gap-3 rounded-[14px] border px-3 py-3"
+                                style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}
                               >
                                 <span
                                   className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white"
@@ -963,7 +1058,7 @@ export default function DashboardPage() {
                                   {initials(member.displayName || member.email || member.uid)}
                                 </span>
                                 <div className="min-w-0 flex-1">
-                                  <p className="truncate text-[14px] font-bold text-[#111827]">
+                                  <p className="truncate text-[14px] font-bold" style={{ color: dashboardPalette.text }}>
                                     {member.displayName || member.email || member.uid}
                                   </p>
                                   <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -978,7 +1073,7 @@ export default function DashboardPage() {
                                       {roleLabel}
                                     </span>
                                     {member.email ? (
-                                      <span className="truncate text-[12px] font-semibold text-[#64748B]">
+                                      <span className="truncate text-[12px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
                                         {member.email}
                                       </span>
                                     ) : null}
@@ -988,6 +1083,7 @@ export default function DashboardPage() {
                                   type="button"
                                   disabled
                                   className="inline-flex h-9 shrink-0 items-center justify-center rounded-[10px] border border-[#D8DEE8] bg-[#EEF2F7] px-4 text-[12px] font-bold text-[#94A3B8] opacity-70"
+                                  style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted, color: isDarkMode ? "#7c8591" : "#94A3B8" }}
                                   title="Coming soon"
                                 >
                                   View
@@ -1011,16 +1107,32 @@ export default function DashboardPage() {
     <ProtectedRoute>
       <AppShell>
           {!companyAccessResolved ? (
-            <div className="rounded-[14px] border border-[#D7DEE8] bg-white p-6 text-[13px] font-semibold text-[#475467] shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+            <div
+              className="rounded-[14px] p-6 text-[13px] font-semibold"
+              style={{
+                border: `1px solid ${dashboardPalette.border}`,
+                backgroundColor: dashboardPalette.panelBg,
+                color: dashboardPalette.textSoft,
+                boxShadow: dashboardPalette.strongShadow,
+              }}
+            >
               Checking access...
             </div>
           ) : !canAccessDashboard ? (
-            <div className="rounded-[14px] border border-[#D7DEE8] bg-white p-6 text-[13px] font-semibold text-[#475467] shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+            <div
+              className="rounded-[14px] p-6 text-[13px] font-semibold"
+              style={{
+                border: `1px solid ${dashboardPalette.border}`,
+                backgroundColor: dashboardPalette.panelBg,
+                color: dashboardPalette.textSoft,
+                boxShadow: dashboardPalette.strongShadow,
+              }}
+            >
               You do not have permission to access the company dashboard.
             </div>
           ) : (
           <>
-          <div className="space-y-0">
+          <div className="space-y-0" style={{ backgroundColor: dashboardPalette.pageBg }}>
 
           <div style={{ marginBottom: 20 }}>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -1051,6 +1163,11 @@ export default function DashboardPage() {
                     className={`rounded-[14px] border border-[#ECECF0] bg-white px-4 py-3 shadow-sm transition hover:-translate-y-[1px] hover:border-[#D7DEE8] ${
                       isInteractiveCard ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#93C5FD]" : ""
                     }`}
+                    style={{
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelBg,
+                      boxShadow: dashboardPalette.strongShadow,
+                    }}
                   >
                     <div className="mb-2 flex items-center gap-2">
                       <div
@@ -1059,9 +1176,9 @@ export default function DashboardPage() {
                       >
                         <Icon size={16} strokeWidth={2.4} />
                       </div>
-                      <p className="text-[14px] font-semibold text-[#2A3441] sm:text-[16px] lg:text-[17px]">{card.label}</p>
+                      <p className="text-[14px] font-semibold sm:text-[16px] lg:text-[17px]" style={{ color: dashboardPalette.textSoft }}>{card.label}</p>
                     </div>
-                    <p className="text-[34px] font-medium leading-none text-[#111111] sm:text-[40px] lg:text-[46px]">{value}</p>
+                    <p className="text-[34px] font-medium leading-none sm:text-[40px] lg:text-[46px]" style={{ color: dashboardPalette.text }}>{value}</p>
                     {stats.weekly[card.key] > 0 && (
                       <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
                         + {stats.weekly[card.key]} this week
@@ -1075,24 +1192,39 @@ export default function DashboardPage() {
 
           <div
             className="-mx-4 rounded-none border-t border-[#D7DEE8] bg-white px-[10px] py-3 md:-mx-5"
+            style={{
+              borderTopColor: dashboardPalette.border,
+              backgroundColor: dashboardPalette.sectionBg,
+            }}
           >
               <div className="mb-2 flex flex-wrap items-center gap-2 pl-0 sm:pl-[10px]">
                 <div className="relative w-full min-w-0 sm:min-w-[280px] sm:max-w-[420px]">
                   <Search
                     size={14}
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#98A2B3]"
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                    style={{ color: dashboardPalette.textMuted }}
                   />
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search projects..."
                     className="h-9 w-full rounded-[10px] border border-[#E4E7ED] bg-[#F3F5F8] pl-8 pr-3 text-[12px] font-semibold text-[#5B6472] outline-none placeholder:text-[#9AA3B2]"
+                    style={{
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.inputBg,
+                      color: dashboardPalette.inputText,
+                    }}
                   />
                 </div>
                 <button
                   type="button"
                   className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#F1F4F9] text-[#6B7686]"
                   title="Filters"
+                  style={{
+                    borderColor: dashboardPalette.border,
+                    backgroundColor: dashboardPalette.panelMuted,
+                    color: dashboardPalette.textMuted,
+                  }}
                 >
                   <SlidersHorizontal size={13} />
                 </button>
@@ -1109,9 +1241,9 @@ export default function DashboardPage() {
                     onClick={() => setQuickFilter(option.key as QuickFilter)}
                     className="h-8 rounded-[8px] border px-4 text-[12px] font-bold"
                     style={{
-                      backgroundColor: quickFilter === option.key ? "#5EA1F7" : "#F1F4F9",
-                      borderColor: quickFilter === option.key ? "#5EA1F7" : "#E4E8EF",
-                      color: quickFilter === option.key ? "#FFFFFF" : "#6B7686",
+                      backgroundColor: quickFilter === option.key ? "#5EA1F7" : dashboardPalette.inputBg,
+                      borderColor: quickFilter === option.key ? "#5EA1F7" : dashboardPalette.border,
+                      color: quickFilter === option.key ? "#FFFFFF" : dashboardPalette.text,
                     }}
                   >
                     {option.label}
@@ -1121,14 +1253,14 @@ export default function DashboardPage() {
 
           </div>
 
-          <div className="-mx-4 bg-white md:-mx-5 lg:hidden">
+          <div className="-mx-4 md:-mx-5 lg:hidden" style={{ backgroundColor: dashboardPalette.sectionBg }}>
                 {isLoading && (
-                  <div className="px-3 py-6 text-[13px] font-semibold text-[#6B7280]">Loading projects...</div>
+                  <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
                 )}
                 {!isLoading && filtered.length === 0 && (
                   <div className="px-3 py-10">
                     <div className="flex flex-col items-center gap-3">
-                      <p className="text-[14px] font-bold text-[#334155]">No Projects Yet</p>
+                      <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
                       <button
                         type="button"
                         onClick={openNewProjectModal}
@@ -1147,6 +1279,10 @@ export default function DashboardPage() {
                         role="button"
                         tabIndex={0}
                         className="w-full cursor-pointer rounded-[12px] border border-[#DCE3EC] bg-white px-3 py-3 text-left hover:bg-[#F8FAFD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#93C5FD]"
+                        style={{
+                          borderColor: dashboardPalette.border,
+                          backgroundColor: dashboardPalette.panelBg,
+                        }}
                         onClick={() => void openProjectInDashboard(project.id)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
@@ -1156,14 +1292,13 @@ export default function DashboardPage() {
                         }}
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <p className="line-clamp-2 text-[13px] font-bold text-[#111827]">{project.name}</p>
+                          <p className="line-clamp-2 text-[13px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</p>
                           <button
                             data-status-trigger="true"
                             type="button"
-                            disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (!canEditProjectFromDashboard(project)) {
+                              if (statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) {
                                 return;
                               }
                               if (statusMenuProjectId === project.id) {
@@ -1189,8 +1324,9 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold disabled:opacity-60"
+                            className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold"
                             style={projectStatusPillStyle(project.statusLabel || "New")}
+                            aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
                           >
@@ -1220,15 +1356,15 @@ export default function DashboardPage() {
                           >
                             {initials(project.createdByName)}
                           </span>
-                          <span className="text-[#111827]">{project.createdByName || "-"}</span>
+                          <span style={{ color: dashboardPalette.text }}>{project.createdByName || "-"}</span>
                         </div>
 
-                        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-[#475467] sm:grid-cols-2">
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2" style={{ color: dashboardPalette.textSoft }}>
                           <p>
-                            <span className="font-bold text-[#64748B]">Created:</span> {dashboardDate(project.createdAt)}
+                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Created:</span> {dashboardDate(project.createdAt)}
                           </p>
                           <p>
-                            <span className="font-bold text-[#64748B]">Modified:</span> {dashboardDate(project.updatedAt)}
+                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Modified:</span> {dashboardDate(project.updatedAt)}
                           </p>
                         </div>
                       </div>
@@ -1237,8 +1373,8 @@ export default function DashboardPage() {
                 )}
               </div>
 
-          <div className="-mx-4 hidden overflow-auto bg-white md:-mx-5 lg:block">
-                <table className="w-full min-w-[980px] table-fixed bg-white text-[12px]">
+          <div className="-mx-4 hidden overflow-auto md:-mx-5 lg:block" style={{ backgroundColor: dashboardPalette.sectionBg }}>
+                <table className="w-full min-w-[980px] table-fixed text-[12px]" style={{ backgroundColor: dashboardPalette.sectionBg }}>
                   <colgroup>
                     <col style={{ width: "220px" }} />
                     <col style={{ width: "180px" }} />
@@ -1248,13 +1384,13 @@ export default function DashboardPage() {
                     <col style={{ width: "200px" }} />
                   </colgroup>
                   <thead>
-                    <tr className="border-b border-[#DCE3EC]">
-                      <th className="pb-2 pl-[10px] text-left text-[11px] font-bold text-[#7F93AE]">Project Name</th>
-                      <th className="pb-2 text-left text-[11px] font-bold text-[#7F93AE]">Tags</th>
-                      <th className="pb-2 text-left text-[11px] font-bold text-[#7F93AE]">Creator</th>
-                      <th className="pb-2 text-center text-[11px] font-bold text-[#7F93AE]">Created</th>
-                      <th className="pb-2 text-center text-[11px] font-bold text-[#7F93AE]">Modified</th>
-                      <th className="w-[200px] pb-2 text-right text-[11px] font-bold text-[#7F93AE]">
+                    <tr className="border-b" style={{ borderBottomColor: dashboardPalette.border }}>
+                      <th className="pb-2 pl-[10px] text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Project Name</th>
+                      <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Tags</th>
+                      <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Creator</th>
+                      <th className="pb-2 text-center text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Created</th>
+                      <th className="pb-2 text-center text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Modified</th>
+                      <th className="w-[200px] pb-2 text-right text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>
                         <span className="inline-block w-[120px] text-center" style={{ marginRight: 10 }}>
                           Status
                         </span>
@@ -1265,14 +1401,14 @@ export default function DashboardPage() {
 
                   {isLoading && (
                     <tr>
-                      <td className="py-3 text-[#6B7280]" colSpan={6}>Loading projects...</td>
+                      <td className="py-3" style={{ color: dashboardPalette.textMuted }} colSpan={6}>Loading projects...</td>
                     </tr>
                   )}
                   {!isLoading && filtered.length === 0 && (
                     <tr>
                       <td className="py-10 text-center" colSpan={6}>
                         <div className="flex flex-col items-center gap-3">
-                          <p className="text-[14px] font-bold text-[#334155]">No Projects Yet</p>
+                          <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
                           <button
                             type="button"
                             onClick={openNewProjectModal}
@@ -1288,21 +1424,27 @@ export default function DashboardPage() {
                   {filtered.map((project) => (
                     <tr
                       key={project.id}
-                      className="cursor-pointer border-b border-[#DCE3EC] hover:bg-[#F2F6FC]"
+                      className="cursor-pointer border-b"
+                      style={{ borderBottomColor: dashboardPalette.border }}
                       onClick={() => void openProjectInDashboard(project.id)}
                     >
-                      <td className="py-[7px] pl-[10px] font-bold text-[#111827]">{project.name}</td>
+                      <td className="py-[7px] pl-[10px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</td>
                       <td className="py-[7px]">
                         <div className="flex flex-wrap gap-1">
                           {project.tags.slice(0, 2).map((tag) => (
                             <span
                               key={tag}
-                              className="rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[1px] text-[11px] font-bold text-[#475569]"
+                              className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
+                              style={{
+                                borderColor: dashboardPalette.border,
+                                backgroundColor: dashboardPalette.panelMuted,
+                                color: dashboardPalette.textSoft,
+                              }}
                             >
                               {tag}
                             </span>
                           ))}
-                          {project.tags.length > 2 && <span className="font-bold text-[#64748B]">...</span>}
+                          {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
                         </div>
                       </td>
                       <td className="py-[7px]">
@@ -1316,19 +1458,18 @@ export default function DashboardPage() {
                           >
                             {initials(project.createdByName)}
                           </span>
-                          <span className="text-[#111827]">{project.createdByName || "-"}</span>
+                          <span style={{ color: dashboardPalette.text }}>{project.createdByName || "-"}</span>
                         </div>
                       </td>
-                      <td className="py-[7px] text-center text-[12px] text-[#1F2937]">{dashboardDate(project.createdAt)}</td>
-                      <td className="py-[7px] text-center text-[12px] text-[#1F2937]">{dashboardDate(project.updatedAt)}</td>
+                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft }}>{dashboardDate(project.createdAt)}</td>
+                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft }}>{dashboardDate(project.updatedAt)}</td>
                       <td className="relative w-[200px] py-[7px] text-right">
                           <button
                             data-status-trigger="true"
                             type="button"
-                            disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (!canEditProjectFromDashboard(project)) {
+                              if (statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)) {
                                 return;
                               }
                               if (statusMenuProjectId === project.id) {
@@ -1356,8 +1497,9 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex w-[120px] items-center justify-center rounded-[10px] px-3 py-[3px] text-[12px] font-bold disabled:opacity-60"
+                            className="inline-flex w-[120px] items-center justify-center rounded-[10px] px-3 py-[3px] text-[12px] font-bold"
                             style={{ ...projectStatusPillStyle(project.statusLabel || "New"), marginRight: 10 }}
+                            aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
                           >
@@ -1381,6 +1523,8 @@ export default function DashboardPage() {
                       top: statusMenuPos.top,
                       width: statusMenuPos.width,
                       zIndex: 2147483647,
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelBg,
                     }}
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -1394,10 +1538,11 @@ export default function DashboardPage() {
                           type="button"
                           disabled={statusUpdatingProjectId === statusMenuProject.id}
                           onClick={() => void onSelectProjectStatus(statusMenuProject, option)}
-                          className="block w-full border-b border-[#EEF2F7] px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
+                          className="block w-full border-b px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
                           style={{
                             backgroundColor: rowColor,
                             filter: active ? "brightness(0.96)" : "brightness(1)",
+                            borderBottomColor: isDarkMode ? "#232323" : "#EEF2F7",
                           }}
                         >
                           {option}

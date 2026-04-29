@@ -34,7 +34,9 @@ import {
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
@@ -148,13 +150,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [clientEmail, setClientEmail] = useState("");
   const [projectAddress, setProjectAddress] = useState("");
   const [projectNotes, setProjectNotes] = useState("");
-  const [newProjectNotesParagraphMode, setNewProjectNotesParagraphMode] = useState(false);
-  const [newProjectNotesBulletMode, setNewProjectNotesBulletMode] = useState(false);
-  const [newProjectNotesBoldActive, setNewProjectNotesBoldActive] = useState(false);
-  const [newProjectNotesItalicActive, setNewProjectNotesItalicActive] = useState(false);
-  const [newProjectNotesStrikeActive, setNewProjectNotesStrikeActive] = useState(false);
-  const [isNewProjectNotesFocused, setIsNewProjectNotesFocused] = useState(false);
-  const [newProjectNotesHeight, setNewProjectNotesHeight] = useState(88);
+  const [isNewProjectNotesEditing, setIsNewProjectNotesEditing] = useState(false);
+  const [newProjectNotesToolbarHost, setNewProjectNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [tagInput, setTagInput] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [isTagInputOpen, setIsTagInputOpen] = useState(false);
@@ -183,14 +180,12 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [defaultQuoteExtras, setDefaultQuoteExtras] = useState<string[]>([]);
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const photoThumbRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const previewPanelRef = useRef<HTMLDivElement | null>(null);
   const previewTimerRef = useRef<number | null>(null);
   const previewCloseRafRef = useRef<number | null>(null);
   const newProjectTagInputRef = useRef<HTMLInputElement | null>(null);
-  const newProjectNotesContainerRef = useRef<HTMLDivElement | null>(null);
-  const newProjectNotesEditorRef = useRef<HTMLDivElement | null>(null);
-  const newProjectNotesLastEnterAtRef = useRef(0);
 
   const userInitials = useMemo(() => initials(user?.displayName || "User"), [user?.displayName]);
   const userEmblemColor = String(user?.userColor || "").trim() || companyThemeColor;
@@ -241,6 +236,23 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       }),
     [canAccessCompanySettings, canAccessDashboard],
   );
+
+  useLayoutEffect(() => {
+    const nextMode = readThemeMode();
+    setThemeMode(nextMode);
+    applyThemeMode(nextMode);
+    if (typeof window === "undefined") return;
+    const onThemeModeUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ mode: ThemeMode }>).detail;
+      const next = detail?.mode === "dark" ? "dark" : "light";
+      setThemeMode(next);
+      applyThemeMode(next);
+    };
+    window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeModeUpdated as EventListener);
+    return () => {
+      window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeModeUpdated as EventListener);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (typeof window === "undefined") return;
@@ -570,19 +582,6 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   }, [showNewProject]);
 
   useEffect(() => {
-    if (!showNewProject) return;
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    editor.innerHTML = notesToDisplayHtml(projectNotes);
-    resizeNewProjectNotesEditor();
-    const onSelectionChange = () => refreshNewProjectNotesToolbarState();
-    document.addEventListener("selectionchange", onSelectionChange);
-    return () => {
-      document.removeEventListener("selectionchange", onSelectionChange);
-    };
-  }, [showNewProject]);
-
-  useEffect(() => {
     setMobileNavOpen(false);
   }, [pathname]);
 
@@ -677,13 +676,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     setClientEmail("");
     setProjectAddress("");
     setProjectNotes("");
-    setNewProjectNotesParagraphMode(false);
-    setNewProjectNotesBulletMode(false);
-    setNewProjectNotesBoldActive(false);
-    setNewProjectNotesItalicActive(false);
-    setNewProjectNotesStrikeActive(false);
-    setIsNewProjectNotesFocused(false);
-    setNewProjectNotesHeight(88);
+    setIsNewProjectNotesEditing(false);
     setTagInput("");
     setTags([]);
     setIsTagInputOpen(false);
@@ -717,257 +710,6 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
 
   const removeTag = (tag: string) => {
     setTags((prev) => prev.filter((t) => t !== tag));
-  };
-
-  const NEW_PROJECT_NOTES_BULLET_PREFIX = "\u2022\u00A0";
-
-  const currentNewProjectNotesBlock = () => {
-    const editor = newProjectNotesEditorRef.current;
-    const sel = window.getSelection();
-    if (!editor || !sel || !sel.rangeCount) return null;
-    let node: Node | null = sel.getRangeAt(0).startContainer;
-    if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
-    if (!node || !(node as HTMLElement).closest) return null;
-    const block =
-      (node as HTMLElement).closest("div, p, li, blockquote, h1, h2, h3, h4, h5, h6") ||
-      (node as HTMLElement);
-    if (!editor.contains(block) || block === editor) return null;
-    return block as HTMLElement;
-  };
-
-  const isCurrentNewProjectNotesLineBullet = () => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return false;
-    const txt = String(block.textContent || "");
-    return /^\s*\u2022(?:\u00A0|\s)/.test(txt);
-  };
-
-  const isCurrentNewProjectNotesLineParagraph = () => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return false;
-    return block.classList.contains("notes-paragraph-line");
-  };
-
-  const ensureNewProjectNotesBulletOnCurrentLine = () => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return;
-    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ").trimStart();
-    if (!txt.startsWith("\u2022")) {
-      block.textContent = `${NEW_PROJECT_NOTES_BULLET_PREFIX}${txt}`;
-    } else if (!txt.startsWith(NEW_PROJECT_NOTES_BULLET_PREFIX)) {
-      block.textContent = txt.replace(/^\u2022(?:\u00A0|\s)*/, NEW_PROJECT_NOTES_BULLET_PREFIX);
-    }
-  };
-
-  const removeNewProjectNotesBulletPrefixFromCurrentLine = () => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return;
-    const txt = String(block.textContent ?? "");
-    block.textContent = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "");
-  };
-
-  const isCurrentNewProjectNotesBulletLineEmpty = (): boolean => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return false;
-    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ");
-    const noBullet = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "").trim();
-    return noBullet.length === 0;
-  };
-
-  const ensureNewProjectNotesParagraphOnCurrentLine = () => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return;
-    block.classList.add("notes-paragraph-line");
-  };
-
-  const insertNextNewProjectNotesBulletLine = () => {
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    const block = currentNewProjectNotesBlock();
-
-    const newBlock = document.createElement("div");
-    const textNode = document.createTextNode(NEW_PROJECT_NOTES_BULLET_PREFIX);
-    newBlock.appendChild(textNode);
-    if ((block as HTMLElement | null)?.classList?.contains("notes-paragraph-line") || newProjectNotesParagraphMode) {
-      newBlock.classList.add("notes-paragraph-line");
-    }
-
-    if (block && editor.contains(block)) {
-      if (block.nextSibling) {
-        block.parentNode?.insertBefore(newBlock, block.nextSibling);
-      } else {
-        block.parentNode?.appendChild(newBlock);
-      }
-    } else {
-      editor.appendChild(newBlock);
-    }
-
-    const sel = window.getSelection();
-    if (sel) {
-      const range = document.createRange();
-      range.setStart(textNode, textNode.length);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  };
-
-  const exitNewProjectNotesParagraphModeOnCurrentLine = () => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return;
-    block.classList.remove("notes-paragraph-line");
-  };
-
-  const placeCaretInNewProjectNotesLine = (block: HTMLElement | null) => {
-    if (!block) return;
-    const sel = window.getSelection();
-    if (!sel) return;
-    const range = document.createRange();
-    if (!block.firstChild) {
-      block.appendChild(document.createElement("br"));
-    }
-    range.setStart(block, 0);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  };
-
-  const isCurrentNewProjectNotesParagraphLineEmpty = (): boolean => {
-    const block = currentNewProjectNotesBlock();
-    if (!block) return false;
-    if (!block.classList.contains("notes-paragraph-line")) return false;
-    const text = String(block.textContent ?? "").replace(/\u00A0/g, " ").trim();
-    return text.length === 0;
-  };
-
-  const refreshNewProjectNotesToolbarState = () => {
-    const editor = newProjectNotesEditorRef.current;
-    const sel = window.getSelection();
-    const insideEditor =
-      !!editor &&
-      !!sel &&
-      sel.rangeCount > 0 &&
-      editor.contains(sel.anchorNode);
-    if (!insideEditor) return;
-    setNewProjectNotesBulletMode(isCurrentNewProjectNotesLineBullet());
-    setNewProjectNotesParagraphMode(isCurrentNewProjectNotesLineParagraph());
-    try {
-      setNewProjectNotesBoldActive(!!document.queryCommandState("bold"));
-      setNewProjectNotesItalicActive(!!document.queryCommandState("italic"));
-      setNewProjectNotesStrikeActive(!!document.queryCommandState("strikeThrough"));
-    } catch {
-      setNewProjectNotesBoldActive(false);
-      setNewProjectNotesItalicActive(false);
-      setNewProjectNotesStrikeActive(false);
-    }
-  };
-
-  const applyNewProjectNotesFormat = (command: string) => {
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    editor.focus();
-    try {
-      document.execCommand(command, false);
-    } catch {
-      // ignore browser differences
-    }
-    setProjectNotes(editor.innerHTML);
-    window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-  };
-
-  const insertNewProjectNotesBullet = () => {
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    try {
-      editor.focus();
-      const sel = window.getSelection();
-      if (!sel) return;
-      let range: Range | null = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
-      if (!range || !editor.contains(range.commonAncestorContainer)) {
-        let lastLine = editor.lastElementChild as HTMLElement | null;
-        if (!lastLine || !/^(DIV|P)$/i.test(lastLine.tagName)) {
-          lastLine = document.createElement("div");
-          lastLine.appendChild(document.createElement("br"));
-          editor.appendChild(lastLine);
-        }
-        const safeRange = document.createRange();
-        safeRange.selectNodeContents(lastLine);
-        safeRange.collapse(false);
-        sel.removeAllRanges();
-        sel.addRange(safeRange);
-        range = safeRange;
-      }
-
-      let block = currentNewProjectNotesBlock();
-      if (!block || !editor.contains(block) || block === editor) {
-        const line = document.createElement("div");
-        line.appendChild(document.createElement("br"));
-        editor.appendChild(line);
-        block = line;
-        const lineRange = document.createRange();
-        lineRange.selectNodeContents(block);
-        lineRange.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(lineRange);
-      }
-
-      const rawText = String(block.textContent ?? "").replace(/\u00A0/g, " ");
-      const plainText = rawText.replace(/^\s*\u2022(?:\u00A0|\s)*/, "");
-      block.textContent = `${NEW_PROJECT_NOTES_BULLET_PREFIX}${plainText}`;
-
-      const firstText = block.firstChild;
-      const caretRange = document.createRange();
-      if (firstText && firstText.nodeType === Node.TEXT_NODE) {
-        const fullTextLen = (firstText.textContent || "").length;
-        caretRange.setStart(firstText, fullTextLen);
-      } else {
-        caretRange.selectNodeContents(block);
-        caretRange.collapse(false);
-      }
-      caretRange.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(caretRange);
-    } catch {
-      // no-op
-    }
-    setProjectNotes(editor.innerHTML);
-  };
-
-  const toggleNewProjectNotesBulletMode = () => {
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    editor.focus();
-    setNewProjectNotesBulletMode((prev) => {
-      const next = !prev;
-      if (next) {
-        ensureNewProjectNotesBulletOnCurrentLine();
-      }
-      setProjectNotes(editor.innerHTML);
-      return next;
-    });
-    window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-  };
-
-  const toggleNewProjectNotesParagraphMode = () => {
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    editor.focus();
-    setNewProjectNotesParagraphMode((prev) => {
-      const next = !prev;
-      if (next) {
-        ensureNewProjectNotesParagraphOnCurrentLine();
-      }
-      setProjectNotes(editor.innerHTML);
-      return next;
-    });
-    window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-  };
-
-  const resizeNewProjectNotesEditor = () => {
-    const editor = newProjectNotesEditorRef.current;
-    if (!editor) return;
-    const measured = Math.max(88, editor.scrollHeight + 2);
-    setNewProjectNotesHeight(measured);
   };
 
   const imageAspectRatioFromFile = async (file: File): Promise<number> => {
@@ -1289,16 +1031,40 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     "grid items-start gap-2 md:gap-3 [grid-template-columns:minmax(0,1fr)] md:[grid-template-columns:220px_minmax(0,1fr)]";
   const modalLabelClass = "text-[11px] font-bold text-[#475467]";
   const modalSectionLabelClass = "pt-1 md:pt-2 text-[11px] font-bold text-[#475467]";
+  const isDarkMode = themeMode === "dark";
+  const shellPalette = isDarkMode
+    ? {
+        appBg: "#0f0f0f",
+        panelBg: "#212121",
+        panelMuted: "#272727",
+        border: "#3f3f46",
+        text: "#f1f1f1",
+        textMuted: "#aaaaaa",
+        hoverBg: "#323232",
+      }
+    : {
+        appBg: "var(--bg-app)",
+        panelBg: "#ffffff",
+        panelMuted: "#F8FAFC",
+        border: "#D8DEE8",
+        text: "#0F172A",
+        textMuted: "#475467",
+        hoverBg: "#F7F8FC",
+      };
 
   return (
-    <div className="min-h-screen bg-[var(--bg-app)]">
-      <header className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden">
+    <div className="min-h-screen bg-[var(--bg-app)]" data-theme-mode={themeMode} style={{ backgroundColor: shellPalette.appBg, color: shellPalette.text }}>
+      <header
+        className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden"
+        style={{ backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}
+      >
         <div className="flex items-center gap-2">
           {!hideSidebar && (
             <button
               type="button"
               onClick={() => setMobileNavOpen(true)}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#334155]"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border text-[#334155]"
+              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
               aria-label="Open menu"
             >
               <Menu size={18} />
@@ -1308,7 +1074,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             <button
               type="button"
               onClick={() => router.push("/dashboard")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#334155]"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border bg-white text-[#334155]"
+              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
               aria-label="Back to projects"
               title="Back to projects"
             >
@@ -1327,7 +1094,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
           <div className="rounded-[8px] border border-[var(--panel-border)] bg-[var(--brand)] p-1.5 text-white">
             <Building2 size={14} />
           </div>
-          <p className="text-[12px] font-bold text-[var(--text-main)]">CutSmart</p>
+          <p className="text-[12px] font-bold text-[var(--text-main)]" style={{ color: shellPalette.text }}>CutSmart</p>
         </div>
         {canCreateProject && (
           <button
@@ -1349,8 +1116,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close menu backdrop"
           />
-          <aside className="relative z-[121] flex h-full w-[260px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white">
-            <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3">
+          <aside className="relative z-[121] flex h-full w-[260px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white" style={{ backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}>
+            <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
               <div className="flex min-h-[44px] items-center">
                 {companyLogoPath ? (
                   <img
@@ -1363,13 +1130,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                     }}
                   />
                 ) : companyDisplayName ? (
-                  <p className="text-[13px] font-semibold text-[var(--text-main)]">{companyDisplayName}</p>
+                  <p className="text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
                 ) : null}
               </div>
               <button
                 type="button"
                 onClick={() => setMobileNavOpen(false)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] text-[#475467]"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[#475467]"
+                style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
                 aria-label="Close menu"
               >
                 <X size={15} />
@@ -1385,7 +1153,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                       setShowNewProject(true);
                       setMobileNavOpen(false);
                     }}
-                    className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold text-[#475467] transition hover:border-[#E4E7EC] hover:bg-[#F7F8FC]"
+                    className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold transition"
+                    style={{ color: shellPalette.textMuted }}
                   >
                     <PlusCircle size={16} />
                     New Project
@@ -1401,9 +1170,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                       className={cn(
                         "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
                         active
-                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
-                          : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
+                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
+                          : "border-transparent",
                       )}
+                      style={{
+                        borderColor: active ? shellPalette.border : "transparent",
+                        backgroundColor: active ? shellPalette.panelMuted : "transparent",
+                        color: shellPalette.textMuted,
+                      }}
                     >
                       <Icon size={16} />
                       {item.label}
@@ -1412,7 +1186,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 })}
               </div>
 
-              <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3">
+              <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3" style={{ borderColor: shellPalette.border }}>
                 {bottomNav.map((item) => {
                   const active = pathname?.startsWith(item.href);
                   const Icon = item.icon;
@@ -1423,9 +1197,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                       className={cn(
                         "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
                         active
-                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
-                          : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
+                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
+                          : "border-transparent",
                       )}
+                      style={{
+                        borderColor: active ? shellPalette.border : "transparent",
+                        backgroundColor: active ? shellPalette.panelMuted : "transparent",
+                        color: shellPalette.textMuted,
+                      }}
                     >
                       <Icon size={16} />
                       {item.label}
@@ -1435,20 +1214,21 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-8 w-full justify-start text-[13px] font-bold text-[#475467] hover:bg-[#F7F8FC] hover:text-[#475467]"
+                  className="h-8 w-full justify-start text-[13px] font-bold"
+                  style={{ color: shellPalette.textMuted }}
                   onClick={() => void logout()}
                 >
                   <LogOut size={14} className="mr-2" />
                   Log Out
                 </Button>
-                <div className="mt-2 flex items-center gap-2 rounded-[10px] border border-[#E4E7EC] bg-[#F8FAFC] px-2 py-2">
+                <div className="mt-2 flex items-center gap-2 rounded-[10px] border px-2 py-2" style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelMuted }}>
                   <div
                     className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
                     style={{ backgroundColor: userEmblemColor }}
                   >
                     {userInitials}
                   </div>
-                  <span className="truncate text-[12px] font-semibold text-[#0F172A]">{user?.displayName || "CutSmart User"}</span>
+                  <span className="truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</span>
                 </div>
               </div>
             </div>
@@ -1459,9 +1239,9 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       {!hideSidebar && (
       <aside
         className="z-[70] hidden w-[230px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white lg:flex"
-        style={{ position: "fixed", left: 0, top: 0, height: "100vh" }}
+        style={{ position: "fixed", left: 0, top: 0, height: "100vh", backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}
       >
-        <div className="border-b border-[var(--panel-border)] px-4 py-3">
+        <div className="border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
           <div className="flex min-h-[44px] items-center">
             {companyLogoPath ? (
               <img
@@ -1474,7 +1254,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 }}
               />
             ) : companyDisplayName ? (
-              <p className="text-[13px] font-semibold text-[var(--text-main)]">{companyDisplayName}</p>
+              <p className="text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
             ) : null}
           </div>
         </div>
@@ -1485,7 +1265,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               <button
                 type="button"
                 onClick={() => setShowNewProject(true)}
-                className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold text-[#475467] transition hover:border-[#E4E7EC] hover:bg-[#F7F8FC]"
+                className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold transition"
+                style={{ color: shellPalette.textMuted }}
               >
                 <PlusCircle size={16} />
                 New Project
@@ -1501,9 +1282,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                   className={cn(
                     "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
                     active
-                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
-                      : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
+                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
+                      : "border-transparent",
                   )}
+                  style={{
+                    borderColor: active ? shellPalette.border : "transparent",
+                    backgroundColor: active ? shellPalette.panelMuted : "transparent",
+                    color: shellPalette.textMuted,
+                  }}
                 >
                   <Icon size={16} />
                   {item.label}
@@ -1512,7 +1298,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             })}
           </div>
 
-          <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3">
+          <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3" style={{ borderColor: shellPalette.border }}>
             {bottomNav.map((item) => {
               const active = pathname?.startsWith(item.href);
               const Icon = item.icon;
@@ -1523,9 +1309,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                   className={cn(
                     "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
                     active
-                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)] text-[#475467]"
-                      : "border-transparent text-[#475467] hover:border-[#E4E7EC] hover:bg-[#F7F8FC]",
+                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
+                      : "border-transparent",
                   )}
+                  style={{
+                    borderColor: active ? shellPalette.border : "transparent",
+                    backgroundColor: active ? shellPalette.panelMuted : "transparent",
+                    color: shellPalette.textMuted,
+                  }}
                 >
                   <Icon size={16} />
                   {item.label}
@@ -1535,20 +1326,21 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 w-full justify-start text-[13px] font-bold text-[#475467] hover:bg-[#F7F8FC] hover:text-[#475467]"
+              className="h-8 w-full justify-start text-[13px] font-bold"
+              style={{ color: shellPalette.textMuted }}
               onClick={() => void logout()}
             >
               <LogOut size={14} className="mr-2" />
               Log Out
             </Button>
-            <div className="mt-2 flex items-center gap-2 rounded-[10px] border border-[#E4E7EC] bg-[#F8FAFC] px-2 py-2">
+            <div className="mt-2 flex items-center gap-2 rounded-[10px] border px-2 py-2" style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelMuted }}>
               <div
                 className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
                 style={{ backgroundColor: userEmblemColor }}
               >
                 {userInitials}
               </div>
-              <span className="truncate text-[12px] font-semibold text-[#0F172A]">{user?.displayName || "CutSmart User"}</span>
+              <span className="truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</span>
             </div>
             {isDemoMode && (
               <span className="inline-flex rounded-[8px] border border-[#F1D46A] bg-[#FFF7CC] px-2 py-1 text-[11px] font-bold text-[#7A5A00]">
@@ -1769,210 +1561,47 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 </div>
               </div>
               <div className={modalRowClass}>
-                <p className={modalSectionLabelClass}>Notes</p>
-                <div
-                  ref={newProjectNotesContainerRef}
-                  className="w-full"
-                  onFocusCapture={() => setIsNewProjectNotesFocused(true)}
-                  onBlurCapture={(e) => {
-                    const next = e.relatedTarget as Node | null;
-                    if (next && newProjectNotesContainerRef.current?.contains(next)) return;
-                    setIsNewProjectNotesFocused(false);
-                  }}
-                >
-                  <div className="relative">
-                    {isNewProjectNotesFocused && (
-                      <div className="absolute inset-x-0 top-0 z-10 flex h-8 items-center gap-1 rounded-t-[8px] border-b border-[#D8DEE8] bg-[#F8FAFC] px-2">
+                <div className="flex min-w-0 flex-col gap-2">
+                  <p className={modalSectionLabelClass}>Notes</p>
+                  <div
+                    className="flex min-h-[30px] items-center justify-start"
+                    ref={setNewProjectNotesToolbarHost}
+                    onMouseDownCapture={(e) => e.preventDefault()}
+                  />
+                </div>
+                <div className="w-full">
+                  <div className="overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-2">
+                    <div className="min-h-[88px]">
+                      {isNewProjectNotesEditing ? (
+                        <QuoteDocumentEditor
+                          key="new-project-notes-editor"
+                          mode="embedded"
+                          toolbarPlacement="inline"
+                          toolbarHost={newProjectNotesToolbarHost}
+                          embeddedChrome="flat"
+                          embeddedMinHeight={88}
+                          embeddedEditableMinHeight={80}
+                          value={projectNotes}
+                          readOnly={creatingProject}
+                          autoFocus
+                          onFocus={() => setIsNewProjectNotesEditing(true)}
+                          onBlur={() => setIsNewProjectNotesEditing(false)}
+                          onChange={(nextValue) => setProjectNotes(nextValue)}
+                        />
+                      ) : (
                         <button
                           type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => applyNewProjectNotesFormat("bold")}
-                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-2 text-[12px] font-semibold ${
-                            newProjectNotesBoldActive
-                              ? "border-[#2F6BFF] bg-[#2F6BFF] text-white"
-                              : "border-[#D6DEE9] bg-white text-black"
-                          }`}
-                          title="Bold"
+                          onClick={() => setIsNewProjectNotesEditing(true)}
+                          className="block min-h-[88px] w-full bg-transparent text-left text-[12px] text-[#2F3F56] outline-none"
                         >
-                          B
+                          {notesHtmlIsEmpty(projectNotes) ? (
+                            <span className="text-[#98A2B3]">Project notes...</span>
+                          ) : (
+                            <div className="notes-rich" dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(projectNotes) }} />
+                          )}
                         </button>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => applyNewProjectNotesFormat("italic")}
-                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-2 text-[12px] font-semibold ${
-                            newProjectNotesItalicActive
-                              ? "border-[#2F6BFF] bg-[#2F6BFF] text-white"
-                              : "border-[#D6DEE9] bg-white text-black"
-                          }`}
-                          title="Italic"
-                        >
-                          I
-                        </button>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => applyNewProjectNotesFormat("strikeThrough")}
-                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-2 text-[12px] font-semibold ${
-                            newProjectNotesStrikeActive
-                              ? "border-[#2F6BFF] bg-[#2F6BFF] text-white"
-                              : "border-[#D6DEE9] bg-white text-black"
-                          }`}
-                          title="Strikethrough"
-                        >
-                          S
-                        </button>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            if (newProjectNotesBulletMode) {
-                              setNewProjectNotesBulletMode(false);
-                            } else {
-                              insertNewProjectNotesBullet();
-                              setNewProjectNotesBulletMode(true);
-                            }
-                            window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                          }}
-                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-1 ${
-                            newProjectNotesBulletMode
-                              ? "border-[#2F6BFF] bg-[#2F6BFF]"
-                              : "border-[#D6DEE9] bg-white"
-                          }`}
-                          title="Bulleted row"
-                        >
-                          <img
-                            src="/bulletpoint.png"
-                            alt="Bullet"
-                            className="h-3 w-3 object-contain"
-                            style={{ filter: newProjectNotesBulletMode ? "brightness(0) invert(1)" : "none" }}
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={toggleNewProjectNotesParagraphMode}
-                          className={`inline-flex h-6 min-w-[24px] items-center justify-center rounded-[6px] border px-1 ${
-                            newProjectNotesParagraphMode
-                              ? "border-[#2F6BFF] bg-[#2F6BFF]"
-                              : "border-[#D6DEE9] bg-white"
-                          }`}
-                          title="Paragraph indent"
-                        >
-                          <img
-                            src="/paragraph.png"
-                            alt="Paragraph"
-                            className="h-3 w-3 object-contain"
-                            style={{ filter: newProjectNotesParagraphMode ? "brightness(0) invert(1)" : "none" }}
-                          />
-                        </button>
-                      </div>
-                    )}
-                    {notesHtmlIsEmpty(projectNotes) && (
-                      <p className="pointer-events-none absolute left-2 text-[12px] text-[#98A2B3]" style={{ top: isNewProjectNotesFocused ? 34 : 8 }}>
-                        Project notes...
-                      </p>
-                    )}
-                    <div
-                      ref={newProjectNotesEditorRef}
-                      contentEditable
-                      suppressContentEditableWarning
-                      onFocus={() =>
-                        window.setTimeout(() => {
-                          refreshNewProjectNotesToolbarState();
-                          resizeNewProjectNotesEditor();
-                        }, 0)
-                      }
-                      onInput={(e) => {
-                        if (newProjectNotesParagraphMode) {
-                          ensureNewProjectNotesParagraphOnCurrentLine();
-                        }
-                        const editor = e.currentTarget;
-                        setProjectNotes(editor.innerHTML);
-                        resizeNewProjectNotesEditor();
-                        window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                      }}
-                      onKeyDown={(e) => {
-                        const editor = newProjectNotesEditorRef.current;
-                        if (!editor) return;
-                        if (e.key !== "Enter") {
-                          newProjectNotesLastEnterAtRef.current = 0;
-                          if (newProjectNotesParagraphMode) {
-                            ensureNewProjectNotesParagraphOnCurrentLine();
-                          }
-                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                          return;
-                        }
-                        if (newProjectNotesBulletMode) {
-                          if (isCurrentNewProjectNotesBulletLineEmpty()) {
-                            e.preventDefault();
-                            const currentBlock = currentNewProjectNotesBlock();
-                            setNewProjectNotesBulletMode(false);
-                            setNewProjectNotesParagraphMode(false);
-                            newProjectNotesLastEnterAtRef.current = 0;
-                            removeNewProjectNotesBulletPrefixFromCurrentLine();
-                            exitNewProjectNotesParagraphModeOnCurrentLine();
-                            if (currentBlock) {
-                              currentBlock.innerHTML = "";
-                              currentBlock.appendChild(document.createElement("br"));
-                            }
-                            placeCaretInNewProjectNotesLine(currentBlock);
-                            setProjectNotes(editor.innerHTML);
-                            resizeNewProjectNotesEditor();
-                            window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                            return;
-                          }
-                          e.preventDefault();
-                          insertNextNewProjectNotesBulletLine();
-                          setProjectNotes(editor.innerHTML);
-                          resizeNewProjectNotesEditor();
-                          newProjectNotesLastEnterAtRef.current = Date.now();
-                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                          return;
-                        }
-                        if (!newProjectNotesParagraphMode) {
-                          newProjectNotesLastEnterAtRef.current = Date.now();
-                          return;
-                        }
-                        if (isCurrentNewProjectNotesParagraphLineEmpty()) {
-                          e.preventDefault();
-                          setNewProjectNotesParagraphMode(false);
-                          newProjectNotesLastEnterAtRef.current = 0;
-                          exitNewProjectNotesParagraphModeOnCurrentLine();
-                          setProjectNotes(editor.innerHTML);
-                          resizeNewProjectNotesEditor();
-                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                          return;
-                        }
-                        const now = Date.now();
-                        if (now - newProjectNotesLastEnterAtRef.current <= 800) {
-                          e.preventDefault();
-                          setNewProjectNotesParagraphMode(false);
-                          newProjectNotesLastEnterAtRef.current = 0;
-                          exitNewProjectNotesParagraphModeOnCurrentLine();
-                          setProjectNotes(editor.innerHTML);
-                          resizeNewProjectNotesEditor();
-                          window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                          return;
-                        }
-                        e.preventDefault();
-                        try {
-                          document.execCommand("insertHTML", false, "<div class=\"notes-paragraph-line\"><br></div>");
-                        } catch {
-                          // no-op
-                        }
-                        newProjectNotesLastEnterAtRef.current = now;
-                        setProjectNotes(editor.innerHTML);
-                        resizeNewProjectNotesEditor();
-                        window.setTimeout(() => refreshNewProjectNotesToolbarState(), 0);
-                      }}
-                      className="notes-rich min-h-[88px] w-full overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#2F3F56] focus:outline-none"
-                      style={{
-                        paddingTop: isNewProjectNotesFocused ? 34 : 8,
-                        paddingBottom: 8,
-                        height: newProjectNotesHeight,
-                      }}
-                    />
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

@@ -1469,7 +1469,7 @@ export default function QuoteLayoutBuilderPage() {
               className="absolute left-0 top-[3px] inline-flex h-8 items-center gap-2 rounded-[10px] border border-[#2F4E68] bg-[#7E9EBB] px-3 text-[11px] font-semibold text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)]"
             >
               <img
-                src="/Edit.png"
+                src="/edit.png"
                 alt="Edit"
                 className="block object-contain"
                 style={{ width: 11, height: 11, filter: "brightness(0) invert(1)" }}
@@ -1511,7 +1511,7 @@ export default function QuoteLayoutBuilderPage() {
               className="absolute left-0 top-[3px] inline-flex h-8 items-center gap-2 rounded-[10px] border border-[#2F4E68] bg-[#7E9EBB] px-3 text-[11px] font-semibold text-white shadow-[0_8px_18px_rgba(15,23,42,0.16)]"
             >
               <img
-                src="/Edit.png"
+                src="/edit.png"
                 alt="Edit"
                 className="block object-contain"
                 style={{ width: 11, height: 11, filter: "brightness(0) invert(1)" }}

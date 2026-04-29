@@ -1,22 +1,18 @@
-Version: v0.1.8
+Version: v0.1.9
 
 whatsNew: [
 <u><b>General:</u></b>
-- Added company Roles & Permissions.
-- Converted applicaiton to web-based only.
-- Straighted Tag pills with Project title in the header bar.
-
-<u><b>Dashboard:</u></b>
-- Added staff card for users to view current staff within their current company.
+- Changed all textboxes to run from a proper engine text editor.
+- Fixed Company wide icon colours not updating properly.
+- Added "Dark Mode" toggle with SOME pages supporting dark mode - more to come.
+------ User Settings
+------ Dashboard
+------ Project Details (Base Tabs)
 
 <u><b>Production:</u></b>
-- If users have no edit permissions, they can click to unlock and type in a password for temp edit access.
-
-<u><b>Sales:</u></b>
-- Quote window now saves snapshots so users can see older quote versions
-- Quote window now uses a proper engine for text editing.
-- Quote window now has a fixed print layout.
-- Added "Items" window for adding products to each room under the project.
-- Initial Cutlist now saves on "Save & Back" button.
+- Fixed users being able to edit textboxes while they only have "view" access.
+- Changed the "Add board" buttons to match the rest of the applicaiton.
+- "Unlock Edit" button no longer shows while user has temporary AND permanent edit access.
+- Temporary Edit access can now be revoked by project editors, Assigned users, and project creator.
 ]
 

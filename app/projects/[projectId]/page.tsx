@@ -34,6 +34,8 @@ import {
 import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
+import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
 import { storage } from "@/lib/firebase";
@@ -2350,11 +2352,11 @@ function DrillingArrowIcon({ color }: { color: string }) {
         width: 9,
         height: 9,
         backgroundColor: color || "#0F172A",
-        WebkitMaskImage: "url('/arrow.png')",
+        WebkitMaskImage: "url('/Arrow.png')",
         WebkitMaskRepeat: "no-repeat",
         WebkitMaskPosition: "center",
         WebkitMaskSize: "contain",
-        maskImage: "url('/arrow.png')",
+        maskImage: "url('/Arrow.png')",
         maskRepeat: "no-repeat",
         maskPosition: "center",
         maskSize: "contain",
@@ -3316,6 +3318,7 @@ export default function ProjectDetailsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [project, setProject] = useState<Project | null>(null);
   const [changes, setChanges] = useState<ProjectChange[]>([]);
   const [quotes, setQuotes] = useState<SalesQuote[]>([]);
@@ -3403,12 +3406,8 @@ export default function ProjectDetailsPage() {
   const [isDeletingProjectFile, setIsDeletingProjectFile] = useState(false);
   const [isEditingClientDetails, setIsEditingClientDetails] = useState(false);
   const [isEditingNotes, setIsEditingNotes] = useState(false);
-  const [notesParagraphMode, setNotesParagraphMode] = useState(false);
-  const [notesBulletMode, setNotesBulletMode] = useState(false);
-  const [notesBoldActive, setNotesBoldActive] = useState(false);
-  const [notesItalicActive, setNotesItalicActive] = useState(false);
-  const [notesStrikeActive, setNotesStrikeActive] = useState(false);
   const [isSavingGeneralDetails, setIsSavingGeneralDetails] = useState(false);
+  const [notesEditorInitialValue, setNotesEditorInitialValue] = useState("");
   const [generalDetailsDraft, setGeneralDetailsDraft] = useState({
     customer: "",
     clientPhone: "",
@@ -3444,12 +3443,43 @@ export default function ProjectDetailsPage() {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [lockMessage, setLockMessage] = useState("");
+  const [notesToolbarHost, setNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [unlockTick, setUnlockTick] = useState(0);
   const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
   const [isUnlockEditModalOpen, setIsUnlockEditModalOpen] = useState(false);
   const [unlockEditPassword, setUnlockEditPassword] = useState("");
   const [unlockEditError, setUnlockEditError] = useState("");
   const [savingProjectPermissionUid, setSavingProjectPermissionUid] = useState("");
+  const isDarkMode = themeMode === "dark";
+  const projectPalette = isDarkMode
+    ? {
+        pageBg: "#0f0f0f",
+        sectionBg: "#181818",
+        panelBg: "#212121",
+        panelMuted: "#272727",
+        panelAlt: "#303134",
+        border: "#3f3f46",
+        text: "#f1f1f1",
+        textSoft: "#d1d5db",
+        textMuted: "#aaaaaa",
+        inputBg: "#303134",
+        inputText: "#f1f1f1",
+        shadow: "0 10px 30px rgba(0,0,0,0.38)",
+      }
+    : {
+        pageBg: "#ffffff",
+        sectionBg: "#ffffff",
+        panelBg: "#ffffff",
+        panelMuted: "#F8FAFC",
+        panelAlt: "#EEF2F7",
+        border: "#D7DEE8",
+        text: "#1A1D23",
+        textSoft: "#334155",
+        textMuted: "#8A97A8",
+        inputBg: "#ffffff",
+        inputText: "#334155",
+        shadow: "0 10px 24px rgba(15,23,42,0.09),0 2px 6px rgba(15,23,42,0.05)",
+      };
   const [projectPermissionSearch, setProjectPermissionSearch] = useState<{
     no_access: string;
     view: string;
@@ -3637,8 +3667,19 @@ export default function ProjectDetailsPage() {
   const [projectImageDragging, setProjectImageDragging] = useState(false);
   const clientDetailsContainerRef = useRef<HTMLDivElement | null>(null);
   const notesContainerRef = useRef<HTMLDivElement | null>(null);
-  const notesEditorRef = useRef<HTMLDivElement | null>(null);
-  const notesLastEnterAtRef = useRef(0);
+  const notesEditorDraftRef = useRef("");
+  useEffect(() => {
+    setThemeMode(readThemeMode());
+    if (typeof window === "undefined") return;
+    const onThemeUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ mode?: ThemeMode }>).detail;
+      setThemeMode(detail?.mode === "dark" ? "dark" : "light");
+    };
+    window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
+    return () => {
+      window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
+    };
+  }, []);
   const projectFilesTotalBytes = useMemo(
     () => projectFiles.reduce((sum, row) => sum + Math.max(0, Number(row.size) || 0), 0),
     [projectFiles],
@@ -3713,8 +3754,29 @@ export default function ProjectDetailsPage() {
     1,
     Math.min(168, Number(toStr(companyDoc?.productionUnlockDurationHours, "6")) || 6),
   );
-  const canRequestProductionUnlock = productionAccess.view && !hasDirectProductionEditPermission;
+  const canRequestProductionUnlock =
+    productionAccess.view &&
+    !hasDirectProductionEditPermission &&
+    productionUnlockRemainingSeconds <= 0;
   const productionUnlockUiReady = companyAccessLoaded && companyDocLoaded;
+  const currentProjectSettingsForTempAccess = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
+  const currentProjectPermissionMapForTempAccess =
+    (currentProjectSettingsForTempAccess.projectPermissionsByUid as Record<string, unknown> | undefined) ??
+    (currentProjectSettingsForTempAccess.userAccessByUid as Record<string, unknown> | undefined) ??
+    (currentProjectSettingsForTempAccess.memberAccessByUid as Record<string, unknown> | undefined) ??
+    {};
+  const currentUserDirectProjectAccessForTempAccess = String(
+    currentProjectPermissionMapForTempAccess[String(user?.uid || "").trim()] || "",
+  )
+    .trim()
+    .toLowerCase();
+  const canManageProductionTempUnlocks = Boolean(
+    user?.uid &&
+      (settingsAccess.edit ||
+        String(project?.createdByUid ?? "").trim() === String(user.uid).trim() ||
+        String(project?.assignedToUid ?? "").trim() === String(user.uid).trim() ||
+        currentUserDirectProjectAccessForTempAccess === "edit"),
+  );
   const productionTabTimerLabel =
     productionUnlockRemainingSeconds > 0 ? (() => {
       const s = Math.max(0, Math.floor(productionUnlockRemainingSeconds));
@@ -6816,11 +6878,41 @@ export default function ProjectDetailsPage() {
         setStaffIconColorByUid({});
         return;
       }
-      const colorMap = await fetchUserColorMapByUids(uids);
+      const colorMap = await fetchUserColorMapByUids(uids, project?.companyId);
       setStaffIconColorByUid(colorMap);
     };
     void loadStaffIconColors();
-  }, [companyMembers]);
+  }, [companyMembers, project?.companyId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUserColorUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserColorUpdatedDetail>).detail;
+      const uid = String(detail?.uid || "").trim();
+      const color = String(detail?.color || "").trim();
+      const companyId = String(detail?.companyId || "").trim();
+      const activeCompanyId = String(project?.companyId || "").trim();
+      if (!uid) return;
+      if (companyId && activeCompanyId && companyId !== activeCompanyId) return;
+      setStaffIconColorByUid((prev) => {
+        const next = { ...prev };
+        if (color) next[uid] = color;
+        else delete next[uid];
+        return next;
+      });
+      setCompanyMembers((prev) =>
+        prev.map((member) =>
+          String(member.uid || "").trim() === uid
+            ? { ...member, badgeColor: color || undefined, userColor: color || undefined }
+            : member,
+        ),
+      );
+    };
+    window.addEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    return () => {
+      window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    };
+  }, [project?.companyId]);
 
   useEffect(() => {
     const loadImages = async () => {
@@ -8130,262 +8222,13 @@ export default function ProjectDetailsPage() {
 
   const commitNotesDetails = async () => {
     if (!project || !generalAccess.edit) return;
-    const nextNotes = String((isEditingNotes && notesEditorRef.current
-      ? notesEditorRef.current.innerHTML
-      : generalDetailsDraft.notes) ?? "");
+    const nextNotes = String(
+      (isEditingNotes ? notesEditorDraftRef.current : generalDetailsDraft.notes) ?? "",
+    );
     if (nextNotes !== String(project.notes ?? "")) {
       await saveGeneralDetailsPatch({ notes: nextNotes });
     }
   };
-
-  const applyNotesFormat = (command: string) => {
-    if (!isEditingNotes || !generalAccess.edit) return;
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    editor.focus();
-    try {
-      document.execCommand(command, false);
-    } catch {
-      // no-op
-    }
-    setGeneralDetailsDraft((prev) => ({ ...prev, notes: editor.innerHTML }));
-  };
-
-  const NOTES_BULLET_PREFIX = "\u2022\u00A0";
-
-  const insertNotesBullet = () => {
-    if (!isEditingNotes || !generalAccess.edit) return;
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    try {
-      let sel = window.getSelection();
-      let range: Range | null = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
-
-      if (!range || !editor.contains(range.commonAncestorContainer)) {
-        editor.focus();
-        sel = window.getSelection();
-        range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
-      }
-
-      if (sel && range && editor.contains(range.commonAncestorContainer)) {
-        range.deleteContents();
-        const textNode = document.createTextNode(NOTES_BULLET_PREFIX);
-        range.insertNode(textNode);
-
-        const caretRange = document.createRange();
-        caretRange.setStartAfter(textNode);
-        caretRange.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(caretRange);
-      } else {
-        editor.focus();
-        document.execCommand("insertText", false, NOTES_BULLET_PREFIX);
-      }
-    } catch {
-      // no-op
-    }
-    setGeneralDetailsDraft((prev) => ({ ...prev, notes: editor.innerHTML }));
-  };
-
-  const currentNotesBlock = () => {
-    const editor = notesEditorRef.current;
-    if (!editor) return null;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return null;
-    const anchor = sel.anchorNode;
-    const base =
-      anchor && anchor.nodeType === Node.TEXT_NODE
-        ? (anchor.parentElement as Element | null)
-        : (anchor as Element | null);
-    const block = base?.closest("div, p");
-    if (!block || !editor.contains(block)) return null;
-    return block as HTMLElement;
-  };
-
-  const ensureBulletPrefixOnCurrentLine = () => {
-    const block = currentNotesBlock();
-    if (!block) return;
-    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ").trimStart();
-    if (!txt.startsWith("\u2022")) {
-      block.textContent = `${NOTES_BULLET_PREFIX}${txt}`;
-    } else if (!txt.startsWith(NOTES_BULLET_PREFIX)) {
-      block.textContent = txt.replace(/^\u2022(?:\u00A0|\s)*/, NOTES_BULLET_PREFIX);
-    }
-  };
-
-  const removeBulletPrefixFromCurrentLine = () => {
-    const block = currentNotesBlock();
-    if (!block) return;
-    const txt = String(block.textContent ?? "");
-    block.textContent = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "");
-  };
-
-  const isCurrentBulletLineEmpty = (): boolean => {
-    const block = currentNotesBlock();
-    if (!block) return false;
-    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ");
-    const noBullet = txt.replace(/^\s*\u2022(?:\u00A0|\s)?/, "").trim();
-    return noBullet.length === 0;
-  };
-
-  const isCurrentLineBullet = (): boolean => {
-    const block = currentNotesBlock();
-    if (!block) return false;
-    const txt = String(block.textContent ?? "").replace(/\u00A0/g, " ").trimStart();
-    return txt.startsWith("\u2022");
-  };
-
-  const toggleNotesBulletMode = () => {
-    if (!isEditingNotes || !generalAccess.edit) return;
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    editor.focus();
-    setNotesBulletMode((prev) => {
-      const next = !prev;
-      if (next) {
-        ensureBulletPrefixOnCurrentLine();
-      }
-      return next;
-    });
-  };
-
-  const insertNextBulletLine = () => {
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    const block = currentNotesBlock();
-
-    const newBlock = document.createElement("div");
-    const textNode = document.createTextNode(NOTES_BULLET_PREFIX);
-    newBlock.appendChild(textNode);
-    if ((block as HTMLElement | null)?.classList?.contains("notes-paragraph-line") || notesParagraphMode) {
-      newBlock.classList.add("notes-paragraph-line");
-    }
-
-    if (block && editor.contains(block)) {
-      if (block.nextSibling) {
-        block.parentNode?.insertBefore(newBlock, block.nextSibling);
-      } else {
-        block.parentNode?.appendChild(newBlock);
-      }
-    } else {
-      editor.appendChild(newBlock);
-    }
-
-    const sel = window.getSelection();
-    if (sel) {
-      const range = document.createRange();
-      range.setStart(textNode, textNode.length);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  };
-
-  const applyParagraphClassToCurrentLine = () => {
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const anchor = sel.anchorNode;
-    if (!anchor) return;
-    const base = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as Element);
-    if (!base) return;
-    const block = base.closest("div, p");
-    if (!block || !editor.contains(block)) return;
-    block.classList.add("notes-paragraph-line");
-  };
-
-  const toggleNotesParagraphMode = () => {
-    if (!isEditingNotes || !generalAccess.edit) return;
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    editor.focus();
-    setNotesParagraphMode((prev) => {
-      const next = !prev;
-      if (next) {
-        applyParagraphClassToCurrentLine();
-      }
-      return next;
-    });
-  };
-
-  const refreshNotesToolbarState = () => {
-    if (!isEditingNotes) return;
-    const editor = notesEditorRef.current;
-    const sel = window.getSelection();
-    const insideEditor =
-      !!editor &&
-      !!sel &&
-      sel.rangeCount > 0 &&
-      editor.contains(sel.anchorNode);
-    if (!insideEditor) return;
-    setNotesBulletMode(isCurrentLineBullet());
-    try {
-      setNotesBoldActive(!!document.queryCommandState("bold"));
-      setNotesItalicActive(!!document.queryCommandState("italic"));
-      setNotesStrikeActive(!!document.queryCommandState("strikeThrough"));
-    } catch {
-      setNotesBoldActive(false);
-      setNotesItalicActive(false);
-      setNotesStrikeActive(false);
-    }
-  };
-  const exitParagraphModeOnCurrentLine = () => {
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const anchor = sel.anchorNode;
-    const base =
-      anchor && anchor.nodeType === Node.TEXT_NODE
-        ? (anchor.parentElement as Element | null)
-        : (anchor as Element | null);
-    const currentBlock = base?.closest("div, p");
-    if (currentBlock && editor.contains(currentBlock)) {
-      currentBlock.classList.remove("notes-paragraph-line");
-    }
-  };
-
-  const isCurrentParagraphLineEmpty = (): boolean => {
-    const editor = notesEditorRef.current;
-    if (!editor) return false;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return false;
-    const anchor = sel.anchorNode;
-    const base =
-      anchor && anchor.nodeType === Node.TEXT_NODE
-        ? (anchor.parentElement as Element | null)
-        : (anchor as Element | null);
-    const currentBlock = base?.closest("div, p");
-    if (!currentBlock || !editor.contains(currentBlock)) return false;
-    if (!currentBlock.classList.contains("notes-paragraph-line")) return false;
-    const text = String(currentBlock.textContent ?? "").replace(/\u00A0/g, " ").trim();
-    return text.length === 0;
-  };
-
-  useEffect(() => {
-    if (!isEditingNotes) return;
-    const editor = notesEditorRef.current;
-    if (!editor) return;
-    editor.innerHTML = notesToDisplayHtml(generalDetailsDraft.notes);
-  }, [isEditingNotes]);
-
-  useEffect(() => {
-    if (isEditingNotes) return;
-    setNotesParagraphMode(false);
-    setNotesBulletMode(false);
-    setNotesBoldActive(false);
-    setNotesItalicActive(false);
-    setNotesStrikeActive(false);
-    notesLastEnterAtRef.current = 0;
-  }, [isEditingNotes]);
-
-  useEffect(() => {
-    if (!isEditingNotes) return;
-    const onSelectionChange = () => refreshNotesToolbarState();
-    document.addEventListener("selectionchange", onSelectionChange);
-    return () => document.removeEventListener("selectionchange", onSelectionChange);
-  }, [isEditingNotes]);
 
   useEffect(() => {
     if (!isEditingClientDetails && !isEditingNotes) return;
@@ -8746,6 +8589,35 @@ export default function ProjectDetailsPage() {
       setUnlockEditError("Could not unlock edit right now.");
     }
     setIsGrantingUnlock(false);
+  };
+
+  const onRemoveProductionTempUnlock = async (targetUid: string) => {
+    const normalizedTargetUid = String(targetUid || "").trim();
+    if (!project || !normalizedTargetUid || !canManageProductionTempUnlocks) {
+      return;
+    }
+    const settings = ((project.projectSettings ?? {}) as Record<string, unknown>) || {};
+    const currentMap = { ...(((settings.productionTempEdit ?? {}) as Record<string, unknown>) || {}) };
+    if (!(normalizedTargetUid in currentMap)) {
+      return;
+    }
+    delete currentMap[normalizedTargetUid];
+    const nextSettings: Record<string, unknown> = {
+      ...settings,
+      productionTempEdit: currentMap,
+    };
+    const ok = await updateProjectPatch(project, {
+      projectSettings: nextSettings,
+      projectSettingsJson: JSON.stringify(nextSettings),
+    });
+    if (!ok) {
+      setLockMessage("Could not remove temporary production access.");
+      return;
+    }
+    setProject({
+      ...project,
+      projectSettings: nextSettings,
+    });
   };
 
   const persistProductionForm = async (next: ProductionFormState) => {
@@ -11438,6 +11310,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const cutlistCellAlignClass = (key: CutlistEditableField) => (isCenteredCutlistColumn(key) ? "text-center" : "text-left");
 
   const startCellEdit = (row: CutlistRow, key: CutlistEditableField, infoLineIndex?: number) => {
+    if (productionReadOnly) return;
     setEditingCell({ rowId: row.id, key });
     if (key === "information") {
       setEditingInfoFocusLine({ rowId: row.id, lineIndex: Math.max(0, Number(infoLineIndex ?? 0)) });
@@ -12964,7 +12837,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   type="button"
                   disabled={isSavingQuoteSnapshot}
                   onClick={() => {
-                    void leaveQuoteWindow("items", true);
+                    void leaveQuoteWindow("specifications", true);
                   }}
                   className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
                 >
@@ -13427,13 +13300,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       </div>
 
       <div className="hidden gap-4 xl:grid xl:grid-cols-[320px_minmax(0,1fr)_320px]">
-        <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
-          <div className="border-b border-[#D7DEE8] p-4">
-            <p className="text-[14px] font-semibold tracking-[1px] text-[#0F2A4A]">ITEM LIBRARY</p>
+        <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border shadow-[0_10px_24px_rgba(15,23,42,0.08)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+          <div className="border-b p-4" style={{ borderBottomColor: projectPalette.border }}>
+            <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>ITEM LIBRARY</p>
             <p className="mt-1 text-[12px] text-[#667085]">Items from Company Settings → Item Categories.</p>
-            <div className="mt-3 flex h-11 items-center gap-3 rounded-[12px] border border-[#D7DEE8] bg-[#F8FAFC] px-3">
-              <Search size={15} className="text-[#667085]" />
-              <input value={salesItemsSearch} onChange={(e) => setSalesItemsSearch(e.currentTarget.value)} placeholder="Search items across all categories" className="h-full w-full bg-transparent text-[13px] text-[#111827] outline-none placeholder:text-[#98A2B3]" />
+            <div className="mt-3 flex h-11 items-center gap-3 rounded-[12px] border px-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+              <Search size={15} style={{ color: projectPalette.textMuted }} />
+              <input value={salesItemsSearch} onChange={(e) => setSalesItemsSearch(e.currentTarget.value)} placeholder="Search items across all categories" className="h-full w-full bg-transparent text-[13px] outline-none placeholder:text-[#98A2B3]" style={{ color: projectPalette.inputText }} />
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -13441,7 +13314,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {salesItemsFilteredCategories.length > 0 ? salesItemsFilteredCategories.map((category) => {
                 const collapsed = collapsedSalesItemCategories[category.id] ?? false;
                 return (
-                  <section key={`sales_item_cat_${category.id}`} className="overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white">
+                  <section key={`sales_item_cat_${category.id}`} className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
                     <button
                       type="button"
                       onClick={() => setCollapsedSalesItemCategories((prev) => ({ ...prev, [category.id]: !(prev[category.id] ?? false) }))}
@@ -13449,22 +13322,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       style={{ borderLeftColor: category.color }}
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-[13px] font-bold text-[#0F172A]">{category.name}</p>
-                        <p className="text-[11px] text-[#667085]">{category.items.length} items</p>
+                        <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.text }}>{category.name}</p>
+                        <p className="text-[11px]" style={{ color: projectPalette.textMuted }}>{category.items.length} items</p>
                       </div>
-                      <ChevronDown size={16} className={`shrink-0 text-[#667085] transition-transform ${collapsed ? "" : "rotate-180"}`} />
+                      <ChevronDown size={16} className={`shrink-0 transition-transform ${collapsed ? "" : "rotate-180"}`} style={{ color: projectPalette.textMuted }} />
                     </button>
                     {!collapsed ? (
-                      <div className="space-y-2 border-t border-[#EEF2F7] p-3">
+                      <div className="space-y-2 border-t p-3" style={{ borderTopColor: projectPalette.border }}>
                         {category.items.map((item) => (
-                          <div key={`sales_item_row_${category.id}_${item.name}`} draggable onDragStart={(event) => onSalesItemsLibraryDragStart(event, category, item)} className="flex items-center gap-3 rounded-[12px] border border-[#D7DEE8] bg-[#F8FAFD] px-3 py-3">
-                            <GripVertical size={14} className="shrink-0 text-[#98A2B3]" />
+                          <div key={`sales_item_row_${category.id}_${item.name}`} draggable onDragStart={(event) => onSalesItemsLibraryDragStart(event, category, item)} className="flex items-center gap-3 rounded-[12px] border px-3 py-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                            <GripVertical size={14} className="shrink-0" style={{ color: projectPalette.textMuted }} />
                             <div className="min-w-0 flex-1">
                               <div className="inline-flex items-center gap-2">
                                 <span className="h-3 w-3 rounded-full" style={{ backgroundColor: category.color }} />
-                                <p className="truncate text-[12px] font-semibold text-[#111827]">{item.name}</p>
+                                <p className="truncate text-[12px] font-semibold" style={{ color: projectPalette.text }}>{item.name}</p>
                               </div>
-                              {item.subcategory ? <p className="mt-1 truncate text-[11px] text-[#667085]">{item.subcategory}</p> : null}
+                              {item.subcategory ? <p className="mt-1 truncate text-[11px]" style={{ color: projectPalette.textMuted }}>{item.subcategory}</p> : null}
                             </div>
                             <button type="button" disabled={!activeSalesItemsRoom || salesReadOnly} onClick={() => onAddSalesItemsLibraryItem(category, item)} className="inline-flex h-9 shrink-0 items-center rounded-[10px] border border-[#BFD3F2] bg-[#EFF4FF] px-3 text-[12px] font-bold text-[#24589A] disabled:opacity-60">+ Add</button>
                           </div>
@@ -13474,17 +13347,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
                 );
               }) : (
-                <div className="rounded-[14px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] px-4 py-10 text-center text-[12px] text-[#667085]">No items match your search.</div>
+                <div className="rounded-[14px] border border-dashed px-4 py-10 text-center text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textMuted }}>No items match your search.</div>
               )}
             </div>
           </div>
         </section>
 
-        <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
-          <div className="flex items-center justify-between border-b border-[#D7DEE8] px-4 py-4">
+        <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border shadow-[0_10px_24px_rgba(15,23,42,0.08)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+          <div className="flex items-center justify-between border-b px-4 py-4" style={{ borderBottomColor: projectPalette.border }}>
             <div>
-              <p className="text-[14px] font-semibold tracking-[1px] text-[#0F2A4A]">ROOMS</p>
-              <p className="mt-1 text-[12px] text-[#667085]">Click a room to make it active, then add or drag items in.</p>
+              <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>ROOMS</p>
+              <p className="mt-1 text-[12px]" style={{ color: projectPalette.textMuted }}>Click a room to make it active, then add or drag items in.</p>
             </div>
             <button type="button" disabled={salesReadOnly} onClick={() => setIsItemsAddRoomModalOpen(true)} className="inline-flex h-10 items-center gap-2 rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-3 text-[12px] font-bold text-[#1F6A3B] disabled:opacity-60"><Plus size={14} />Add Room</button>
           </div>
@@ -13516,35 +13389,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 if (e.key === "Enter") { e.preventDefault(); commitEditingItemsRoom(); }
                                 if (e.key === "Escape") { e.preventDefault(); cancelEditingItemsRoom(); }
                               }}
-                              className="h-10 w-full rounded-[10px] border border-[#D7DEE8] bg-white px-3 text-[13px] font-semibold text-[#0F172A]"
+                              className="h-10 w-full rounded-[10px] border px-3 text-[13px] font-semibold"
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             />
                           ) : (
                             <>
-                              <p className="truncate text-[15px] font-bold text-[#0F172A]">{room.name}</p>
-                              <p className="mt-1 text-[11px] text-[#667085]">{room.items.reduce((sum, item) => sum + item.quantity, 0)} items</p>
+                              <p className="truncate text-[15px] font-bold" style={{ color: projectPalette.text }}>{room.name}</p>
+                              <p className="mt-1 text-[11px]" style={{ color: projectPalette.textMuted }}>{room.items.reduce((sum, item) => sum + item.quantity, 0)} items</p>
                             </>
                           )}
                         </div>
                       </div>
                       <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                         {room.items.length > 0 ? room.items.map((item) => (
-                          <div key={`sales_room_item_${room.id}_${item.itemId}`} draggable onDragStart={(event) => onSalesItemsRoomItemDragStart(event, room.id, item)} className="rounded-[12px] border border-[#D7DEE8] bg-white p-3 shadow-[0_4px_10px_rgba(15,23,42,0.05)]">
+                          <div key={`sales_room_item_${room.id}_${item.itemId}`} draggable onDragStart={(event) => onSalesItemsRoomItemDragStart(event, room.id, item)} className="rounded-[12px] border p-3 shadow-[0_4px_10px_rgba(15,23,42,0.05)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
                             <div className="flex items-start gap-3">
-                              <GripVertical size={14} className="mt-1 shrink-0 text-[#98A2B3]" />
+                              <GripVertical size={14} className="mt-1 shrink-0" style={{ color: projectPalette.textMuted }} />
                               <div className="min-w-0 flex-1">
-                                <p className="truncate text-[12px] font-semibold text-[#111827]">{item.name}</p>
+                                <p className="truncate text-[12px] font-semibold" style={{ color: projectPalette.text }}>{item.name}</p>
                                 <span className="mt-2 inline-flex rounded-full px-2 py-1 text-[10px] font-bold text-white" style={{ backgroundColor: item.categoryColor }}>{item.categoryName}</span>
                               </div>
                               <button type="button" disabled={salesReadOnly} onClick={() => setSalesItemsBoardRooms((prev) => removeItemFromSalesItemsRoom(prev, room.id, item.itemId))} className="inline-flex h-8 w-8 items-center justify-center rounded-[9px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-60" title="Remove item"><X size={13} /></button>
                             </div>
                             <div className="mt-3 flex items-center gap-2">
-                              <button type="button" disabled={salesReadOnly} onClick={() => setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, -1))} className="inline-flex h-8 w-8 items-center justify-center rounded-[9px] border border-[#D8DEE8] bg-white text-[#334155] disabled:opacity-60"><Minus size={14} /></button>
-                              <div className="min-w-[42px] text-center text-[13px] font-bold text-[#0F172A]">{item.quantity}</div>
-                              <button type="button" disabled={salesReadOnly} onClick={() => setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, 1))} className="inline-flex h-8 w-8 items-center justify-center rounded-[9px] border border-[#D8DEE8] bg-white text-[#334155] disabled:opacity-60"><Plus size={14} /></button>
+                              <button type="button" disabled={salesReadOnly} onClick={() => setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, -1))} className="inline-flex h-8 w-8 items-center justify-center rounded-[9px] border disabled:opacity-60" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.textSoft }}><Minus size={14} /></button>
+                              <div className="min-w-[42px] text-center text-[13px] font-bold" style={{ color: projectPalette.text }}>{item.quantity}</div>
+                              <button type="button" disabled={salesReadOnly} onClick={() => setSalesItemsBoardRooms((prev) => updateSalesItemsRoomItemQuantity(prev, room.id, item.itemId, 1))} className="inline-flex h-8 w-8 items-center justify-center rounded-[9px] border disabled:opacity-60" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.textSoft }}><Plus size={14} /></button>
                             </div>
                           </div>
                         )) : (
-                          <div className="flex h-full min-h-[180px] items-center justify-center rounded-[12px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] px-4 text-center text-[12px] text-[#667085]">Drop items here or use Add from the library.</div>
+                          <div className="flex h-full min-h-[180px] items-center justify-center rounded-[12px] border border-dashed px-4 text-center text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textMuted }}>Drop items here or use Add from the library.</div>
                         )}
                       </div>
                     </div>
@@ -13552,50 +13426,50 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 })}
               </div>
             ) : (
-              <div className="flex h-full min-h-[520px] items-center justify-center rounded-[16px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] px-6 text-center text-[13px] text-[#667085]">Add a room to start assigning items to spaces like Kitchen, Bathroom, or Laundry.</div>
+              <div className="flex h-full min-h-[520px] items-center justify-center rounded-[16px] border border-dashed px-6 text-center text-[13px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textMuted }}>Add a room to start assigning items to spaces like Kitchen, Bathroom, or Laundry.</div>
             )}
           </div>
         </section>
 
-        <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
-          <div className="border-b border-[#D7DEE8] p-4">
-            <p className="text-[14px] font-semibold tracking-[1px] text-[#0F2A4A]">SELECTION SUMMARY</p>
-            <p className="mt-1 text-[12px] text-[#667085]">A lightweight room-by-room summary with no pricing.</p>
+        <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border shadow-[0_10px_24px_rgba(15,23,42,0.08)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+          <div className="border-b p-4" style={{ borderBottomColor: projectPalette.border }}>
+            <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>SELECTION SUMMARY</p>
+            <p className="mt-1 text-[12px]" style={{ color: projectPalette.textMuted }}>A lightweight room-by-room summary with no pricing.</p>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD] p-3"><p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#667085]">Rooms</p><p className="mt-2 text-[28px] font-extrabold text-[#12345B]">{salesItemsBoardRooms.length}</p></div>
-                <div className="rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD] p-3"><p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#667085]">Items</p><p className="mt-2 text-[28px] font-extrabold text-[#12345B]">{salesItemsTotalSelected}</p></div>
+                <div className="rounded-[14px] border p-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}><p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: projectPalette.textMuted }}>Rooms</p><p className="mt-2 text-[28px] font-extrabold" style={{ color: isDarkMode ? "#8ab4f8" : "#12345B" }}>{salesItemsBoardRooms.length}</p></div>
+                <div className="rounded-[14px] border p-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}><p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: projectPalette.textMuted }}>Items</p><p className="mt-2 text-[28px] font-extrabold" style={{ color: isDarkMode ? "#8ab4f8" : "#12345B" }}>{salesItemsTotalSelected}</p></div>
               </div>
-              <div className="rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD] p-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#667085]">Items Per Room</p>
+              <div className="rounded-[14px] border p-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: projectPalette.textMuted }}>Items Per Room</p>
                 <div className="mt-3 space-y-2">
                   {salesItemsBoardRooms.map((room) => (
                     <div key={`room_count_${room.id}`} className="flex items-center justify-between gap-3">
-                      <span className="truncate text-[12px] font-semibold text-[#334155]">{room.name}</span>
-                      <span className="text-[12px] font-bold text-[#0F172A]">{room.items.reduce((sum, item) => sum + item.quantity, 0)}</span>
+                      <span className="truncate text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>{room.name}</span>
+                      <span className="text-[12px] font-bold" style={{ color: projectPalette.text }}>{room.items.reduce((sum, item) => sum + item.quantity, 0)}</span>
                     </div>
                   ))}
                 </div>
               </div>
-              <div className="rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD] p-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#667085]">Category Breakdown</p>
+              <div className="rounded-[14px] border p-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                <p className="text-[11px] font-bold uppercase tracking-[0.8px]" style={{ color: projectPalette.textMuted }}>Category Breakdown</p>
                 <div className="mt-3 space-y-2">
                   {salesItemsCategoryBreakdown.length > 0 ? salesItemsCategoryBreakdown.map((row) => (
                     <div key={`desktop_cat_breakdown_${row.categoryName}`} className="flex items-center justify-between gap-3">
                       <div className="inline-flex min-w-0 items-center gap-2">
                         <span className="h-3 w-3 rounded-full" style={{ backgroundColor: row.categoryColor }} />
-                        <span className="truncate text-[12px] font-semibold text-[#334155]">{row.categoryName}</span>
+                        <span className="truncate text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>{row.categoryName}</span>
                       </div>
-                      <span className="text-[12px] font-bold text-[#0F172A]">{row.quantity}</span>
+                      <span className="text-[12px] font-bold" style={{ color: projectPalette.text }}>{row.quantity}</span>
                     </div>
-                  )) : <p className="text-[12px] text-[#667085]">No items selected yet.</p>}
+                  )) : <p className="text-[12px]" style={{ color: projectPalette.textMuted }}>No items selected yet.</p>}
                 </div>
               </div>
             </div>
           </div>
-          <div className="border-t border-[#D7DEE8] p-4">
+          <div className="border-t p-4" style={{ borderTopColor: projectPalette.border }}>
             <div className="grid grid-cols-2 gap-2">
               <button type="button" disabled={salesReadOnly || isSavingSalesRooms} onClick={() => void continueFromSalesItems()} className="h-10 rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-3 text-[12px] font-bold text-[#1F6A3B] disabled:opacity-60">Continue</button>
               <button type="button" disabled={salesReadOnly || !activeSalesItemsRoom} onClick={clearActiveSalesItemsRoom} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] disabled:opacity-60">Clear Room</button>
@@ -13611,9 +13485,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const salesSpecificationsContent = (
     <>
       <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
-        <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-          <div className="flex h-[50px] items-center justify-between border-b border-[#D7DEE8] px-4">
-            <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">ROOMS</p>
+        <section className="rounded-[14px] border shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+          <div className="flex h-[50px] items-center justify-between border-b px-4" style={{ borderBottomColor: projectPalette.border }}>
+            <p className="text-[14px] font-medium tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>ROOMS</p>
             <button
               type="button"
               disabled={salesReadOnly || isSavingSalesRooms}
@@ -13633,12 +13507,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </button>
           </div>
           <div className="p-3">
-            <div className="mb-2 grid grid-cols-[24px_28px_1fr_100px_64px] gap-2 text-[11px] font-bold text-[#8A97A8]">
+            <div className="mb-2 grid grid-cols-[24px_28px_1fr_100px_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
               <p></p><p></p><p>Room</p><p className="text-right">Price</p><p className="text-center">Included</p>
             </div>
             <div className="space-y-1">
               {displayedSalesRoomRows.map((room) => (
-                <div key={room.name} className="grid grid-cols-[24px_28px_1fr_100px_64px] items-center gap-2 border-b border-[#DDE4EE] py-2">
+                <div key={room.name} className="grid grid-cols-[24px_28px_1fr_100px_64px] items-center gap-2 border-b py-2" style={{ borderBottomColor: projectPalette.border }}>
                   <button
                     type="button"
                     disabled={salesReadOnly || isSavingSalesRooms}
@@ -13656,7 +13530,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     title="Edit room name"
                   >
                     <img
-                      src="/Edit.png"
+                      src="/edit.png"
                       alt="Edit"
                       className="block object-contain"
                       style={{ width: 13, height: 13, filter: "brightness(0) invert(1)" }}
@@ -13682,12 +13556,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           cancelEditingSalesRoom();
                         }
                       }}
-                      className="h-7 w-full rounded-[8px] border border-[#D7DEE8] bg-white px-2 text-[12px] font-semibold text-[#0F172A] disabled:opacity-60"
+                      className="h-7 w-full rounded-[8px] border px-2 text-[12px] font-semibold disabled:opacity-60"
+                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                     />
                   ) : (
-                    <p className="text-[12px] font-semibold text-[#0F172A]">{room.name}</p>
+                    <p className="text-[12px] font-semibold" style={{ color: projectPalette.text }}>{room.name}</p>
                   )}
-                  <p className="text-right text-[12px] font-semibold italic text-[#0F172A]">{room.totalPrice}</p>
+                  <p className="text-right text-[12px] font-semibold italic" style={{ color: projectPalette.text }}>{room.totalPrice}</p>
                   <label className="inline-flex items-center justify-center gap-1 text-[12px] font-bold">
                     <input
                       type="checkbox"
@@ -13721,19 +13596,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   }}
                 />
               </button>
-              <p className="text-[36px] font-extrabold text-[#7E9EBB]">{formatCurrencyValue(displayedSalesQuoteFinalTotal)}</p>
+              <p className="text-[36px] font-extrabold" style={{ color: isDarkMode ? "#8ab4f8" : "#7E9EBB" }}>{formatCurrencyValue(displayedSalesQuoteFinalTotal)}</p>
             </div>
           </div>
         </section>
 
-        <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-          <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
-            <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">PRODUCT</p>
+        <section className="rounded-[14px] border shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+          <div className="flex h-[50px] items-center border-b px-4" style={{ borderBottomColor: projectPalette.border }}>
+            <p className="text-[14px] font-medium tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>PRODUCT</p>
           </div>
           <div className="space-y-2 p-4 text-[12px]">
             {salesProductRows.length > 0 ? (
               salesProductRows.map((row) => (
-                <label key={row.name} className="flex items-center gap-2 text-[#1F2937]">
+                <label key={row.name} className="flex items-center gap-2" style={{ color: projectPalette.text }}>
                   <input
                     type="checkbox"
                     disabled={salesReadOnly || isSavingSalesRooms}
@@ -13745,19 +13620,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </label>
               ))
             ) : (
-              <p className="text-[12px] text-[#667085]">No products available.</p>
+              <p className="text-[12px]" style={{ color: projectPalette.textMuted }}>No products available.</p>
             )}
           </div>
         </section>
 
-        <section className="rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-          <div className="flex h-[50px] items-center border-b border-[#D7DEE8] px-4">
-            <p className="text-[14px] font-medium tracking-[1px] text-[#0F2A4A]">QUOTE EXTRAS</p>
+        <section className="rounded-[14px] border shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+          <div className="flex h-[50px] items-center border-b px-4" style={{ borderBottomColor: projectPalette.border }}>
+            <p className="text-[14px] font-medium tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>QUOTE EXTRAS</p>
           </div>
           <div className="space-y-2 p-4 text-[12px]">
             {displayedSalesQuoteExtras.length > 0 ? (
               displayedSalesQuoteExtras.map((item) => (
-                <label key={item.id} className="flex items-center gap-2 text-[#1F2937]">
+                <label key={item.id} className="flex items-center gap-2" style={{ color: projectPalette.text }}>
                   <input
                     type="checkbox"
                     checked={item.included}
@@ -13769,7 +13644,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </label>
               ))
             ) : (
-              <p className="text-[12px] text-[#667085]">No quote extras configured.</p>
+              <p className="text-[12px]" style={{ color: projectPalette.textMuted }}>No quote extras configured.</p>
             )}
           </div>
         </section>
@@ -13782,10 +13657,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </CardHeader>
           <CardContent className="space-y-2 text-[12px]">
             {quotes.map((quote) => (
-              <div key={quote.id} className="rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
-                <p className="font-bold text-[#111827]">{quote.currency} {quote.value.toLocaleString()}</p>
-                <p className="text-[#5B6472]">Stage: {quote.stage}</p>
-                <p className="text-[#5B6472]">Updated: {shortDate(quote.updatedAt)}</p>
+              <div key={quote.id} className="rounded-[10px] border p-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                <p className="font-bold" style={{ color: projectPalette.text }}>{quote.currency} {quote.value.toLocaleString()}</p>
+                <p style={{ color: projectPalette.textSoft }}>Stage: {quote.stage}</p>
+                <p style={{ color: projectPalette.textSoft }}>Updated: {shortDate(quote.updatedAt)}</p>
               </div>
             ))}
           </CardContent>
@@ -15732,12 +15607,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
               <ShoppingCart size={14} />
               <span>Order</span>
-              <span className="text-[#6B7280]">|</span>
-              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+              <span style={{ color: projectPalette.textMuted }}>|</span>
+              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
@@ -16963,12 +16838,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
               <Scissors size={14} />
               <span>Cutlist</span>
-              <span className="text-[#6B7280]">|</span>
-              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+              <span style={{ color: projectPalette.textMuted }}>|</span>
+              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
@@ -16979,7 +16854,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               Save & Back
             </button>
           </div>
-          <div className="shrink-0 overflow-hidden border-b border-[#DCE3EC] bg-white px-3 py-1">
+          <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -18984,12 +18859,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="min-h-screen bg-[var(--bg-app)]">
-          <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+          <div className="flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
               <GitBranch size={14} />
               <span>Nesting</span>
-              <span className="text-[#6B7280]">|</span>
-              <span className="truncate text-[#334155]">{project?.name || "Project"}</span>
+              <span style={{ color: projectPalette.textMuted }}>|</span>
+              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
@@ -19512,25 +19387,30 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   return (
     <ProtectedRoute>
       <AppShell>
-        <div className="space-y-4">
-          <div className="-mx-4 -mt-4 bg-white md:-mx-5">
-          <div className="border-b border-[#D7DEE8]">
+        <div className="space-y-4" style={{ backgroundColor: projectPalette.pageBg }}>
+          <div className="-mx-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectPalette.sectionBg }}>
+          <div className="border-b" style={{ borderBottomColor: projectPalette.border }}>
             <div className="px-4 pb-[10px] pt-4 md:px-5">
-            <Link href="/dashboard" className="mb-2 hidden items-center gap-1 text-[14px] font-semibold text-[#6E88AA] lg:inline-flex">
+            <Link href="/dashboard" className="mb-2 hidden items-center gap-1 text-[14px] font-semibold lg:inline-flex" style={{ color: isDarkMode ? "#8ab4f8" : "#6E88AA" }}>
               <ArrowLeft size={15} />
               Back to Projects
             </Link>
             <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-start md:gap-4">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-[32px] font-medium leading-[1.05] text-[#1A1D23] md:text-[42px]">{project.name}</h1>
+                  <h1 className="text-[32px] font-medium leading-[1.05] md:text-[42px]" style={{ color: projectPalette.text }}>{project.name}</h1>
                   {projectTags.map((tag) => (
                     <button
                       key={tag}
                       type="button"
                       onClick={() => void onDeleteTag(tag)}
                       disabled={!canEditTags}
-                      className="inline-flex self-center items-center gap-1 rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[2px] text-[12px] font-semibold text-[#7B8798] hover:bg-[#FDECEC] hover:text-[#B42318] disabled:cursor-not-allowed disabled:opacity-70"
+                      className="inline-flex self-center items-center gap-1 rounded-[8px] border px-2 py-[2px] text-[12px] font-semibold hover:bg-[#FDECEC] hover:text-[#B42318] disabled:cursor-not-allowed disabled:opacity-70"
+                      style={{
+                        borderColor: projectPalette.border,
+                        backgroundColor: projectPalette.panelAlt,
+                        color: isDarkMode ? "#cbd5e1" : "#7B8798",
+                      }}
                       title="Delete tag"
                     >
                       <Tag size={11} />
@@ -19562,17 +19442,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               }
                             }}
                             placeholder="Tag"
-                            className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
+                            className="h-7 w-[120px] rounded-[8px] border px-2 text-[12px] outline-none"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           />
                           {showTagSuggestions && filteredTagSuggestions.length > 0 && (
-                            <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                            <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
                               {filteredTagSuggestions.map((tag) => (
                                 <button
                                   key={tag}
                                   type="button"
                                   onMouseDown={(e) => e.preventDefault()}
                                   onClick={() => void onAddTagValue(tag)}
-                                  className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                                  className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
+                                  style={{ color: projectPalette.textSoft }}
                                 >
                                   {tag}
                                 </button>
@@ -19592,16 +19474,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           void onAddTag();
                         }}
                         disabled={isSavingTags}
-                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0] disabled:opacity-60"
+                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border hover:bg-[#E2E8F0] disabled:opacity-60"
+                        style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelAlt, color: projectPalette.textMuted }}
                       >
                         <Plus size={14} />
                       </button>
                   </>
                   )}
                 </div>
-                <p className="pt-2 text-[13px] text-[#8A97A8]">Client: {project.customer || "-"}</p>
-                <p className="text-[13px] text-[#8A97A8]">Creator: {creatorDisplayName}</p>
-                <p className="text-[13px] text-[#8A97A8]">
+                <p className="pt-2 text-[13px]" style={{ color: projectPalette.textMuted }}>Client: {project.customer || "-"}</p>
+                <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>Creator: {creatorDisplayName}</p>
+                <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>
                   Assigned: {assignedDisplayName}
                 </p>
               </div>
@@ -19619,8 +19502,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     data-status-trigger="true"
                     type="button"
-                    disabled={isSavingStatus || !canEditStatus}
                     onClick={(e) => {
+                      if (isSavingStatus || !canEditStatus) {
+                        return;
+                      }
                       if (projectStatusMenuPos) {
                         setProjectStatusMenuPos(null);
                         return;
@@ -19646,22 +19531,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         width: menuWidth,
                       });
                     }}
-                    className="inline-flex h-8 min-w-[90px] items-center justify-center rounded-[10px] px-3 text-[12px] font-bold disabled:opacity-60"
+                    className="inline-flex h-8 min-w-[90px] items-center justify-center rounded-[10px] px-3 text-[12px] font-bold"
                     style={projectStatusPillStyle(project.statusLabel || "New")}
+                    aria-disabled={isSavingStatus || !canEditStatus}
                     aria-label="Project status"
-                    title="Change project status"
+                    title={canEditStatus ? "Change project status" : "You can view this project but not change its status"}
                   >
                     {isSavingStatus ? "Saving..." : project.statusLabel || "New"}
                   </button>
                 </div>
-                <p className="pt-2 text-[13px] text-[#8A97A8] md:pt-3">Created: {dashboardStyleDate(project.createdAt)}</p>
-                <p className="text-[13px] text-[#8A97A8]">Modified: {dashboardStyleDate(project.updatedAt)}</p>
+                <p className="pt-2 text-[13px] md:pt-3" style={{ color: projectPalette.textMuted }}>Created: {dashboardStyleDate(project.createdAt)}</p>
+                <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>Modified: {dashboardStyleDate(project.updatedAt)}</p>
               </div>
             </div>
             </div>
           </div>
 
-          <div className="border-b border-[#D7DEE8]">
+          <div className="border-b" style={{ borderBottomColor: projectPalette.border }}>
             <div className="px-4 md:px-5">
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between md:gap-6">
                 <div className="grid grid-cols-4 items-end gap-1 sm:-mx-1 sm:flex sm:gap-4 sm:overflow-x-auto sm:px-1 md:mx-0 md:flex-1 md:gap-10 md:px-2">
@@ -19676,14 +19562,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       onClick={() => onChangeTab(item.value)}
                       className={`w-full border-b-2 pb-[10px] pt-[10px] text-center text-[16px] font-semibold transition sm:w-auto sm:shrink-0 sm:whitespace-nowrap sm:text-left sm:text-[18px] md:text-[20px] ${
                         active
-                          ? "border-[#7395BD] text-[#1F3654]"
-                          : "border-transparent text-[#6D82A1] hover:text-[#45638A]"
+                          ? "border-[#7395BD]"
+                          : "border-transparent hover:text-[#45638A]"
                       } disabled:cursor-not-allowed disabled:opacity-50`}
+                      style={{ color: active ? (isDarkMode ? "#f1f1f1" : "#1F3654") : (isDarkMode ? "#9ca3af" : "#6D82A1") }}
                     >
                       <span className="inline-flex items-center gap-2">
                         <span>{item.label}</span>
                         {"unlockPill" in item && item.unlockPill ? (
-                          <span className="inline-flex h-6 items-center rounded-full border border-[#C6D3E1] bg-[#F8FAFC] px-2 text-[11px] font-bold text-[#475467] sm:h-7 sm:px-3 sm:text-[12px]">
+                          <span className="inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-bold sm:h-7 sm:px-3 sm:text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
+                            <img
+                              src="/unlock.png"
+                              alt=""
+                              aria-hidden="true"
+                              className="h-[11px] w-[11px] object-contain sm:h-[12px] sm:w-[12px]"
+                            />
                             {item.unlockPill}
                           </span>
                         ) : null}
@@ -19708,6 +19601,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   top: projectStatusMenuPos.top,
                   width: projectStatusMenuPos.width,
                   zIndex: 2147483647,
+                  borderColor: projectPalette.border,
+                  backgroundColor: projectPalette.panelBg,
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -19720,10 +19615,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       disabled={isSavingStatus}
                       onClick={() => void onChangeStatus(option)}
-                      className="block w-full border-b border-[#EEF2F7] px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
+                      className="block w-full border-b px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
                       style={{
                         backgroundColor: rowColor,
                         filter: active ? "brightness(0.96)" : "brightness(1)",
+                        borderBottomColor: isDarkMode ? "#232323" : "#EEF2F7",
                       }}
                     >
                       {option}
@@ -19741,20 +19637,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {!productionAccess.view && resolvedTab === "general" && (
-            <div className="rounded-[10px] border border-[#E4E6EC] bg-[#F7F8FC] px-3 py-3">
-              <p className="text-[12px] font-semibold text-[#334155]">Production is locked for your role on this project.</p>
+            <div className="rounded-[10px] border px-3 py-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+              <p className="text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>Production is locked for your role on this project.</p>
             </div>
           )}
 
           {resolvedTab === "general" && (
             <div className="-mx-4 -mb-4 -mt-4 md:-mx-5 xl:mx-0 xl:mb-0 xl:mt-0">
-              <div className="space-y-4 px-3 sm:px-4 md:px-5 xl:px-0 xl:pt-0 xl:pb-0">
+              <div className="space-y-4 px-3 sm:px-4 md:px-5 xl:px-0 xl:pt-0 xl:pb-0" style={{ backgroundColor: projectPalette.pageBg }}>
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="space-y-4">
                     <div ref={clientDetailsContainerRef}>
-                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                        <CardHeader className="flex min-h-[50px] flex-row items-center justify-between border-b border-[#D7DEE8] px-4 py-2">
-                          <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Client Details</CardTitle>
+                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                        <CardHeader className="flex min-h-[50px] flex-row items-center justify-between border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
+                          <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Client Details</CardTitle>
                           <button
                             type="button"
                             disabled={!generalAccess.edit || isSavingGeneralDetails}
@@ -19773,7 +19669,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             title={isEditingClientDetails ? "Save changes" : "Edit client details"}
                           >
                             <img
-                              src={isEditingClientDetails ? "/tick.png" : "/Edit.png"}
+                              src={isEditingClientDetails ? "/tick.png" : "/edit.png"}
                               alt={isEditingClientDetails ? "Save" : "Edit"}
                               className="block object-contain"
                               style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
@@ -19790,10 +19686,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             { label: "Email", key: "clientEmail" as const, value: project.clientEmail || "-" },
                             { label: "Address", key: "clientAddress" as const, value: project.clientAddress || "-" },
                           ].map((row) => (
-                            <div key={row.label} className="grid grid-cols-[55px_1fr] border-b border-[#DCE3EC] py-[9px] last:border-none">
-                              <p className="font-bold text-[#1E2D42]">{row.label}</p>
+                            <div key={row.label} className="grid grid-cols-[55px_1fr] border-b py-[9px] last:border-none" style={{ borderBottomColor: projectPalette.border }}>
+                              <p className="font-bold" style={{ color: isDarkMode ? "#e5e7eb" : "#1E2D42" }}>{row.label}</p>
                               <div className="relative min-h-[20px]">
-                                <p className={`text-[#2F3F56] ${isEditingClientDetails && generalAccess.edit ? "opacity-0" : ""}`}>
+                                <p className={`${isEditingClientDetails && generalAccess.edit ? "opacity-0" : ""}`} style={{ color: projectPalette.textSoft }}>
                                   {row.value}
                                 </p>
                                 {isEditingClientDetails && generalAccess.edit ? (
@@ -19805,7 +19701,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       setGeneralDetailsDraft((prev) => ({ ...prev, [row.key]: nextValue }));
                                     }}
                                     onBlur={() => void commitClientDetails()}
-                                    className="absolute inset-0 h-full rounded-[6px] border border-[#C9D5E5] bg-white px-2 text-[12px] text-[#2F3F56]"
+                                    className="absolute inset-0 h-full rounded-[6px] border px-2 text-[12px]"
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                                   />
                                 ) : null}
                               </div>
@@ -19816,134 +19713,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
 
                     <div ref={notesContainerRef}>
-                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                        <CardHeader className="flex min-h-[50px] flex-row items-center justify-between border-b border-[#D7DEE8] px-4 py-2">
-                          <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Notes</CardTitle>
-                          <div className="flex items-center gap-2">
-                            {isEditingNotes && generalAccess.edit ? (
-                              <div className="flex items-center gap-1 rounded-[8px] border border-[#C9D5E5] bg-white px-1 py-1">
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[12px] font-semibold hover:brightness-95"
-                                  style={
-                                    notesBoldActive
-                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#000000" }
-                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#000000" }
-                                  }
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    applyNotesFormat("bold");
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                  }}
-                                  title="Bold"
-                                >
-                                  B
-                                </button>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[12px] italic hover:brightness-95"
-                                  style={
-                                    notesItalicActive
-                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#000000" }
-                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#000000" }
-                                  }
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    applyNotesFormat("italic");
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                  }}
-                                  title="Italic"
-                                >
-                                  I
-                                </button>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[12px] line-through hover:brightness-95"
-                                  style={
-                                    notesStrikeActive
-                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#000000" }
-                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#000000" }
-                                  }
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    applyNotesFormat("strikeThrough");
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                  }}
-                                  title="Strikethrough"
-                                >
-                                  S
-                                </button>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 min-w-[26px] items-center justify-center rounded-[6px] border px-1 text-[14px] font-semibold hover:brightness-95"
-                                  style={
-                                    notesBulletMode
-                                      ? { backgroundColor: "#2F6BFF", borderColor: "#1D4ED8", color: "#FFFFFF" }
-                                      : { backgroundColor: "#FFFFFF", borderColor: "#D8DEE8", color: "#243B58" }
-                                  }
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    if (notesBulletMode) {
-                                      setNotesBulletMode(false);
-                                    } else {
-                                      insertNotesBullet();
-                                      setNotesBulletMode(true);
-                                    }
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                  }}
-                                  title="Bullets"
-                                >
-                                  <img
-                                    src="/bulletpoint.png"
-                                    alt="Bullets"
-                                    className="block object-contain"
-                                    style={{
-                                      width: 14,
-                                      height: 14,
-                                      filter: "brightness(0) saturate(100%)",
-                                    }}
-                                    onError={(e) => {
-                                      e.currentTarget.src = "/file.svg";
-                                    }}
-                                  />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] border px-1 hover:brightness-95"
-                                  style={{ backgroundColor: "#FFFFFF", borderColor: "#D8DEE8" }}
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    toggleNotesParagraphMode();
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                  }}
-                                  title="Paragraph"
-                                >
-                                  <img
-                                    src="/paragraph.png"
-                                    alt="Paragraph mode"
-                                    className="block object-contain"
-                                    style={{
-                                      width: 14,
-                                      height: 14,
-                                      filter: notesParagraphMode ? "brightness(0) invert(1)" : "none",
-                                    }}
-                                    onError={(e) => {
-                                      e.currentTarget.src = "/file.svg";
-                                    }}
-                                  />
-                                </button>
-                              </div>
-                            ) : null}
+                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                        <CardHeader className="flex h-[50px] flex-row items-center justify-between overflow-hidden border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
+                          <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Notes</CardTitle>
+                          <div className="flex items-center justify-end gap-2">
+                            <div
+                              ref={setNotesToolbarHost}
+                              className={`${isEditingNotes && generalAccess.edit ? "shrink-0 overflow-hidden" : "hidden"}`}
+                            />
                             <button
                               type="button"
                               disabled={!generalAccess.edit || isSavingGeneralDetails}
                               onClick={() => {
                                 if (isEditingNotes) {
                                   void commitNotesDetails();
+                                } else {
+                                  const nextNotesValue = notesToDisplayHtml(project?.notes || "");
+                                  notesEditorDraftRef.current = nextNotesValue;
+                                  setNotesEditorInitialValue(nextNotesValue);
+                                  setGeneralDetailsDraft((prev) => ({
+                                    ...prev,
+                                    notes: nextNotesValue,
+                                  }));
                                 }
                                 setIsEditingNotes((prev) => !prev);
                               }}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
+                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
                               style={
                                 isEditingNotes
                                   ? { backgroundColor: "#16A34A", borderColor: "#166534" }
@@ -19952,7 +19747,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               title={isEditingNotes ? "Save changes" : "Edit notes"}
                             >
                               <img
-                                src={isEditingNotes ? "/tick.png" : "/Edit.png"}
+                                src={isEditingNotes ? "/tick.png" : "/edit.png"}
                                 alt={isEditingNotes ? "Save" : "Edit"}
                                 className="block object-contain"
                                 style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
@@ -19963,95 +19758,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </button>
                           </div>
                         </CardHeader>
-                        <CardContent className="min-h-[155px] pt-3 text-[13px] text-[#475467]">
-                          <div className="relative min-h-[130px]">
+                        <CardContent className="min-h-[155px] pt-3 text-[13px]" style={{ color: projectPalette.textSoft }}>
+                          {isEditingNotes && generalAccess.edit ? (
+                            <QuoteDocumentEditor
+                              key="editing-notes"
+                              mode="embedded"
+                              toolbarPlacement="inline"
+                              toolbarHost={notesToolbarHost}
+                              embeddedChrome="flat"
+                              embeddedMinHeight={53}
+                              embeddedEditableMinHeight={23}
+                              value={notesEditorInitialValue}
+                              readOnly={isSavingGeneralDetails || !generalAccess.edit}
+                              autoFocus
+                              onChange={(nextValue) => {
+                                notesEditorDraftRef.current = nextValue;
+                              }}
+                            />
+                          ) : (
                             <div
-                              className={`notes-rich leading-[20px] ${isEditingNotes && generalAccess.edit ? "opacity-0" : ""}`}
+                              className="notes-rich min-h-[130px] leading-[20px]"
                               dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project.notes || "") }}
                             />
-                            {isEditingNotes && generalAccess.edit ? (
-                              <div
-                                ref={notesEditorRef}
-                                contentEditable
-                                suppressContentEditableWarning
-                                onKeyDown={(e) => {
-                                  if (e.key !== "Enter") {
-                                    notesLastEnterAtRef.current = 0;
-                                    if (notesParagraphMode) {
-                                      applyParagraphClassToCurrentLine();
-                                    }
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                    return;
-                                  }
-                                  if (notesBulletMode) {
-                                    if (isCurrentBulletLineEmpty()) {
-                                      e.preventDefault();
-                                      setNotesBulletMode(false);
-                                      notesLastEnterAtRef.current = 0;
-                                      removeBulletPrefixFromCurrentLine();
-                                      window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                      return;
-                                    }
-                                    e.preventDefault();
-                                    insertNextBulletLine();
-                                    notesLastEnterAtRef.current = Date.now();
-                                    const editor = notesEditorRef.current;
-                                    if (editor) {
-                                      setGeneralDetailsDraft((prev) => ({ ...prev, notes: editor.innerHTML }));
-                                    }
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                    return;
-                                  }
-                                  if (!notesParagraphMode) {
-                                    notesLastEnterAtRef.current = Date.now();
-                                    return;
-                                  }
-                                  if (isCurrentParagraphLineEmpty()) {
-                                    e.preventDefault();
-                                    setNotesParagraphMode(false);
-                                    notesLastEnterAtRef.current = 0;
-                                    exitParagraphModeOnCurrentLine();
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                    return;
-                                  }
-                                  const now = Date.now();
-                                  if (now - notesLastEnterAtRef.current <= 800) {
-                                    e.preventDefault();
-                                    setNotesParagraphMode(false);
-                                    notesLastEnterAtRef.current = 0;
-                                    exitParagraphModeOnCurrentLine();
-                                    window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                    return;
-                                  }
-                                  e.preventDefault();
-                                  try {
-                                    document.execCommand("insertHTML", false, "<div class=\"notes-paragraph-line\"><br></div>");
-                                  } catch {
-                                    // no-op
-                                  }
-                                  notesLastEnterAtRef.current = now;
-                                }}
-                                onInput={(e) => {
-                                  if (notesParagraphMode) {
-                                    applyParagraphClassToCurrentLine();
-                                  }
-                                  const nextValue = (e.currentTarget as HTMLDivElement).innerHTML;
-                                  setGeneralDetailsDraft((prev) => ({ ...prev, notes: nextValue }));
-                                  window.setTimeout(() => refreshNotesToolbarState(), 0);
-                                }}
-                                className="notes-rich absolute inset-0 h-full w-full overflow-auto rounded-[8px] border border-[#C9D5E5] bg-white px-2 py-2 text-[12px] text-[#2F3F56] focus:outline-none"
-                              />
-                            ) : null}
-                          </div>
+                          )}
                         </CardContent>
                       </Card>
                     </div>
                   </div>
 
                   <div className="space-y-4">
-                    <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] px-4 py-2">
-                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Images</p>
+                    <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Images</p>
                     <div className="ml-auto flex items-center gap-2">
                       <input
                         ref={projectImagesInputRef}
@@ -20075,7 +19813,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               style={{ width: `${projectImageUploadProgress}%` }}
                             />
                           </div>
-                          <span className="w-[40px] text-right text-[11px] font-bold text-[#12345B]">
+                          <span className="w-[40px] text-right text-[11px] font-bold" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
                             {projectImageUploadProgress}%
                           </span>
                         </div>
@@ -20145,9 +19883,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`${url}_${idx}`}
                                 type="button"
                                 onClick={() => setSelectedProjectImageIndex(idx)}
-                                className={`box-border flex w-full items-center justify-center overflow-hidden rounded-[8px] border bg-[#F8FAFC] transition ${
+                                className={`box-border flex w-full items-center justify-center overflow-hidden rounded-[8px] border transition ${
                                   selected ? "border-[#2F6BFF]" : "border-[#D8DEE8] hover:border-[#94A3B8]"
                                 }`}
+                                style={{ backgroundColor: projectPalette.panelMuted }}
                                 title={`Image ${idx + 1}`}
                               >
                                 <img
@@ -20235,17 +19974,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                       </div>
                     ) : (
-                      <div className="flex min-h-[240px] items-center justify-center text-[13px] text-[#98A2B3]">
+                      <div className="flex min-h-[240px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
                         No images uploaded.
                       </div>
                     )}
                   </CardContent>
                 </Card>
-<Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] px-4 py-2">
-                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Files</p>
+<Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Files</p>
                     <div className="ml-auto flex items-center gap-2">
-                      <p className="mr-1 text-[12px] font-bold text-[#475467]">{formatProjectFileTotal(projectFilesTotalBytes)}</p>
+                      <p className="mr-1 text-[12px] font-bold" style={{ color: projectPalette.textSoft }}>{formatProjectFileTotal(projectFilesTotalBytes)}</p>
                       <input
                         ref={projectFilesInputRef}
                         type="file"
@@ -20268,7 +20007,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               style={{ width: `${projectFileUploadProgress}%` }}
                             />
                           </div>
-                          <span className="w-[40px] text-right text-[11px] font-bold text-[#12345B]">{projectFileUploadProgress}%</span>
+                          <span className="w-[40px] text-right text-[11px] font-bold" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{projectFileUploadProgress}%</span>
                         </div>
                       )}
                       {projectFilesTotalBytes < PROJECT_FILE_TOTAL_LIMIT_BYTES && (
@@ -20313,7 +20052,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                   <CardContent className="min-h-[280px] px-0 pb-0 pt-0">
                     {projectFiles.length > 0 ? (
-                      <div className="border-b border-[#D8DEE8]">
+                      <div className="border-b" style={{ borderBottomColor: projectPalette.border }}>
                         {projectFiles.map((file, idx) => {
                           const selected = idx === selectedProjectFileIndex;
                           const checked = selectedProjectFileIds.includes(file.id);
@@ -20322,8 +20061,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <div
                               key={`${file.id}_${idx}`}
                               className={`flex w-full items-center justify-between px-[10px] py-2 text-[12px] ${
-                                idx < projectFiles.length - 1 ? "border-b border-[#D8DEE8]" : ""
+                                idx < projectFiles.length - 1 ? "border-b" : ""
                               } ${selected ? "bg-[#EEF3FF]" : "bg-transparent"}`}
+                              style={{
+                                borderBottomColor: idx < projectFiles.length - 1 ? projectPalette.border : undefined,
+                                backgroundColor: selected ? (isDarkMode ? "#1f2a44" : "#EEF3FF") : "transparent",
+                              }}
                             >
                               <div className="flex min-w-0 flex-1 items-center gap-2">
                                 <input
@@ -20344,14 +20087,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <button
                                   type="button"
                                   onClick={() => setSelectedProjectFileIndex(idx)}
-                                  className="min-w-0 flex-1 truncate text-left font-semibold text-[#1F2937]"
+                                  className="min-w-0 flex-1 truncate text-left font-semibold"
+                                  style={{ color: projectPalette.text }}
                                   title={file.name}
                                 >
                                   {file.name}
                                 </button>
                               </div>
                               <div className="ml-3 flex items-center gap-3">
-                                <p className="text-[11px] font-semibold text-[#64748B]">{formatBytes(file.size)}</p>
+                                <p className="text-[11px] font-semibold" style={{ color: projectPalette.textMuted }}>{formatBytes(file.size)}</p>
                                 {link ? (
                                   <button
                                     type="button"
@@ -20399,8 +20143,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]">
-              <aside className="h-full overflow-hidden border-b border-[#DCE3EC] px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0">
+            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectPalette.pageBg }}>
+              <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const },
@@ -20419,9 +20163,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         if (item.key === salesNav) return;
                         void leaveQuoteWindow(item.key, false);
                       }}
-                      className={`inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal ${
-                        active ? "bg-[#EEF2F7] text-[#12345B]" : "text-[#243B58] hover:bg-[#EEF2F7]"
-                      }`}
+                      className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                      style={{
+                        backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : "transparent",
+                        color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
+                      }}
                     >
                       <span className="pl-4">
                         <Icon size={13} />
@@ -20429,7 +20175,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {item.label}
                     </button>
                     {idx < arr.length - 1 && (
-                      <div className="my-0.5 h-px w-full bg-[#DCE3EC] sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" />
+                      <div className="my-0.5 h-px w-full sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" style={{ backgroundColor: projectPalette.border }} />
                     )}
                     </div>
                   );
@@ -20445,15 +20191,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 }
               >
                 {salesReadOnly && (
-                  <div className="rounded-[10px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-2 text-[12px] font-semibold text-[#334155]">
+                  <div className="rounded-[10px] border px-3 py-2 text-[12px] font-semibold" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
                     Sales is in read-only mode for your account.
                   </div>
                 )}
                 {salesNav === "initial" ? (
                   <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
-                    <aside className="border-r border-[#DCE3EC]">
+                    <aside className="border-r" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                       <div className="flex h-full flex-col p-2">
-                        <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
+                        <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: projectPalette.text }}>Rooms</p>
                         <div className="flex flex-1 flex-col">
                         <div className="space-y-1">
                           {initialCutlistAddedRoomTabs.map((roomTab) => {
@@ -20463,15 +20209,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`${roomTab.label}_${roomTab.filter}`}
                                 type="button"
                                 onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
-                                className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                                  active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
-                                }`}
+                                className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold"
+                                style={{
+                                  backgroundColor: active ? (isDarkMode ? "#253246" : "#E9EFF7") : "transparent",
+                                  color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : projectPalette.textSoft,
+                                }}
                               >
                                 {roomTab.label}
                               </button>
                             );
                           })}
-                          <div className="my-2 h-px bg-[#DCE3EC]" />
+                          <div className="my-2 h-px" style={{ backgroundColor: projectPalette.border }} />
                           {initialCutlistRoomTabs
                             .filter((tab) => tab.filter === "Project Cutlist")
                             .map((roomTab) => {
@@ -20481,9 +20229,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   key={`${roomTab.label}_${roomTab.filter}`}
                                   type="button"
                                   onClick={() => setInitialCutlistRoomFilter(roomTab.filter)}
-                                  className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                                    active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
-                                  }`}
+                                  className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold"
+                                  style={{
+                                    backgroundColor: active ? (isDarkMode ? "#253246" : "#E9EFF7") : "transparent",
+                                    color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : projectPalette.textSoft,
+                                  }}
                                 >
                                   {roomTab.label}
                                 </button>
@@ -20544,7 +20294,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {initialCutlistRoomFilter !== "Project Cutlist" && (
                         <section className="relative z-10 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
                           <div className="flex h-[50px] items-center px-1">
-                            <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                            <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
                           </div>
                           <div className="space-y-3 px-0 pb-0">
                             <div className="flex flex-wrap items-center gap-2 rounded-[8px] px-1">
@@ -20568,7 +20318,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 );
                               })}
                             </div>
-                            <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate }}>
+                            <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: projectPalette.textMuted }}>
                               <p></p>
                               {initialCutlistEntryColumnDefs.map((col) => (
                                 <p
@@ -20631,7 +20381,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                       <section className="w-full overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
                           <div className="flex items-center justify-between px-1 py-2">
-                            <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
+                            <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist List</p>
                             <div className="flex items-center gap-2">
                               {initialPendingDeleteRowsSet.size > 0 && (
                                 <button
@@ -20649,8 +20399,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   {initialDeleteAllArmed ? `Confirm (${initialPendingDeleteRowsSet.size})` : `Delete (${initialPendingDeleteRowsSet.size})`}
                                 </button>
                               )}
-                              <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[240px] rounded-[8px] border border-[#D8DEE8] bg-[#F3F5F8] px-2 text-[12px] text-[#243B58]" />
-                              <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-[8px] border border-[#D8DEE8] bg-[#F3F5F8] px-2 text-[12px] text-[#243B58]">
+                              <input value={initialCutlistSearch} onChange={(e) => setInitialCutlistSearch(e.target.value)} placeholder="Search part name or board" className="h-8 w-[240px] rounded-[8px] border px-2 text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }} />
+                              <select value={initialCutlistPartTypeFilter} onChange={(e) => setInitialCutlistPartTypeFilter(e.target.value)} className="h-8 rounded-[8px] border px-2 text-[12px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}>
                                 <option>All Part Types</option>
                                 {initialMeasurePartTypeOptions.map((v) => (
                                   <option key={`im_filter_${v}`} value={v}>{v}</option>
@@ -20658,10 +20408,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </select>
                           </div>
                         </div>
-                        <div className="rounded-[10px] border border-[#D8DEE8] bg-white">
+                        <div className="rounded-[10px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
                           <table className="w-full text-[12px]">
                             <thead>
-                              <tr className="border-b border-[#D8DEE8] bg-[#EEF2F7]">
+                              <tr className="border-b" style={{ borderBottomColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
                                 <th className="px-2 py-2"></th>
                                 {showRoomColumnInInitialList && <th className="px-2 py-2 text-left">Room</th>}
                                 {initialCutlistListColumnDefs.map((col) => (
@@ -20745,15 +20495,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]">
-              <aside className="h-full overflow-hidden border-b border-[#DCE3EC] px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0">
+            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectPalette.pageBg }}>
+              <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
-                  { label: "Unlock Edit", icon: Lock, key: "unlock" as const },
+                  ...(canRequestProductionUnlock
+                    ? [{ label: "Unlock Edit", icon: Lock, key: "unlock" as const }]
+                    : []),
                 ].map((item, idx, arr) => {
                   const Icon = item.icon;
                   const active = item.key === "unlock" ? false : productionNav === item.key;
@@ -20774,9 +20526,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           setNestingFullscreen(false);
                           setProductionNav(item.key);
                         }}
-                        className={`inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal ${
-                          active ? "bg-[#EEF2F7] text-[#12345B]" : "text-[#243B58] hover:bg-[#EEF2F7]"
-                        }`}
+                        className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                        style={{
+                          backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : "transparent",
+                          color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
+                        }}
                       >
                         <span className="pl-4">
                           <Icon size={13} />
@@ -20784,7 +20538,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         {item.label}
                       </button>
                       {idx < arr.length - 1 && (
-                        <div className="my-0.5 h-px w-full bg-[#DCE3EC] sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" />
+                        <div className="my-0.5 h-px w-full sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" style={{ backgroundColor: projectPalette.border }} />
                       )}
                     </div>
                   );
@@ -20801,9 +20555,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               >
                 {productionNav === "cutlist" ? (
                   <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
-                    <aside className="border-r border-[#DCE3EC]">
+                    <aside className="border-r" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                       <div className="flex h-full flex-col p-2">
-                        <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
+                        <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: projectPalette.text }}>Rooms</p>
                         <div className="flex flex-1 flex-col">
                         <div className="space-y-1">
                           {cutlistAddedRoomTabs.map((roomTab) => {
@@ -20813,15 +20567,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`${roomTab.label}_${roomTab.filter}`}
                                 type="button"
                                 onClick={() => setCutlistRoomFilter(roomTab.filter)}
-                                className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                                  active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
-                                }`}
+                                className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold"
+                                style={{
+                                  backgroundColor: active ? (isDarkMode ? "#253246" : "#E9EFF7") : "transparent",
+                                  color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : projectPalette.textSoft,
+                                }}
                               >
                                 {roomTab.label}
                               </button>
                             );
                           })}
-                          <div className="my-2 h-px bg-[#DCE3EC]" />
+                          <div className="my-2 h-px" style={{ backgroundColor: projectPalette.border }} />
                           {cutlistRoomTabs
                             .filter((tab) => tab.filter === "Project Cutlist")
                             .map((roomTab) => {
@@ -20831,9 +20587,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   key={`${roomTab.label}_${roomTab.filter}`}
                                   type="button"
                                   onClick={() => setCutlistRoomFilter(roomTab.filter)}
-                                  className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                                    active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
-                                  }`}
+                                  className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold"
+                                  style={{
+                                    backgroundColor: active ? (isDarkMode ? "#253246" : "#E9EFF7") : "transparent",
+                                    color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : projectPalette.textSoft,
+                                  }}
                                 >
                                   {roomTab.label}
                                 </button>
@@ -20894,7 +20652,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       {cutlistRoomFilter !== "Project Cutlist" && (
                       <section className="relative z-10 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
                         <div className="flex h-[50px] items-center px-1">
-                          <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                          <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
                         </div>
                         <div className="space-y-3 px-0 pb-0">
                           <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
@@ -20919,7 +20677,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             })}
                           </div>
 
-                          <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: cutlistEntryGridTemplate }}>
+                          <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
                             <p></p>
                             {cutlistEntryColumnDefs.map((col) => (
                               <p
@@ -21646,23 +21404,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ) : productionNav === "nesting" && !isNestingFullscreen ? (
                   <div className="grid h-full min-h-[calc(100dvh-235px)] gap-3 xl:grid-cols-[1fr_340px]">
                     <section className="flex min-h-0 flex-col gap-3">
-                      <div className="flex h-[52px] items-center justify-between rounded-[14px] border border-[#D7DEE8] bg-white px-4">
+                      <div className="flex h-[52px] items-center justify-between rounded-[14px] border px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
                         <div className="inline-flex items-center gap-2">
-                          <GitBranch size={16} className="text-[#12345B]" />
-                          <p className="text-[13px] font-medium uppercase tracking-[1px] text-[#12345B]">Nesting</p>
-                          <span className="text-[12px] font-bold text-[#6B7280]">|</span>
-                          <p className="text-[13px] font-bold text-[#334155]">{project?.name || "Project"}</p>
+                          <GitBranch size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
+                          <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Nesting</p>
+                          <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
+                          <p className="text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
                         </div>
-                        <div className="inline-flex items-center gap-4 text-[12px] font-semibold text-[#475569]">
+                        <div className="inline-flex items-center gap-4 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
                           <span>Sheets: {nestingSummary.sheets}</span>
                           <span>Pieces: {nestingSummary.totalPieces}</span>
                           {nestingSummary.hiddenPieces > 0 && <span>Hidden: {nestingSummary.hiddenPieces}</span>}
                         </div>
                       </div>
 
-                      <section className="min-h-0 overflow-auto rounded-[14px] border border-[#D7DEE8] bg-white">
-                        <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-4">
-                          <div className="inline-flex items-center gap-3 text-[12px] font-semibold text-[#475569]">
+                      <section className="min-h-0 overflow-auto rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                        <div className="flex h-[46px] items-center justify-between border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                          <div className="inline-flex items-center gap-3 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
                             <span>Sheet H: {formatMm(nestingSettings.sheetHeight)} mm</span>
                             <span>Sheet W: {formatMm(nestingSettings.sheetWidth)} mm</span>
                             <span>Kerf: {formatMm(nestingSettings.kerf)} mm</span>
@@ -21690,10 +21448,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const collapsed = Boolean(nestingCollapsedGroups[group.boardKey]);
                             const qtySum = group.rows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
                             return (
-                              <div key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8]">
-                                <div className="flex h-[40px] items-center justify-between bg-[#F8FAFC] pl-3">
+                            <div key={group.boardKey} className="overflow-hidden rounded-[12px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
+                                <div className="flex h-[40px] items-center justify-between pl-3" style={{ backgroundColor: projectPalette.panelMuted }}>
                                   <div className="inline-flex items-center gap-2">
-                                    <p className="text-[13px] font-medium text-[#12345B]">{group.boardLabel}</p>
+                                    <p className="text-[13px] font-medium" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{group.boardLabel}</p>
                                     <span className="rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
                                       {formatPartCount(qtySum)}
                                     </span>
@@ -21701,7 +21459,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <button
                                     type="button"
                                     onClick={() => toggleNestingGroup(group.boardKey)}
-                                    className="inline-flex h-[40px] w-[46px] items-center justify-center border-l border-[#DCE3EC] text-[#12345B] hover:bg-[#EEF2F7]"
+                                    className="inline-flex h-[40px] w-[46px] items-center justify-center border-l hover:bg-[#EEF2F7]"
+                                    style={{ borderColor: projectPalette.border, color: isDarkMode ? "#f1f1f1" : "#12345B" }}
                                   >
                                     {collapsed ? <Plus size={16} strokeWidth={2.5} /> : <Minus size={16} strokeWidth={2.5} />}
                                   </button>
@@ -21755,9 +21514,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </section>
                     </section>
 
-                    <section className="min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white">
-                      <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
-                        <p className="text-[13px] font-medium text-[#111827]">Edit Visibility</p>
+                    <section className="min-h-0 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                      <div className="flex h-[46px] items-center justify-between border-b px-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                        <p className="text-[13px] font-medium" style={{ color: projectPalette.text }}>Edit Visibility</p>
                         <button
                           type="button"
                           disabled={productionReadOnly}
@@ -21772,7 +21531,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           value={nestingSearch}
                           onChange={(e) => setNestingSearch(e.target.value)}
                           placeholder="Search pieces..."
-                          className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          className="h-8 w-full rounded-[8px] border px-2 text-[12px]"
+                          style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                         />
                       </div>
                       <div className="h-[calc(100%-94px)] overflow-auto px-3 pb-3">
@@ -21876,10 +21636,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                 ) : (
                   <>
-                <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
-                  <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
-                      <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Existing</p>
+                  <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
+                  <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Existing</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
                       {[
@@ -21889,26 +21649,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       ].map((item) => (
                         <div key={item.key} className="grid grid-cols-[1fr_78px_26px] items-center gap-2">
                           <p className="font-semibold text-[#334155]">{item.label}</p>
-                          <select
-                            disabled={productionReadOnly}
-                            value={productionForm.existing[item.key]}
-                            onChange={(e) => void onChangeExisting(item.key, e.target.value)}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#344054]"
-                          >
+                            <select
+                              disabled={productionReadOnly}
+                              value={productionForm.existing[item.key]}
+                              onChange={(e) => void onChangeExisting(item.key, e.target.value)}
+                              className="h-7 rounded-[8px] border px-2 text-[12px]"
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                            >
                             <option value=""></option>
                             {boardThicknessOptions.map((opt) => (
                               <option key={opt} value={opt}>{opt}</option>
                             ))}
                           </select>
-                          <p className="font-semibold text-[#8A97A8]">mm</p>
+                            <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
                         </div>
                       ))}
                     </div>
                   </section>
 
-                  <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
-                      <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cabinetry</p>
+                  <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cabinetry</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
                       {[
@@ -21919,33 +21680,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       ].map((item) => (
                         <div key={item.key} className="grid grid-cols-[1fr_58px_26px] items-center gap-2">
                           <p className="font-semibold text-[#334155]">{item.label}</p>
-                          <input
-                            disabled={productionReadOnly}
-                            value={productionForm.cabinetry[item.key]}
-                            onChange={(e) => onCabinetryDraftChange(item.key, e.target.value)}
-                            onBlur={() => void onCabinetryBlurSave()}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                          />
-                          <p className="font-semibold text-[#8A97A8]">mm</p>
+                            <input
+                              disabled={productionReadOnly}
+                              value={productionForm.cabinetry[item.key]}
+                              onChange={(e) => onCabinetryDraftChange(item.key, e.target.value)}
+                              onBlur={() => void onCabinetryBlurSave()}
+                              className="h-7 rounded-[8px] border px-2 text-[12px]"
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                            />
+                            <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
                         </div>
                       ))}
                       <div className="grid grid-cols-[1fr_58px_26px_58px] items-center gap-2">
-                        <p className="font-semibold text-[#334155]">Hob Centre</p>
-                        <input
-                          disabled={productionReadOnly}
-                          value={productionForm.cabinetry.hobCentre}
-                          onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
-                          onBlur={() => void onCabinetryBlurSave()}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                        />
-                        <p className="font-semibold text-[#8A97A8]">mm</p>
-                        <select
-                          disabled={productionReadOnly}
-                          value={productionForm.cabinetry.hobSide}
-                          onChange={(e) => onCabinetryDraftChange("hobSide", e.target.value)}
-                          onBlur={() => void onCabinetryBlurSave()}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-1 text-[11px] text-[#344054]"
-                        >
+                          <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Hob Centre</p>
+                          <input
+                            disabled={productionReadOnly}
+                            value={productionForm.cabinetry.hobCentre}
+                            onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
+                            onBlur={() => void onCabinetryBlurSave()}
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                          />
+                          <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
+                          <select
+                            disabled={productionReadOnly}
+                            value={productionForm.cabinetry.hobSide}
+                            onChange={(e) => onCabinetryDraftChange("hobSide", e.target.value)}
+                            onBlur={() => void onCabinetryBlurSave()}
+                            className="h-7 rounded-[8px] border px-1 text-[11px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                          >
                           <option value=""></option>
                           <option value="RH">RH</option>
                           <option value="LH">LH</option>
@@ -21954,18 +21718,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   </section>
 
-                  <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                    <div className="flex h-[50px] items-center border-b border-[#DCE3EC] bg-white px-4">
-                      <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Hardware</p>
+                  <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Hardware</p>
                     </div>
                     <div className="space-y-3 p-3 text-[12px]">
                       <div className="flex items-center gap-3">
                         {hardwareRows.map((row) => (
-                          <label
-                            key={row.name}
-                            className="inline-flex items-center gap-1 font-semibold text-[#344054]"
-                            title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
-                          >
+                            <label
+                              key={row.name}
+                              className="inline-flex items-center gap-1 font-semibold"
+                              style={{ color: projectPalette.textSoft }}
+                              title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
+                            >
                             <input
                               disabled={productionReadOnly || hasDrawerRowsInUse}
                               type="checkbox"
@@ -21977,14 +21742,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         ))}
                       </div>
                       <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                        <p className="font-semibold text-[#334155]">New Drawer Type</p>
-                        <select
+                          <p className="font-semibold" style={{ color: projectPalette.textSoft }}>New Drawer Type</p>
+                          <select
                           disabled={productionReadOnly || hasDrawerRowsInUse}
                           value={productionForm.hardware.newDrawerType}
                           onChange={(e) => void onChangeDrawerType(e.target.value)}
                           title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#344054]"
-                        >
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                          >
                           <option value=""></option>
                           {drawerOptionsForCategory(productionForm.hardware.hardwareCategory).map((row) => (
                             <option key={row.name} value={row.name}>{row.name}</option>
@@ -21997,12 +21763,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </p>
                       )}
                       <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                        <p className="font-semibold text-[#334155]">Hinge Type</p>
-                        <select
-                          disabled
-                          value={productionForm.hardware.hardwareCategory}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFC] px-2 text-[12px] text-[#344054]"
-                        >
+                          <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Hinge Type</p>
+                          <select
+                            disabled
+                            value={productionForm.hardware.hardwareCategory}
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}
+                          >
                           <option value={productionForm.hardware.hardwareCategory}>{productionForm.hardware.hardwareCategory}</option>
                         </select>
                       </div>
@@ -22010,13 +21777,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
                 </div>
 
-                <section className="relative z-10 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
-                  <div className="flex h-[50px] items-center justify-between border-b border-[#DCE3EC] bg-white px-4">
-                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Board Settings</p>
-                    <button disabled={productionReadOnly} onClick={() => void onAddBoardRow()} className="text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55">+ Add Board</button>
+                <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <div className="flex h-[50px] items-center justify-between border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Board Settings</p>
+                    <button
+                      type="button"
+                      disabled={productionReadOnly}
+                      onClick={() => void onAddBoardRow()}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] text-[16px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                      title="Add board"
+                    >
+                      <img
+                        src="/plus.png"
+                        alt="Add board"
+                        className="block object-contain"
+                        style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    </button>
                   </div>
                   <div className="p-3 text-[12px]">
-                    <div className="grid grid-cols-[28px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2 text-[11px] font-bold text-[#8A97A8]">
+                    <div className="grid grid-cols-[28px_1fr_80px_80px_80px_50px_60px_110px_45px_70px] items-center gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
                       <p></p>
                       <p>Colour</p>
                       <p className="text-center">Thickness</p>
@@ -22066,7 +21849,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   setActiveBoardColourSuggestionsRowId(null);
                                 }
                               }}
-                              className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                              className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             />
                             {activeBoardColourSuggestionsRowId === row.id &&
                               (() => {
@@ -22078,7 +21862,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 const filtered = (query ? [...starts, ...contains] : boardColourSuggestions).slice(0, 20);
                                 if (!filtered.length) return null;
                                 return (
-                                  <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                                  <div
+                                    className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
+                                  >
                                     {filtered.map((colour) => (
                                       <button
                                         key={`${row.id}_${colour}`}
@@ -22089,7 +21876,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           setActiveBoardColourSuggestionsRowId(null);
                                           void onBoardFieldCommit(row.id, { colour }, true);
                                         }}
-                                        className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                                        className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
+                                        style={{ color: projectPalette.textSoft }}
                                       >
                                         {colour}
                                       </button>
@@ -22102,7 +21890,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             disabled={productionReadOnly}
                             value={row.thickness}
                             onChange={(e) => void onBoardFieldCommit(row.id, { thickness: e.target.value })}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           >
                             <option value=""></option>
                             {boardThicknessOptions.map((opt) => (
@@ -22113,7 +21902,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             disabled={productionReadOnly}
                             value={row.finish}
                             onChange={(e) => void onBoardFieldCommit(row.id, { finish: e.target.value })}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           >
                             <option value=""></option>
                             {boardFinishOptions.map((opt) => (
@@ -22125,7 +21915,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             value={row.edging}
                             onChange={(e) => onBoardFieldDraftChange(row.id, { edging: e.target.value })}
                             onBlur={(e) => void onBoardFieldCommit(row.id, { edging: e.target.value || "Matching" })}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           />
                           <input
                             disabled={productionReadOnly}
@@ -22143,7 +21934,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             disabled={productionReadOnly}
                             value={row.sheetSize}
                             onChange={(e) => void onBoardFieldCommit(row.id, { sheetSize: e.target.value })}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           >
                             <option value=""></option>
                             {sheetSizeOptions.map((opt) => {
@@ -22151,8 +21943,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               return <option key={label} value={label}>{label}</option>;
                             })}
                           </select>
-                          <p className="text-center text-[12px] font-semibold text-[#344054]">{requiredSheets}</p>
-                          <p className="text-center text-[12px] font-semibold text-[#344054]">
+                          <p className="text-center text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>{requiredSheets}</p>
+                          <p className="text-center text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
                             {requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape}
                           </p>
                               </>
@@ -22161,7 +21953,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </div>
                       ))}
                     </div>
-                    <button disabled={productionReadOnly} onClick={() => void onAddBoardRow()} className="mt-3 text-[12px] font-bold text-[#7E9EBB] disabled:opacity-55">+ Add Board</button>
+                    <button
+                      type="button"
+                      disabled={productionReadOnly}
+                      onClick={() => void onAddBoardRow()}
+                      className="mt-3 inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#A9DDBF] bg-[#EAF8F0] text-[16px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                      title="Add board"
+                    >
+                      <img
+                        src="/plus.png"
+                        alt="Add board"
+                        className="block object-contain"
+                        style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    </button>
                   </div>
                 </section>
                   </>
@@ -22172,18 +21980,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
           {resolvedTab === "settings" && settingsAccess.view && (
             <div className="grid gap-4 xl:grid-cols-2">
-              <Card>
-                <CardHeader className="flex min-h-[50px] flex-row items-center border-b border-[#D7DEE8] px-4 py-0">
-                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#0F2A4A]">Project Assignment</CardTitle>
+              <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
+                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Project Assignment</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 pt-3 text-[12px]">
                   <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
-                    <p className="font-semibold text-[#334155]">Project Creator</p>
+                    <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Project Creator</p>
                     <select
                       value={String(project.createdByUid ?? "").trim()}
                       onChange={(e) => void onChangeProjectCreatorUser(e.target.value)}
                       disabled={!canChangeProjectCreator || isSavingGeneralDetails}
-                      className="h-9 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155] outline-none disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                      className="h-9 min-w-0 rounded-[8px] border px-3 text-[12px] outline-none disabled:opacity-60"
+                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                     >
                       {companyMembers.map((member) => (
                         <option key={member.uid} value={member.uid}>
@@ -22193,12 +22002,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </select>
                   </div>
                   <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
-                    <p className="font-semibold text-[#334155]">Assigned User</p>
+                    <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Assigned User</p>
                     <select
                       value={effectiveAssignedSelectionUid}
                       onChange={(e) => void onChangeAssignedProjectUser(e.target.value)}
                       disabled={!settingsAccess.edit || isSavingGeneralDetails}
-                      className="h-9 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155] outline-none disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
+                      className="h-9 min-w-0 rounded-[8px] border px-3 text-[12px] outline-none disabled:opacity-60"
+                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                     >
                       {companyMembers.map((member) => (
                         <option key={member.uid} value={member.uid}>
@@ -22210,12 +22020,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader className="flex min-h-[50px] flex-row items-center border-b border-[#D7DEE8] px-4 py-0">
-                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#0F2A4A]">Project Permissions</CardTitle>
+              <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
+                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Project Permissions</CardTitle>
                 </CardHeader>
                 <CardContent className="px-0 pt-3 text-[12px]">
-                  <div className="grid gap-0 xl:grid-cols-3 xl:divide-x xl:divide-[#D7DEE8]">
+                  <div className="grid gap-0 xl:grid-cols-3">
                     {projectPermissionColumns.map((column) => {
                       const isDropActive = projectPermissionDropColumn === column.key;
                       return (
@@ -22233,11 +22043,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             event.preventDefault();
                             void onDropProjectPermissionUser(column.key as "no_access" | "view" | "edit");
                           }}
-                          className={`flex h-[468px] flex-col px-4 py-3 transition ${isDropActive ? "bg-[#EEF4FF]" : "bg-transparent"}`}
+                          className="flex h-[468px] flex-col px-4 py-3 transition"
+                          style={{
+                            backgroundColor: isDropActive ? (isDarkMode ? "#1f2d40" : "#EEF4FF") : "transparent",
+                            borderRight:
+                              column.key !== "edit"
+                                ? `1px solid ${projectPalette.border}`
+                                : undefined,
+                          }}
                         >
                           <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[#12345B]">{column.label}</p>
-                            <span className="rounded-full border border-[#D6DEE9] bg-white px-2 py-[2px] text-[11px] font-bold text-[#667085]">
+                            <p className="text-[12px] font-bold uppercase tracking-[0.8px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{column.label}</p>
+                            <span className="rounded-full border px-2 py-[2px] text-[11px] font-bold" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.textMuted }}>
                               {column.rows.length}
                             </span>
                           </div>
@@ -22251,7 +22068,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 }))
                               }
                               placeholder="Search staff"
-                              className="mb-3 h-9 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155] outline-none"
+                              className="mb-3 h-9 w-full rounded-[10px] border px-3 text-[12px] outline-none"
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             />
                           ) : null}
                           <div
@@ -22281,11 +22099,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     setDraggingProjectPermissionUid("");
                                     setProjectPermissionDropColumn("");
                                   }}
-                                  className={`rounded-[12px] border bg-white px-3 py-2 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition ${
+                                  className={`rounded-[12px] border px-3 py-2 shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition ${
                                     draggable ? "cursor-grab active:cursor-grabbing" : ""
-                                  } ${isDragging ? "border-[#8FB4FF] opacity-60" : "border-[#DCE3EC]"} ${
-                                    row.isLocked ? "bg-[#F8FAFC]" : ""
-                                  }`}
+                                  } ${isDragging ? "opacity-60" : ""}`}
+                                  style={{
+                                    borderColor: isDragging ? "#8FB4FF" : projectPalette.border,
+                                    backgroundColor: row.isLocked ? projectPalette.panelMuted : projectPalette.panelBg,
+                                  }}
                                 >
                                   <div className="flex items-center justify-between gap-3">
                                     <div className="min-w-0 flex items-center gap-2">
@@ -22314,16 +22134,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         );
                                       })()}
                                       <div className="min-w-0 flex items-center gap-2">
-                                        <p className="min-w-0 truncate font-semibold text-[#334155]">{row.displayName}</p>
+                                        <p className="min-w-0 truncate font-semibold" style={{ color: projectPalette.textSoft }}>{row.displayName}</p>
                                         {productionUnlockUiReady && unlockRemaining > 0 && (
-                                          <span className="shrink-0 rounded-full border border-[#C6D3E1] bg-[#F8FAFC] px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px] text-[#475467]">
-                                            {formatUnlockTimer(unlockRemaining)}
-                                          </span>
+                                          <>
+                                            <span className="shrink-0 rounded-full border px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}>
+                                              {formatUnlockTimer(unlockRemaining)}
+                                            </span>
+                                            {canManageProductionTempUnlocks && (
+                                              <button
+                                                type="button"
+                                                onClick={() => void onRemoveProductionTempUnlock(row.uid)}
+                                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[#F1B8B8] bg-[#FCEAEA] text-[#B42318] hover:bg-[#F9DCDC]"
+                                                title="Remove temporary production edit access"
+                                                aria-label={`Remove temporary production edit access for ${row.displayName}`}
+                                              >
+                                                <X size={11} strokeWidth={2.6} />
+                                              </button>
+                                            )}
+                                          </>
                                         )}
                                       </div>
                                     </div>
                                     {row.isLocked ? (
-                                      <span className="shrink-0 rounded-full border border-[#D8DEE8] bg-[#EEF2F6] px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px] text-[#667085]">
+                                      <span className="shrink-0 rounded-full border px-2 py-[2px] text-[10px] font-bold uppercase tracking-[0.6px]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textMuted }}>
                                         Locked
                                       </span>
                                     ) : null}
@@ -22340,7 +22173,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </div>
                             ) : null}
                             {column.rows.length === 0 ? (
-                              <div className="rounded-[12px] border border-dashed border-[#D7DEE8] px-3 py-6 text-center text-[11px] font-medium text-[#8A97A8]">
+                              <div className="rounded-[12px] border border-dashed px-3 py-6 text-center text-[11px] font-medium" style={{ borderColor: projectPalette.border, color: projectPalette.textMuted }}>
                                 No staff in this column
                               </div>
                             ) : null}
@@ -22353,17 +22186,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader className="flex min-h-[50px] flex-row items-center border-b border-[#D7DEE8] px-4 py-0">
-                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px] text-[#0F2A4A]">Changelog</CardTitle>
+              <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
+                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Changelog</CardTitle>
                 </CardHeader>
                 <CardContent className="h-[560px] space-y-2 overflow-auto pt-2 text-[12px]">
-                  {changes.length === 0 && <p className="text-[#6B7280]">No changes recorded.</p>}
+                  {changes.length === 0 && <p style={{ color: projectPalette.textMuted }}>No changes recorded.</p>}
                   {changes.map((change) => (
-                    <div key={change.id} className="rounded-[10px] border border-[#DEE4EC] bg-[#F5F6F8] p-3">
-                      <p className="font-bold text-[#1E3A62]">{change.action}</p>
-                      <p className="text-[#2F4563]">{change.actor}</p>
-                      <p className="text-[#5B6472]">{shortDate(change.at)}</p>
+                    <div key={change.id} className="rounded-[10px] border p-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                      <p className="font-bold" style={{ color: projectPalette.text }}>{change.action}</p>
+                      <p style={{ color: projectPalette.textSoft }}>{change.actor}</p>
+                      <p style={{ color: projectPalette.textMuted }}>{shortDate(change.at)}</p>
                     </div>
                   ))}
                 </CardContent>

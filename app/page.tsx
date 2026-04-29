@@ -251,6 +251,33 @@ export default function HomePage() {
     };
   }, [isLoading, router, user?.uid]);
 
+  const shouldHoldLoginScreen =
+    hasFirebaseConfig &&
+    (isLoading || Boolean(user?.uid));
+
+  if (shouldHoldLoginScreen) {
+    return (
+      <div
+        className="flex min-h-screen items-center justify-center"
+        style={{
+          backgroundImage: "url('/bg.png')",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+        }}
+      >
+        <div className="rounded-[18px] border border-[rgba(255,255,255,0.45)] bg-[rgba(255,255,255,0.58)] px-8 py-6 text-center shadow-[0_18px_50px_rgba(15,23,42,0.10)] backdrop-blur-[10px]">
+          <p className="text-[12px] font-bold uppercase tracking-[1.2px] text-[#6B7280]">
+            CutSmart Web
+          </p>
+          <p className="mt-2 text-[18px] font-semibold text-[#0F172A]">
+            {user?.uid ? "Opening your workspace..." : "Checking saved sign-in..."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="relative flex min-h-screen flex-row overflow-hidden"
@@ -357,7 +384,7 @@ export default function HomePage() {
                   }}
                     className="h-4 w-4 rounded border border-[#94A3B8]"
                   />
-                  <span>Remember me on this device</span>
+                  <span>Stay logged in on this device</span>
                 </label>
                 {error && <p className="text-[12px] font-semibold text-[#D32F2F]">{error}</p>}
                 <div className="grid grid-cols-1 gap-2 pt-1">

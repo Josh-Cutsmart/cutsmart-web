@@ -1,15 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { UserCog } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { fetchPrimaryMembership } from "@/lib/membership";
+import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
+import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
 
 export default function UserSettingsPage() {
+  const router = useRouter();
   const { user, setUserColorLocal, setUserProfileLocal } = useAuth();
   const [companyColor, setCompanyColor] = useState("#2F6BFF");
   const [displayName, setDisplayName] = useState(user?.displayName || "");
@@ -19,6 +24,7 @@ export default function UserSettingsPage() {
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
   const [themeSource, setThemeSource] = useState("unknown");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const autoSaveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef(false);
   const isSavingRef = useRef(false);
@@ -57,6 +63,10 @@ export default function UserSettingsPage() {
       mobile: String(user?.mobile || "").trim(),
     });
   }, [user?.displayName, user?.mobile, user?.userColor]);
+
+  useEffect(() => {
+    setThemeMode(readThemeMode());
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -144,6 +154,11 @@ export default function UserSettingsPage() {
       setUserColorLocal(normalized.userColor);
       setUserProfileLocal(normalized);
       lastSavedSnapshotRef.current = nextSnapshot;
+      dispatchUserColorUpdated({
+        uid,
+        color: normalized.userColor,
+        companyId: companyId || undefined,
+      });
     }
     setSaveMsg(result.ok ? "Saved" : `Save failed${result.error ? ` (${result.error})` : ""}`);
     setIsSaving(false);
@@ -197,38 +212,85 @@ export default function UserSettingsPage() {
     queueAutoSave();
   };
 
+  const onSelectThemeMode = (mode: ThemeMode) => {
+    setThemeMode(mode);
+    saveThemeMode(mode);
+  };
+  const isDarkMode = themeMode === "dark";
+  const pagePalette = isDarkMode
+    ? {
+        pageBg: "#0f0f0f",
+        panelBg: "#212121",
+        panelMuted: "#272727",
+        border: "#3f3f46",
+        text: "#f1f1f1",
+        textMuted: "#aaaaaa",
+        inputBg: "#303134",
+      }
+    : {
+        pageBg: "#ffffff",
+        panelBg: "#ffffff",
+        panelMuted: "#F8FAFC",
+        border: "#D8DEE8",
+        text: "#0F172A",
+        textMuted: "#667085",
+        inputBg: "#ffffff",
+      };
+
   return (
     <ProtectedRoute>
       <AppShell>
-        <section className="rounded-[14px] border border-[#D7DEE8] bg-white p-4">
-          <p className="text-[15px] font-extrabold uppercase tracking-[1px] text-[#12345B]">User Settings</p>
-          <div className="mt-3 grid gap-2 text-[13px] text-[#334155]">
+        <section className="-mx-4 -mb-4 -mt-4 min-h-screen bg-white pb-4 pt-0 md:-mx-5" style={{ backgroundColor: pagePalette.pageBg, color: pagePalette.text }}>
+          <div className="flex h-[56px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] bg-white px-4 md:px-5" style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.panelBg }}>
+            <div className="inline-flex items-center gap-2">
+              <UserCog size={16} color={isDarkMode ? "#f1f1f1" : "#12345B"} strokeWidth={2.1} />
+              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+                User Settings
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isSaving}
+              onClick={async () => {
+                await saveProfile("manual");
+                router.push("/dashboard");
+              }}
+              className="inline-flex h-9 items-center rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+              style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.inputBg, color: pagePalette.text }}
+            >
+              {isSaving ? "Saving..." : "Save & Back"}
+            </button>
+          </div>
+          <div className="px-4 py-4 md:px-5">
+          <div className="grid gap-2 text-[13px] text-[#334155]" style={{ color: pagePalette.text }}>
             <label className="flex items-center gap-2">
-              <span className="font-bold">Name:</span>
+              <span className="font-bold" style={{ color: pagePalette.text }}>Name:</span>
               <input
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 onBlur={() => queueAutoSave()}
                 placeholder="Enter your name"
                 className="h-8 w-[240px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.inputBg, color: pagePalette.text }}
               />
             </label>
-            <p><span className="font-bold">Email:</span> {user?.email || "-"}</p>
-            <p><span className="font-bold">Role:</span> {user?.role || "-"}</p>
+            <p style={{ color: pagePalette.text }}><span className="font-bold">Email:</span> {user?.email || "-"}</p>
+            <p style={{ color: pagePalette.text }}><span className="font-bold">Role:</span> {user?.role || "-"}</p>
             <label className="flex items-center gap-2">
-              <span className="font-bold">Mobile Number:</span>
+              <span className="font-bold" style={{ color: pagePalette.text }}>Mobile Number:</span>
               <input
                 value={mobile}
                 onChange={(e) => setMobile(e.target.value)}
                 onBlur={() => queueAutoSave()}
                 placeholder="Enter mobile number"
                 className="h-8 w-[240px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.inputBg, color: pagePalette.text }}
               />
             </label>
           </div>
-          <div className="mt-4 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] p-3">
-            <p className="text-[12px] font-bold text-[#334155]">User Emblem Color</p>
-            <p className="mt-1 text-[11px] text-[#667085]">
+          <div className="mt-4 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] p-3" style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.panelBg }}>
+            <p className="text-[12px] font-bold text-[#334155]" style={{ color: pagePalette.text }}>User Emblem Color</p>
+            <p className="mt-1 text-[11px] text-[#667085]" style={{ color: pagePalette.textMuted }}>
               Defaults to company color unless you set your own.
             </p>
             <div className="mt-2 flex items-center gap-3">
@@ -240,6 +302,7 @@ export default function UserSettingsPage() {
                   queueAutoSave();
                 }}
                 className="h-8 w-10 cursor-pointer rounded-[8px] border border-[#D8DEE8] bg-white p-1"
+                style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.inputBg }}
               />
               <input
                 value={userColor}
@@ -247,25 +310,19 @@ export default function UserSettingsPage() {
                 onBlur={() => queueAutoSave()}
                 placeholder="Leave blank to use company color"
                 className="h-8 w-[260px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.inputBg, color: pagePalette.text }}
               />
               <button
                 type="button"
                 onClick={() => void applyCompanyDefault()}
                 className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-bold text-[#475467]"
+                style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.inputBg, color: pagePalette.text }}
               >
                 Use Company Default
               </button>
-              <button
-                type="button"
-                onClick={() => void saveProfile("manual")}
-                disabled={isSaving}
-                className="h-8 rounded-[8px] border border-[#BFD4F6] bg-[#EAF2FF] px-3 text-[11px] font-bold text-[#1E3A8A] disabled:opacity-55"
-              >
-                {isSaving ? "Saving..." : "Save"}
-              </button>
-              {!!saveMsg && <span className="text-[11px] font-bold text-[#475467]">{saveMsg}</span>}
+              {!!saveMsg && <span className="text-[11px] font-bold text-[#475467]" style={{ color: pagePalette.textMuted }}>{saveMsg}</span>}
             </div>
-            <div className="mt-3 inline-flex items-center gap-2 rounded-[10px] border border-[#E4E7EC] bg-white px-2 py-2">
+            <div className="mt-3 inline-flex items-center gap-2 rounded-[10px] border border-[#E4E7EC] bg-white px-2 py-2" style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.panelMuted }}>
               <div
                 className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
                 style={{ backgroundColor: effectiveColor }}
@@ -277,8 +334,63 @@ export default function UserSettingsPage() {
                   .map((p) => p[0]?.toUpperCase() ?? "")
                   .join("") || "CU"}
               </div>
-              <span className="truncate text-[12px] font-semibold text-[#0F172A]">{displayName || user?.displayName || "CutSmart User"}</span>
+              <span className="truncate text-[12px] font-semibold text-[#0F172A]" style={{ color: pagePalette.text }}>{displayName || user?.displayName || "CutSmart User"}</span>
             </div>
+          </div>
+          <div className="mt-4 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] p-3" style={{ borderColor: pagePalette.border, backgroundColor: pagePalette.panelBg }}>
+            <p className="text-[12px] font-bold text-[#334155]" style={{ color: pagePalette.text }}>App Theme</p>
+            <p className="mt-1 text-[11px] text-[#667085]" style={{ color: pagePalette.textMuted }}>
+              Applies only on this device for your app.
+            </p>
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isDarkMode}
+                aria-label={`Theme mode: ${isDarkMode ? "Dark" : "Light"}`}
+                onClick={() => onSelectThemeMode(isDarkMode ? "light" : "dark")}
+                className="relative inline-flex h-9 w-[132px] items-center rounded-[999px] border px-1 transition-colors"
+                style={{
+                  borderColor: isDarkMode ? "#65b8ff" : pagePalette.border,
+                  backgroundColor: isDarkMode ? "#3ea6ff" : "#E5E7EB",
+                }}
+              >
+                <span
+                  className="absolute left-1 top-[2px] h-[30px] w-[59px] rounded-[999px] transition-transform"
+                  style={{
+                    transform: isDarkMode ? "translateX(65px)" : "translateX(-2px)",
+                    backgroundColor: isDarkMode ? "#0f0f0f" : "#ffffff",
+                    border: isDarkMode ? "1px solid transparent" : "1px solid #D1D5DB",
+                    boxShadow: isDarkMode
+                      ? "0 2px 10px rgba(15,23,42,0.18)"
+                      : "0 1px 3px rgba(15,23,42,0.14)",
+                  }}
+                />
+                <span className="relative z-10 flex w-full items-center justify-between px-3 text-[12px] font-medium">
+                  <span
+                    style={{
+                      color: isDarkMode ? "#d1d5db" : "#24589A",
+                      transform: isDarkMode ? "scale(0.92)" : "scale(1.08)",
+                      transformOrigin: "left center",
+                      transition: "transform 140ms ease, color 140ms ease",
+                    }}
+                  >
+                    Light
+                  </span>
+                  <span
+                    style={{
+                      color: isDarkMode ? "#f1f1f1" : "#64748B",
+                      transform: `${isDarkMode ? "scale(1.08)" : "scale(0.92)"} translateX(-2px)`,
+                      transformOrigin: "right center",
+                      transition: "transform 140ms ease, color 140ms ease",
+                    }}
+                  >
+                    Dark
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
           </div>
         </section>
       </AppShell>

@@ -14,6 +14,7 @@ import {
   restoreDeletedProject,
 } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
+import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 
 function formatDeletedDate(value: string) {
   const d = new Date(value);
@@ -177,13 +178,11 @@ export default function RecentlyDeletedPage() {
     await purgeExpiredDeletedProjects(user?.uid, preferredCompanyIds);
     const rows = await fetchDeletedProjects(user?.uid, preferredCompanyIds);
     setDeletedProjects(rows);
-    const creatorUids = rows.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
-    const userColorMap = await fetchUserColorMapByUids(creatorUids);
-    setCreatorColorByUid(userColorMap);
-
     const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
-
     const selectedCompanyId = storedCompanyId || companyIds[0] || "";
+    const creatorUids = rows.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
+    const userColorMap = await fetchUserColorMapByUids(creatorUids, selectedCompanyId);
+    setCreatorColorByUid(userColorMap);
     if (selectedCompanyId) {
       const selectedCompanyDoc = await fetchCompanyDoc(selectedCompanyId);
       const selectedDoc = (selectedCompanyDoc as Record<string, unknown> | null) ?? null;
@@ -225,6 +224,26 @@ export default function RecentlyDeletedPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUserColorUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserColorUpdatedDetail>).detail;
+      const uid = String(detail?.uid || "").trim();
+      const color = String(detail?.color || "").trim();
+      if (!uid) return;
+      setCreatorColorByUid((prev) => {
+        const next = { ...prev };
+        if (color) next[uid] = color;
+        else delete next[uid];
+        return next;
+      });
+    };
+    window.addEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    return () => {
+      window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    };
+  }, []);
 
   const nextRefreshMs = useMemo(() => {
     const oneDay = 24 * 60 * 60 * 1000;
@@ -328,7 +347,7 @@ export default function RecentlyDeletedPage() {
           <div className="flex h-[56px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] bg-white px-4 md:px-5">
             <div className="inline-flex items-center gap-2">
               <Trash2 size={16} color="#12345B" strokeWidth={2.1} />
-              <p className="text-[14px] font-extrabold uppercase tracking-[1px]" style={{ color: "#12345B" }}>
+              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
                 <span style={{ color: "#12345B" }}>Recently Deleted</span>
                 <span className="px-2" style={{ color: "#6B7280" }}>|</span>
                 <span style={{ color: "#334155" }}>{companyName}</span>

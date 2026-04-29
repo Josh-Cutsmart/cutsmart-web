@@ -1575,8 +1575,8 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
       const roleId = roleOverridesByUid[uid] || membershipRoleId;
       const email = String(data.email ?? "").trim();
       const mobile = String(data.mobile ?? data.phone ?? "").trim();
-      const userColor = String(data.userColor ?? data.avatarColor ?? "").trim();
-      const badgeColor = String(data.badgeColor ?? "").trim();
+      const userColor = String(data.userColor ?? data.badgeColor ?? data.avatarColor ?? data.color ?? data.colour ?? "").trim();
+      const badgeColor = String(data.badgeColor ?? data.userColor ?? data.avatarColor ?? data.color ?? data.colour ?? "").trim();
       const displayNameOverride = displayNameOverridesByUid[uid];
       out.push({
         uid,
@@ -1604,8 +1604,12 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
           const profileDisplayName = String(userData.displayName ?? userData.name ?? "").trim();
           const profileEmail = String(userData.email ?? "").trim();
           const profileMobile = String(userData.mobile ?? userData.phone ?? "").trim();
-          const profileUserColor = String(userData.userColor ?? userData.avatarColor ?? "").trim();
-          const profileBadgeColor = String(userData.badgeColor ?? "").trim();
+          const profileUserColor = String(
+            userData.userColor ?? userData.badgeColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
+          ).trim();
+          const profileBadgeColor = String(
+            userData.badgeColor ?? userData.userColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
+          ).trim();
           if (!displayNameOverridesByUid[uid] && !member.membershipDisplayName && profileDisplayName) {
             member.displayName = profileDisplayName;
           }
@@ -1618,6 +1622,17 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
         }
       }),
     );
+
+    const resolvedColorMap = await fetchUserColorMapByUids(
+      out.map((member) => String(member.uid || "").trim()).filter(Boolean),
+      cid,
+    );
+    for (const member of out) {
+      const resolved = String(resolvedColorMap[String(member.uid || "").trim()] || "").trim();
+      if (!resolved) continue;
+      member.badgeColor = resolved;
+      member.userColor = resolved;
+    }
 
     out.sort((a, b) => a.displayName.localeCompare(b.displayName));
     return out;
@@ -1914,8 +1929,10 @@ export async function saveUserProfilePatchDetailed(
   if (!db || !userId) return { ok: false, error: "missing-firebase-or-user-id" };
   let lastError = "unknown-save-error";
   let userWriteOk = false;
+  let membershipWriteOk = false;
   const hasUserColor = Object.prototype.hasOwnProperty.call(patch, "userColor");
   const userColorValue = String(patch.userColor ?? "").trim();
+  let userEmailForMembershipMatch = String(patch.email ?? "").trim().toLowerCase();
   const withMeta = (data: Record<string, unknown>) => ({
     ...data,
     updatedAt: serverTimestamp(),
@@ -1945,7 +1962,24 @@ export async function saveUserProfilePatchDetailed(
     lastError = "users-write-failed";
   }
 
-  const targetCompanyIds = cid ? [cid] : await fetchCompanyIdsForUser(userId);
+  if (!userEmailForMembershipMatch) {
+    try {
+      const userSnap = await getDoc(doc(db, "users", userId));
+      if (userSnap.exists()) {
+        const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
+        userEmailForMembershipMatch = String(userData.email ?? "").trim().toLowerCase();
+      }
+    } catch {
+      // ignore lookup failure
+    }
+  }
+
+  const targetCompanyIds = Array.from(
+    new Set([
+      ...((cid ? [cid] : []).filter(Boolean)),
+      ...(await fetchCompanyIdsForUser(userId)),
+    ]),
+  );
 
   const writeMembershipRef = async (ref: ReturnType<typeof doc>) => {
     try {
@@ -1985,7 +2019,7 @@ export async function saveUserProfilePatchDetailed(
     try {
       const ok = await writeMembershipRef(doc(db, "companies", targetCompanyId, "memberships", userId));
       if (ok) {
-        return { ok: true };
+        membershipWriteOk = true;
       }
     } catch {
       // continue fallback paths
@@ -2002,7 +2036,7 @@ export async function saveUserProfilePatchDetailed(
       if (!membershipSnap.empty) {
         const ok = await writeMembershipRef(membershipSnap.docs[0].ref);
         if (ok) {
-          return { ok: true };
+          membershipWriteOk = true;
         }
       }
     } catch (error) {
@@ -2010,6 +2044,32 @@ export async function saveUserProfilePatchDetailed(
         error && typeof error === "object" && "code" in error
           ? String((error as { code?: unknown }).code ?? "membership-query-write-failed")
           : String((error as { message?: unknown } | null)?.message ?? "membership-query-write-failed");
+    }
+
+    try {
+      const companyMemberships = await getDocs(
+        query(collection(db, "companies", targetCompanyId, "memberships"), limit(500)),
+      );
+      for (const membershipDoc of companyMemberships.docs) {
+        const membershipData = (membershipDoc.data() ?? {}) as Record<string, unknown>;
+        const membershipUid = String(membershipData.uid ?? "").trim();
+        const membershipEmail = String(membershipData.email ?? "").trim().toLowerCase();
+        const membershipDocId = String(membershipDoc.id ?? "").trim();
+        const isMatch =
+          membershipUid === userId ||
+          membershipDocId === userId ||
+          (!!userEmailForMembershipMatch && membershipEmail === userEmailForMembershipMatch);
+        if (!isMatch) continue;
+        const ok = await writeMembershipRef(membershipDoc.ref);
+        if (ok) {
+          membershipWriteOk = true;
+        }
+      }
+    } catch (error) {
+      lastError =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "membership-company-scan-failed")
+          : String((error as { message?: unknown } | null)?.message ?? "membership-company-scan-failed");
     }
   }
 
@@ -2021,7 +2081,7 @@ export async function saveUserProfilePatchDetailed(
       for (const membershipDoc of membershipByUid.docs) {
         const ok = await writeMembershipRef(membershipDoc.ref);
         if (ok) {
-          return { ok: true };
+          membershipWriteOk = true;
         }
       }
     }
@@ -2038,7 +2098,7 @@ export async function saveUserProfilePatchDetailed(
       if (String(membershipDoc.id || "").trim() !== userId) continue;
       const ok = await writeMembershipRef(membershipDoc.ref);
       if (ok) {
-        return { ok: true };
+        membershipWriteOk = true;
       }
     }
   } catch (error) {
@@ -2048,8 +2108,14 @@ export async function saveUserProfilePatchDetailed(
         : String((error as { message?: unknown } | null)?.message ?? "membership-docid-query-failed");
   }
 
-  if (userWriteOk) {
-    // User doc save succeeded; membership sync may be blocked by rules.
+  if (hasUserColor) {
+    if (membershipWriteOk) {
+      return { ok: true };
+    }
+    return { ok: false, error: lastError || "company-membership-color-sync-failed" };
+  }
+
+  if (membershipWriteOk || userWriteOk) {
     return { ok: true };
   }
 
@@ -2171,19 +2237,63 @@ export async function markUserUpdateNoticeSeen(
   return result.ok;
 }
 
-export async function fetchUserColorMapByUids(uids: string[]): Promise<Record<string, string>> {
+export async function fetchUserColorMapByUids(
+  uids: string[],
+  companyId?: string,
+): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   const cleanUids = Array.from(new Set((uids || []).map((uid) => String(uid || "").trim()).filter(Boolean)));
   if (!db || !cleanUids.length) return out;
   const firestore = db;
+  const cid = String(companyId || "").trim();
+
+  if (cid) {
+    await Promise.all(
+      cleanUids.map(async (uid) => {
+        try {
+          let membership: Record<string, unknown> | null = null;
+          const membershipSnap = await getDoc(doc(firestore, "companies", cid, "memberships", uid));
+          if (membershipSnap.exists()) {
+            membership = (membershipSnap.data() ?? {}) as Record<string, unknown>;
+          } else {
+            const membershipQuery = await getDocs(
+              query(
+                collection(firestore, "companies", cid, "memberships"),
+                where("uid", "==", uid),
+                limit(1),
+              ),
+            );
+            if (!membershipQuery.empty) {
+              membership = (membershipQuery.docs[0]?.data() ?? {}) as Record<string, unknown>;
+            }
+          }
+          if (!membership) return;
+          const color = String(
+            membership.badgeColor ??
+              membership.userColor ??
+              membership.avatarColor ??
+              membership.color ??
+              membership.colour ??
+              "",
+          ).trim();
+          if (color) out[uid] = color;
+        } catch {
+          // ignore missing membership docs
+        }
+      }),
+    );
+  }
 
   await Promise.all(
     cleanUids.map(async (uid) => {
+      if (out[uid]) return;
       try {
         const snap = await getDoc(doc(firestore, "users", uid));
         if (!snap.exists()) return;
         const data = (snap.data() ?? {}) as Record<string, unknown>;
-        const color = String(data.userColor ?? data.badgeColor ?? data.avatarColor ?? "").trim();
+        const color = String(
+          data.userColor ?? data.badgeColor ?? data.avatarColor ?? data.color ?? data.colour ?? "",
+        ).trim();
         if (color) out[uid] = color;
       } catch {
         // ignore missing user docs
