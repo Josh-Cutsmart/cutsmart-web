@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Inbox, Phone, Search, UserRound } from "lucide-react";
+import { Inbox, Search } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
@@ -12,14 +12,7 @@ import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/t
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const RESERVED_LEAD_FIELD_KEYS = new Set([
   "companyid",
-  "name",
-  "email",
-  "phone",
-  "message",
-  "submittedat",
-  "submittedatiso",
   "source",
-  "formname",
   "status",
 ]);
 
@@ -185,11 +178,8 @@ export default function LeadsPage() {
     if (!query) return leads;
     return leads.filter((lead) => {
       const searchable = [
-        lead.name,
-        lead.email,
-        lead.phone,
-        lead.message,
         lead.formName,
+        lead.status,
         ...getLeadDynamicFields(lead).map((field) => field.value),
       ];
       return searchable.some((value) => String(value || "").toLowerCase().includes(query));
@@ -210,23 +200,12 @@ export default function LeadsPage() {
     }
     return columns;
   }, [leads]);
-  const visibleStandardColumns = useMemo(
-    () => ({
-      email: leads.some((lead) => Boolean(lead.email)),
-      phone: leads.some((lead) => Boolean(lead.phone)),
-      message: leads.some((lead) => Boolean(lead.message)),
-    }),
-    [leads],
-  );
   const desktopGridTemplate = useMemo(() => {
-    const parts = ["minmax(190px,1.1fr)"];
-    if (visibleStandardColumns.email) parts.push("minmax(180px,1fr)");
-    if (visibleStandardColumns.phone) parts.push("minmax(150px,0.8fr)");
+    const parts: string[] = [];
     for (const _ of dynamicColumns) parts.push("minmax(170px,0.95fr)");
-    if (visibleStandardColumns.message) parts.push("minmax(240px,1.4fr)");
-    parts.push("minmax(140px,0.8fr)");
+    if (parts.length === 0) parts.push("minmax(220px,1fr)");
     return parts.join(" ");
-  }, [dynamicColumns, visibleStandardColumns.email, visibleStandardColumns.message, visibleStandardColumns.phone]);
+  }, [dynamicColumns]);
 
   return (
     <ProtectedRoute>
@@ -291,14 +270,13 @@ export default function LeadsPage() {
                       color: palette.textMuted,
                     }}
                   >
-                    <p>Name</p>
-                    {visibleStandardColumns.email ? <p>Email</p> : null}
-                    {visibleStandardColumns.phone ? <p>Phone</p> : null}
-                    {dynamicColumns.map((column) => (
-                      <p key={column.key}>{column.label}</p>
-                    ))}
-                    {visibleStandardColumns.message ? <p>Message</p> : null}
-                    <p>Submitted</p>
+                    {dynamicColumns.length === 0 ? (
+                      <p>No visible lead fields</p>
+                    ) : (
+                      dynamicColumns.map((column) => (
+                        <p key={column.key}>{column.label}</p>
+                      ))
+                    )}
                   </div>
                   {filteredLeads.map((lead, idx) => (
                     <div
@@ -310,43 +288,27 @@ export default function LeadsPage() {
                         backgroundColor: idx % 2 === 0 ? palette.panelBg : palette.panelMuted,
                       }}
                     >
-                      <div className="min-w-0">
-                        <div className="inline-flex max-w-full items-center gap-2">
-                          <UserRound size={13} style={{ color: palette.textMuted }} />
-                          <p className="truncate font-bold" style={{ color: palette.textSoft }}>{lead.name || "-"}</p>
-                        </div>
-                        <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: lead.status === "new" ? "#1F6A3B" : palette.textMuted }}>
-                          {lead.status}
-                        </p>
-                        {lead.formName ? (
-                          <p className="mt-1 truncate text-[10px]" style={{ color: palette.textMuted }}>
-                            {lead.formName}
+                      {dynamicColumns.length === 0 ? (
+                        <div className="min-w-0">
+                          <p className="text-[12px] font-semibold" style={{ color: palette.textSoft }}>
+                            No mapped lead fields found for this company yet.
                           </p>
-                        ) : null}
-                      </div>
-                      {visibleStandardColumns.email ? (
-                        <p className="truncate" style={{ color: palette.textSoft }}>{lead.email || "-"}</p>
-                      ) : null}
-                      {visibleStandardColumns.phone ? (
-                        <div className="inline-flex items-center gap-2">
-                          <Phone size={12} style={{ color: palette.textMuted }} />
-                          <p className="truncate" style={{ color: palette.textSoft }}>{lead.phone || "-"}</p>
-                        </div>
-                      ) : null}
-                      {dynamicColumns.map((column) => {
-                        const match = getLeadDynamicFields(lead).find(
-                          (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
-                        );
-                        return (
-                          <p key={`${lead.id}:${column.key}`} className="line-clamp-3 whitespace-pre-wrap" style={{ color: palette.textSoft }}>
-                            {match?.value || "-"}
+                          <p className="mt-1 text-[10px]" style={{ color: palette.textMuted }}>
+                            Submit at least one Zapier test with named data fields to generate columns.
                           </p>
-                        );
-                      })}
-                      {visibleStandardColumns.message ? (
-                        <p className="line-clamp-3 whitespace-pre-wrap" style={{ color: palette.textSoft }}>{lead.message || "-"}</p>
-                      ) : null}
-                      <p style={{ color: palette.textMuted }}>{formatLeadDate(lead.submittedAtIso || lead.createdAtIso)}</p>
+                        </div>
+                      ) : (
+                        dynamicColumns.map((column) => {
+                          const match = getLeadDynamicFields(lead).find(
+                            (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
+                          );
+                          return (
+                            <p key={`${lead.id}:${column.key}`} className="line-clamp-3 whitespace-pre-wrap" style={{ color: palette.textSoft }}>
+                              {match?.value || "-"}
+                            </p>
+                          );
+                        })
+                      )}
                     </div>
                   ))}
                 </div>
