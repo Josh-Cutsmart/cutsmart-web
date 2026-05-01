@@ -6,6 +6,14 @@ function toStr(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function pickFirstNonEmpty(...values: unknown[]) {
+  for (const value of values) {
+    const next = toStr(value);
+    if (next) return next;
+  }
+  return "";
+}
+
 function readZapierLeadsConfig(companyDoc: Record<string, unknown> | null) {
   const integrations =
     companyDoc?.integrations && typeof companyDoc.integrations === "object"
@@ -49,19 +57,47 @@ export async function POST(request: NextRequest) {
 
   const url = new URL(request.url);
   const body = await parseBody(request);
-  const companyId = toStr(body.companyId) || toStr(url.searchParams.get("companyId"));
-  const token = toStr(url.searchParams.get("token")) || toStr(request.headers.get("x-zapier-secret"));
+  const companyId = pickFirstNonEmpty(
+    body.companyId,
+    body.companyID,
+    body.company_id,
+    url.searchParams.get("companyId"),
+    url.searchParams.get("companyID"),
+    request.headers.get("x-company-id"),
+  );
+  const token = pickFirstNonEmpty(
+    url.searchParams.get("token"),
+    request.headers.get("x-zapier-secret"),
+    body.token,
+    body.webhookSecret,
+    body.zapierSecret,
+  );
 
   if (!companyId || !token) {
-    return NextResponse.json({ ok: false, error: "missing-company-or-token" }, { status: 400 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: !companyId ? "missing-company-id" : "missing-webhook-token",
+      },
+      { status: 400 },
+    );
   }
 
   const companySnap = await getDoc(doc(db, "companies", companyId)).catch(() => null);
   const companyDoc = companySnap?.exists() ? ((companySnap.data() ?? {}) as Record<string, unknown>) : null;
+  if (!companyDoc) {
+    return NextResponse.json({ ok: false, error: "company-not-found" }, { status: 404 });
+  }
   const zapier = readZapierLeadsConfig(companyDoc);
 
-  if (!zapier.enabled || !zapier.webhookSecret || zapier.webhookSecret !== token) {
-    return NextResponse.json({ ok: false, error: "invalid-webhook-auth" }, { status: 403 });
+  if (!zapier.enabled) {
+    return NextResponse.json({ ok: false, error: "zapier-leads-disabled" }, { status: 403 });
+  }
+  if (!zapier.webhookSecret) {
+    return NextResponse.json({ ok: false, error: "missing-company-webhook-secret" }, { status: 403 });
+  }
+  if (zapier.webhookSecret !== token) {
+    return NextResponse.json({ ok: false, error: "webhook-token-mismatch" }, { status: 403 });
   }
 
   const submittedAtIso = toStr(body.submittedAt) || new Date().toISOString();
