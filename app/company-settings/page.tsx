@@ -1015,6 +1015,8 @@ export default function CompanySettingsPage() {
   const [unlockHours, setUnlockHours] = useState("6");
   const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "" });
   const [zapierCopyStatus, setZapierCopyStatus] = useState("");
+  const [zapierTestStatus, setZapierTestStatus] = useState("");
+  const [isSendingZapierTest, setIsSendingZapierTest] = useState(false);
   const [appOrigin, setAppOrigin] = useState("");
   const [backupTemplate, setBackupTemplate] = useState<BackupTemplateSettings>({
     quoteTemplateHeaderHtml: "",
@@ -2626,6 +2628,60 @@ export default function CompanySettingsPage() {
                             >
                               {zapierLeads.webhookSecret ? "Regenerate Secret" : "Generate Secret"}
                             </button>
+                            <button
+                              type="button"
+                              disabled={!zapierLeads.enabled || !zapierWebhookUrl || isSendingZapierTest}
+                              onClick={async () => {
+                                if (!zapierLeads.enabled || !zapierWebhookUrl) return;
+                                setIsSendingZapierTest(true);
+                                setZapierTestStatus("");
+                                const stamp = new Date();
+                                const iso = stamp.toISOString();
+                                const shortStamp = stamp.toLocaleString("en-NZ", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  hour: "numeric",
+                                  minute: "2-digit",
+                                  hour12: true,
+                                });
+                                try {
+                                  const response = await fetch(zapierWebhookUrl, {
+                                    method: "POST",
+                                    headers: {
+                                      "content-type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      FullName: "CutSmart Test Lead",
+                                      EmailAddress: "testlead@cutsmart.local",
+                                      DaytimePhone: "0210000000",
+                                      Source: "CutSmart Integration Test",
+                                      Notes: `Created from Company Settings at ${shortStamp}`,
+                                      submittedAt: iso,
+                                    }),
+                                  });
+                                  const detail = (await response.json().catch(() => null)) as { error?: string } | null;
+                                  if (!response.ok) {
+                                    setZapierTestStatus(`Test failed: ${detail?.error || "unknown-error"}`);
+                                  } else {
+                                    setZapierTestStatus("Test lead sent successfully. Open the Leads tab and refresh it.");
+                                  }
+                                } catch {
+                                  setZapierTestStatus("Test failed: network-error");
+                                } finally {
+                                  setIsSendingZapierTest(false);
+                                }
+                              }}
+                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                            >
+                              {isSendingZapierTest ? "Sending Test..." : "Send Test Lead"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => router.push("/leads")}
+                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467]"
+                            >
+                              Open Leads
+                            </button>
                           </div>
                         </div>
                         <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
@@ -2714,6 +2770,11 @@ export default function CompanySettingsPage() {
                         </div>
                         {zapierCopyStatus ? (
                           <p className="text-[11px] font-semibold text-[#1F6A3B]">{zapierCopyStatus}</p>
+                        ) : null}
+                        {zapierTestStatus ? (
+                          <p className={`text-[11px] font-semibold ${zapierTestStatus.startsWith("Test failed") ? "text-[#C62828]" : "text-[#1F6A3B]"}`}>
+                            {zapierTestStatus}
+                          </p>
                         ) : null}
                         <div className="rounded-[10px] border border-[#D8DEE8] bg-white p-3">
                           <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[#12345B]">Zapier Setup</p>

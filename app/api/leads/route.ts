@@ -50,6 +50,76 @@ async function parseBody(request: NextRequest): Promise<Record<string, unknown>>
   return {};
 }
 
+function toIsoString(value: unknown, fallback = "") {
+  if (value == null) return fallback;
+  if (typeof value === "string") {
+    const raw = value.trim();
+    if (!raw) return fallback;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
+  }
+  if (value && typeof value === "object" && "toDate" in (value as Record<string, unknown>)) {
+    try {
+      const parsed = (value as { toDate: () => Date }).toDate();
+      return parsed.toISOString();
+    } catch {
+      return fallback;
+    }
+  }
+  if (value instanceof Date) return value.toISOString();
+  return fallback;
+}
+
+export async function GET(request: NextRequest) {
+  if (!adminDb || !hasFirebaseAdminConfig) {
+    return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
+  }
+  const url = new URL(request.url);
+  const companyId = pickFirstNonEmpty(
+    url.searchParams.get("companyId"),
+    url.searchParams.get("companyID"),
+  );
+  if (!companyId) {
+    return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
+  }
+
+  try {
+    const snap = await adminDb
+      .collection("companies")
+      .doc(companyId)
+      .collection("leads")
+      .orderBy("createdAt", "desc")
+      .limit(500)
+      .get();
+    const leads = snap.docs.map((docSnap) => {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      return {
+        id: String(data.id ?? docSnap.id),
+        companyId,
+        name: toStr(data.name),
+        email: toStr(data.email),
+        phone: toStr(data.phone),
+        message: toStr(data.message),
+        formName: toStr(data.formName),
+        submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
+        createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+        source: toStr(data.source) || "zapier-form",
+        status: (() => {
+          const raw = toStr(data.status).toLowerCase();
+          return raw === "contacted" || raw === "converted" || raw === "archived" ? raw : "new";
+        })(),
+        rawFields:
+          data.rawFields && typeof data.rawFields === "object"
+            ? (data.rawFields as Record<string, unknown>)
+            : undefined,
+      };
+    });
+    return NextResponse.json({ ok: true, leads });
+  } catch {
+    return NextResponse.json({ ok: false, error: "lead-read-failed" }, { status: 500 });
+  }
+}
+
 export async function POST(request: NextRequest) {
   if (!adminDb || !hasFirebaseAdminConfig) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });

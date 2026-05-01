@@ -6,7 +6,7 @@ import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
-import { fetchCompanyDoc, fetchCompanyLeads, type CompanyLeadRow } from "@/lib/firestore-data";
+import { fetchCompanyDoc, type CompanyLeadRow } from "@/lib/firestore-data";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -156,10 +156,9 @@ export default function LeadsPage() {
         setIsLoading(false);
         return;
       }
-      const [access, companyDoc, leadRows] = await Promise.all([
+      const [access, companyDoc] = await Promise.all([
         fetchCompanyAccess(companyId, user.uid),
         fetchCompanyDoc(companyId),
-        fetchCompanyLeads(companyId),
       ]);
       const role = String(access?.role || "").trim().toLowerCase();
       const permitted =
@@ -167,7 +166,23 @@ export default function LeadsPage() {
       setCompanyName(String(companyDoc?.name || "").trim());
       setCompanyAccessResolved(true);
       setCanAccessLeads(permitted);
-      setLeads(permitted ? leadRows : []);
+      if (!permitted) {
+        setLeads([]);
+        setIsLoading(false);
+        return;
+      }
+      try {
+        const response = await fetch(`/api/leads?companyId=${encodeURIComponent(companyId)}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        const detail = (await response.json().catch(() => null)) as
+          | { ok?: boolean; leads?: CompanyLeadRow[] }
+          | null;
+        setLeads(response.ok && Array.isArray(detail?.leads) ? detail.leads : []);
+      } catch {
+        setLeads([]);
+      }
       setIsLoading(false);
     };
     void run();
