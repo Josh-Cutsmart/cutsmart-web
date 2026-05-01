@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { collection, doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { FieldValue } from "firebase-admin/firestore";
+import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 
 function toStr(value: unknown) {
   return String(value ?? "").trim();
@@ -51,8 +51,8 @@ async function parseBody(request: NextRequest): Promise<Record<string, unknown>>
 }
 
 export async function POST(request: NextRequest) {
-  if (!db) {
-    return NextResponse.json({ ok: false, error: "missing-firestore" }, { status: 500 });
+  if (!adminDb || !hasFirebaseAdminConfig) {
+    return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
   }
 
   const url = new URL(request.url);
@@ -83,8 +83,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const companySnap = await getDoc(doc(db, "companies", companyId)).catch(() => null);
-  const companyDoc = companySnap?.exists() ? ((companySnap.data() ?? {}) as Record<string, unknown>) : null;
+  const companySnap = await adminDb.collection("companies").doc(companyId).get().catch(() => null);
+  const companyDoc = companySnap?.exists ? ((companySnap.data() ?? {}) as Record<string, unknown>) : null;
   if (!companyDoc) {
     return NextResponse.json({ ok: false, error: "company-not-found" }, { status: 404 });
   }
@@ -113,16 +113,16 @@ export async function POST(request: NextRequest) {
     status: "new",
   };
 
-  const leadRef = doc(collection(db, "companies", companyId, "leads"));
+  const leadRef = adminDb.collection("companies").doc(companyId).collection("leads").doc();
   try {
-    await setDoc(leadRef, {
+    await leadRef.set({
       id: leadRef.id,
       ...payload,
       rawFields: body,
       submittedAt: submittedAtIso,
-      createdAt: serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       createdAtIso: new Date().toISOString(),
-      updatedAt: serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
       updatedAtIso: new Date().toISOString(),
     });
   } catch {
