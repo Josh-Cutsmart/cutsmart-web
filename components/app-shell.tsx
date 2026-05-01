@@ -39,6 +39,7 @@ import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
+import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX = "cutsmart_update_notice_seen_";
@@ -256,6 +257,35 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeModeUpdated as EventListener);
     return () => {
       window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeModeUpdated as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onOpenNewProject = (event: Event) => {
+      const detail = (event as CustomEvent<NewProjectPrefillPayload | undefined>).detail ?? {};
+      setProjectName(String(detail.projectName || "").trim());
+      setClientName(String(detail.clientName || "").trim());
+      setClientPhone(formatMobileLikeDesktop(String(detail.clientPhone || "")));
+      setClientEmail(String(detail.clientEmail || "").trim());
+      setProjectAddress(String(detail.projectAddress || "").trim());
+      setProjectNotes(String(detail.projectNotes || "").trim());
+      setProjectFormError("");
+      setTagInput("");
+      setTags([]);
+      setIsTagInputOpen(false);
+      setShowTagSuggestions(false);
+      setPhotos([]);
+      setHoveredPhotoId("");
+      setPreviewPhotoId("");
+      setAssigneeSearch("");
+      setAssigneeMenuOpen(false);
+      setIsNewProjectNotesEditing(false);
+      setShowNewProject(true);
+    };
+    window.addEventListener(OPEN_NEW_PROJECT_EVENT, onOpenNewProject as EventListener);
+    return () => {
+      window.removeEventListener(OPEN_NEW_PROJECT_EVENT, onOpenNewProject as EventListener);
     };
   }, []);
 

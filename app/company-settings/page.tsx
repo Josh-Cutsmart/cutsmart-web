@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, Building2, CircleDollarSign, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, Settings, Users, Wrench, X } from "lucide-react";
+import { Bell, Building2, CircleDollarSign, CircleHelp, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
@@ -67,7 +67,30 @@ type BackupTemplateSettings = {
 type ZapierLeadsSettings = {
   enabled: boolean;
   webhookSecret: string;
+  fieldLayout: LeadFieldLayoutRow[];
 };
+type LeadProjectFieldTarget = "" | "clientName" | "clientPhone" | "clientEmail" | "projectAddress" | "projectNotes";
+type LeadFieldLayoutRow = {
+  key: string;
+  label: string;
+  showInRow: boolean;
+  showInDetail: boolean;
+  order: number;
+  projectFieldTarget: LeadProjectFieldTarget;
+};
+
+const LEAD_PROJECT_FIELD_TARGET_OPTIONS: Array<{ value: LeadProjectFieldTarget; label: string }> = [
+  { value: "", label: "Not Used" },
+  { value: "clientName", label: "Client Name" },
+  { value: "clientPhone", label: "Client Phone" },
+  { value: "clientEmail", label: "Client Email" },
+  { value: "projectAddress", label: "Project Address" },
+  { value: "projectNotes", label: "Project Notes" },
+];
+
+function normalizeLeadFieldLayoutOrder(rows: LeadFieldLayoutRow[]): LeadFieldLayoutRow[] {
+  return rows.map((row, idx) => ({ ...row, order: idx }));
+}
 type PendingOwnerTransferState = {
   currentOwnerUid: string;
   currentOwnerName: string;
@@ -138,6 +161,74 @@ const deletedRetentionOptions: Array<{ label: string; days: string }> = [
 
 const cutlistColumnDefaults = ["Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
 const autoClashLeftOptions = ["1L", "2L"];
+const RESERVED_LEAD_FIELD_KEYS = new Set(["companyid", "source", "status"]);
+const LEAD_PROJECT_FIELD_TARGET_VALUES = new Set<LeadProjectFieldTarget>([
+  "",
+  "clientName",
+  "clientPhone",
+  "clientEmail",
+  "projectAddress",
+  "projectNotes",
+]);
+
+function normalizeLeadFieldKey(key: string) {
+  return String(key || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function formatLeadFieldLabel(key: string) {
+  const raw = String(key || "").trim();
+  if (!raw) return "Field";
+  return raw
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function normalizeLeadFieldLayout(raw: unknown): LeadFieldLayoutRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item, idx) => {
+      const row = item as Record<string, unknown>;
+      const key = String(row.key ?? "").trim();
+      return {
+        key,
+        label: String(row.label ?? formatLeadFieldLabel(key)).trim() || formatLeadFieldLabel(key),
+        showInRow: Boolean(row.showInRow),
+        showInDetail: row.showInDetail == null ? true : Boolean(row.showInDetail),
+        order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
+        projectFieldTarget: LEAD_PROJECT_FIELD_TARGET_VALUES.has(String(row.projectFieldTarget ?? "").trim() as LeadProjectFieldTarget)
+          ? (String(row.projectFieldTarget ?? "").trim() as LeadProjectFieldTarget)
+          : "",
+      };
+    })
+    .filter((row) => row.key);
+}
+
+function mergeLeadFieldLayout(
+  availableFields: Array<{ key: string; label: string }>,
+  savedLayout: LeadFieldLayoutRow[],
+): LeadFieldLayoutRow[] {
+  const savedByKey = new Map(savedLayout.map((row) => [normalizeLeadFieldKey(row.key), row]));
+  return availableFields
+    .map((field, idx) => {
+      const existing = savedByKey.get(normalizeLeadFieldKey(field.key));
+      return {
+        key: field.key,
+        label: existing?.label || field.label,
+        showInRow: existing?.showInRow ?? idx < 3,
+        showInDetail: existing?.showInDetail ?? true,
+        order: existing?.order ?? idx,
+        projectFieldTarget: existing?.projectFieldTarget ?? "",
+      };
+    })
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
 const autoClashRightOptions = ["1S", "2S"];
 
 const sections: Array<{ key: SettingsSection; label: string; icon: React.ComponentType<{ size?: number }> }> = [
@@ -1013,11 +1104,16 @@ export default function CompanySettingsPage() {
   const [edgebandingRoundNearestMeters, setEdgebandingRoundNearestMeters] = useState("");
   const [unlockSuffix, setUnlockSuffix] = useState("");
   const [unlockHours, setUnlockHours] = useState("6");
-  const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "" });
+  const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "", fieldLayout: [] });
   const [zapierCopyStatus, setZapierCopyStatus] = useState("");
-  const [zapierTestStatus, setZapierTestStatus] = useState("");
-  const [isSendingZapierTest, setIsSendingZapierTest] = useState(false);
+  const [showZapierHelp, setShowZapierHelp] = useState(false);
+  const [showLeadFieldsCustomize, setShowLeadFieldsCustomize] = useState(false);
   const [appOrigin, setAppOrigin] = useState("");
+  const zapierCopyResetTimerRef = useRef<number | null>(null);
+  const [availableLeadFields, setAvailableLeadFields] = useState<Array<{ key: string; label: string }>>([]);
+  const [leadFieldsLoading, setLeadFieldsLoading] = useState(false);
+  const [leadFieldDragIndex, setLeadFieldDragIndex] = useState<number | null>(null);
+  const [leadFieldDragOverIndex, setLeadFieldDragOverIndex] = useState<number | null>(null);
   const [backupTemplate, setBackupTemplate] = useState<BackupTemplateSettings>({
     quoteTemplateHeaderHtml: "",
     quoteTemplateFooterHtml: "",
@@ -1175,6 +1271,7 @@ export default function CompanySettingsPage() {
         setZapierLeads({
           enabled: Boolean(zapierDoc.enabled),
           webhookSecret: toStr(zapierDoc.webhookSecret),
+          fieldLayout: normalizeLeadFieldLayout(zapierDoc.fieldLayout),
         });
         setBackupTemplate({
           quoteTemplateHeaderHtml: toStr(doc.quoteTemplateHeaderHtml),
@@ -1773,6 +1870,47 @@ export default function CompanySettingsPage() {
     });
     return `${zapierWebhookBaseUrl}?${params.toString()}`;
   }, [activeCompanyId, zapierLeads.webhookSecret, zapierWebhookBaseUrl]);
+  const mergedLeadFieldLayout = useMemo(
+    () => mergeLeadFieldLayout(availableLeadFields, zapierLeads.fieldLayout),
+    [availableLeadFields, zapierLeads.fieldLayout],
+  );
+
+  useEffect(() => {
+    const run = async () => {
+      if (!activeCompanyId) {
+        setAvailableLeadFields([]);
+        return;
+      }
+      setLeadFieldsLoading(true);
+      try {
+        const response = await fetch(`/api/leads?companyId=${encodeURIComponent(activeCompanyId)}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        const detail = (await response.json().catch(() => null)) as
+          | { ok?: boolean; leads?: Array<{ rawFields?: Record<string, unknown> }> }
+          | null;
+        const nextFields: Array<{ key: string; label: string }> = [];
+        const seen = new Set<string>();
+        for (const lead of Array.isArray(detail?.leads) ? detail!.leads : []) {
+          for (const key of Object.keys(lead?.rawFields ?? {})) {
+            const normalized = normalizeLeadFieldKey(key);
+            if (!normalized || RESERVED_LEAD_FIELD_KEYS.has(normalized) || key.startsWith("__") || seen.has(normalized)) {
+              continue;
+            }
+            seen.add(normalized);
+            nextFields.push({ key, label: formatLeadFieldLabel(key) });
+          }
+        }
+        setAvailableLeadFields(nextFields);
+      } catch {
+        setAvailableLeadFields([]);
+      } finally {
+        setLeadFieldsLoading(false);
+      }
+    };
+    void run();
+  }, [activeCompanyId]);
 
   const downloadBackupSnapshot = () => {
     const snapshot = {
@@ -2138,6 +2276,14 @@ export default function CompanySettingsPage() {
         zapierLeads: {
           enabled: Boolean(zapierLeads.enabled),
           webhookSecret: toStr(zapierLeads.webhookSecret),
+          fieldLayout: mergedLeadFieldLayout.map((row, idx) => ({
+            key: row.key,
+            label: row.label,
+            showInRow: Boolean(row.showInRow),
+            showInDetail: Boolean(row.showInDetail),
+            order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
+            projectFieldTarget: row.projectFieldTarget || "",
+          })),
         },
       },
       quoteTemplateHeaderHtml: toStr(backupTemplate.quoteTemplateHeaderHtml),
@@ -2203,6 +2349,14 @@ export default function CompanySettingsPage() {
             zapierLeads: {
               enabled: Boolean(zapierLeads.enabled),
               webhookSecret: toStr(zapierLeads.webhookSecret),
+              fieldLayout: mergedLeadFieldLayout.map((row, idx) => ({
+                key: row.key,
+                label: row.label,
+                showInRow: Boolean(row.showInRow),
+                showInDetail: Boolean(row.showInDetail),
+                order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
+                projectFieldTarget: row.projectFieldTarget || "",
+              })),
             },
           },
           quoteTemplateHeaderHtml: backupTemplate.quoteTemplateHeaderHtml,
@@ -2252,6 +2406,11 @@ export default function CompanySettingsPage() {
   };
 
   const triggerAutosaveAfterRowDrop = () => {
+    hasPendingBlurSaveRef.current = true;
+    triggerBlurAutoSave();
+  };
+
+  const triggerToggleAutosave = () => {
     hasPendingBlurSaveRef.current = true;
     triggerBlurAutoSave();
   };
@@ -2590,211 +2749,198 @@ export default function CompanySettingsPage() {
 
                 {active === "integrations" && (
                   <div className="space-y-3">
-                    <Panel title="Zapier Leads">
-                      <div className="space-y-4 text-[12px]">
-                        <p className="text-[11px] text-[#6B7280]">
-                          Connect a Zapier form to CutSmart so new website submissions flow into the Leads page for this company.
-                        </p>
-                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
-                          <p className="font-bold text-[#334155]">Enable Leads Webhook</p>
-                          <div className="flex flex-wrap items-center gap-2">
+                    <section
+                      className="overflow-hidden rounded-[14px] border border-[#D7DEE8] shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-colors"
+                      style={{ backgroundColor: zapierLeads.enabled ? "#ffffff" : "#F3F4F6" }}
+                    >
+                      <div
+                        className="space-y-3 px-3 pb-2 pt-4 text-[12px] transition-colors"
+                        style={{
+                          backgroundColor: zapierLeads.enabled ? "#ffffff" : "#F3F4F6",
+                        }}
+                      >
+                        <div
+                          className="grid min-h-[48px] items-center gap-4 md:grid-cols-[auto_minmax(0,1fr)]"
+                          style={{ transform: "translateY(2px)" }}
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
                             <button
                               type="button"
                               onClick={() =>
-                                setZapierLeads((prev) => ({
-                                  ...prev,
-                                  enabled: !prev.enabled,
-                                  webhookSecret: prev.webhookSecret || generateZapierSecret(),
-                                }))
+                                {
+                                  setZapierLeads((prev) => ({
+                                    ...prev,
+                                    enabled: !prev.enabled,
+                                    webhookSecret: prev.webhookSecret || generateZapierSecret(),
+                                  }));
+                                  triggerToggleAutosave();
+                                }
                               }
-                              className={`h-8 rounded-[10px] border px-3 text-[12px] font-bold ${
-                                zapierLeads.enabled
-                                  ? "border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C]"
-                                  : "border-[#D8DEE8] bg-white text-[#475467]"
-                              }`}
+                              role="switch"
+                              aria-checked={zapierLeads.enabled}
+                              aria-label={`Zapier Leads: ${zapierLeads.enabled ? "Enabled" : "Disabled"}`}
+                              className="relative inline-flex h-9 w-[74px] items-center rounded-[999px] border px-1 transition-colors"
+                              style={{
+                                borderColor: zapierLeads.enabled ? "#65b8ff" : "#D8DEE8",
+                                backgroundColor: zapierLeads.enabled ? "#3ea6ff" : "#E5E7EB",
+                              }}
                             >
-                              {zapierLeads.enabled ? "Enabled" : "Disabled"}
+                              <span
+                                className="absolute left-1 top-[2px] h-[30px] w-[30px] rounded-full transition-transform"
+                                style={{
+                                  transform: zapierLeads.enabled ? "translateX(34px)" : "translateX(-1px)",
+                                  backgroundColor: "#ffffff",
+                                  border: "1px solid #D1D5DB",
+                                  boxShadow: "0 1px 3px rgba(15,23,42,0.14)",
+                                }}
+                              />
                             </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setZapierLeads((prev) => ({
-                                  ...prev,
-                                  enabled: true,
-                                  webhookSecret: generateZapierSecret(),
-                                }))
-                              }
-                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467]"
+                            <div
+                              className="inline-flex h-11 w-11 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]"
+                              style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}
                             >
-                              {zapierLeads.webhookSecret ? "Regenerate Secret" : "Generate Secret"}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!zapierLeads.enabled || !zapierWebhookUrl || isSendingZapierTest}
+                              <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-6 w-6 object-contain" />
+                            </div>
+                            <div className="flex min-w-0 flex-col justify-center" style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}>
+                              <p className="text-[15px] font-bold text-[#12345B]">Zapier Forms</p>
+                              <p className="mt-1 text-[11px] text-[#6B7280]">
+                                Connect a Zapier Form to your "Leads" tab.
+                              </p>
+                            </div>
+                          </div>
+                          <div
+                            className="flex min-w-0 items-center justify-end gap-3 md:justify-self-stretch"
+                            style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}
+                          >
+                            <input
+                              value={zapierCopyStatus === "copied" ? "✓ Copied" : zapierWebhookUrl}
+                              readOnly
+                              placeholder="Webhook URL"
                               onClick={async () => {
-                                if (!zapierLeads.enabled || !zapierWebhookUrl) return;
-                                setIsSendingZapierTest(true);
-                                setZapierTestStatus("");
-                                const stamp = new Date();
-                                const iso = stamp.toISOString();
-                                const shortStamp = stamp.toLocaleString("en-NZ", {
-                                  day: "2-digit",
-                                  month: "short",
-                                  hour: "numeric",
-                                  minute: "2-digit",
-                                  hour12: true,
-                                });
+                                if (!zapierWebhookUrl || !zapierLeads.enabled) return;
                                 try {
-                                  const response = await fetch(zapierWebhookUrl, {
-                                    method: "POST",
-                                    headers: {
-                                      "content-type": "application/json",
-                                    },
-                                    body: JSON.stringify({
-                                      FullName: "CutSmart Test Lead",
-                                      EmailAddress: "testlead@cutsmart.local",
-                                      DaytimePhone: "0210000000",
-                                      Source: "CutSmart Integration Test",
-                                      Notes: `Created from Company Settings at ${shortStamp}`,
-                                      submittedAt: iso,
-                                    }),
-                                  });
-                                  const detail = (await response.json().catch(() => null)) as { error?: string } | null;
-                                  if (!response.ok) {
-                                    setZapierTestStatus(`Test failed: ${detail?.error || "unknown-error"}`);
-                                  } else {
-                                    setZapierTestStatus("Test lead sent successfully. Open the Leads tab and refresh it.");
+                                  await navigator.clipboard.writeText(zapierWebhookUrl);
+                                  setZapierCopyStatus("copied");
+                                  if (zapierCopyResetTimerRef.current) {
+                                    window.clearTimeout(zapierCopyResetTimerRef.current);
                                   }
+                                  zapierCopyResetTimerRef.current = window.setTimeout(() => {
+                                    setZapierCopyStatus("");
+                                    zapierCopyResetTimerRef.current = null;
+                                  }, 1400);
                                 } catch {
-                                  setZapierTestStatus("Test failed: network-error");
-                                } finally {
-                                  setIsSendingZapierTest(false);
+                                  setZapierCopyStatus("");
                                 }
                               }}
-                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                              className="h-9 w-[660px] max-w-full rounded-[8px] border px-3 text-[12px] outline-none transition-colors focus:outline-none focus:ring-0 focus-visible:outline-none"
+                              style={{
+                                borderColor: zapierCopyStatus === "copied" ? "#1F6A3B" : "#D8DEE8",
+                                backgroundColor: zapierCopyStatus === "copied"
+                                  ? "#EAF8EF"
+                                  : zapierLeads.enabled
+                                    ? "#ffffff"
+                                    : "#E5E7EB",
+                                color: zapierCopyStatus === "copied" ? "#1F6A3B" : "#334155",
+                                cursor: zapierLeads.enabled ? "pointer" : "default",
+                                textAlign: zapierCopyStatus === "copied" ? "center" : "left",
+                              }}
+                            />
+                            <button
+                              type="button"
+                              disabled={!zapierLeads.enabled}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                if (!zapierLeads.enabled) return;
+                                setShowLeadFieldsCustomize(true);
+                              }}
+                              className="inline-flex h-9 items-center rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
                             >
-                              {isSendingZapierTest ? "Sending Test..." : "Send Test Lead"}
+                              Customize
                             </button>
                             <button
                               type="button"
-                              onClick={() => router.push("/leads")}
-                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467]"
+                              disabled={!zapierLeads.enabled}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                if (!zapierLeads.enabled) return;
+                                if (zapierCopyResetTimerRef.current) {
+                                  window.clearTimeout(zapierCopyResetTimerRef.current);
+                                  zapierCopyResetTimerRef.current = null;
+                                }
+                                setZapierCopyStatus("");
+                                setZapierLeads((prev) => ({
+                                  ...prev,
+                                  webhookSecret: generateZapierSecret(),
+                                }));
+                                triggerToggleAutosave();
+                              }}
+                              className="inline-flex h-9 items-center rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
                             >
-                              Open Leads
+                              Regenerate
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setShowZapierHelp(true);
+                              }}
+                              className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#D8DEE8] bg-white text-[#475467]"
+                            >
+                              <CircleHelp size={15} />
                             </button>
                           </div>
                         </div>
-                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
+                        <div className="hidden grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
                           <p className="font-bold text-[#334155]">Webhook URL</p>
                           <div className="space-y-2">
                             <div className="flex flex-wrap items-center gap-2">
                               <input
-                                value={zapierWebhookUrl}
+                                value={zapierCopyStatus === "copied" ? "✓ Copied" : zapierWebhookUrl}
                                 readOnly
                                 placeholder="Generate a secret to create the webhook URL"
-                                className="h-9 min-w-[360px] flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
-                              />
-                              <button
-                                type="button"
-                                disabled={!zapierWebhookUrl}
                                 onClick={async () => {
                                   if (!zapierWebhookUrl) return;
                                   try {
                                     await navigator.clipboard.writeText(zapierWebhookUrl);
-                                    setZapierCopyStatus("Webhook URL copied");
+                                    setZapierCopyStatus("copied");
+                                    if (zapierCopyResetTimerRef.current) {
+                                      window.clearTimeout(zapierCopyResetTimerRef.current);
+                                    }
+                                    zapierCopyResetTimerRef.current = window.setTimeout(() => {
+                                      setZapierCopyStatus("");
+                                      zapierCopyResetTimerRef.current = null;
+                                    }, 1400);
                                   } catch {
-                                    setZapierCopyStatus("Copy failed");
+                                    setZapierCopyStatus("");
                                   }
                                 }}
-                                className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
-                              >
-                                Copy URL
-                              </button>
+                                className="h-9 min-w-[360px] flex-1 cursor-pointer rounded-[8px] border px-3 text-[12px] transition-colors"
+                                style={{
+                                  borderColor: zapierCopyStatus === "copied" ? "#1EA44B" : "#D8DEE8",
+                                  backgroundColor: zapierCopyStatus === "copied" ? "#EAF8EF" : "#ffffff",
+                                  color: zapierCopyStatus === "copied" ? "#1F6A3B" : "#334155",
+                                }}
+                              />
                             </div>
-                            <p className="text-[11px] text-[#6B7280]">
-                              Paste this full URL into the Zapier Webhooks POST step. It already includes the company ID and secure token.
-                            </p>
                           </div>
                         </div>
-                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
-                          <p className="font-bold text-[#334155]">Company ID</p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              value={activeCompanyId}
-                              readOnly
-                              className="h-9 min-w-[220px] rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
-                            />
-                            <button
-                              type="button"
-                              disabled={!activeCompanyId}
-                              onClick={async () => {
-                                try {
-                                  await navigator.clipboard.writeText(activeCompanyId);
-                                  setZapierCopyStatus("Company ID copied");
-                                } catch {
-                                  setZapierCopyStatus("Copy failed");
-                                }
-                              }}
-                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
-                            >
-                              Copy Company ID
-                            </button>
-                          </div>
-                        </div>
-                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
-                          <p className="font-bold text-[#334155]">Webhook Secret</p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              value={zapierLeads.webhookSecret}
-                              readOnly
-                              placeholder="Generate secret"
-                              className="h-9 min-w-[320px] flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
-                            />
-                            <button
-                              type="button"
-                              disabled={!zapierLeads.webhookSecret}
-                              onClick={async () => {
-                                if (!zapierLeads.webhookSecret) return;
-                                try {
-                                  await navigator.clipboard.writeText(zapierLeads.webhookSecret);
-                                  setZapierCopyStatus("Webhook secret copied");
-                                } catch {
-                                  setZapierCopyStatus("Copy failed");
-                                }
-                              }}
-                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
-                            >
-                              Copy Secret
-                            </button>
-                          </div>
-                        </div>
-                        {zapierCopyStatus ? (
-                          <p className="text-[11px] font-semibold text-[#1F6A3B]">{zapierCopyStatus}</p>
-                        ) : null}
-                        {zapierTestStatus ? (
-                          <p className={`text-[11px] font-semibold ${zapierTestStatus.startsWith("Test failed") ? "text-[#C62828]" : "text-[#1F6A3B]"}`}>
-                            {zapierTestStatus}
-                          </p>
-                        ) : null}
-                        <div className="rounded-[10px] border border-[#D8DEE8] bg-white p-3">
+                        <div className="hidden rounded-[10px] border border-[#D8DEE8] bg-white p-3">
                           <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[#12345B]">Zapier Setup</p>
                           <div className="mt-2 space-y-2 text-[12px] text-[#475467]">
                             <p>1. Trigger: <span className="font-bold">Zapier Forms → New Submission</span></p>
                             <p>2. Action: <span className="font-bold">Webhooks by Zapier → POST</span></p>
                             <p>3. URL: paste the Webhook URL above</p>
                             <p>4. Payload Type: <span className="font-bold">JSON</span></p>
-                            <p>5. Data fields to send:</p>
-                            <pre className="overflow-auto rounded-[8px] border border-[#E4E7EC] bg-[#F8FAFC] p-3 text-[11px] text-[#334155]">{`name -> your form name field
-email -> your form email field
-phone -> your form phone field
-message -> your form message field
-submittedAt -> submission date field
-source -> "zapier-form"`}</pre>
+                            <p>5. Add whatever lead data keys you want in the POST body.</p>
+                            <p>6. The left-side key names you send from Zapier become the dynamic fields shown in CutSmart.</p>
                             <p>Headers are optional if you use the full Webhook URL above, because the secure token is already embedded in it.</p>
                           </div>
                         </div>
                       </div>
-                    </Panel>
+                    </section>
                     <Panel title="Quote Layout Builder">
                       <div className="space-y-3 text-[12px]">
                       <p className="text-[11px] text-[#6B7280]">
@@ -3534,6 +3680,111 @@ source -> "zapier-form"`}</pre>
                             className="rounded-[8px] bg-[#1EA44B] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60"
                           >
                             Confirm Transfer
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {false && showZapierHelp ? (
+                    <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close Zapier help"
+                        onClick={() => setShowZapierHelp(false)}
+                        className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+                      />
+                      <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+                        <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
+                              <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
+                            </div>
+                            <div>
+                              <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                                Connect Zapier Leads
+                              </p>
+                              <p className="text-[11px] text-[#6B7280]">
+                                Use your company webhook URL to connect any Zapier form into CutSmart Leads.
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowZapierHelp(false)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto px-5 py-5">
+                          <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+                            <div className="space-y-4">
+                              <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What To Do In Zapier</p>
+                                <div className="mt-3 space-y-3 text-[12px] text-[#475467]">
+                                  <p>1. Create a Zap with <span className="font-bold text-[#12345B]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
+                                  <p>2. Add <span className="font-bold text-[#12345B]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
+                                  <p>3. Paste your company webhook URL into the Zapier URL field.</p>
+                                  <p>4. Set <span className="font-bold text-[#12345B]">Payload Type</span> to <span className="font-bold text-[#12345B]">JSON</span>.</p>
+                                  <p>5. Add the lead fields you want to send in the body. The left-side key names become the dynamic fields shown in CutSmart.</p>
+                                  <p>6. Test the Zap and then publish it.</p>
+                                </div>
+                              </div>
+                              <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Dynamic Field Tip</p>
+                                <p className="mt-3 text-[12px] text-[#475467]">
+                                  If you send keys like <span className="font-bold text-[#12345B]">Email</span>, <span className="font-bold text-[#12345B]">Daytime Phone</span>, <span className="font-bold text-[#12345B]">Suburb</span>, or <span className="font-bold text-[#12345B]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="space-y-4">
+                              <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Webhook URL</p>
+                                <div className="mt-3 flex items-center gap-2">
+                                  <input
+                                    value={zapierWebhookUrl}
+                                    readOnly
+                                    className="h-10 flex-1 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={!zapierWebhookUrl}
+                                    onClick={async () => {
+                                      if (!zapierWebhookUrl) return;
+                                      try {
+                                        await navigator.clipboard.writeText(zapierWebhookUrl);
+                                        setZapierCopyStatus("Webhook URL copied");
+                                      } catch {
+                                        setZapierCopyStatus("Copy failed");
+                                      }
+                                    }}
+                                    className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                                <p className="mt-2 text-[11px] text-[#6B7280]">
+                                  This URL already includes the secure company token, so you do not need to add separate auth headers in Zapier.
+                                </p>
+                              </div>
+                              <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What Happens Next</p>
+                                <div className="mt-3 space-y-2 text-[12px] text-[#475467]">
+                                  <p>Leads are saved under this company automatically.</p>
+                                  <p>The Leads tab reads them back through the server route.</p>
+                                  <p>You can use different field names for different companies because the lead display is dynamic.</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={() => setShowZapierHelp(false)}
+                            className="rounded-[10px] border border-[#D8DEE8] bg-white px-4 py-2 text-[12px] font-bold text-[#475467]"
+                          >
+                            Close
                           </button>
                         </div>
                       </div>
@@ -5201,6 +5452,308 @@ source -> "zapier-form"`}</pre>
           </div>
         </div>
         )}
+        {showZapierHelp ? (
+          <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
+            <button
+              type="button"
+              aria-label="Close Zapier help"
+              onClick={() => setShowZapierHelp(false)}
+              className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+            />
+            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
+                    <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                      Connect Zapier Leads
+                    </p>
+                    <p className="text-[11px] text-[#6B7280]">
+                      Use your company webhook URL to connect any Zapier form into CutSmart Leads.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowZapierHelp(false)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-5 py-5">
+                <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+                  <div className="space-y-4">
+                    <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What To Do In Zapier</p>
+                      <div className="mt-3 space-y-3 text-[12px] text-[#475467]">
+                        <p>1. Create a Zap with <span className="font-bold text-[#12345B]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
+                        <p>2. Add <span className="font-bold text-[#12345B]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
+                        <p>3. Paste your company webhook URL into the Zapier URL field.</p>
+                        <p>4. Set <span className="font-bold text-[#12345B]">Payload Type</span> to <span className="font-bold text-[#12345B]">JSON</span>.</p>
+                        <p>5. Add the lead fields you want to send in the body. The left-side key names become the dynamic fields shown in CutSmart.</p>
+                        <p>6. Test the Zap and then publish it.</p>
+                      </div>
+                    </div>
+                    <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Dynamic Field Tip</p>
+                      <p className="mt-3 text-[12px] text-[#475467]">
+                        If you send keys like <span className="font-bold text-[#12345B]">Email</span>, <span className="font-bold text-[#12345B]">Daytime Phone</span>, <span className="font-bold text-[#12345B]">Suburb</span>, or <span className="font-bold text-[#12345B]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Webhook URL</p>
+                      <div className="mt-3 flex items-center gap-2">
+                        <input
+                          value={zapierWebhookUrl}
+                          readOnly
+                          className="h-10 flex-1 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                        />
+                        <button
+                          type="button"
+                          disabled={!zapierWebhookUrl}
+                          onClick={async () => {
+                            if (!zapierWebhookUrl) return;
+                            try {
+                              await navigator.clipboard.writeText(zapierWebhookUrl);
+                              setZapierCopyStatus("Webhook URL copied");
+                            } catch {
+                              setZapierCopyStatus("Copy failed");
+                            }
+                          }}
+                          className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[11px] text-[#6B7280]">
+                        This URL already includes the secure company token, so you do not need to add separate auth headers in Zapier.
+                      </p>
+                    </div>
+                    <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What Happens Next</p>
+                      <div className="mt-3 space-y-2 text-[12px] text-[#475467]">
+                        <p>Leads are saved under this company automatically.</p>
+                        <p>The Leads tab reads them back through the server route.</p>
+                        <p>You can use different field names for different companies because the lead display is dynamic.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => setShowZapierHelp(false)}
+                  className="rounded-[10px] border border-[#D8DEE8] bg-white px-4 py-2 text-[12px] font-bold text-[#475467]"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {showLeadFieldsCustomize ? (
+          <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
+            <button
+              type="button"
+              aria-label="Close lead field customization"
+              onClick={() => setShowLeadFieldsCustomize(false)}
+              className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+            />
+            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[940px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+                <div>
+                  <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                    Customize Lead Fields
+                  </p>
+                  <p className="text-[11px] text-[#6B7280]">
+                    Choose which webhook fields show in the main row, which stay in the detail view, and which ones autofill New Project.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowLeadFieldsCustomize(false)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-5 py-5">
+                <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Lead Fields</p>
+                      <p className="mt-1 text-[12px] text-[#6B7280]">
+                        Drag to reorder. The order you set here controls both the compact lead row and the expanded details.
+                      </p>
+                      <p className="mt-1 text-[12px] text-[#6B7280]">
+                        Use the <span className="font-bold text-[#12345B]">Use For</span> column to tell CutSmart which incoming field should fill client name, phone, email, address, or notes when creating a project.
+                      </p>
+                    </div>
+                    {leadFieldsLoading ? (
+                      <span className="text-[11px] font-semibold text-[#94A3B8]">Loading fields...</span>
+                    ) : (
+                      <span className="text-[11px] font-semibold text-[#94A3B8]">
+                        {mergedLeadFieldLayout.length} field{mergedLeadFieldLayout.length === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </div>
+                  {mergedLeadFieldLayout.length === 0 ? (
+                    <p className="mt-4 rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-4 text-[12px] text-[#6B7280]">
+                      No lead fields detected yet. Submit at least one Zapier lead and the available webhook fields will appear here.
+                    </p>
+                  ) : (
+                    <div className="mt-4 space-y-2">
+                      <div className="grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 px-2 text-[10px] font-extrabold uppercase tracking-[0.7px] text-[#94A3B8]">
+                        <p></p>
+                        <p>Field</p>
+                        <p className="text-center">Use For</p>
+                        <p className="text-center">Main Row</p>
+                        <p className="text-center">Details</p>
+                      </div>
+                      {mergedLeadFieldLayout.map((field, idx) => (
+                        <div
+                          key={field.key}
+                          className={`grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 rounded-[10px] border px-2 py-2 ${
+                            leadFieldDragIndex === idx
+                              ? "border-[#B7C7E5] bg-[#EEF3FA]"
+                              : leadFieldDragOverIndex === idx
+                                ? "border-[#D8DEE8] bg-[#F3F6FA]"
+                                : "border-[#E4E7EC] bg-[#F8FAFC]"
+                          }`}
+                          onDragOver={(event) => {
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(event) => {
+                            event.preventDefault();
+                            if (leadFieldDragIndex == null || leadFieldDragIndex === idx) return;
+                            setZapierLeads((prev) => ({
+                              ...prev,
+                              fieldLayout: normalizeLeadFieldLayoutOrder(
+                                moveRowTo(
+                                  mergeLeadFieldLayout(availableLeadFields, prev.fieldLayout),
+                                  leadFieldDragIndex,
+                                  idx,
+                                ),
+                              ),
+                            }));
+                            setLeadFieldDragIndex(idx);
+                            setLeadFieldDragOverIndex(idx);
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            setLeadFieldDragIndex(null);
+                            setLeadFieldDragOverIndex(null);
+                            triggerToggleAutosave();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(event) => {
+                              setLeadFieldDragIndex(idx);
+                              setLeadFieldDragOverIndex(idx);
+                              event.dataTransfer.effectAllowed = "move";
+                            }}
+                            onDragEnd={() => {
+                              setLeadFieldDragIndex(null);
+                              setLeadFieldDragOverIndex(null);
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#98A2B3]"
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={14} />
+                          </button>
+                          <div className="min-w-0">
+                            <p className="truncate text-[12px] font-semibold text-[#334155]">{field.label}</p>
+                            <p className="truncate text-[10px] text-[#94A3B8]">{field.key}</p>
+                          </div>
+                          <label className="flex items-center justify-center">
+                            <select
+                              value={field.projectFieldTarget || ""}
+                              onChange={(event) => {
+                                const nextTarget = String(event.target.value || "") as LeadProjectFieldTarget;
+                                setZapierLeads((prev) => ({
+                                  ...prev,
+                                  fieldLayout: mergeLeadFieldLayout(availableLeadFields, prev.fieldLayout).map((row) => {
+                                    const sameField =
+                                      normalizeLeadFieldKey(row.key) === normalizeLeadFieldKey(field.key);
+                                    const sameTarget =
+                                      nextTarget &&
+                                      row.projectFieldTarget === nextTarget &&
+                                      normalizeLeadFieldKey(row.key) !== normalizeLeadFieldKey(field.key);
+                                    if (sameField) return { ...row, projectFieldTarget: nextTarget };
+                                    if (sameTarget) return { ...row, projectFieldTarget: "" };
+                                    return row;
+                                  }),
+                                }));
+                                triggerToggleAutosave();
+                              }}
+                              className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#334155] outline-none"
+                            >
+                              {LEAD_PROJECT_FIELD_TARGET_OPTIONS.map((option) => (
+                                <option key={option.value || "none"} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center justify-center">
+                            <input
+                              type="checkbox"
+                              checked={field.showInRow}
+                              onChange={() =>
+                                setZapierLeads((prev) => ({
+                                  ...prev,
+                                  fieldLayout: mergeLeadFieldLayout(availableLeadFields, prev.fieldLayout).map((row) =>
+                                    normalizeLeadFieldKey(row.key) === normalizeLeadFieldKey(field.key)
+                                      ? { ...row, showInRow: !row.showInRow }
+                                      : row,
+                                  ),
+                                }))
+                              }
+                            />
+                          </label>
+                          <label className="flex items-center justify-center">
+                            <input
+                              type="checkbox"
+                              checked={field.showInDetail}
+                              onChange={() =>
+                                setZapierLeads((prev) => ({
+                                  ...prev,
+                                  fieldLayout: mergeLeadFieldLayout(availableLeadFields, prev.fieldLayout).map((row) =>
+                                    normalizeLeadFieldKey(row.key) === normalizeLeadFieldKey(field.key)
+                                      ? { ...row, showInDetail: !row.showInDetail }
+                                      : row,
+                                  ),
+                                }))
+                              }
+                            />
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => setShowLeadFieldsCustomize(false)}
+                  className="rounded-[10px] border border-[#D8DEE8] bg-white px-4 py-2 text-[12px] font-bold text-[#475467]"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </AppShell>
     </ProtectedRoute>
   );

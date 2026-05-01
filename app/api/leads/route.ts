@@ -201,3 +201,85 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({ ok: true, leadId: leadRef.id });
 }
+
+export async function DELETE(request: NextRequest) {
+  if (!adminDb || !hasFirebaseAdminConfig) {
+    return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
+  }
+
+  const url = new URL(request.url);
+  const body = await parseBody(request);
+  const companyId = pickFirstNonEmpty(
+    body.companyId,
+    body.companyID,
+    body.company_id,
+    url.searchParams.get("companyId"),
+    url.searchParams.get("companyID"),
+    request.headers.get("x-company-id"),
+  );
+  const token = pickFirstNonEmpty(
+    url.searchParams.get("token"),
+    request.headers.get("x-zapier-secret"),
+    body.token,
+    body.webhookSecret,
+    body.zapierSecret,
+  );
+  const sampleOnly = ["1", "true", "yes"].includes(
+    pickFirstNonEmpty(body.sampleOnly, url.searchParams.get("sampleOnly")).toLowerCase(),
+  );
+
+  if (!companyId || !token) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: !companyId ? "missing-company-id" : "missing-webhook-token",
+      },
+      { status: 400 },
+    );
+  }
+  if (!sampleOnly) {
+    return NextResponse.json({ ok: false, error: "missing-delete-mode" }, { status: 400 });
+  }
+
+  const companySnap = await adminDb.collection("companies").doc(companyId).get().catch(() => null);
+  const companyDoc = companySnap?.exists ? ((companySnap.data() ?? {}) as Record<string, unknown>) : null;
+  if (!companyDoc) {
+    return NextResponse.json({ ok: false, error: "company-not-found" }, { status: 404 });
+  }
+  const zapier = readZapierLeadsConfig(companyDoc);
+
+  if (!zapier.enabled) {
+    return NextResponse.json({ ok: false, error: "zapier-leads-disabled" }, { status: 403 });
+  }
+  if (!zapier.webhookSecret) {
+    return NextResponse.json({ ok: false, error: "missing-company-webhook-secret" }, { status: 403 });
+  }
+  if (zapier.webhookSecret !== token) {
+    return NextResponse.json({ ok: false, error: "webhook-token-mismatch" }, { status: 403 });
+  }
+
+  try {
+    const snap = await adminDb
+      .collection("companies")
+      .doc(companyId)
+      .collection("leads")
+      .limit(500)
+      .get();
+    const sampleDocs = snap.docs.filter((docSnap) => {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const rawFields =
+        data.rawFields && typeof data.rawFields === "object"
+          ? (data.rawFields as Record<string, unknown>)
+          : {};
+      return rawFields.__sampleLead === true;
+    });
+    const batch = adminDb.batch();
+    sampleDocs.forEach((docSnap) => batch.delete(docSnap.ref));
+    if (sampleDocs.length > 0) {
+      await batch.commit();
+    }
+    return NextResponse.json({ ok: true, deleted: sampleDocs.length });
+  } catch {
+    return NextResponse.json({ ok: false, error: "lead-delete-failed" }, { status: 500 });
+  }
+}
