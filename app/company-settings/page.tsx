@@ -64,6 +64,10 @@ type BackupTemplateSettings = {
   quoteTemplateMarginMm: string;
   quoteTemplateFooterPinBottom: boolean;
 };
+type ZapierLeadsSettings = {
+  enabled: boolean;
+  webhookSecret: string;
+};
 type PendingOwnerTransferState = {
   currentOwnerUid: string;
   currentOwnerName: string;
@@ -201,6 +205,11 @@ function textColorForHex(hex: string): string {
   const b = Number.parseInt(clean.slice(4, 6), 16);
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return luminance > 0.62 ? "#0F172A" : "#FFFFFF";
+}
+
+function generateZapierSecret() {
+  const randomPart = () => Math.random().toString(36).slice(2, 10);
+  return `zpr_${randomPart()}${randomPart()}${Date.now().toString(36)}`;
 }
 
 function Panel({
@@ -1004,6 +1013,9 @@ export default function CompanySettingsPage() {
   const [edgebandingRoundNearestMeters, setEdgebandingRoundNearestMeters] = useState("");
   const [unlockSuffix, setUnlockSuffix] = useState("");
   const [unlockHours, setUnlockHours] = useState("6");
+  const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "" });
+  const [zapierCopyStatus, setZapierCopyStatus] = useState("");
+  const [appOrigin, setAppOrigin] = useState("");
   const [backupTemplate, setBackupTemplate] = useState<BackupTemplateSettings>({
     quoteTemplateHeaderHtml: "",
     quoteTemplateFooterHtml: "",
@@ -1047,6 +1059,11 @@ export default function CompanySettingsPage() {
     if (!form?.themeColor) return;
     window.localStorage.setItem(ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY, String(form.themeColor));
   }, [form.themeColor]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setAppOrigin(window.location.origin);
+  }, []);
 
   useEffect(() => {
     const run = async () => {
@@ -1145,6 +1162,18 @@ export default function CompanySettingsPage() {
         setEdgebandingRoundNearestMeters(edgeSettings.roundNearestMeters);
         setUnlockSuffix(toStr(doc.productionUnlockPasswordSuffix));
         setUnlockHours(toStr(doc.productionUnlockDurationHours, "6"));
+        const integrationsDoc =
+          doc.integrations && typeof doc.integrations === "object"
+            ? (doc.integrations as Record<string, unknown>)
+            : {};
+        const zapierDoc =
+          integrationsDoc.zapierLeads && typeof integrationsDoc.zapierLeads === "object"
+            ? (integrationsDoc.zapierLeads as Record<string, unknown>)
+            : {};
+        setZapierLeads({
+          enabled: Boolean(zapierDoc.enabled),
+          webhookSecret: toStr(zapierDoc.webhookSecret),
+        });
         setBackupTemplate({
           quoteTemplateHeaderHtml: toStr(doc.quoteTemplateHeaderHtml),
           quoteTemplateFooterHtml: toStr(doc.quoteTemplateFooterHtml),
@@ -1733,6 +1762,15 @@ export default function CompanySettingsPage() {
 
   const activeRoleModal = activeRoleModalIndex !== null ? roles[activeRoleModalIndex] ?? null : null;
   const activeRoleIsProtected = isProtectedStarterRole(activeRoleModal?.id || activeRoleModal?.name);
+  const zapierWebhookBaseUrl = appOrigin ? `${appOrigin}/api/leads` : "";
+  const zapierWebhookUrl = useMemo(() => {
+    if (!zapierWebhookBaseUrl || !activeCompanyId || !zapierLeads.webhookSecret) return "";
+    const params = new URLSearchParams({
+      companyId: activeCompanyId,
+      token: zapierLeads.webhookSecret,
+    });
+    return `${zapierWebhookBaseUrl}?${params.toString()}`;
+  }, [activeCompanyId, zapierLeads.webhookSecret, zapierWebhookBaseUrl]);
 
   const downloadBackupSnapshot = () => {
     const snapshot = {
@@ -2093,6 +2131,13 @@ export default function CompanySettingsPage() {
         .map((row) => ({ low: toStr(row.low), high: toStr(row.high), discount: toStr(row.discount) }))
         .filter((row) => row.low && row.high && row.discount),
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
+      integrations: {
+        ...(((company as Record<string, unknown> | null)?.integrations as Record<string, unknown> | undefined) ?? {}),
+        zapierLeads: {
+          enabled: Boolean(zapierLeads.enabled),
+          webhookSecret: toStr(zapierLeads.webhookSecret),
+        },
+      },
       quoteTemplateHeaderHtml: toStr(backupTemplate.quoteTemplateHeaderHtml),
       quoteTemplateFooterHtml: toStr(backupTemplate.quoteTemplateFooterHtml),
       quoteTemplatePageSize: toStr(backupTemplate.quoteTemplatePageSize, "A4"),
@@ -2120,9 +2165,9 @@ export default function CompanySettingsPage() {
       setSaveLabel(`Save failed (${result.error})`);
     }
     if (ok) {
-      setCompany((prev) => ({
-        ...(prev ?? {}),
-        ...form,
+        setCompany((prev) => ({
+          ...(prev ?? {}),
+          ...form,
         projectStatuses: statuses,
         dashboardCompleteLegend: dashboardLegend,
         projectTagUsage: { tags: projectTagUsage },
@@ -2148,10 +2193,17 @@ export default function CompanySettingsPage() {
         itemCategories,
         salesJobTypes: jobTypes,
         quoteExtras,
-        salesQuoteHelpers: quoteHelpers,
-        salesQuoteDiscountTiers: discountTiers,
-        salesMinusOffQuoteTotal: minusOffQuoteTotal,
-        quoteTemplateHeaderHtml: backupTemplate.quoteTemplateHeaderHtml,
+          salesQuoteHelpers: quoteHelpers,
+          salesQuoteDiscountTiers: discountTiers,
+          salesMinusOffQuoteTotal: minusOffQuoteTotal,
+          integrations: {
+            ...((((prev ?? {}) as Record<string, unknown>).integrations as Record<string, unknown> | undefined) ?? {}),
+            zapierLeads: {
+              enabled: Boolean(zapierLeads.enabled),
+              webhookSecret: toStr(zapierLeads.webhookSecret),
+            },
+          },
+          quoteTemplateHeaderHtml: backupTemplate.quoteTemplateHeaderHtml,
         quoteTemplateFooterHtml: backupTemplate.quoteTemplateFooterHtml,
         quoteTemplatePageSize: backupTemplate.quoteTemplatePageSize,
         quoteTemplateMarginMm: backupTemplate.quoteTemplateMarginMm,
@@ -2227,10 +2279,11 @@ export default function CompanySettingsPage() {
     itemCategories,
     jobTypes,
     quoteExtras,
-    quoteHelpers,
-    discountTiers,
-    minusOffQuoteTotal,
-    backupTemplate,
+      quoteHelpers,
+      discountTiers,
+      minusOffQuoteTotal,
+      zapierLeads,
+      backupTemplate,
     hardware,
     nesting,
     cutlistProduction,
@@ -2533,10 +2586,156 @@ export default function CompanySettingsPage() {
                 </div>
               )}
 
-              {active === "integrations" && (
-                <div className="space-y-3">
-                  <Panel title="Quote Layout Builder">
-                    <div className="space-y-3 text-[12px]">
+                {active === "integrations" && (
+                  <div className="space-y-3">
+                    <Panel title="Zapier Leads">
+                      <div className="space-y-4 text-[12px]">
+                        <p className="text-[11px] text-[#6B7280]">
+                          Connect a Zapier form to CutSmart so new website submissions flow into the Leads page for this company.
+                        </p>
+                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
+                          <p className="font-bold text-[#334155]">Enable Leads Webhook</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setZapierLeads((prev) => ({
+                                  ...prev,
+                                  enabled: !prev.enabled,
+                                  webhookSecret: prev.webhookSecret || generateZapierSecret(),
+                                }))
+                              }
+                              className={`h-8 rounded-[10px] border px-3 text-[12px] font-bold ${
+                                zapierLeads.enabled
+                                  ? "border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C]"
+                                  : "border-[#D8DEE8] bg-white text-[#475467]"
+                              }`}
+                            >
+                              {zapierLeads.enabled ? "Enabled" : "Disabled"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setZapierLeads((prev) => ({
+                                  ...prev,
+                                  enabled: true,
+                                  webhookSecret: generateZapierSecret(),
+                                }))
+                              }
+                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467]"
+                            >
+                              {zapierLeads.webhookSecret ? "Regenerate Secret" : "Generate Secret"}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
+                          <p className="font-bold text-[#334155]">Webhook URL</p>
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                value={zapierWebhookUrl}
+                                readOnly
+                                placeholder="Generate a secret to create the webhook URL"
+                                className="h-9 min-w-[360px] flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                              />
+                              <button
+                                type="button"
+                                disabled={!zapierWebhookUrl}
+                                onClick={async () => {
+                                  if (!zapierWebhookUrl) return;
+                                  try {
+                                    await navigator.clipboard.writeText(zapierWebhookUrl);
+                                    setZapierCopyStatus("Webhook URL copied");
+                                  } catch {
+                                    setZapierCopyStatus("Copy failed");
+                                  }
+                                }}
+                                className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                              >
+                                Copy URL
+                              </button>
+                            </div>
+                            <p className="text-[11px] text-[#6B7280]">
+                              Paste this full URL into the Zapier Webhooks POST step. It already includes the company ID and secure token.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
+                          <p className="font-bold text-[#334155]">Company ID</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              value={activeCompanyId}
+                              readOnly
+                              className="h-9 min-w-[220px] rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                            />
+                            <button
+                              type="button"
+                              disabled={!activeCompanyId}
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(activeCompanyId);
+                                  setZapierCopyStatus("Company ID copied");
+                                } catch {
+                                  setZapierCopyStatus("Copy failed");
+                                }
+                              }}
+                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                            >
+                              Copy Company ID
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
+                          <p className="font-bold text-[#334155]">Webhook Secret</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              value={zapierLeads.webhookSecret}
+                              readOnly
+                              placeholder="Generate secret"
+                              className="h-9 min-w-[320px] flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                            />
+                            <button
+                              type="button"
+                              disabled={!zapierLeads.webhookSecret}
+                              onClick={async () => {
+                                if (!zapierLeads.webhookSecret) return;
+                                try {
+                                  await navigator.clipboard.writeText(zapierLeads.webhookSecret);
+                                  setZapierCopyStatus("Webhook secret copied");
+                                } catch {
+                                  setZapierCopyStatus("Copy failed");
+                                }
+                              }}
+                              className="h-8 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                            >
+                              Copy Secret
+                            </button>
+                          </div>
+                        </div>
+                        {zapierCopyStatus ? (
+                          <p className="text-[11px] font-semibold text-[#1F6A3B]">{zapierCopyStatus}</p>
+                        ) : null}
+                        <div className="rounded-[10px] border border-[#D8DEE8] bg-white p-3">
+                          <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[#12345B]">Zapier Setup</p>
+                          <div className="mt-2 space-y-2 text-[12px] text-[#475467]">
+                            <p>1. Trigger: <span className="font-bold">Zapier Forms → New Submission</span></p>
+                            <p>2. Action: <span className="font-bold">Webhooks by Zapier → POST</span></p>
+                            <p>3. URL: paste the Webhook URL above</p>
+                            <p>4. Payload Type: <span className="font-bold">JSON</span></p>
+                            <p>5. Data fields to send:</p>
+                            <pre className="overflow-auto rounded-[8px] border border-[#E4E7EC] bg-[#F8FAFC] p-3 text-[11px] text-[#334155]">{`name -> your form name field
+email -> your form email field
+phone -> your form phone field
+message -> your form message field
+submittedAt -> submission date field
+source -> "zapier-form"`}</pre>
+                            <p>Headers are optional if you use the full Webhook URL above, because the secure token is already embedded in it.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </Panel>
+                    <Panel title="Quote Layout Builder">
+                      <div className="space-y-3 text-[12px]">
                       <p className="text-[11px] text-[#6B7280]">
                         Build the company quote layout once, then use that same template across every project.
                       </p>

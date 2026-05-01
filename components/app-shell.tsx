@@ -8,6 +8,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import {
   Building2,
   ImagePlus,
+  Inbox,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -52,6 +53,7 @@ const brandingMemoryCacheByCompany: Record<string, CompanyBrandingCache> = {};
 
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/leads", label: "Leads", icon: Inbox },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
   { href: "/company-updates", label: "Company Updates", icon: Waves },
   { href: "/changelog", label: "Changelog", icon: Search },
@@ -227,6 +229,9 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     () =>
       topNav.filter((item) => {
         if (item.href === "/dashboard") {
+          return canAccessDashboard;
+        }
+        if (item.href === "/leads") {
           return canAccessDashboard;
         }
         if (item.href === "/company-settings") {

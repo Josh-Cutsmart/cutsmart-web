@@ -1,18 +1,7 @@
-Version: v0.1.9
+Version: v0.2.0
 
 whatsNew: [
 <u><b>General:</u></b>
-- Changed all textboxes to run from a proper engine text editor.
-- Fixed Company wide icon colours not updating properly.
-- Added "Dark Mode" toggle with SOME pages supporting dark mode - more to come.
------- User Settings
------- Dashboard
------- Project Details (Base Tabs)
-
-<u><b>Production:</u></b>
-- Fixed users being able to edit textboxes while they only have "view" access.
-- Changed the "Add board" buttons to match the rest of the applicaiton.
-- "Unlock Edit" button no longer shows while user has temporary AND permanent edit access.
-- Temporary Edit access can now be revoked by project editors, Assigned users, and project creator.
+- Zapier Webhoook testing
 ]
 

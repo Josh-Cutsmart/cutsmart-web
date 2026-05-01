@@ -1728,6 +1728,59 @@ export async function fetchCompanyDoc(companyId: string): Promise<Record<string,
   }
 }
 
+export type CompanyLeadRow = {
+  id: string;
+  companyId: string;
+  name: string;
+  email: string;
+  phone: string;
+  message: string;
+  formName: string;
+  submittedAtIso: string;
+  createdAtIso: string;
+  source: string;
+  status: "new" | "contacted" | "converted" | "archived";
+  rawFields?: Record<string, unknown>;
+};
+
+function normalizeLeadStatus(value: unknown): CompanyLeadRow["status"] {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === "contacted" || raw === "converted" || raw === "archived") return raw;
+  return "new";
+}
+
+export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadRow[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return [];
+  try {
+    const snap = await getDocs(
+      query(collection(db, "companies", cid, "leads"), orderBy("createdAt", "desc"), limit(500)),
+    );
+    return snap.docs.map((docSnap) => {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      return {
+        id: String(data.id ?? docSnap.id),
+        companyId: cid,
+        name: String(data.name ?? "").trim(),
+        email: String(data.email ?? "").trim(),
+        phone: String(data.phone ?? "").trim(),
+        message: String(data.message ?? "").trim(),
+        formName: String(data.formName ?? "").trim(),
+        submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
+        createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+        source: String(data.source ?? "").trim() || "zapier-form",
+        status: normalizeLeadStatus(data.status),
+        rawFields:
+          data.rawFields && typeof data.rawFields === "object"
+            ? (data.rawFields as Record<string, unknown>)
+            : undefined,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function createCompanyInviteDetailed(
   companyId: string,
   email: string,
