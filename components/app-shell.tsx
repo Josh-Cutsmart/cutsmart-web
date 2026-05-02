@@ -42,7 +42,10 @@ import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHt
 import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
+const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
 const UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX = "cutsmart_update_notice_seen_";
+const ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT = "cutsmart:zapier-leads-visibility-updated";
+const COMPANY_ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 type CompanyBrandingCache = {
   themeColor: string;
@@ -50,7 +53,15 @@ type CompanyBrandingCache = {
   name: string;
 };
 
+type CompanyAccessCache = {
+  role: string;
+  permissionKeys: string[];
+  isZapierLeadsEnabled: boolean;
+  cachedAt: number;
+};
+
 const brandingMemoryCacheByCompany: Record<string, CompanyBrandingCache> = {};
+const companyAccessMemoryCacheByKey: Record<string, CompanyAccessCache> = {};
 
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -104,6 +115,59 @@ function formatMobileLikeDesktop(input: string) {
 
 function normalizeTagValue(raw: string) {
   return String(raw || "").replace(/,/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function buildCompanyAccessCacheKey(companyId: string, uid: string) {
+  const cleanCompanyId = String(companyId || "").trim();
+  const cleanUid = String(uid || "").trim();
+  if (!cleanCompanyId || !cleanUid) return "";
+  return `${cleanCompanyId}::${cleanUid}`;
+}
+
+function readCompanyAccessCache(cacheKey: string): CompanyAccessCache | null {
+  const cleanKey = String(cacheKey || "").trim();
+  if (!cleanKey) return null;
+  const memoryValue = companyAccessMemoryCacheByKey[cleanKey];
+  if (memoryValue && Date.now() - Number(memoryValue.cachedAt || 0) <= COMPANY_ACCESS_CACHE_TTL_MS) {
+    return memoryValue;
+  }
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(`${COMPANY_ACCESS_CACHE_KEY_PREFIX}${cleanKey}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const cached: CompanyAccessCache = {
+      role: String(parsed.role || "").trim(),
+      permissionKeys: Array.isArray(parsed.permissionKeys)
+        ? parsed.permissionKeys.map((item) => String(item || "").trim()).filter(Boolean)
+        : [],
+      isZapierLeadsEnabled: Boolean(parsed.isZapierLeadsEnabled),
+      cachedAt: Number(parsed.cachedAt || 0),
+    };
+    if (!cached.cachedAt || Date.now() - cached.cachedAt > COMPANY_ACCESS_CACHE_TTL_MS) {
+      return null;
+    }
+    companyAccessMemoryCacheByKey[cleanKey] = cached;
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writeCompanyAccessCache(cacheKey: string, payload: Omit<CompanyAccessCache, "cachedAt">) {
+  const cleanKey = String(cacheKey || "").trim();
+  if (!cleanKey) return;
+  const cached: CompanyAccessCache = {
+    ...payload,
+    cachedAt: Date.now(),
+  };
+  companyAccessMemoryCacheByKey[cleanKey] = cached;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${COMPANY_ACCESS_CACHE_KEY_PREFIX}${cleanKey}`, JSON.stringify(cached));
+  } catch {
+    // ignore storage write issues
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -178,6 +242,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [companyLogoPath, setCompanyLogoPath] = useState("");
   const [companyDisplayName, setCompanyDisplayName] = useState("");
+  const [isZapierLeadsEnabled, setIsZapierLeadsEnabled] = useState(false);
   const [companyTagSuggestions, setCompanyTagSuggestions] = useState<string[]>([]);
   const [defaultProjectStatus, setDefaultProjectStatus] = useState("New");
   const [defaultQuoteExtras, setDefaultQuoteExtras] = useState<string[]>([]);
@@ -226,6 +291,12 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     return normalizedEffectivePermissions.includes("company.dashboard.view");
   }, [normalizedEffectivePermissions, roleForUi]);
 
+  const canAccessLeads = useMemo(() => {
+    const role = roleForUi;
+    if (role === "owner" || role === "admin") return true;
+    return normalizedEffectivePermissions.includes("leads.*");
+  }, [normalizedEffectivePermissions, roleForUi]);
+
   const visibleTopNav = useMemo(
     () =>
       topNav.filter((item) => {
@@ -233,14 +304,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
           return canAccessDashboard;
         }
         if (item.href === "/leads") {
-          return canAccessDashboard;
+          return canAccessLeads && isZapierLeadsEnabled;
         }
         if (item.href === "/company-settings") {
           return canAccessCompanySettings;
         }
         return true;
       }),
-    [canAccessCompanySettings, canAccessDashboard],
+    [canAccessCompanySettings, canAccessDashboard, canAccessLeads, isZapierLeadsEnabled],
   );
 
   useLayoutEffect(() => {
@@ -289,6 +360,33 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onZapierLeadsVisibilityUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ companyId?: string; enabled?: boolean }>).detail;
+      const eventCompanyId = String(detail?.companyId || "").trim();
+      const storedCompanyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+      const directCompanyId = String(user?.companyId || "").trim();
+      const activeCompanyId = storedCompanyId || directCompanyId;
+      if (!eventCompanyId || !activeCompanyId || eventCompanyId !== activeCompanyId) return;
+      const nextEnabled = Boolean(detail?.enabled);
+      setIsZapierLeadsEnabled(nextEnabled);
+      const cacheKey = buildCompanyAccessCacheKey(activeCompanyId, String(user?.uid || "").trim());
+      const existing = readCompanyAccessCache(cacheKey);
+      if (existing) {
+        writeCompanyAccessCache(cacheKey, {
+          role: existing.role,
+          permissionKeys: existing.permissionKeys,
+          isZapierLeadsEnabled: nextEnabled,
+        });
+      }
+    };
+    window.addEventListener(ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT, onZapierLeadsVisibilityUpdated as EventListener);
+    return () => {
+      window.removeEventListener(ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT, onZapierLeadsVisibilityUpdated as EventListener);
+    };
+  }, [user?.companyId, user?.uid]);
+
   useLayoutEffect(() => {
     if (typeof window === "undefined") return;
     const storedCompanyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
@@ -319,6 +417,29 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       // ignore cache parse issues
     }
   }, [user?.companyId]);
+
+  useLayoutEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    const role = String(user?.role || "").trim().toLowerCase();
+    const storedCompanyId =
+      typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
+    const directCompanyId = String(user?.companyId || "").trim();
+    const companyId = storedCompanyId || directCompanyId;
+    if (!uid || !companyId) {
+      setEffectiveCompanyRole(role);
+      setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
+      return;
+    }
+    const cached = readCompanyAccessCache(buildCompanyAccessCacheKey(companyId, uid));
+    if (!cached) {
+      setEffectiveCompanyRole(role);
+      setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
+      return;
+    }
+    setEffectiveCompanyRole(cached.role || role);
+    setEffectiveCompanyPermissions(cached.permissionKeys);
+    setIsZapierLeadsEnabled(cached.isZapierLeadsEnabled);
+  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   useEffect(() => {
     const load = async () => {
@@ -354,6 +475,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
       const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
       if (!companyId) return;
+      const accessCacheKey = buildCompanyAccessCacheKey(companyId, String(user?.uid || "").trim());
       if (typeof window !== "undefined") {
         if (!storedCompanyId) {
           window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
@@ -364,7 +486,6 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         setCompanyThemeColor(memoryBranding.themeColor || "#2F6BFF");
         setCompanyLogoPath(memoryBranding.logoPath || "");
         setCompanyDisplayName(memoryBranding.name || "Company");
-        return;
       }
       const cachedBranding = readBrandingCache(companyId);
       if (cachedBranding) {
@@ -376,10 +497,19 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
           logoPath: cachedBranding.logoPath || "",
           name: cachedBranding.name || "Company",
         };
-        return;
       }
       const doc = await fetchCompanyDoc(companyId);
       const color = String((doc as Record<string, unknown> | null)?.themeColor ?? "").trim();
+      const integrations =
+        doc && typeof (doc as Record<string, unknown>).integrations === "object"
+          ? ((doc as Record<string, unknown>).integrations as Record<string, unknown>)
+          : {};
+      const zapierLeadsDoc =
+        integrations.zapierLeads && typeof integrations.zapierLeads === "object"
+          ? (integrations.zapierLeads as Record<string, unknown>)
+          : {};
+      const nextIsZapierLeadsEnabled = Boolean(zapierLeadsDoc.enabled);
+      setIsZapierLeadsEnabled(nextIsZapierLeadsEnabled);
       if (color) {
         setCompanyThemeColor(color);
       }
@@ -397,6 +527,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         logoPath,
         name: name || "Company",
       };
+      const existingAccessCache = readCompanyAccessCache(accessCacheKey);
+      if (existingAccessCache) {
+        writeCompanyAccessCache(accessCacheKey, {
+          role: existingAccessCache.role,
+          permissionKeys: existingAccessCache.permissionKeys,
+          isZapierLeadsEnabled: nextIsZapierLeadsEnabled,
+        });
+      }
     };
     void load();
   }, [user?.companyId, user?.uid]);
@@ -503,16 +641,31 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         }
         return;
       }
+      const cacheKey = buildCompanyAccessCacheKey(companyId, user.uid);
+      const cached = readCompanyAccessCache(cacheKey);
+      if (cached && !cancelled) {
+        setEffectiveCompanyRole(cached.role || String(user?.role || "").trim().toLowerCase());
+        setEffectiveCompanyPermissions(cached.permissionKeys);
+        setIsZapierLeadsEnabled(cached.isZapierLeadsEnabled);
+        return;
+      }
       const companyAccess = await fetchCompanyAccess(companyId, user.uid);
       if (cancelled) return;
-      setEffectiveCompanyRole(String(companyAccess?.role || user?.role || "").trim().toLowerCase());
-      setEffectiveCompanyPermissions(companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []));
+      const nextRole = String(companyAccess?.role || user?.role || "").trim().toLowerCase();
+      const nextPermissions = companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []);
+      setEffectiveCompanyRole(nextRole);
+      setEffectiveCompanyPermissions(nextPermissions);
+      writeCompanyAccessCache(cacheKey, {
+        role: nextRole,
+        permissionKeys: nextPermissions,
+        isZapierLeadsEnabled,
+      });
     };
     void loadCompanyAccess();
     return () => {
       cancelled = true;
     };
-  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
+  }, [isZapierLeadsEnabled, user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   useEffect(() => {
     const openNewProject = () => {

@@ -1738,15 +1738,22 @@ export type CompanyLeadRow = {
   formName: string;
   submittedAtIso: string;
   createdAtIso: string;
+  updatedAtIso?: string;
   source: string;
-  status: "new" | "contacted" | "converted" | "archived";
+  status: string;
   rawFields?: Record<string, unknown>;
 };
 
 function normalizeLeadStatus(value: unknown): CompanyLeadRow["status"] {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (raw === "contacted" || raw === "converted" || raw === "archived") return raw;
-  return "new";
+  const raw = String(value ?? "").trim();
+  const normalized = raw.toLowerCase();
+  if (!raw) return "New";
+  if (normalized === "new") return "New";
+  if (normalized === "contacted") return "Contacted";
+  if (normalized === "qualified") return "Qualified";
+  if (normalized === "converted") return "Converted";
+  if (normalized === "archived") return "Archived";
+  return raw;
 }
 
 export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadRow[]> {
@@ -1768,6 +1775,7 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
         formName: String(data.formName ?? "").trim(),
         submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+        updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
         source: String(data.source ?? "").trim() || "zapier-form",
         status: normalizeLeadStatus(data.status),
         rawFields:
@@ -1778,6 +1786,86 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
     });
   } catch {
     return [];
+  }
+}
+
+export async function updateCompanyLeadStatus(
+  companyId: string,
+  leadId: string,
+  status: CompanyLeadRow["status"],
+): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  const lid = String(leadId || "").trim();
+  if (!db || !cid || !lid) return false;
+  try {
+    await updateDoc(doc(db, "companies", cid, "leads", lid), {
+      status,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function createCompanyLead(
+  companyId: string,
+  payload: {
+    rawFields: Record<string, unknown>;
+    name?: string;
+    email?: string;
+    phone?: string;
+    message?: string;
+    formName?: string;
+    source?: string;
+    status?: string;
+  },
+): Promise<CompanyLeadRow | null> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return null;
+  try {
+    const leadRef = doc(collection(db, "companies", cid, "leads"));
+    const createdAtIso = new Date().toISOString();
+    const nextLead: CompanyLeadRow = {
+      id: leadRef.id,
+      companyId: cid,
+      name: String(payload.name ?? "").trim(),
+      email: String(payload.email ?? "").trim(),
+      phone: String(payload.phone ?? "").trim(),
+      message: String(payload.message ?? "").trim(),
+      formName: String(payload.formName ?? "").trim() || "Manual Lead",
+      submittedAtIso: createdAtIso,
+      createdAtIso,
+      updatedAtIso: createdAtIso,
+      source: String(payload.source ?? "").trim() || "manual-entry",
+      status: normalizeLeadStatus(payload.status ?? "New"),
+      rawFields:
+        payload.rawFields && typeof payload.rawFields === "object"
+          ? payload.rawFields
+          : {},
+    };
+    await setDoc(leadRef, {
+      id: nextLead.id,
+      companyId: nextLead.companyId,
+      name: nextLead.name,
+      email: nextLead.email,
+      phone: nextLead.phone,
+      message: nextLead.message,
+      formName: nextLead.formName,
+      submittedAtIso: nextLead.submittedAtIso,
+      submittedAt: nextLead.submittedAtIso,
+      source: nextLead.source,
+      status: nextLead.status,
+      rawFields: nextLead.rawFields,
+      createdAt: serverTimestamp(),
+      createdAtIso,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: createdAtIso,
+    });
+    return nextLead;
+  } catch {
+    return null;
   }
 }
 

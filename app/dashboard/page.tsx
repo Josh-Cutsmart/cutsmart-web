@@ -222,6 +222,7 @@ export default function DashboardPage() {
   const [roleRows, setRoleRows] = useState<RoleRow[]>([]);
   const [creatorColorByUid, setCreatorColorByUid] = useState<Record<string, string>>({});
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
+  const [hoveredProjectId, setHoveredProjectId] = useState("");
   const [showCompletedProjectsModal, setShowCompletedProjectsModal] = useState(false);
   const [completedProjectsModalExpanded, setCompletedProjectsModalExpanded] = useState(false);
   const [completedMonthFrom, setCompletedMonthFrom] = useState("");
@@ -1281,8 +1282,10 @@ export default function DashboardPage() {
                         className="w-full cursor-pointer rounded-[12px] border border-[#DCE3EC] bg-white px-3 py-3 text-left hover:bg-[#F8FAFD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#93C5FD]"
                         style={{
                           borderColor: dashboardPalette.border,
-                          backgroundColor: dashboardPalette.panelBg,
+                          backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg,
                         }}
+                        onMouseEnter={() => setHoveredProjectId(project.id)}
+                        onMouseLeave={() => setHoveredProjectId((prev) => (prev === project.id ? "" : prev))}
                         onClick={() => void openProjectInDashboard(project.id)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
@@ -1426,10 +1429,12 @@ export default function DashboardPage() {
                       key={project.id}
                       className="cursor-pointer border-b"
                       style={{ borderBottomColor: dashboardPalette.border }}
+                      onMouseEnter={() => setHoveredProjectId(project.id)}
+                      onMouseLeave={() => setHoveredProjectId((prev) => (prev === project.id ? "" : prev))}
                       onClick={() => void openProjectInDashboard(project.id)}
                     >
-                      <td className="py-[7px] pl-[10px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</td>
-                      <td className="py-[7px]">
+                      <td className="py-[7px] pl-[10px] font-bold" style={{ color: dashboardPalette.text, backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>{project.name}</td>
+                      <td className="py-[7px]" style={{ backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>
                         <div className="flex flex-wrap gap-1">
                           {project.tags.slice(0, 2).map((tag) => (
                             <span
@@ -1447,7 +1452,7 @@ export default function DashboardPage() {
                           {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
                         </div>
                       </td>
-                      <td className="py-[7px]">
+                      <td className="py-[7px]" style={{ backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>
                         <div className="flex items-center gap-2 text-[12px]">
                           <span
                             className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
@@ -1461,9 +1466,9 @@ export default function DashboardPage() {
                           <span style={{ color: dashboardPalette.text }}>{project.createdByName || "-"}</span>
                         </div>
                       </td>
-                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft }}>{dashboardDate(project.createdAt)}</td>
-                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft }}>{dashboardDate(project.updatedAt)}</td>
-                      <td className="relative w-[200px] py-[7px] text-right">
+                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>{dashboardDate(project.createdAt)}</td>
+                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>{dashboardDate(project.updatedAt)}</td>
+                      <td className="relative w-[200px] py-[7px] text-right" style={{ backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>
                           <button
                             data-status-trigger="true"
                             type="button"

@@ -105,8 +105,8 @@ export async function GET(request: NextRequest) {
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
         source: toStr(data.source) || "zapier-form",
         status: (() => {
-          const raw = toStr(data.status).toLowerCase();
-          return raw === "contacted" || raw === "converted" || raw === "archived" ? raw : "new";
+          const raw = toStr(data.status);
+          return raw || "New";
         })(),
         rawFields:
           data.rawFields && typeof data.rawFields === "object"
@@ -180,7 +180,7 @@ export async function POST(request: NextRequest) {
     formName: toStr(body.formName),
     submittedAtIso,
     source: toStr(body.source) || "zapier-form",
-    status: "new",
+    status: "New",
   };
 
   const leadRef = adminDb.collection("companies").doc(companyId).collection("leads").doc();
@@ -200,6 +200,64 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ ok: true, leadId: leadRef.id });
+}
+
+export async function PATCH(request: NextRequest) {
+  if (!adminDb || !hasFirebaseAdminConfig) {
+    return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
+  }
+
+  const url = new URL(request.url);
+  const body = await parseBody(request);
+  const companyId = pickFirstNonEmpty(
+    body.companyId,
+    body.companyID,
+    body.company_id,
+    url.searchParams.get("companyId"),
+    url.searchParams.get("companyID"),
+    request.headers.get("x-company-id"),
+  );
+  const leadId = pickFirstNonEmpty(
+    body.leadId,
+    body.leadID,
+    body.lead_id,
+    url.searchParams.get("leadId"),
+    url.searchParams.get("leadID"),
+  );
+  const status = pickFirstNonEmpty(
+    body.status,
+    body.leadStatus,
+    body.lead_status,
+    url.searchParams.get("status"),
+  );
+
+  if (!companyId || !leadId || !status) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: !companyId ? "missing-company-id" : !leadId ? "missing-lead-id" : "missing-status",
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const leadRef = adminDb.collection("companies").doc(companyId).collection("leads").doc(leadId);
+    const leadSnap = await leadRef.get();
+    if (!leadSnap.exists) {
+      return NextResponse.json({ ok: false, error: "lead-not-found" }, { status: 404 });
+    }
+
+    const updatedAtIso = new Date().toISOString();
+    await leadRef.update({
+      status,
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedAtIso,
+    });
+    return NextResponse.json({ ok: true, leadId, status, updatedAtIso });
+  } catch {
+    return NextResponse.json({ ok: false, error: "lead-status-update-failed" }, { status: 500 });
+  }
 }
 
 export async function DELETE(request: NextRequest) {

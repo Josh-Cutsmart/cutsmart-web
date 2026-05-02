@@ -1,17 +1,18 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Inbox, Search } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { ChevronDown, ChevronRight, Inbox, Plus, Search } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
-import { fetchCompanyDoc, type CompanyLeadRow } from "@/lib/firestore-data";
+import { fetchCompanyDoc, type CompanyLeadRow, updateCompanyLeadStatus } from "@/lib/firestore-data";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
-import { buildTemporarySampleLeads } from "@/lib/removable-sample-leads";
 import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
 const RESERVED_LEAD_FIELD_KEYS = new Set([
   "companyid",
   "source",
@@ -33,6 +34,102 @@ type LeadDynamicField = {
   label: string;
   value: string;
 };
+
+type StatusRow = { name: string; color: string };
+
+function buildTemporarySampleLeads(_companyId: string): CompanyLeadRow[] {
+  return [];
+}
+
+function statusPillColors(status: string) {
+  const key = String(status || "").trim().toLowerCase();
+  const defaults: Record<string, string> = {
+    new: "#3060D0",
+    contacted: "#C77700",
+    qualified: "#6B4FB3",
+    converted: "#2A7A3B",
+    archived: "#7F1D1D",
+  };
+  const bg = defaults[key] ?? "#64748B";
+  return { backgroundColor: bg, color: "#FFFFFF" };
+}
+
+function normalizeLeadStatuses(raw: unknown): StatusRow[] {
+  if (!Array.isArray(raw)) {
+    return [
+      { name: "New", color: "#3060D0" },
+      { name: "Contacted", color: "#C77700" },
+      { name: "Qualified", color: "#6B4FB3" },
+      { name: "Converted", color: "#2A7A3B" },
+    ];
+  }
+  const rows = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return {
+        name: String(row.name ?? "").trim(),
+        color: String(row.color ?? "").trim() || "#64748B",
+      };
+    })
+    .filter((row) => row.name);
+  return rows.length
+    ? rows
+    : [
+        { name: "New", color: "#3060D0" },
+        { name: "Contacted", color: "#C77700" },
+        { name: "Qualified", color: "#6B4FB3" },
+      { name: "Converted", color: "#2A7A3B" },
+      ];
+}
+
+function measureStatusPillWidth(options: string[]) {
+  const labels = options.map((option) => String(option || "").trim()).filter(Boolean);
+  if (!labels.length) return 60;
+  if (typeof document === "undefined") {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  context.font = '700 11px "Segoe UI", Arial, sans-serif';
+  const widest = labels.reduce((max, label) => Math.max(max, context.measureText(label).width), 0);
+  return Math.max(60, Math.ceil(widest + 10));
+}
+
+function sampleLeadsStorageKey(companyId: string) {
+  return `${SAMPLE_LEADS_STORAGE_KEY_PREFIX}${String(companyId || "").trim()}`;
+}
+
+function readPersistedSampleLeads(companyId: string): CompanyLeadRow[] | null {
+  if (typeof window === "undefined") return null;
+  const cid = String(companyId || "").trim();
+  if (!cid) return null;
+  try {
+    const raw = window.localStorage.getItem(sampleLeadsStorageKey(cid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed as CompanyLeadRow[];
+  } catch {
+    return null;
+  }
+}
+
+function persistSampleLeads(companyId: string, rows: CompanyLeadRow[]) {
+  if (typeof window === "undefined") return;
+  const cid = String(companyId || "").trim();
+  if (!cid) return;
+  try {
+    window.localStorage.setItem(sampleLeadsStorageKey(cid), JSON.stringify(rows));
+  } catch {
+    // ignore local storage persistence failure
+  }
+}
 
 function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
   const target = String(key || "").trim().toLowerCase();
@@ -141,6 +238,10 @@ function isInternalTestLead(lead: CompanyLeadRow) {
   );
 }
 
+function isTemporarySampleLead(lead: CompanyLeadRow) {
+  return String(lead.id || "").startsWith("temporary-sample-lead-") || String(lead.source || "").trim() === "local-sample";
+}
+
 function leadValueToText(value: unknown): string {
   if (value == null) return "";
   if (Array.isArray(value)) {
@@ -192,8 +293,26 @@ function findBestLeadField(
     if (score > bestScore) {
       bestField = field;
       bestScore = score;
-    }
   }
+}
+
+function measureStatusPillWidth(options: string[]) {
+  const labels = options.map((option) => String(option || "").trim()).filter(Boolean);
+  if (!labels.length) return 60;
+  if (typeof document === "undefined") {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  context.font = '700 11px "Segoe UI", Arial, sans-serif';
+  const widest = labels.reduce((max, label) => Math.max(max, context.measureText(label).width), 0);
+  return Math.max(60, Math.ceil(widest + 10));
+}
   return bestScore > 0 ? bestField : null;
 }
 
@@ -281,12 +400,25 @@ export default function LeadsPage() {
   const [activeCompanyId, setActiveCompanyId] = useState("");
   const [leads, setLeads] = useState<CompanyLeadRow[]>([]);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [listOrder, setListOrder] = useState<"status" | "az" | "za" | "newest" | "oldest">("status");
   const [isLoading, setIsLoading] = useState(true);
   const [companyName, setCompanyName] = useState("");
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
+  const [leadStatusRows, setLeadStatusRows] = useState<StatusRow[]>(normalizeLeadStatuses(undefined));
   const [fieldLayout, setFieldLayout] = useState<LeadFieldLayoutRow[]>([]);
   const [openLeadId, setOpenLeadId] = useState("");
+  const [confirmDeleteLeadId, setConfirmDeleteLeadId] = useState("");
+  const [deletingLeadId, setDeletingLeadId] = useState("");
+  const [statusMenuLeadId, setStatusMenuLeadId] = useState("");
+  const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [statusFilterMenuOpen, setStatusFilterMenuOpen] = useState(false);
+  const [statusFilterMenuPos, setStatusFilterMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [statusUpdatingLeadId, setStatusUpdatingLeadId] = useState("");
+  const [leadFormUrl, setLeadFormUrl] = useState("");
   const [hoveredLeadId, setHoveredLeadId] = useState("");
+  const deleteConfirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sampleLeadsRef = useRef<Record<string, CompanyLeadRow[]>>({});
 
   const isDarkMode = themeMode === "dark";
   const palette = isDarkMode
@@ -300,6 +432,7 @@ export default function LeadsPage() {
         textMuted: "#aaaaaa",
         inputBg: "#303134",
         inputText: "#f1f1f1",
+        rowHover: "#2a2a2a",
         shadow: "0 10px 30px rgba(0,0,0,0.38)",
       }
     : {
@@ -312,6 +445,7 @@ export default function LeadsPage() {
         textMuted: "#8A97A8",
         inputBg: "#ffffff",
         inputText: "#334155",
+        rowHover: "#EEF4FF",
         shadow: "0 10px 24px rgba(15,23,42,0.09),0 2px 6px rgba(15,23,42,0.05)",
       };
 
@@ -324,6 +458,39 @@ export default function LeadsPage() {
     };
     window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
     return () => window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (deleteConfirmTimeoutRef.current) {
+        clearTimeout(deleteConfirmTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const loadLeads = useCallback(async (companyId: string) => {
+    const cid = String(companyId || "").trim();
+    if (!cid) {
+      setLeads([]);
+      return;
+    }
+    const currentSampleLeads =
+      sampleLeadsRef.current[cid] ??
+      (sampleLeadsRef.current[cid] = readPersistedSampleLeads(cid) ?? buildTemporarySampleLeads(cid));
+    persistSampleLeads(cid, currentSampleLeads);
+    try {
+      const response = await fetch(`/api/leads?companyId=${encodeURIComponent(cid)}`, {
+        method: "GET",
+        cache: "no-store",
+      });
+        const detail = (await response.json().catch(() => null)) as
+          | { ok?: boolean; leads?: CompanyLeadRow[] }
+          | null;
+        const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads : [];
+      setLeads([...currentSampleLeads, ...fetchedLeads]);
+    } catch {
+      setLeads(currentSampleLeads);
+    }
   }, []);
 
   useEffect(() => {
@@ -340,6 +507,10 @@ export default function LeadsPage() {
       const fallbackMembership = !directCompanyId ? await fetchPrimaryMembership(user.uid) : null;
       const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
       setActiveCompanyId(companyId);
+      if (companyId && !sampleLeadsRef.current[companyId]) {
+        sampleLeadsRef.current[companyId] = readPersistedSampleLeads(companyId) ?? buildTemporarySampleLeads(companyId);
+        persistSampleLeads(companyId, sampleLeadsRef.current[companyId]);
+      }
       if (!companyId) {
         setCompanyAccessResolved(true);
         setCanAccessLeads(false);
@@ -351,10 +522,11 @@ export default function LeadsPage() {
         fetchCompanyDoc(companyId),
       ]);
       const role = String(access?.role || "").trim().toLowerCase();
-      const permitted =
-        role === "owner" || role === "admin" || hasPermissionKey(access?.permissionKeys, "company.dashboard.view");
+      const permitted = role === "owner" || role === "admin" || hasPermissionKey(access?.permissionKeys, "leads.*");
       setCompanyName(String(companyDoc?.name || "").trim());
       setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
+      setLeadFormUrl(String(companyDoc?.salesLeadFormUrl || "").trim());
+      setLeadStatusRows(normalizeLeadStatuses((companyDoc as Record<string, unknown> | null)?.leadStatuses));
       setFieldLayout(
         normalizeLeadFieldLayout(
           ((companyDoc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout,
@@ -367,28 +539,29 @@ export default function LeadsPage() {
         setIsLoading(false);
         return;
       }
-      try {
-        const response = await fetch(`/api/leads?companyId=${encodeURIComponent(companyId)}`, {
-          method: "GET",
-          cache: "no-store",
-        });
-        const detail = (await response.json().catch(() => null)) as
-          | { ok?: boolean; leads?: CompanyLeadRow[] }
-          | null;
-        const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads : [];
-        setLeads([...buildTemporarySampleLeads(companyId), ...fetchedLeads]);
-      } catch {
-        setLeads(buildTemporarySampleLeads(companyId));
-      }
+      await loadLeads(companyId);
       setIsLoading(false);
     };
     void run();
-  }, [user?.uid, user?.companyId]);
+  }, [loadLeads, user?.uid, user?.companyId]);
+
+  useEffect(() => {
+    if (!companyAccessResolved || !canAccessLeads || !activeCompanyId) return;
+    const intervalId = window.setInterval(() => {
+      void loadLeads(activeCompanyId);
+    }, 4000);
+    return () => window.clearInterval(intervalId);
+  }, [activeCompanyId, canAccessLeads, companyAccessResolved, loadLeads]);
 
   const filteredLeads = useMemo(() => {
     const query = String(search || "").trim().toLowerCase();
-    if (!query) return leads;
-    return leads.filter((lead) => {
+    const filtered = leads.filter((lead) => {
+      if (statusFilter !== "all" && String(lead.status || "").trim().toLowerCase() !== statusFilter) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
       const searchable = [
         lead.formName,
         lead.status,
@@ -396,9 +569,35 @@ export default function LeadsPage() {
       ];
       return searchable.some((value) => String(value || "").toLowerCase().includes(query));
     });
-  }, [leads, search]);
+    const sorted = [...filtered];
+    const leadLabel = (lead: CompanyLeadRow) => {
+      const firstVisible = getLeadDynamicFields(lead)[0]?.value || "";
+      return String(firstVisible || lead.name || lead.email || lead.phone || "").trim().toLowerCase();
+    };
+    const leadTimestamp = (lead: CompanyLeadRow) => {
+      const raw = String(lead.createdAtIso || lead.submittedAtIso || lead.updatedAtIso || "").trim();
+      const parsed = raw ? new Date(raw).getTime() : 0;
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    if (listOrder === "az") {
+      sorted.sort((a, b) => leadLabel(a).localeCompare(leadLabel(b)));
+    } else if (listOrder === "za") {
+      sorted.sort((a, b) => leadLabel(b).localeCompare(leadLabel(a)));
+    } else if (listOrder === "newest") {
+      sorted.sort((a, b) => leadTimestamp(b) - leadTimestamp(a));
+    } else if (listOrder === "oldest") {
+      sorted.sort((a, b) => leadTimestamp(a) - leadTimestamp(b));
+    } else {
+      sorted.sort((a, b) => {
+        const statusDiff = String(a.status || "").trim().toLowerCase().localeCompare(String(b.status || "").trim().toLowerCase());
+        if (statusDiff !== 0) return statusDiff;
+        return leadLabel(a).localeCompare(leadLabel(b));
+      });
+    }
+    return sorted;
+  }, [leads, listOrder, search, statusFilter]);
 
-  const newCount = filteredLeads.filter((lead) => lead.status === "new").length;
+  const newCount = filteredLeads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "new").length;
   const availableFields = useMemo(() => {
     const seen = new Set<string>();
     const columns: Array<{ key: string; label: string }> = [];
@@ -424,12 +623,159 @@ export default function LeadsPage() {
     const configured = mergedFieldLayout.filter((field) => field.showInDetail);
     return configured.length > 0 ? configured : mergedFieldLayout;
   }, [mergedFieldLayout]);
+  const leadStatusColorByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of leadStatusRows) {
+      map.set(String(row.name || "").trim().toLowerCase(), String(row.color || "").trim() || "#64748B");
+    }
+    return map;
+  }, [leadStatusRows]);
+  const leadStatusOptions = useMemo(() => {
+    const options = leadStatusRows.map((row) => row.name).filter(Boolean);
+    return options.length ? options : ["New", "Contacted", "Qualified", "Converted"];
+  }, [leadStatusRows]);
+  const leadStatusPillWidth = useMemo(() => {
+    return measureStatusPillWidth(leadStatusOptions);
+  }, [leadStatusOptions]);
+  const statusFilterPillWidth = useMemo(() => {
+    return measureStatusPillWidth(["All Statuses", ...leadStatusOptions]);
+  }, [leadStatusOptions]);
+
+  const leadStatusPillStyle = (statusLabel: string) => {
+    const configured = leadStatusColorByName.get(String(statusLabel || "").trim().toLowerCase());
+    if (configured) {
+      return { backgroundColor: configured, color: "#FFFFFF" };
+    }
+    return statusPillColors(statusLabel);
+  };
+  const currentStatusFilterLabel = statusFilter === "all"
+    ? "All Statuses"
+    : leadStatusOptions.find((status) => String(status).trim().toLowerCase() === statusFilter) || "All Statuses";
+
+  const armLeadDelete = (leadId: string) => {
+    setConfirmDeleteLeadId(leadId);
+    if (deleteConfirmTimeoutRef.current) {
+      clearTimeout(deleteConfirmTimeoutRef.current);
+    }
+    deleteConfirmTimeoutRef.current = setTimeout(() => {
+      setConfirmDeleteLeadId((current) => (current === leadId ? "" : current));
+    }, 10000);
+  };
+
+  const handleDeleteLead = async (lead: CompanyLeadRow) => {
+    const leadId = String(lead.id || "").trim();
+    if (!leadId || deletingLeadId) return;
+    if (confirmDeleteLeadId !== leadId) {
+      armLeadDelete(leadId);
+      return;
+    }
+    if (deleteConfirmTimeoutRef.current) {
+      clearTimeout(deleteConfirmTimeoutRef.current);
+      deleteConfirmTimeoutRef.current = null;
+    }
+    setDeletingLeadId(leadId);
+    let didArchive = false;
+    if (isTemporarySampleLead(lead)) {
+      didArchive = true;
+    } else {
+      didArchive = await updateCompanyLeadStatus(lead.companyId, leadId, "archived");
+    }
+    if (didArchive) {
+      if (isTemporarySampleLead(lead)) {
+        sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).filter((item) => item.id !== leadId);
+        persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+      }
+      setLeads((current) => current.filter((item) => item.id !== leadId));
+      setOpenLeadId((current) => (current === leadId ? "" : current));
+      setConfirmDeleteLeadId("");
+    }
+    setDeletingLeadId("");
+  };
   const previewGridTemplate = useMemo(() => {
-    const parts = ["40px"];
+    const parts = ["40px", `${leadStatusPillWidth}px`];
     for (const _ of rowFields) parts.push("minmax(150px,1fr)");
     parts.push("132px");
     return parts.join(" ");
-  }, [rowFields]);
+  }, [leadStatusPillWidth, rowFields]);
+
+  const onSelectLeadStatus = async (lead: CompanyLeadRow, nextStatus: string) => {
+    if (!nextStatus || statusUpdatingLeadId) return;
+    if (isTemporarySampleLead(lead)) {
+      sampleLeadsRef.current[lead.companyId] = (sampleLeadsRef.current[lead.companyId] || []).map((row) =>
+        row.id === lead.id ? { ...row, status: nextStatus, updatedAtIso: new Date().toISOString() } : row,
+      );
+      persistSampleLeads(lead.companyId, sampleLeadsRef.current[lead.companyId]);
+      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, status: nextStatus, updatedAtIso: new Date().toISOString() } : row)));
+      setStatusMenuLeadId("");
+      setStatusMenuPos(null);
+      return;
+    }
+    setStatusUpdatingLeadId(lead.id);
+    const response = await fetch("/api/leads", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        companyId: lead.companyId,
+        leadId: lead.id,
+        status: nextStatus,
+      }),
+    }).catch(() => null);
+    if (response?.ok) {
+      setLeads((prev) => prev.map((row) => (row.id === lead.id ? { ...row, status: nextStatus, updatedAtIso: new Date().toISOString() } : row)));
+      setStatusMenuLeadId("");
+      setStatusMenuPos(null);
+      void loadLeads(lead.companyId);
+    }
+    setStatusUpdatingLeadId("");
+  };
+
+  const statusMenuLead = useMemo(() => leads.find((lead) => lead.id === statusMenuLeadId) ?? null, [leads, statusMenuLeadId]);
+
+  useEffect(() => {
+    if (!statusMenuLeadId) return;
+    const closeMenu = () => {
+      setStatusMenuLeadId("");
+      setStatusMenuPos(null);
+    };
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("[data-lead-status-menu='true']")) return;
+      if (target.closest("[data-lead-status-trigger='true']")) return;
+      closeMenu();
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [statusMenuLeadId]);
+
+  useEffect(() => {
+    if (!statusFilterMenuOpen) return;
+    const closeMenu = () => {
+      setStatusFilterMenuOpen(false);
+      setStatusFilterMenuPos(null);
+    };
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("[data-status-filter-menu='true']")) return;
+      if (target.closest("[data-status-filter-trigger='true']")) return;
+      closeMenu();
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [statusFilterMenuOpen]);
 
   const handleCreateProjectFromLead = (lead: CompanyLeadRow) => {
     if (typeof window === "undefined") return;
@@ -438,6 +784,12 @@ export default function LeadsPage() {
         detail: buildLeadProjectPrefill(lead, mergedFieldLayout),
       }),
     );
+  };
+
+  const openLeadForm = () => {
+    const url = String(leadFormUrl || "").trim();
+    if (!url || typeof window === "undefined") return;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   return (
@@ -468,6 +820,77 @@ export default function LeadsPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: palette.textSoft }}>
+                  <button
+                    type="button"
+                    onClick={openLeadForm}
+                    disabled={!leadFormUrl}
+                    className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold"
+                    style={{
+                      borderColor: "#C8DAFF",
+                      backgroundColor: "#EAF1FF",
+                      color: "#24589A",
+                      opacity: leadFormUrl ? 1 : 0.55,
+                    }}
+                  >
+                    <Plus size={14} />
+                    Create Lead
+                  </button>
+                  <button
+                    type="button"
+                    data-status-filter-trigger="true"
+                    onClick={(e) => {
+                      if (statusFilterMenuOpen) {
+                        setStatusFilterMenuOpen(false);
+                        setStatusFilterMenuPos(null);
+                        return;
+                      }
+                      const trigger = e.currentTarget as HTMLButtonElement;
+                      const rect = trigger.getBoundingClientRect();
+                      const menuWidth = rect.width;
+                      const estimatedMenuHeight = Math.max(92, (leadStatusOptions.length + 1) * 34);
+                      const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
+                      const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
+                      const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
+                      const clampedLeft = Math.min(Math.max(8, rect.left), window.innerWidth - menuWidth - 8);
+                      setStatusFilterMenuPos({
+                        left: clampedLeft,
+                        top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
+                        width: menuWidth,
+                      });
+                      setStatusFilterMenuOpen(true);
+                    }}
+                    className="inline-flex h-9 items-center justify-center rounded-[10px] border px-[5px] outline-none"
+                    style={{
+                      width: statusFilterPillWidth + 10,
+                      borderColor: palette.border,
+                      backgroundColor: palette.panelMuted,
+                    }}
+                    aria-label="Filter by status"
+                  >
+                    <span
+                      className="inline-flex h-7 items-center justify-center rounded-[10px] px-[5px] text-[11px] font-bold whitespace-nowrap"
+                      style={{
+                        width: statusFilterPillWidth,
+                        ...(statusFilter === "all"
+                          ? { backgroundColor: palette.panelBg, color: palette.textSoft, border: `1px solid ${palette.border}` }
+                          : leadStatusPillStyle(currentStatusFilterLabel)),
+                      }}
+                    >
+                      {currentStatusFilterLabel}
+                    </span>
+                  </button>
+                  <select
+                    value={listOrder}
+                    onChange={(e) => setListOrder((e.target.value as "status" | "az" | "za" | "newest" | "oldest") || "status")}
+                    className="h-9 rounded-[10px] border px-3 text-[12px] outline-none"
+                    style={{ borderColor: palette.border, backgroundColor: palette.panelMuted, color: palette.inputText }}
+                  >
+                    <option value="status">Sort: Status</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="az">A &gt; Z</option>
+                    <option value="za">Z &gt; A</option>
+                  </select>
                   <div
                     className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-2"
                     style={{ width: 340, minWidth: 340, borderColor: palette.border, backgroundColor: palette.panelMuted }}
@@ -486,6 +909,66 @@ export default function LeadsPage() {
                 </div>
               </div>
             </section>
+            {statusFilterMenuOpen && statusFilterMenuPos && typeof document !== "undefined"
+              ? createPortal(
+                  <div
+                    data-status-filter-menu="true"
+                    className="fixed z-[210] rounded-[12px] border py-[2px] shadow-[0_18px_42px_rgba(15,23,42,0.22)]"
+                    style={{
+                      left: statusFilterMenuPos.left,
+                      top: statusFilterMenuPos.top,
+                      width: statusFilterMenuPos.width,
+                      borderColor: palette.border,
+                      backgroundColor: palette.panelBg,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStatusFilter("all");
+                        setStatusFilterMenuOpen(false);
+                        setStatusFilterMenuPos(null);
+                      }}
+                      className="flex w-full items-center justify-center px-[3px] py-[3px]"
+                    >
+                      <span
+                        className="inline-flex h-7 items-center justify-center rounded-[10px] px-[5px] text-[11px] font-bold whitespace-nowrap"
+                        style={{
+                          width: statusFilterPillWidth,
+                          backgroundColor: palette.panelBg,
+                          color: palette.textSoft,
+                          border: `1px solid ${palette.border}`,
+                        }}
+                      >
+                        All Statuses
+                      </span>
+                    </button>
+                    {leadStatusOptions.map((status) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => {
+                          setStatusFilter(String(status).trim().toLowerCase());
+                          setStatusFilterMenuOpen(false);
+                          setStatusFilterMenuPos(null);
+                        }}
+                        className="flex w-full items-center justify-center px-[3px] py-[3px]"
+                      >
+                        <span
+                          className="inline-flex h-7 items-center justify-center rounded-[10px] px-[5px] text-[11px] font-bold whitespace-nowrap"
+                          style={{
+                            width: statusFilterPillWidth,
+                            ...leadStatusPillStyle(status),
+                          }}
+                        >
+                          {status}
+                        </span>
+                      </button>
+                    ))}
+                  </div>,
+                  document.body,
+                )
+              : null}
 
             <section className="-mx-4 overflow-hidden border-x md:-mx-5" style={{ marginTop: "-1px", borderColor: palette.border, backgroundColor: palette.panelBg }}>
               {isLoading ? (
@@ -498,89 +981,125 @@ export default function LeadsPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <div
-                    className="grid min-w-full gap-3 border-b px-4 py-3 text-[11px] font-bold uppercase tracking-[0.8px]"
+                    <div
+                      className="grid min-w-full gap-3 border-b px-4 py-3 text-[11px] font-bold uppercase tracking-[0.8px]"
                     style={{
                       gridTemplateColumns: previewGridTemplate,
                       borderColor: palette.border,
                       backgroundColor: palette.panelMuted,
                       color: palette.textMuted,
                     }}
-                  >
-                    <p></p>
-                    {rowFields.length === 0 ? <p>No visible lead fields</p> : rowFields.map((column) => <p key={column.key}>{column.label}</p>)}
-                    <p className="text-right">Received</p>
-                  </div>
+                    >
+                      <p></p>
+                      <p>Status</p>
+                      {rowFields.length === 0 ? <p>No visible lead fields</p> : rowFields.map((column) => <p key={column.key}>{column.label}</p>)}
+                      <p className="text-right">Received</p>
+                    </div>
                   {filteredLeads.map((lead, idx) => {
                     const leadFields = getLeadDynamicFields(lead);
                     const isOpen = openLeadId === lead.id;
                     return (
                       <Fragment key={lead.id}>
                         <div
+                          role="button"
+                          tabIndex={0}
                           onMouseEnter={() => setHoveredLeadId(lead.id)}
                           onMouseLeave={() => setHoveredLeadId((prev) => (prev === lead.id ? "" : prev))}
+                          onClick={() => {
+                            setOpenLeadId((prev) => (prev === lead.id ? "" : lead.id));
+                            setConfirmDeleteLeadId("");
+                            if (deleteConfirmTimeoutRef.current) {
+                              clearTimeout(deleteConfirmTimeoutRef.current);
+                              deleteConfirmTimeoutRef.current = null;
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            setOpenLeadId((prev) => (prev === lead.id ? "" : lead.id));
+                            setConfirmDeleteLeadId("");
+                            if (deleteConfirmTimeoutRef.current) {
+                              clearTimeout(deleteConfirmTimeoutRef.current);
+                              deleteConfirmTimeoutRef.current = null;
+                            }
+                          }}
                           className="grid min-w-full items-center gap-3 border-b px-4 py-[7px] text-left text-[12px] transition-colors"
                           style={{
                             gridTemplateColumns: previewGridTemplate,
                             borderColor: palette.border,
-                            backgroundColor: idx % 2 === 0 ? palette.panelBg : palette.panelMuted,
+                            backgroundColor:
+                              hoveredLeadId === lead.id ? palette.rowHover : idx % 2 === 0 ? palette.panelBg : palette.panelMuted,
                           }}
                         >
-                          <button
-                            type="button"
-                            onClick={() => setOpenLeadId((prev) => (prev === lead.id ? "" : lead.id))}
+                          <span
                             className="flex h-6 w-6 items-center justify-center rounded-full"
                             style={{ backgroundColor: isOpen ? palette.panelBg : "transparent", color: palette.textSoft }}
-                            aria-label={isOpen ? "Collapse lead details" : "Expand lead details"}
+                            aria-hidden="true"
                           >
                             {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                          </button>
-                          {rowFields.length === 0 ? (
+                          </span>
+                          <div className="-ml-5 flex justify-center">
                             <button
                               type="button"
-                              onClick={() => setOpenLeadId((prev) => (prev === lead.id ? "" : lead.id))}
+                              data-lead-status-trigger="true"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (statusMenuLeadId === lead.id) {
+                                  setStatusMenuLeadId("");
+                                  setStatusMenuPos(null);
+                                  return;
+                                }
+                                const trigger = e.currentTarget as HTMLButtonElement;
+                                const rect = trigger.getBoundingClientRect();
+                                const menuWidth = Math.max(rect.width, leadStatusPillWidth + 6);
+                                const estimatedMenuHeight = Math.max(120, leadStatusOptions.length * 34);
+                                const hasRoomBelow = rect.bottom + estimatedMenuHeight <= window.innerHeight - 8;
+                                const hasRoomAbove = rect.top - estimatedMenuHeight >= 8;
+                                const shouldOpenUp = !hasRoomBelow && hasRoomAbove;
+                                const clampedLeft = Math.min(Math.max(8, rect.left), window.innerWidth - menuWidth - 8);
+                                setStatusMenuPos({
+                                  left: clampedLeft,
+                                  top: shouldOpenUp ? Math.max(8, rect.top - estimatedMenuHeight - 4) : rect.bottom + 4,
+                                  width: menuWidth,
+                                });
+                                setStatusMenuLeadId(lead.id);
+                              }}
+                              className="inline-flex h-7 shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold whitespace-nowrap"
+                              style={{
+                                ...leadStatusPillStyle(lead.status || "New"),
+                                width: leadStatusPillWidth,
+                              }}
+                              aria-label="Lead status"
+                            >
+                              {statusUpdatingLeadId === lead.id ? "Saving..." : lead.status || "New"}
+                            </button>
+                          </div>
+                          {rowFields.length === 0 ? (
+                            <span
                               className="min-w-0 text-left text-[12px] font-semibold"
                               style={{ gridColumn: "2 / span 1", color: palette.textSoft }}
                             >
                               No preview fields configured yet.
-                            </button>
+                            </span>
                           ) : (
                             rowFields.map((column) => {
                               const match = leadFields.find(
                                 (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
                               );
                               return (
-                                <button
+                                <span
                                   key={`${lead.id}:${column.key}`}
-                                  type="button"
-                                  onClick={() => setOpenLeadId((prev) => (prev === lead.id ? "" : lead.id))}
-                                  className="min-w-0 text-left"
+                                  className="min-w-0 overflow-hidden text-left"
                                 >
-                                  <p className="line-clamp-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: palette.textSoft }}>
+                                  <p className="truncate whitespace-nowrap text-[12px] font-semibold" style={{ color: palette.textSoft }}>
                                     {match?.value || "-"}
                                   </p>
-                                </button>
+                                </span>
                               );
                             })
                           )}
-                          <div className="flex items-center justify-end gap-2 text-right">
-                            {hoveredLeadId === lead.id ? (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  handleCreateProjectFromLead(lead);
-                                }}
-                                className="inline-flex h-7 items-center rounded-[8px] border px-3 text-[11px] font-bold text-white transition-opacity"
-                                style={{
-                                  borderColor: companyThemeColor,
-                                  backgroundColor: companyThemeColor,
-                                }}
-                              >
-                                Create Project
-                              </button>
-                            ) : null}
-                            <p className="text-[11px] font-semibold" style={{ color: palette.textMuted }}>
+                          <div className="text-right">
+                            <p className="whitespace-nowrap text-[11px] font-semibold" style={{ color: palette.textMuted }}>
                               {formatLeadDate(lead.createdAtIso || "")}
                             </p>
                           </div>
@@ -593,6 +1112,44 @@ export default function LeadsPage() {
                               backgroundColor: idx % 2 === 0 ? palette.panelMuted : palette.panelBg,
                             }}
                           >
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleCreateProjectFromLead(lead);
+                                  }}
+                                  className="inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-[8px] border px-3 text-[11px] font-bold text-white"
+                                  style={{
+                                    borderColor: companyThemeColor,
+                                    backgroundColor: companyThemeColor,
+                                  }}
+                                >
+                                  Create Project
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleDeleteLead(lead);
+                                  }}
+                                  disabled={deletingLeadId === lead.id}
+                                  className="inline-flex h-8 w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-[8px] border px-3 text-[11px] font-bold transition-colors"
+                                  style={{
+                                    borderColor: confirmDeleteLeadId === lead.id ? "#991B1B" : "#F5B4BC",
+                                    backgroundColor: confirmDeleteLeadId === lead.id ? "#991B1B" : "#FFF5F6",
+                                    color: confirmDeleteLeadId === lead.id ? "#ffffff" : "#991B1B",
+                                    opacity: deletingLeadId === lead.id ? 0.65 : 1,
+                                  }}
+                                >
+                                  {deletingLeadId === lead.id ? "Deleting" : confirmDeleteLeadId === lead.id ? "Confirm" : "Delete"}
+                                </button>
+                              </div>
+                              <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: palette.textMuted }}>
+                                Lead Details
+                              </p>
+                            </div>
                             {detailFields.length === 0 ? (
                               <p className="text-[12px] font-semibold" style={{ color: palette.textMuted }}>
                                 No detail fields configured yet.
@@ -630,6 +1187,48 @@ export default function LeadsPage() {
             </section>
           </div>
         )}
+        {statusMenuLead &&
+          statusMenuPos &&
+          typeof document !== "undefined" &&
+          createPortal(
+            <div
+              data-lead-status-menu="true"
+              className="fixed z-[210] rounded-[12px] border py-[2px] shadow-[0_18px_42px_rgba(15,23,42,0.22)]"
+              style={{
+                left: statusMenuPos.left,
+                top: statusMenuPos.top,
+                width: statusMenuPos.width,
+                borderColor: palette.border,
+                backgroundColor: palette.panelBg,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {leadStatusOptions.map((option) => {
+                const active = String(statusMenuLead.status || "").trim().toLowerCase() === option.toLowerCase();
+                return (
+                  <button
+                    key={`${statusMenuLead.id}_${option}`}
+                    type="button"
+                    disabled={statusUpdatingLeadId === statusMenuLead.id}
+                    onClick={() => void onSelectLeadStatus(statusMenuLead, option)}
+                    className="flex w-full items-center justify-center px-[3px] py-[3px] disabled:opacity-55"
+                  >
+                    <span
+                      className="inline-flex h-7 items-center justify-center rounded-[10px] px-[5px] text-[11px] font-bold whitespace-nowrap"
+                      style={{
+                        width: leadStatusPillWidth,
+                        ...leadStatusPillStyle(option),
+                        filter: active ? "brightness(0.96)" : "brightness(1)",
+                      }}
+                    >
+                      {option}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )}
       </AppShell>
     </ProtectedRoute>
   );

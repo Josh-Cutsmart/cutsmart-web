@@ -100,6 +100,7 @@ type PendingOwnerTransferState = {
 const desktopPermissionKeys = [
   "company.*",
   "company.dashboard.view",
+  "leads.*",
   "projects.create",
   "projects.create.other",
   "projects.view",
@@ -125,6 +126,7 @@ const desktopPermissionKeys = [
 const permissionLabels: Record<string, string> = {
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
+  "leads.*": "leads.* - Access Leads and Deleted Leads",
   "projects.create": "projects.create - Create Projects",
   "projects.create.other": "projects.create.other - Change Project Creator / Handover Project",
   "projects.view": "projects.view - View Projects",
@@ -162,6 +164,7 @@ const deletedRetentionOptions: Array<{ label: string; days: string }> = [
 const cutlistColumnDefaults = ["Board", "Part Name", "Height", "Width", "Depth", "Quantity", "Clashing", "Information", "Grain"];
 const autoClashLeftOptions = ["1L", "2L"];
 const RESERVED_LEAD_FIELD_KEYS = new Set(["companyid", "source", "status"]);
+const ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT = "cutsmart:zapier-leads-visibility-updated";
 const LEAD_PROJECT_FIELD_TARGET_VALUES = new Set<LeadProjectFieldTarget>([
   "",
   "clientName",
@@ -343,6 +346,32 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
     })
     .filter((row) => row.name);
   return out.length ? out : [{ name: "New", color: "#3060D0" }];
+}
+
+function normalizeLeadStatuses(raw: unknown): StatusRow[] {
+  if (!Array.isArray(raw)) {
+    return [
+      { name: "New", color: "#3060D0" },
+      { name: "Contacted", color: "#C77700" },
+      { name: "Qualified", color: "#6B4FB3" },
+      { name: "Converted", color: "#2A7A3B" },
+    ];
+  }
+  const out = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return { name: toStr(row.name), color: toStr(row.color, "#64748B") };
+    })
+    .filter((row) => row.name);
+  return out.length
+    ? out
+    : [
+        { name: "New", color: "#3060D0" },
+        { name: "Contacted", color: "#C77700" },
+        { name: "Qualified", color: "#6B4FB3" },
+        { name: "Converted", color: "#2A7A3B" },
+      ];
 }
 
 function normalizeStringList(raw: unknown, fallback: string[]): string[] {
@@ -1046,12 +1075,17 @@ export default function CompanySettingsPage() {
   const hasPendingBlurSaveRef = useRef(false);
   const saveQueuedWhileBusyRef = useRef(false);
   const skipFirstDirtyEffectRef = useRef(true);
+  const skipFirstZapierPersistEffectRef = useRef(true);
+  const lastZapierPersistSignatureRef = useRef("");
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
+  const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
   const [dashboardLegend, setDashboardLegend] = useState<DashboardLegendRow[]>([]);
   const [legendDragIndex, setLegendDragIndex] = useState<number | null>(null);
   const [legendDragOverIndex, setLegendDragOverIndex] = useState<number | null>(null);
   const [statusDragIndex, setStatusDragIndex] = useState<number | null>(null);
   const [statusDragOverIndex, setStatusDragOverIndex] = useState<number | null>(null);
+  const [leadStatusDragIndex, setLeadStatusDragIndex] = useState<number | null>(null);
+  const [leadStatusDragOverIndex, setLeadStatusDragOverIndex] = useState<number | null>(null);
   const [projectTagUsage, setProjectTagUsage] = useState<TagUsageRow[]>([]);
   const [boardColourMemory, setBoardColourMemory] = useState<BoardColourMemoryRow[]>([]);
   const [boardThicknesses, setBoardThicknesses] = useState<string[]>(["16", "18"]);
@@ -1080,6 +1114,7 @@ export default function CompanySettingsPage() {
   const [discountTierDragIndex, setDiscountTierDragIndex] = useState<number | null>(null);
   const [discountTierDragOverIndex, setDiscountTierDragOverIndex] = useState<number | null>(null);
   const [minusOffQuoteTotal, setMinusOffQuoteTotal] = useState(false);
+  const [salesLeadFormUrl, setSalesLeadFormUrl] = useState("");
   const quoteHelperRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hardware, setHardware] = useState<HardwareRow[]>([]);
   const [hardwareExpanded, setHardwareExpanded] = useState<Record<number, boolean>>({});
@@ -1106,10 +1141,12 @@ export default function CompanySettingsPage() {
   const [unlockHours, setUnlockHours] = useState("6");
   const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "", fieldLayout: [] });
   const [zapierCopyStatus, setZapierCopyStatus] = useState("");
+  const [confirmZapierRegenerate, setConfirmZapierRegenerate] = useState(false);
   const [showZapierHelp, setShowZapierHelp] = useState(false);
   const [showLeadFieldsCustomize, setShowLeadFieldsCustomize] = useState(false);
   const [appOrigin, setAppOrigin] = useState("");
   const zapierCopyResetTimerRef = useRef<number | null>(null);
+  const zapierRegenerateConfirmTimerRef = useRef<number | null>(null);
   const [availableLeadFields, setAvailableLeadFields] = useState<Array<{ key: string; label: string }>>([]);
   const [leadFieldsLoading, setLeadFieldsLoading] = useState(false);
   const [leadFieldDragIndex, setLeadFieldDragIndex] = useState<number | null>(null);
@@ -1162,6 +1199,38 @@ export default function CompanySettingsPage() {
     if (typeof window === "undefined") return;
     setAppOrigin(window.location.origin);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!isHydrated || !activeCompanyId) return;
+    window.dispatchEvent(
+      new CustomEvent(ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT, {
+        detail: {
+          companyId: activeCompanyId,
+          enabled: Boolean(zapierLeads.enabled),
+        },
+      }),
+    );
+  }, [activeCompanyId, isHydrated, zapierLeads.enabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (zapierRegenerateConfirmTimerRef.current != null) {
+      window.clearTimeout(zapierRegenerateConfirmTimerRef.current);
+      zapierRegenerateConfirmTimerRef.current = null;
+    }
+    if (!confirmZapierRegenerate) return;
+    zapierRegenerateConfirmTimerRef.current = window.setTimeout(() => {
+      setConfirmZapierRegenerate(false);
+      zapierRegenerateConfirmTimerRef.current = null;
+    }, 5000);
+    return () => {
+      if (zapierRegenerateConfirmTimerRef.current != null) {
+        window.clearTimeout(zapierRegenerateConfirmTimerRef.current);
+        zapierRegenerateConfirmTimerRef.current = null;
+      }
+    };
+  }, [confirmZapierRegenerate]);
 
   useEffect(() => {
     const run = async () => {
@@ -1221,6 +1290,7 @@ export default function CompanySettingsPage() {
           logoPath: toStr(doc.logoPath),
         });
         setStatuses(normalizeStatuses(doc.projectStatuses));
+        setLeadStatuses(normalizeLeadStatuses((doc as Record<string, unknown>).leadStatuses));
         setDashboardLegend(normalizeDashboardLegend(doc.dashboardCompleteLegend));
         setProjectTagUsage(normalizeProjectTagUsage(doc.projectTagUsage));
         setBoardColourMemory(normalizeBoardColourMemory(doc.boardMaterialUsage));
@@ -1235,6 +1305,7 @@ export default function CompanySettingsPage() {
         setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
         setDiscountTiers(normalizeDiscountTiers(doc.salesQuoteDiscountTiers));
         setMinusOffQuoteTotal(Boolean(doc.salesMinusOffQuoteTotal));
+        setSalesLeadFormUrl(toStr(doc.salesLeadFormUrl));
         const hardwareRows = normalizeHardware(doc.hardwareSettings);
         setHardware(sanitizeHardwareRows(hardwareRows));
         setNesting({
@@ -1862,6 +1933,17 @@ export default function CompanySettingsPage() {
   const activeRoleModal = activeRoleModalIndex !== null ? roles[activeRoleModalIndex] ?? null : null;
   const activeRoleIsProtected = isProtectedStarterRole(activeRoleModal?.id || activeRoleModal?.name);
   const zapierWebhookBaseUrl = appOrigin ? `${appOrigin}/api/leads` : "";
+  const existingZapierWebhookSecret = useMemo(() => {
+    const integrations =
+      company && typeof company.integrations === "object"
+        ? (company.integrations as Record<string, unknown>)
+        : {};
+    const zapierDoc =
+      integrations.zapierLeads && typeof integrations.zapierLeads === "object"
+        ? (integrations.zapierLeads as Record<string, unknown>)
+        : {};
+    return toStr(zapierDoc.webhookSecret);
+  }, [company]);
   const zapierWebhookUrl = useMemo(() => {
     if (!zapierWebhookBaseUrl || !activeCompanyId || !zapierLeads.webhookSecret) return "";
     const params = new URLSearchParams({
@@ -1931,6 +2013,7 @@ export default function CompanySettingsPage() {
         salesQuoteHelpers: quoteHelpers,
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
+        salesLeadFormUrl,
         backupTemplate,
         hardware,
         nesting,
@@ -2104,6 +2187,11 @@ export default function CompanySettingsPage() {
         name: toStr(row.name),
         color: toStr(row.color, "#64748B"),
       })),
+      leadStatuses: leadStatuses.map((row, idx) => ({
+        id: toStr(row.name, `lead_status_${idx + 1}`).toLowerCase().replace(/\s+/g, "_"),
+        name: toStr(row.name),
+        color: toStr(row.color, "#64748B"),
+      })),
       dashboardCompleteLegend: dashboardLegend
         .map((row, idx) => {
           const name = toStr(row.name);
@@ -2271,11 +2359,12 @@ export default function CompanySettingsPage() {
         .map((row) => ({ low: toStr(row.low), high: toStr(row.high), discount: toStr(row.discount) }))
         .filter((row) => row.low && row.high && row.discount),
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
+      salesLeadFormUrl: toStr(salesLeadFormUrl),
       integrations: {
         ...(((company as Record<string, unknown> | null)?.integrations as Record<string, unknown> | undefined) ?? {}),
         zapierLeads: {
           enabled: Boolean(zapierLeads.enabled),
-          webhookSecret: toStr(zapierLeads.webhookSecret),
+          webhookSecret: toStr(zapierLeads.webhookSecret, existingZapierWebhookSecret),
           fieldLayout: mergedLeadFieldLayout.map((row, idx) => ({
             key: row.key,
             label: row.label,
@@ -2317,6 +2406,7 @@ export default function CompanySettingsPage() {
           ...(prev ?? {}),
           ...form,
         projectStatuses: statuses,
+        leadStatuses,
         dashboardCompleteLegend: dashboardLegend,
         projectTagUsage: { tags: projectTagUsage },
         boardMaterialUsage: { colours: boardColourMemory },
@@ -2344,11 +2434,12 @@ export default function CompanySettingsPage() {
           salesQuoteHelpers: quoteHelpers,
           salesQuoteDiscountTiers: discountTiers,
           salesMinusOffQuoteTotal: minusOffQuoteTotal,
+          salesLeadFormUrl,
           integrations: {
             ...((((prev ?? {}) as Record<string, unknown>).integrations as Record<string, unknown> | undefined) ?? {}),
             zapierLeads: {
               enabled: Boolean(zapierLeads.enabled),
-              webhookSecret: toStr(zapierLeads.webhookSecret),
+              webhookSecret: toStr(zapierLeads.webhookSecret, existingZapierWebhookSecret),
               fieldLayout: mergedLeadFieldLayout.map((row, idx) => ({
                 key: row.key,
                 label: row.label,
@@ -2417,6 +2508,37 @@ export default function CompanySettingsPage() {
 
   useEffect(() => {
     if (!isHydrated || isLoading || !activeCompanyId) return;
+    const nextSignature = JSON.stringify({
+      companyId: activeCompanyId,
+      enabled: Boolean(zapierLeads.enabled),
+      webhookSecret: String(zapierLeads.webhookSecret || ""),
+    });
+    if (skipFirstZapierPersistEffectRef.current) {
+      skipFirstZapierPersistEffectRef.current = false;
+      lastZapierPersistSignatureRef.current = nextSignature;
+      return;
+    }
+    if (lastZapierPersistSignatureRef.current === nextSignature) {
+      return;
+    }
+    lastZapierPersistSignatureRef.current = nextSignature;
+    if (blurAutoSaveTimerRef.current != null) {
+      window.clearTimeout(blurAutoSaveTimerRef.current);
+      blurAutoSaveTimerRef.current = null;
+    }
+    if (isSaving) {
+      hasPendingBlurSaveRef.current = true;
+      saveQueuedWhileBusyRef.current = true;
+      setSaveLabel("Autosaving...");
+      return;
+    }
+    hasPendingBlurSaveRef.current = false;
+    setSaveLabel("Autosaving...");
+    void save("auto");
+  }, [activeCompanyId, isHydrated, isLoading, zapierLeads.enabled, zapierLeads.webhookSecret]);
+
+  useEffect(() => {
+    if (!isHydrated || isLoading || !activeCompanyId) return;
     if (skipFirstDirtyEffectRef.current) {
       skipFirstDirtyEffectRef.current = false;
       return;
@@ -2429,6 +2551,7 @@ export default function CompanySettingsPage() {
     activeCompanyId,
     form,
     statuses,
+    leadStatuses,
     dashboardLegend,
     projectTagUsage,
     boardColourMemory,
@@ -2443,6 +2566,7 @@ export default function CompanySettingsPage() {
       quoteHelpers,
       discountTiers,
       minusOffQuoteTotal,
+      salesLeadFormUrl,
       zapierLeads,
       backupTemplate,
     hardware,
@@ -2768,6 +2892,7 @@ export default function CompanySettingsPage() {
                               type="button"
                               onClick={() =>
                                 {
+                                  setConfirmZapierRegenerate(false);
                                   setZapierLeads((prev) => ({
                                     ...prev,
                                     enabled: !prev.enabled,
@@ -2812,6 +2937,8 @@ export default function CompanySettingsPage() {
                             className="flex min-w-0 items-center justify-end gap-3 md:justify-self-stretch"
                             style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}
                           >
+                            {zapierLeads.enabled ? (
+                              <>
                             <input
                               value={zapierCopyStatus === "copied" ? "✓ Copied" : zapierWebhookUrl}
                               readOnly
@@ -2852,6 +2979,7 @@ export default function CompanySettingsPage() {
                                 event.preventDefault();
                                 event.stopPropagation();
                                 if (!zapierLeads.enabled) return;
+                                setConfirmZapierRegenerate(false);
                                 setShowLeadFieldsCustomize(true);
                               }}
                               className="inline-flex h-9 items-center rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
@@ -2865,26 +2993,39 @@ export default function CompanySettingsPage() {
                                 event.preventDefault();
                                 event.stopPropagation();
                                 if (!zapierLeads.enabled) return;
+                                if (!confirmZapierRegenerate) {
+                                  setConfirmZapierRegenerate(true);
+                                  return;
+                                }
                                 if (zapierCopyResetTimerRef.current) {
                                   window.clearTimeout(zapierCopyResetTimerRef.current);
                                   zapierCopyResetTimerRef.current = null;
                                 }
                                 setZapierCopyStatus("");
+                                setConfirmZapierRegenerate(false);
                                 setZapierLeads((prev) => ({
                                   ...prev,
                                   webhookSecret: generateZapierSecret(),
                                 }));
                                 triggerToggleAutosave();
                               }}
-                              className="inline-flex h-9 items-center rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                              className="inline-flex h-9 w-[106px] items-center justify-center rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-55"
+                              style={{
+                                borderColor: confirmZapierRegenerate ? "#16A34A" : "#D8DEE8",
+                                backgroundColor: confirmZapierRegenerate ? "#16A34A" : "#ffffff",
+                                color: confirmZapierRegenerate ? "#ffffff" : "#475467",
+                              }}
                             >
-                              Regenerate
+                              {confirmZapierRegenerate ? "Confirm" : "Regenerate"}
                             </button>
+                              </>
+                            ) : null}
                             <button
                               type="button"
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
+                                setConfirmZapierRegenerate(false);
                                 setShowZapierHelp(true);
                               }}
                               className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#D8DEE8] bg-white text-[#475467]"
@@ -3881,7 +4022,7 @@ export default function CompanySettingsPage() {
                       </div>
                       {statuses.map((row, idx) => (
                         <div
-                          key={`${row.name}_${idx}`}
+                          key={`project_status_${idx}`}
                           className={`grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 rounded-[8px] transition-all ${
                             statusDragIndex === idx
                               ? "z-10 bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
@@ -3956,6 +4097,91 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
+                  <Panel title="Leads Statuses">
+                    <div className="space-y-2 text-[12px]">
+                      <div className="grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                        <p></p>
+                        <p>Del</p>
+                        <p>Status Name</p>
+                        <p className="text-center">Color</p>
+                      </div>
+                      {leadStatuses.map((row, idx) => (
+                        <div
+                          key={`lead_status_${idx}`}
+                          className={`grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 rounded-[8px] transition-all ${
+                            leadStatusDragIndex === idx
+                              ? "z-10 bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
+                              : leadStatusDragOverIndex === idx
+                                ? "bg-white"
+                                : ""
+                          }`}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }}
+                          onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (leadStatusDragIndex == null || leadStatusDragIndex === idx) return;
+                            setLeadStatuses((prev) => moveRowTo(prev, leadStatusDragIndex, idx));
+                            setLeadStatusDragIndex(idx);
+                            setLeadStatusDragOverIndex(idx);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setLeadStatusDragIndex(null);
+                            setLeadStatusDragOverIndex(null);
+                            triggerAutosaveAfterRowDrop();
+                          }}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              setLeadStatusDragIndex(idx);
+                              setLeadStatusDragOverIndex(idx);
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData("text/plain", `${idx}`);
+                            }}
+                            onDragEnd={() => {
+                              setLeadStatusDragIndex(null);
+                              setLeadStatusDragOverIndex(null);
+                            }}
+                            className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                          >
+                            <X size={15} strokeWidth={2.8} />
+                          </button>
+                          <input
+                            value={row.name}
+                            onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                          <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#64748B"}>
+                            <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
+                            <input
+                              type="color"
+                              value={row.color || "#64748B"}
+                              onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
+                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                            />
+                          </label>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => setLeadStatuses((prev) => [...prev, { name: "", color: "#64748B" }])}
+                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                      >
+                        + Add
+                      </button>
+                    </div>
+                  </Panel>
                   <Panel title="Tags">
                     <div className="space-y-2 text-[12px]">
                       <div className="grid grid-cols-[26px_1fr_60px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
@@ -3986,6 +4212,19 @@ export default function CompanySettingsPage() {
 
               {active === "sales" && (
                 <div className="space-y-3">
+                  <Panel title="Lead Form">
+                    <div className="space-y-2 text-[12px]">
+                      <div className="grid grid-cols-[180px_minmax(0,1fr)] items-center gap-3">
+                        <p className="text-[11px] font-bold text-[#475467]">Public Form URL</p>
+                        <input
+                          value={salesLeadFormUrl}
+                          onChange={(e) => setSalesLeadFormUrl(e.target.value)}
+                          placeholder="https://..."
+                          className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                        />
+                      </div>
+                    </div>
+                  </Panel>
                   <Panel title="Item Categories">
                     <div className="space-y-2 text-[12px]">
                       <div className="grid grid-cols-[26px_26px_26px_72px_1fr_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
@@ -5438,6 +5677,7 @@ export default function CompanySettingsPage() {
   companyId: activeCompanyId,
   deletedRetentionDays: form.deletedRetentionDays,
   projectStatuses: statuses,
+  leadStatuses,
   dashboardCompleteLegend: dashboardLegend,
   projectTagUsage,
   quoteTemplatePageSize: backupTemplate.quoteTemplatePageSize,

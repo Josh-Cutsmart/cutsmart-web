@@ -1,20 +1,37 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, RotateCcw, Search, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
+import { fetchCompanyAccess } from "@/lib/membership";
 import {
   fetchCompanyDoc,
   fetchDeletedProjects,
+  fetchCompanyLeads,
   fetchUserColorMapByUids,
   permanentlyDeleteProject,
   purgeExpiredDeletedProjects,
   restoreDeletedProject,
 } from "@/lib/firestore-data";
+import type { CompanyLeadRow } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
+
+const RESERVED_LEAD_FIELD_KEYS = new Set(["companyid", "source", "status"]);
+
+type LeadProjectFieldTarget = "" | "clientName" | "clientPhone" | "clientEmail" | "projectAddress" | "projectNotes";
+type LeadFieldLayoutRow = {
+  key: string;
+  label: string;
+  showInRow: boolean;
+  showInDetail: boolean;
+  order: number;
+  projectFieldTarget: LeadProjectFieldTarget;
+};
+
+type StatusRow = { name: string; color: string };
 
 function formatDeletedDate(value: string) {
   const d = new Date(value);
@@ -133,11 +150,178 @@ function initialsFromName(name: string) {
   return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
 }
 
+function formatLeadFieldLabel(key: string) {
+  const raw = String(key || "").trim();
+  if (!raw) return "Field";
+  return raw
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function normalizeLeadFieldKey(key: string) {
+  return String(key || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeLeadFieldLayout(raw: unknown): LeadFieldLayoutRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item, idx) => {
+      const row = (item ?? {}) as Record<string, unknown>;
+      const key = String(row.key || "").trim();
+      if (!key) return null;
+      const label = String(row.label || "").trim() || formatLeadFieldLabel(key);
+      return {
+        key,
+        label,
+        showInRow: Boolean(row.showInRow),
+        showInDetail: row.showInDetail == null ? true : Boolean(row.showInDetail),
+        order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
+        projectFieldTarget: ([ 
+          "",
+          "clientName",
+          "clientPhone",
+          "clientEmail",
+          "projectAddress",
+          "projectNotes",
+        ] as LeadProjectFieldTarget[]).includes(String(row.projectFieldTarget || "").trim() as LeadProjectFieldTarget)
+          ? (String(row.projectFieldTarget || "").trim() as LeadProjectFieldTarget)
+          : "",
+      } satisfies LeadFieldLayoutRow;
+    })
+    .filter((row): row is LeadFieldLayoutRow => Boolean(row));
+}
+
+type LeadDynamicField = {
+  key: string;
+  label: string;
+  value: string;
+};
+
+function mergeLeadFieldLayout(
+  availableFields: Array<{ key: string; label: string }>,
+  savedLayout: LeadFieldLayoutRow[],
+): LeadFieldLayoutRow[] {
+  const byKey = new Map(savedLayout.map((row) => [normalizeLeadFieldKey(row.key), row] as const));
+  return availableFields
+    .map((field, idx) => {
+      const existing = byKey.get(normalizeLeadFieldKey(field.key));
+      return {
+        key: existing?.key || field.key,
+        label: existing?.label || field.label,
+        showInRow: existing?.showInRow ?? idx < 3,
+        showInDetail: existing?.showInDetail ?? true,
+        order: Number.isFinite(Number(existing?.order)) ? Number(existing?.order) : idx,
+        projectFieldTarget: existing?.projectFieldTarget ?? "",
+      } satisfies LeadFieldLayoutRow;
+    })
+    .sort((a, b) => {
+      const orderDiff = Number(a.order) - Number(b.order);
+      if (orderDiff !== 0) return orderDiff;
+      return a.label.localeCompare(b.label);
+    });
+}
+
+function leadValueToText(value: unknown): string {
+  if (value == null) return "";
+  if (Array.isArray(value)) {
+    return value.map((item) => leadValueToText(item)).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${formatLeadFieldLabel(key)}: ${leadValueToText(item)}`)
+      .filter((item) => item.endsWith(": ") === false)
+      .join(" | ");
+  }
+  return String(value).trim();
+}
+
+function getLeadDynamicFields(lead: CompanyLeadRow): LeadDynamicField[] {
+  const raw = lead.rawFields ?? {};
+  return Object.entries(raw)
+    .filter(([key]) => {
+      const normalized = normalizeLeadFieldKey(key);
+      return !RESERVED_LEAD_FIELD_KEYS.has(normalized) && !String(key || "").startsWith("__");
+    })
+    .map(([key, value]) => ({
+      key,
+      label: formatLeadFieldLabel(key),
+      value: leadValueToText(value),
+    }))
+    .filter((field) => field.value);
+}
+
+function statusPillColors(status: string) {
+  const key = String(status || "").trim().toLowerCase();
+  const defaults: Record<string, string> = {
+    new: "#3060D0",
+    contacted: "#C77700",
+    qualified: "#6B4FB3",
+    converted: "#2A7A3B",
+    archived: "#7F1D1D",
+  };
+  const bg = defaults[key] ?? "#64748B";
+  return { backgroundColor: bg, color: "#FFFFFF" };
+}
+
+function normalizeLeadStatuses(raw: unknown): StatusRow[] {
+  if (!Array.isArray(raw)) {
+    return [
+      { name: "New", color: "#3060D0" },
+      { name: "Contacted", color: "#C77700" },
+      { name: "Qualified", color: "#6B4FB3" },
+      { name: "Converted", color: "#2A7A3B" },
+    ];
+  }
+  const rows = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return {
+        name: String(row.name ?? "").trim(),
+        color: String(row.color ?? "").trim() || "#64748B",
+      };
+    })
+    .filter((row) => row.name);
+  return rows.length
+    ? rows
+    : [
+        { name: "New", color: "#3060D0" },
+        { name: "Contacted", color: "#C77700" },
+        { name: "Qualified", color: "#6B4FB3" },
+        { name: "Converted", color: "#2A7A3B" },
+      ];
+}
+
+function measureStatusPillWidth(options: string[]) {
+  const labels = options.map((option) => String(option || "").trim()).filter(Boolean);
+  if (!labels.length) return 60;
+  if (typeof document === "undefined") {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  context.font = '700 11px "Segoe UI", Arial, sans-serif';
+  const widest = labels.reduce((max, label) => Math.max(max, context.measureText(label).width), 0);
+  return Math.max(60, Math.ceil(widest + 10));
+}
+
 export default function RecentlyDeletedPage() {
   const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
   const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [deletedProjects, setDeletedProjects] = useState<Project[]>([]);
+  const [deletedLeads, setDeletedLeads] = useState<CompanyLeadRow[]>([]);
   const [retentionDaysByCompany, setRetentionDaysByCompany] = useState<Record<string, number>>({});
   const [creatorColorByUid, setCreatorColorByUid] = useState<Record<string, string>>({});
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
@@ -152,6 +336,11 @@ export default function RecentlyDeletedPage() {
   const [hoveredRowId, setHoveredRowId] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
   const [expandedProjectId, setExpandedProjectId] = useState("");
+  const [expandedLeadId, setExpandedLeadId] = useState("");
+  const [leadFieldLayout, setLeadFieldLayout] = useState<LeadFieldLayoutRow[]>([]);
+  const [leadStatusRows, setLeadStatusRows] = useState<StatusRow[]>(normalizeLeadStatuses(undefined));
+  const [activeTab, setActiveTab] = useState<"leads" | "projects">("projects");
+  const [canAccessDeletedLeads, setCanAccessDeletedLeads] = useState(false);
   const confirmResetTimeoutRef = useRef<number | null>(null);
   const confirmDeleteTimeoutRef = useRef<number | null>(null);
 
@@ -183,9 +372,37 @@ export default function RecentlyDeletedPage() {
     const creatorUids = rows.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
     const userColorMap = await fetchUserColorMapByUids(creatorUids, selectedCompanyId);
     setCreatorColorByUid(userColorMap);
+    if (selectedCompanyId && user?.uid) {
+      const access = await fetchCompanyAccess(selectedCompanyId, user.uid);
+      const role = String(access?.role || "").trim().toLowerCase();
+      const permitted =
+        role === "owner" ||
+        role === "admin" ||
+        (access?.permissionKeys ?? []).some((item) => {
+          const normalized = String(item || "").trim().toLowerCase();
+          return normalized === "company.*" || normalized === "leads.*";
+        });
+      setCanAccessDeletedLeads(permitted);
+    } else {
+      setCanAccessDeletedLeads(false);
+    }
+    if (selectedCompanyId) {
+      const leads = await fetchCompanyLeads(selectedCompanyId);
+      setDeletedLeads(leads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "archived"));
+    } else {
+      setDeletedLeads([]);
+    }
     if (selectedCompanyId) {
       const selectedCompanyDoc = await fetchCompanyDoc(selectedCompanyId);
       const selectedDoc = (selectedCompanyDoc as Record<string, unknown> | null) ?? null;
+      const integrations =
+        selectedDoc && typeof selectedDoc.integrations === "object" && selectedDoc.integrations !== null
+          ? (selectedDoc.integrations as Record<string, unknown>)
+          : null;
+      const zapierLeads =
+        integrations && typeof integrations.zapierLeads === "object" && integrations.zapierLeads !== null
+          ? (integrations.zapierLeads as Record<string, unknown>)
+          : null;
       const appPrefs =
         selectedDoc && typeof selectedDoc.applicationPreferences === "object" && selectedDoc.applicationPreferences !== null
           ? (selectedDoc.applicationPreferences as Record<string, unknown>)
@@ -199,6 +416,11 @@ export default function RecentlyDeletedPage() {
       if (selectedName) setCompanyName(selectedName);
       const selectedThemeColor = String(selectedDoc?.themeColor ?? "").trim();
       if (selectedThemeColor) setCompanyThemeColor(selectedThemeColor);
+      setLeadFieldLayout(normalizeLeadFieldLayout(zapierLeads?.fieldLayout));
+      setLeadStatusRows(normalizeLeadStatuses(selectedDoc?.leadStatuses));
+    } else {
+      setLeadFieldLayout([]);
+      setLeadStatusRows(normalizeLeadStatuses(undefined));
     }
 
     if (!companyIds.length) {
@@ -271,6 +493,104 @@ export default function RecentlyDeletedPage() {
     return deletedProjects.filter((project) => `${project.name} ${project.createdByName}`.toLowerCase().includes(q));
   }, [deletedProjects, search]);
 
+  const filteredDeletedLeads = useMemo(() => {
+    const q = String(search || "").trim().toLowerCase();
+    if (!q) return deletedLeads;
+    return deletedLeads.filter((lead) => {
+      const raw = lead.rawFields ?? {};
+      const searchable = [
+        lead.name,
+        lead.email,
+        lead.phone,
+        lead.message,
+        lead.formName,
+        ...Object.entries(raw).map(([key, value]) => `${key} ${String(value ?? "")}`),
+      ].join(" ").toLowerCase();
+      return searchable.includes(q);
+    });
+  }, [deletedLeads, search]);
+
+  useEffect(() => {
+    if (activeTab === "leads" && !canAccessDeletedLeads) {
+      setActiveTab("projects");
+    }
+  }, [activeTab, canAccessDeletedLeads]);
+
+  const availableLeadFields = useMemo(() => {
+    const map = new Map<string, { key: string; label: string }>();
+    for (const lead of deletedLeads) {
+      for (const field of getLeadDynamicFields(lead)) {
+        const normalized = normalizeLeadFieldKey(field.key);
+        if (!normalized || map.has(normalized)) continue;
+        map.set(normalized, { key: field.key, label: field.label });
+  }
+}
+
+function measureStatusPillWidth(options: string[]) {
+  const labels = options.map((option) => String(option || "").trim()).filter(Boolean);
+  if (!labels.length) return 60;
+  if (typeof document === "undefined") {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
+    return Math.max(60, Math.ceil(longest * 6.6 + 10));
+  }
+  context.font = '700 11px "Segoe UI", Arial, sans-serif';
+  const widest = labels.reduce((max, label) => Math.max(max, context.measureText(label).width), 0);
+  return Math.max(60, Math.ceil(widest + 10));
+}
+    return Array.from(map.values());
+  }, [deletedLeads]);
+
+  const mergedLeadFieldLayout = useMemo(
+    () => mergeLeadFieldLayout(availableLeadFields, leadFieldLayout),
+    [availableLeadFields, leadFieldLayout],
+  );
+
+  const leadRowFields = useMemo(() => {
+    const configured = mergedLeadFieldLayout.filter((field) => field.showInRow);
+    return configured.length > 0 ? configured : mergedLeadFieldLayout.slice(0, 3);
+  }, [mergedLeadFieldLayout]);
+
+  const leadDetailFields = useMemo(() => {
+    const configured = mergedLeadFieldLayout.filter((field) => field.showInDetail);
+    return configured.length > 0 ? configured : mergedLeadFieldLayout;
+  }, [mergedLeadFieldLayout]);
+
+  const leadStatusColorByName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of leadStatusRows) {
+      map.set(String(row.name || "").trim().toLowerCase(), String(row.color || "").trim() || "#64748B");
+    }
+    return map;
+  }, [leadStatusRows]);
+  const leadStatusOptions = useMemo(() => {
+    const options = leadStatusRows.map((row) => row.name).filter(Boolean);
+    return options.length ? options : ["New", "Contacted", "Qualified", "Converted"];
+  }, [leadStatusRows]);
+  const leadStatusPillWidth = useMemo(() => {
+    return measureStatusPillWidth(leadStatusOptions);
+  }, [leadStatusOptions]);
+
+  const deletedLeadStatusPillStyle = (statusLabel: string) => {
+    const configured = leadStatusColorByName.get(String(statusLabel || "").trim().toLowerCase());
+    if (configured) {
+      return { backgroundColor: configured, color: "#FFFFFF" };
+    }
+    return statusPillColors(statusLabel);
+  };
+
+  const deletedLeadGridTemplate = useMemo(() => {
+    const parts = ["118px", "40px", `${leadStatusPillWidth}px`];
+    for (const _ of leadRowFields) parts.push("minmax(150px,1fr)");
+    parts.push("132px");
+    return parts.join(" ");
+  }, [leadRowFields, leadStatusPillWidth]);
+
   const onRestore = async (project: Project) => {
     if (restoringId || deletingId) return;
     clearConfirmRestoreTimeout();
@@ -333,6 +653,10 @@ export default function RecentlyDeletedPage() {
     setExpandedProjectId((prev) => (prev === project.id ? "" : project.id));
   };
 
+  const toggleLeadExpand = (lead: CompanyLeadRow) => {
+    setExpandedLeadId((prev) => (prev === lead.id ? "" : lead.id));
+  };
+
   useEffect(() => {
     return () => {
       clearConfirmRestoreTimeout();
@@ -344,14 +668,44 @@ export default function RecentlyDeletedPage() {
     <ProtectedRoute>
       <AppShell>
         <section className="-mx-4 -mb-4 -mt-4 min-h-screen bg-white pb-4 pt-0 md:-mx-5">
-          <div className="flex h-[56px] flex-wrap items-center justify-between gap-2 border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2">
-              <Trash2 size={16} color="#12345B" strokeWidth={2.1} />
-              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
-                <span style={{ color: "#12345B" }}>Recently Deleted</span>
-                <span className="px-2" style={{ color: "#6B7280" }}>|</span>
-                <span style={{ color: "#334155" }}>{companyName}</span>
-              </p>
+          <div className="flex h-[56px] flex-wrap items-center justify-between gap-3 border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+            <div className="inline-flex min-w-0 items-center gap-3">
+              <div className="inline-flex items-center gap-2">
+                <Trash2 size={16} color="#12345B" strokeWidth={2.1} />
+                <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
+                  <span style={{ color: "#12345B" }}>Recently Deleted</span>
+                  <span className="px-2" style={{ color: "#6B7280" }}>|</span>
+                  <span style={{ color: "#334155" }}>{companyName}</span>
+                </p>
+              </div>
+              <div className="inline-flex items-center gap-2 border-l border-[#D7DEE8] pl-3">
+                {canAccessDeletedLeads ? (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("leads")}
+                    className="inline-flex h-8 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold uppercase tracking-[0.7px] transition-colors"
+                    style={
+                      activeTab === "leads"
+                        ? { backgroundColor: "#EAF1FF", color: "#12345B" }
+                        : { backgroundColor: "transparent", color: "#7F93AE" }
+                    }
+                  >
+                    Leads
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("projects")}
+                  className="inline-flex h-8 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold uppercase tracking-[0.7px] transition-colors"
+                  style={
+                    activeTab === "projects"
+                      ? { backgroundColor: "#EAF1FF", color: "#12345B" }
+                      : { backgroundColor: "transparent", color: "#7F93AE" }
+                  }
+                >
+                  Projects
+                </button>
+              </div>
             </div>
             <div
               className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#D8DEE8] bg-[#F7F9FC] px-2"
@@ -361,13 +715,14 @@ export default function RecentlyDeletedPage() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search deleted projects..."
+                placeholder={activeTab === "projects" ? "Search deleted projects..." : "Search deleted leads..."}
                 className="h-8 w-full bg-transparent text-[12px] outline-none"
               />
             </div>
           </div>
 
-          <div className="mt-3 overflow-auto">
+          <div className="overflow-auto">
+            {activeTab === "projects" ? (
             <table className="w-full min-w-[920px] text-[12px]">
               <thead>
                 <tr>
@@ -570,6 +925,159 @@ export default function RecentlyDeletedPage() {
                 })}
               </tbody>
             </table>
+            ) : (
+              <div className="overflow-x-auto">
+                {isLoading ? (
+                  <div className="px-4 py-8 text-[13px] font-semibold text-[#6B7280]">
+                    Loading deleted leads...
+                  </div>
+                ) : filteredDeletedLeads.length === 0 ? (
+                  <div className="px-4 py-10 text-center text-[13px] font-semibold text-[#6B7280]">
+                    No deleted leads.
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      className="grid min-w-full gap-3 border-b px-4 py-3 text-[11px] font-bold uppercase tracking-[0.8px]"
+                      style={{
+                        gridTemplateColumns: deletedLeadGridTemplate,
+                        borderColor: "#D7E1EE",
+                        backgroundColor: "#F8FBFF",
+                        color: "#7F93AE",
+                      }}
+                    >
+                      <p>Permanent Delete</p>
+                      <p></p>
+                      <p>Status</p>
+                      {leadRowFields.length === 0 ? <p>No visible lead fields</p> : leadRowFields.map((column) => <p key={column.key}>{column.label}</p>)}
+                      <p className="text-right">Received</p>
+                    </div>
+                    {filteredDeletedLeads.map((lead, idx) => {
+                      const leadFields = getLeadDynamicFields(lead);
+                      const isExpanded = expandedLeadId === lead.id;
+                      const archivedAt = String(lead.updatedAtIso || lead.createdAtIso || lead.submittedAtIso || "").trim();
+                      const archivedAtMs = new Date(archivedAt).getTime();
+                      const retentionDays = retentionDaysByCompany[String(lead.companyId || "").trim()] ?? 90;
+                      const remainingMs =
+                        Number.isFinite(archivedAtMs)
+                          ? archivedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
+                          : Number.POSITIVE_INFINITY;
+                      return (
+                        <Fragment key={`recently_deleted_lead_${lead.id}`}>
+                          <button
+                            type="button"
+                            onClick={() => toggleLeadExpand(lead)}
+                            className="grid min-w-full items-center gap-3 border-b px-4 py-[7px] text-left text-[12px] transition-colors"
+                            style={{
+                              gridTemplateColumns: deletedLeadGridTemplate,
+                              borderColor: "#D7E1EE",
+                              backgroundColor: idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                            }}
+                          >
+                            <div className="text-left">
+                              <span
+                                className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border border-[#F3B8BF] bg-[#FDECEC] px-2 py-[3px] text-[11px] font-bold"
+                                style={{ color: "#7F1D1D" }}
+                              >
+                                {formatRemaining(remainingMs)}
+                              </span>
+                            </div>
+                            <span
+                              className="flex h-6 w-6 items-center justify-center rounded-full"
+                              style={{ backgroundColor: isExpanded ? "#FFFFFF" : "transparent", color: "#334155" }}
+                              aria-hidden="true"
+                            >
+                              {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                            </span>
+                            <div className="-ml-1 flex justify-center">
+                              <span
+                                className="inline-flex h-7 shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold whitespace-nowrap"
+                                style={{ ...deletedLeadStatusPillStyle(lead.status || "Archived"), width: leadStatusPillWidth }}
+                              >
+                                {lead.status || "Archived"}
+                              </span>
+                            </div>
+                            {leadRowFields.length === 0 ? (
+                              <span className="min-w-0 text-left text-[12px] font-semibold text-[#334155]">
+                                No preview fields configured yet.
+                              </span>
+                            ) : (
+                              leadRowFields.map((column) => {
+                                const match = leadFields.find(
+                                  (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
+                                );
+                                return (
+                                  <span key={`${lead.id}:${column.key}`} className="min-w-0 overflow-hidden text-left">
+                                    <p className="truncate whitespace-nowrap text-[12px] font-semibold text-[#334155]">
+                                      {match?.value || "-"}
+                                    </p>
+                                  </span>
+                                );
+                              })
+                            )}
+                            <div className="text-right">
+                              <p className="whitespace-nowrap text-[11px] font-semibold text-[#6B7280]">
+                                {formatDeletedDate(archivedAt)}
+                              </p>
+                            </div>
+                          </button>
+                          {isExpanded ? (
+                            <div
+                              className="border-b px-4 pb-4 pt-3"
+                              style={{
+                                borderColor: "#D7E1EE",
+                                backgroundColor: idx % 2 === 0 ? "#F8FBFF" : "#FFFFFF",
+                              }}
+                            >
+                              <div className="mb-3 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border border-[#F3B8BF] bg-[#FDECEC] px-2 py-[3px] text-[11px] font-bold"
+                                    style={{ color: "#7F1D1D" }}
+                                  >
+                                    {formatRemaining(remainingMs)}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] font-extrabold uppercase tracking-[0.7px] text-[#7F93AE]">
+                                  Lead Details
+                                </p>
+                              </div>
+                              {leadDetailFields.length === 0 ? (
+                                <p className="text-[12px] font-semibold text-[#6B7280]">
+                                  No detail fields configured yet.
+                                </p>
+                              ) : (
+                                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                  {leadDetailFields.map((column) => {
+                                    const match = leadFields.find(
+                                      (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
+                                    );
+                                    return (
+                                      <div
+                                        key={`${lead.id}:detail:${column.key}`}
+                                        className="rounded-[12px] border px-3 py-2"
+                                        style={{ borderColor: "#D7E1EE", backgroundColor: "#FFFFFF" }}
+                                      >
+                                        <p className="text-[10px] font-extrabold uppercase tracking-[0.7px] text-[#7F93AE]">
+                                          {column.label}
+                                        </p>
+                                        <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold text-[#334155]">
+                                          {match?.value || "-"}
+                                        </p>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </section>
       </AppShell>
