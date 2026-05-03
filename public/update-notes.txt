@@ -1,32 +1,9 @@
-Version: v0.2.2
+Version: v0.2.3
 
 whatsNew: [
 <u><b>General:</u></b>
-- Removed "Edit is disabled for your role" container from showing on project load.
+- "Leads" delete should now move deleted leads into the deleted tab.
 
-<u><b>Production Cutlist:</u></b>
-- Fixed live feed flashing on changes.
-- Grain direciton now has a safeguard against board size / grain direciton of sheet.
-- Grain now has an update message in live feed bar
-
-<u><b>Initial Cutlist:</u></b>
-- Fixed live feed flashing on changes.
-- Grain direciton now has a safeguard against board size / grain direciton of sheet.
-- Grain now has an update message in live feed bar
-
-<u><b>Leads:</u></b>
-- Deleted leads should now go into the "Recently Deleted, Leads" tab.
-
-<u><b>Dashboard:</u></b>
-- Rows now highlights on hover.
-- Fixed "Loading Projects" from staying after projects have loaded for a few seconds.
-
-<u><b>Project Details:</u></b>
-- Production tab containers now have white backgrounds behind the header bar.
-- Fixed Board Settings "Colour" drop down showing behind the background.
-- Fixed broken shading behind the contianers in the "General" tab.
-- Fixed corner border overflow in "Board Settings" container.
-- The 4 main tabs now have a lgiht grey background behind the containers for section separation.
 
 ]
 

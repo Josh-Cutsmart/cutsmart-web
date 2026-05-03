@@ -19,6 +19,7 @@ import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 
 const RESERVED_LEAD_FIELD_KEYS = new Set(["companyid", "source", "status"]);
+const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
 
 type LeadProjectFieldTarget = "" | "clientName" | "clientPhone" | "clientEmail" | "projectAddress" | "projectNotes";
 type LeadFieldLayoutRow = {
@@ -461,6 +462,26 @@ export default function RecentlyDeletedPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const onLeadArchiveUpdated = (event: Event) => {
+      const detail =
+        event instanceof CustomEvent && event.detail && typeof event.detail === "object"
+          ? (event.detail as { companyId?: string })
+          : null;
+      const storedCompanyId =
+        typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
+      const targetCompanyId = String(detail?.companyId || storedCompanyId).trim();
+      if (!targetCompanyId) return;
+      void fetchArchivedLeadsFromApi(targetCompanyId).then((rows) => {
+        setDeletedLeads(rows);
+      });
+    };
+    window.addEventListener(LEAD_ARCHIVE_UPDATED_EVENT, onLeadArchiveUpdated as EventListener);
+    return () => {
+      window.removeEventListener(LEAD_ARCHIVE_UPDATED_EVENT, onLeadArchiveUpdated as EventListener);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

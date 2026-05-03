@@ -7,12 +7,13 @@ import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
-import { fetchCompanyDoc, type CompanyLeadRow, updateCompanyLeadStatus } from "@/lib/firestore-data";
+import { fetchCompanyDoc, type CompanyLeadRow } from "@/lib/firestore-data";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
+const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
 const RESERVED_LEAD_FIELD_KEYS = new Set([
   "companyid",
   "source",
@@ -678,7 +679,16 @@ export default function LeadsPage() {
     if (isTemporarySampleLead(lead)) {
       didArchive = true;
     } else {
-      didArchive = await updateCompanyLeadStatus(lead.companyId, leadId, "archived");
+      const response = await fetch("/api/leads", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: lead.companyId,
+          leadId,
+          status: "Archived",
+        }),
+      }).catch(() => null);
+      didArchive = Boolean(response?.ok);
     }
     if (didArchive) {
       if (isTemporarySampleLead(lead)) {
@@ -688,6 +698,20 @@ export default function LeadsPage() {
       setLeads((current) => current.filter((item) => item.id !== leadId));
       setOpenLeadId((current) => (current === leadId ? "" : current));
       setConfirmDeleteLeadId("");
+      if (!isTemporarySampleLead(lead)) {
+        void loadLeads(lead.companyId);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent(LEAD_ARCHIVE_UPDATED_EVENT, {
+              detail: {
+                companyId: String(lead.companyId || "").trim(),
+                leadId,
+                status: "Archived",
+              },
+            }),
+          );
+        }
+      }
     }
     setDeletingLeadId("");
   };
