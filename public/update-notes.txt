@@ -1,4 +1,4 @@
-Version: v0.2.1
+Version: v0.2.2
 
 whatsNew: [
 <u><b>General:</u></b>
