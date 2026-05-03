@@ -103,6 +103,9 @@ export async function GET(request: NextRequest) {
         formName: toStr(data.formName),
         submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+        updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
+        deletedAtIso: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
+        isDeleted: Boolean(data.isDeleted),
         source: toStr(data.source) || "zapier-form",
         status: (() => {
           const raw = toStr(data.status);
@@ -230,8 +233,21 @@ export async function PATCH(request: NextRequest) {
     body.lead_status,
     url.searchParams.get("status"),
   );
+  const deleteModeRaw = pickFirstNonEmpty(
+    body.deleteMode,
+    body.deleted,
+    body.isDeleted,
+    body.is_deleted,
+    url.searchParams.get("deleteMode"),
+    url.searchParams.get("deleted"),
+    url.searchParams.get("isDeleted"),
+  );
+  const hasDeleteMode = deleteModeRaw !== "";
+  const isDeleted =
+    hasDeleteMode &&
+    ["true", "1", "yes", "on"].includes(String(deleteModeRaw || "").trim().toLowerCase());
 
-  if (!companyId || !leadId || !status) {
+  if (!companyId || !leadId || (!status && !hasDeleteMode)) {
     return NextResponse.json(
       {
         ok: false,
@@ -249,12 +265,20 @@ export async function PATCH(request: NextRequest) {
     }
 
     const updatedAtIso = new Date().toISOString();
-    await leadRef.update({
-      status,
+    const patch: Record<string, unknown> = {
       updatedAt: FieldValue.serverTimestamp(),
       updatedAtIso,
-    });
-    return NextResponse.json({ ok: true, leadId, status, updatedAtIso });
+    };
+    if (status) {
+      patch.status = status;
+    }
+    if (hasDeleteMode) {
+      patch.isDeleted = isDeleted;
+      patch.deletedAt = isDeleted ? FieldValue.serverTimestamp() : "";
+      patch.deletedAtIso = isDeleted ? updatedAtIso : "";
+    }
+    await leadRef.update(patch);
+    return NextResponse.json({ ok: true, leadId, status, isDeleted, updatedAtIso });
   } catch {
     return NextResponse.json({ ok: false, error: "lead-status-update-failed" }, { status: 500 });
   }

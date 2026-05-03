@@ -251,7 +251,7 @@ async function fetchArchivedLeadsFromApi(companyId: string): Promise<CompanyLead
     });
     const detail = (await response.json().catch(() => null)) as { leads?: CompanyLeadRow[] } | null;
     const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads : [];
-    return fetchedLeads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "archived");
+    return fetchedLeads.filter((lead) => Boolean(lead.isDeleted));
   } catch {
     return [];
   }
@@ -1027,12 +1027,12 @@ function measureStatusPillWidth(options: string[]) {
                     {filteredDeletedLeads.map((lead, idx) => {
                       const leadFields = getLeadDynamicFields(lead);
                       const isExpanded = expandedLeadId === lead.id;
-                      const archivedAt = String(lead.updatedAtIso || lead.createdAtIso || lead.submittedAtIso || "").trim();
-                      const archivedAtMs = new Date(archivedAt).getTime();
+                      const deletedAt = String(lead.deletedAtIso || lead.updatedAtIso || lead.createdAtIso || lead.submittedAtIso || "").trim();
+                      const deletedAtMs = new Date(deletedAt).getTime();
                       const retentionDays = retentionDaysByCompany[String(lead.companyId || "").trim()] ?? 90;
                       const remainingMs =
-                        Number.isFinite(archivedAtMs)
-                          ? archivedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
+                        Number.isFinite(deletedAtMs)
+                          ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
                           : Number.POSITIVE_INFINITY;
                       return (
                         <Fragment key={`recently_deleted_lead_${lead.id}`}>
@@ -1089,7 +1089,7 @@ function measureStatusPillWidth(options: string[]) {
                             )}
                             <div className="text-right">
                               <p className="whitespace-nowrap text-[11px] font-semibold text-[#6B7280]">
-                                {formatDeletedDate(archivedAt)}
+                                {formatDeletedDate(deletedAt)}
                               </p>
                             </div>
                           </button>

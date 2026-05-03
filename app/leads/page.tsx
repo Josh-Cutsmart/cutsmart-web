@@ -487,7 +487,7 @@ export default function LeadsPage() {
         const detail = (await response.json().catch(() => null)) as
           | { ok?: boolean; leads?: CompanyLeadRow[] }
           | null;
-        const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads : [];
+        const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads.filter((lead) => !lead.isDeleted) : [];
       setLeads([...currentSampleLeads, ...fetchedLeads]);
     } catch {
       setLeads(currentSampleLeads);
@@ -685,7 +685,7 @@ export default function LeadsPage() {
         body: JSON.stringify({
           companyId: lead.companyId,
           leadId,
-          status: "Archived",
+          isDeleted: true,
         }),
       }).catch(() => null);
       didArchive = Boolean(response?.ok);
@@ -706,7 +706,7 @@ export default function LeadsPage() {
               detail: {
                 companyId: String(lead.companyId || "").trim(),
                 leadId,
-                status: "Archived",
+                isDeleted: true,
               },
             }),
           );

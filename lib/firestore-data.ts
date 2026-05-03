@@ -1739,6 +1739,8 @@ export type CompanyLeadRow = {
   submittedAtIso: string;
   createdAtIso: string;
   updatedAtIso?: string;
+  deletedAtIso?: string;
+  isDeleted?: boolean;
   source: string;
   status: string;
   rawFields?: Record<string, unknown>;
@@ -1776,6 +1778,8 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
         submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
         updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
+        deletedAtIso: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
+        isDeleted: Boolean(data.isDeleted),
         source: String(data.source ?? "").trim() || "zapier-form",
         status: normalizeLeadStatus(data.status),
         rawFields:

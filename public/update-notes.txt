@@ -2,7 +2,7 @@ Version: v0.2.3
 
 whatsNew: [
 <u><b>General:</u></b>
-- "Leads" delete should now move deleted leads into the deleted tab.
+-
 
 
 ]
