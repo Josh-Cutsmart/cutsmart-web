@@ -401,7 +401,7 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<CompanyLeadRow[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [listOrder, setListOrder] = useState<"status" | "az" | "za" | "newest" | "oldest">("status");
+  const [listOrder, setListOrder] = useState<"status" | "az" | "za" | "newest" | "oldest">("newest");
   const [isLoading, setIsLoading] = useState(true);
   const [companyName, setCompanyName] = useState("");
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");

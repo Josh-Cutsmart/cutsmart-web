@@ -9,7 +9,6 @@ import { fetchCompanyAccess } from "@/lib/membership";
 import {
   fetchCompanyDoc,
   fetchDeletedProjects,
-  fetchCompanyLeads,
   fetchUserColorMapByUids,
   permanentlyDeleteProject,
   purgeExpiredDeletedProjects,
@@ -241,6 +240,22 @@ function leadValueToText(value: unknown): string {
   return String(value).trim();
 }
 
+async function fetchArchivedLeadsFromApi(companyId: string): Promise<CompanyLeadRow[]> {
+  const cid = String(companyId || "").trim();
+  if (!cid) return [];
+  try {
+    const response = await fetch(`/api/leads?companyId=${encodeURIComponent(cid)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const detail = (await response.json().catch(() => null)) as { leads?: CompanyLeadRow[] } | null;
+    const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads : [];
+    return fetchedLeads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "archived");
+  } catch {
+    return [];
+  }
+}
+
 function getLeadDynamicFields(lead: CompanyLeadRow): LeadDynamicField[] {
   const raw = lead.rawFields ?? {};
   return Object.entries(raw)
@@ -387,8 +402,8 @@ export default function RecentlyDeletedPage() {
       setCanAccessDeletedLeads(false);
     }
     if (selectedCompanyId) {
-      const leads = await fetchCompanyLeads(selectedCompanyId);
-      setDeletedLeads(leads.filter((lead) => String(lead.status || "").trim().toLowerCase() === "archived"));
+      const leads = await fetchArchivedLeadsFromApi(selectedCompanyId);
+      setDeletedLeads(leads);
     } else {
       setDeletedLeads([]);
     }
@@ -669,16 +684,16 @@ function measureStatusPillWidth(options: string[]) {
       <AppShell>
         <section className="-mx-4 -mb-4 -mt-4 min-h-screen bg-white pb-4 pt-0 md:-mx-5">
           <div className="flex h-[56px] flex-wrap items-center justify-between gap-3 border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex min-w-0 items-center gap-3">
+            <div className="inline-flex min-w-0 items-center gap-2">
+              <Trash2 size={16} color="#12345B" strokeWidth={2.1} />
+              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
+                <span style={{ color: "#12345B" }}>Recently Deleted</span>
+                <span className="px-2" style={{ color: "#6B7280" }}>|</span>
+                <span style={{ color: "#334155" }}>{companyName}</span>
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-3">
               <div className="inline-flex items-center gap-2">
-                <Trash2 size={16} color="#12345B" strokeWidth={2.1} />
-                <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
-                  <span style={{ color: "#12345B" }}>Recently Deleted</span>
-                  <span className="px-2" style={{ color: "#6B7280" }}>|</span>
-                  <span style={{ color: "#334155" }}>{companyName}</span>
-                </p>
-              </div>
-              <div className="inline-flex items-center gap-2 border-l border-[#D7DEE8] pl-3">
                 {canAccessDeletedLeads ? (
                   <button
                     type="button"
@@ -706,18 +721,18 @@ function measureStatusPillWidth(options: string[]) {
                   Projects
                 </button>
               </div>
-            </div>
-            <div
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#D8DEE8] bg-[#F7F9FC] px-2"
-              style={{ width: 340, minWidth: 340 }}
-            >
-              <Search size={14} className="text-[#6B7280]" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={activeTab === "projects" ? "Search deleted projects..." : "Search deleted leads..."}
-                className="h-8 w-full bg-transparent text-[12px] outline-none"
-              />
+              <div
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#D8DEE8] bg-[#F7F9FC] px-2"
+                style={{ width: 340, minWidth: 340 }}
+              >
+                <Search size={14} className="text-[#6B7280]" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={activeTab === "projects" ? "Search deleted projects..." : "Search deleted leads..."}
+                  className="h-8 w-full bg-transparent text-[12px] outline-none"
+                />
+              </div>
             </div>
           </div>
 
@@ -726,11 +741,11 @@ function measureStatusPillWidth(options: string[]) {
             <table className="w-full min-w-[920px] text-[12px]">
               <thead>
                 <tr>
-                  <th className="border-b pb-2 pl-[10px] text-left text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Project Name</th>
-                  <th className="border-b pb-2 pl-[10px] text-left text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Creator</th>
-                  <th className="border-b pb-2 text-center text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Deleted</th>
-                  <th className="border-b pb-2 text-center text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Permanent Delete</th>
-                  <th className="w-[180px] border-b pb-2 text-center text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Action</th>
+                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Project Name</th>
+                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Creator</th>
+                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Deleted</th>
+                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Permanent Delete</th>
+                  <th className="h-[38px] w-[180px] border-b py-[7px] text-center align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -746,7 +761,7 @@ function measureStatusPillWidth(options: string[]) {
                   </tr>
                 )}
 
-                {filtered.map((project) => {
+                {filtered.map((project, idx) => {
                   const deletedAt = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
                   const deletedAtMs = new Date(deletedAt).getTime();
                   const retentionDays = retentionDaysByCompany[String(project.companyId || "").trim()] ?? 90;
@@ -771,11 +786,20 @@ function measureStatusPillWidth(options: string[]) {
                       >
                         <td
                           className="border-b py-[7px] pl-[10px] font-bold text-[#111827]"
-                          style={{ backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : "#FFFFFF", borderColor: "#D7E1EE" }}
+                          style={{
+                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                            borderColor: "#D7E1EE",
+                          }}
                         >
                           {project.name}
                         </td>
-                        <td className="border-b py-[7px] pl-[10px] text-[#344054]" style={{ backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : "#FFFFFF", borderColor: "#D7E1EE" }}>
+                        <td
+                          className="border-b py-[7px] pl-[10px] text-[#344054]"
+                          style={{
+                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                            borderColor: "#D7E1EE",
+                          }}
+                        >
                           <div className="inline-flex items-center gap-2">
                             <span
                               className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
@@ -789,8 +813,22 @@ function measureStatusPillWidth(options: string[]) {
                             <span>{project.createdByName || "-"}</span>
                           </div>
                         </td>
-                        <td className="border-b py-[7px] text-center text-[#344054]" style={{ backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : "#FFFFFF", borderColor: "#D7E1EE" }}>{formatDeletedDate(deletedAt)}</td>
-                        <td className="border-b py-[7px] text-center" style={{ backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : "#FFFFFF", borderColor: "#D7E1EE" }}>
+                        <td
+                          className="border-b py-[7px] text-center text-[#344054]"
+                          style={{
+                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                            borderColor: "#D7E1EE",
+                          }}
+                        >
+                          {formatDeletedDate(deletedAt)}
+                        </td>
+                        <td
+                          className="border-b py-[7px] text-center"
+                          style={{
+                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                            borderColor: "#D7E1EE",
+                          }}
+                        >
                           <span
                             className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border border-[#F3B8BF] bg-[#FDECEC] px-2 py-[3px] text-[11px] font-bold"
                             style={{ color: "#7F1D1D" }}
@@ -798,7 +836,13 @@ function measureStatusPillWidth(options: string[]) {
                             {formatRemaining(remainingMs)}
                           </span>
                         </td>
-                        <td className="w-[180px] border-b py-[7px]" style={{ backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : "#FFFFFF", borderColor: "#D7E1EE" }}>
+                        <td
+                          className="w-[180px] border-b py-[7px]"
+                          style={{
+                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                            borderColor: "#D7E1EE",
+                          }}
+                        >
                           <div className="flex w-full justify-center">
                             <button
                               type="button"
@@ -843,7 +887,14 @@ function measureStatusPillWidth(options: string[]) {
                       </tr>
                       {isExpanded && (
                         <tr>
-                          <td colSpan={5} className="relative border-b px-[10px] py-[8px]" style={{ borderColor: "#D7E1EE", backgroundColor: "#F8FBFF" }}>
+                          <td
+                            colSpan={5}
+                            className="relative border-b px-[10px] py-[8px]"
+                            style={{
+                              borderColor: "#D7E1EE",
+                              backgroundColor: idx % 2 === 0 ? "#F8FBFF" : "#FFFFFF",
+                            }}
+                          >
                               <div className="grid grid-cols-4 text-[12px]">
                               <div className="px-3 py-2">
                                 <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#6B7D94]">Client</p>
@@ -938,7 +989,7 @@ function measureStatusPillWidth(options: string[]) {
                 ) : (
                   <>
                     <div
-                      className="grid min-w-full gap-3 border-b px-4 py-3 text-[11px] font-bold uppercase tracking-[0.8px]"
+                      className="grid min-w-full h-[38px] items-center gap-3 border-b px-4 py-[7px] text-[11px] font-bold uppercase tracking-[0.8px]"
                       style={{
                         gridTemplateColumns: deletedLeadGridTemplate,
                         borderColor: "#D7E1EE",

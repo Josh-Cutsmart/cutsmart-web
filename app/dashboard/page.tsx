@@ -270,6 +270,7 @@ export default function DashboardPage() {
         rowHover: "#F2F6FC",
         strongShadow: "0 10px 30px rgba(15,23,42,0.08)",
       };
+  const dashboardSurfaceBg = isDarkMode ? dashboardPalette.pageBg : "#F5F7FB";
   const canAccessDashboard = useMemo(() => {
     const role = String(effectiveCompanyRole || user?.role || "").trim().toLowerCase();
     if (role === "owner" || role === "admin") {
@@ -552,6 +553,7 @@ export default function DashboardPage() {
     const completeRows = rows.filter((r) => isCompletedStatus(r.statusLabel));
     return [...openRows, ...completeRows];
   }, [allProjects, quickFilter, search]);
+  const showProjectsLoadingState = isLoading && filtered.length === 0;
 
   const stats = useMemo(() => {
     const total = allProjects.length;
@@ -1133,9 +1135,9 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          <div className="space-y-0" style={{ backgroundColor: dashboardPalette.pageBg }}>
+          <div className="space-y-0" style={{ backgroundColor: dashboardSurfaceBg }}>
 
-          <div style={{ marginBottom: 20 }}>
+          <div className="relative z-0" style={{ marginBottom: 20 }}>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {statCards.map((card) => {
                 const Icon = card.icon;
@@ -1192,7 +1194,7 @@ export default function DashboardPage() {
           </div>
 
           <div
-            className="-mx-4 rounded-none border-t border-[#D7DEE8] bg-white px-[10px] py-3 md:-mx-5"
+            className="-mx-4 relative z-10 mt-[-8px] rounded-none border-t bg-white px-[10px] pb-3 pt-[19px] md:-mx-5"
             style={{
               borderTopColor: dashboardPalette.border,
               backgroundColor: dashboardPalette.sectionBg,
@@ -1255,10 +1257,10 @@ export default function DashboardPage() {
           </div>
 
           <div className="-mx-4 md:-mx-5 lg:hidden" style={{ backgroundColor: dashboardPalette.sectionBg }}>
-                {isLoading && (
+                {showProjectsLoadingState && (
                   <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
                 )}
-                {!isLoading && filtered.length === 0 && (
+                {!showProjectsLoadingState && filtered.length === 0 && (
                   <div className="px-3 py-10">
                     <div className="flex flex-col items-center gap-3">
                       <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
@@ -1387,7 +1389,7 @@ export default function DashboardPage() {
                     <col style={{ width: "200px" }} />
                   </colgroup>
                   <thead>
-                    <tr className="border-b" style={{ borderBottomColor: dashboardPalette.border }}>
+                    <tr className="border-b" style={{ borderBottomColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
                       <th className="pb-2 pl-[10px] text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Project Name</th>
                       <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Tags</th>
                       <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Creator</th>
@@ -1402,12 +1404,12 @@ export default function DashboardPage() {
                   </thead>
                   <tbody>
 
-                  {isLoading && (
+                  {showProjectsLoadingState && (
                     <tr>
                       <td className="py-3" style={{ color: dashboardPalette.textMuted }} colSpan={6}>Loading projects...</td>
                     </tr>
                   )}
-                  {!isLoading && filtered.length === 0 && (
+                  {!showProjectsLoadingState && filtered.length === 0 && (
                     <tr>
                       <td className="py-10 text-center" colSpan={6}>
                         <div className="flex flex-col items-center gap-3">
@@ -1424,7 +1426,9 @@ export default function DashboardPage() {
                     </tr>
                   )}
 
-                  {filtered.map((project) => (
+                  {filtered.map((project) => {
+                    const rowBg = hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg;
+                    return (
                     <tr
                       key={project.id}
                       className="cursor-pointer border-b"
@@ -1433,8 +1437,8 @@ export default function DashboardPage() {
                       onMouseLeave={() => setHoveredProjectId((prev) => (prev === project.id ? "" : prev))}
                       onClick={() => void openProjectInDashboard(project.id)}
                     >
-                      <td className="py-[7px] pl-[10px] font-bold" style={{ color: dashboardPalette.text, backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>{project.name}</td>
-                      <td className="py-[7px]" style={{ backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>
+                      <td className="py-[7px] pl-[10px] font-bold" style={{ color: dashboardPalette.text, backgroundColor: rowBg }}>{project.name}</td>
+                      <td className="py-[7px]" style={{ backgroundColor: rowBg }}>
                         <div className="flex flex-wrap gap-1">
                           {project.tags.slice(0, 2).map((tag) => (
                             <span
@@ -1452,7 +1456,7 @@ export default function DashboardPage() {
                           {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
                         </div>
                       </td>
-                      <td className="py-[7px]" style={{ backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>
+                      <td className="py-[7px]" style={{ backgroundColor: rowBg }}>
                         <div className="flex items-center gap-2 text-[12px]">
                           <span
                             className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
@@ -1466,9 +1470,9 @@ export default function DashboardPage() {
                           <span style={{ color: dashboardPalette.text }}>{project.createdByName || "-"}</span>
                         </div>
                       </td>
-                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>{dashboardDate(project.createdAt)}</td>
-                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>{dashboardDate(project.updatedAt)}</td>
-                      <td className="relative w-[200px] py-[7px] text-right" style={{ backgroundColor: hoveredProjectId === project.id ? dashboardPalette.rowHover : dashboardPalette.panelBg }}>
+                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.createdAt)}</td>
+                      <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.updatedAt)}</td>
+                      <td className="relative w-[200px] py-[7px] text-right" style={{ backgroundColor: rowBg }}>
                           <button
                             data-status-trigger="true"
                             type="button"
@@ -1512,7 +1516,8 @@ export default function DashboardPage() {
                           </button>
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                   </tbody>
                 </table>
               </div>

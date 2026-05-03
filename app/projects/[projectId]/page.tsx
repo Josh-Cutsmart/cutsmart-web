@@ -1178,7 +1178,7 @@ function serializeCutlistActivityFeedForProject(feed: CutlistActivityEntry[]) {
 }
 
 type CutlistValidationIssue = {
-  field: "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity";
+  field: "partType" | "board" | "name" | "height" | "width" | "depth" | "quantity" | "grain";
   message: string;
 };
 
@@ -3452,7 +3452,7 @@ export default function ProjectDetailsPage() {
   const [savingProjectPermissionUid, setSavingProjectPermissionUid] = useState("");
   const isDarkMode = themeMode === "dark";
   const projectPalette = isDarkMode
-    ? {
+      ? {
         pageBg: "#0f0f0f",
         sectionBg: "#181818",
         panelBg: "#212121",
@@ -3480,6 +3480,8 @@ export default function ProjectDetailsPage() {
         inputText: "#334155",
         shadow: "0 10px 24px rgba(15,23,42,0.09),0 2px 6px rgba(15,23,42,0.05)",
       };
+  const projectTabAreaBg = isDarkMode ? projectPalette.pageBg : "#F5F7FB";
+  const productionContainerHeaderBg = isDarkMode ? projectPalette.panelBg : "#FFFFFF";
   const [projectPermissionSearch, setProjectPermissionSearch] = useState<{
     no_access: string;
     view: string;
@@ -3582,6 +3584,7 @@ export default function ProjectDetailsPage() {
   const [cutlistFlashPhaseOn, setCutlistFlashPhaseOn] = useState(false);
   const cutlistFlashTimeoutRef = useRef<number | null>(null);
   const cutlistFlashIntervalRef = useRef<number | null>(null);
+  const cutlistActivityFeedRef = useRef<CutlistActivityEntry[]>([]);
   const cutlistActivityScrollRef = useRef<HTMLDivElement | null>(null);
   const cutlistActivityInnerRef = useRef<HTMLDivElement | null>(null);
   const cutlistActivityNextIdRef = useRef<number>(1);
@@ -3598,6 +3601,7 @@ export default function ProjectDetailsPage() {
   const cutlistActivityPendingOffsetRef = useRef<number | null>(null);
   const cutlistActivityPersistTimeoutRef = useRef<number | null>(null);
   const cutlistActivityProjectHydratedRef = useRef(false);
+  const cutlistActivityHydratedProjectIdRef = useRef("");
   const lastPersistedCutlistActivityJsonRef = useRef("");
     const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
     const [initialCollapsedCutlistGroups, setInitialCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
@@ -3611,6 +3615,7 @@ export default function ProjectDetailsPage() {
   const cncExportMenuRef = useRef<HTMLDivElement | null>(null);
   const [initialEditingCellValue, setInitialEditingCellValue] = useState("");
   const [editingCellValue, setEditingCellValue] = useState("");
+  const editingCellValueRef = useRef("");
   const [editingClashLeft, setEditingClashLeft] = useState("");
   const [editingClashRight, setEditingClashRight] = useState("");
   const [editingFixedShelf, setEditingFixedShelf] = useState("");
@@ -4303,8 +4308,19 @@ export default function ProjectDetailsPage() {
     }
     return out;
   }, [companySalesProductConfigs]);
+  const initialMeasureBoardSheetMap = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const row of companySalesProductConfigs) {
+      const key = String(row.name || "").trim().toLowerCase();
+      if (!key) continue;
+      out[key] = String(row.defaultOption?.sheetSize || "").trim();
+    }
+    return out;
+  }, [companySalesProductConfigs]);
   const initialMeasureBoardGrainFor = (value: string) =>
     Boolean(initialMeasureBoardGrainMap[String(value || "").trim().toLowerCase()]);
+  const initialMeasureBoardSheetFor = (value: string) =>
+    String(initialMeasureBoardSheetMap[String(value || "").trim().toLowerCase()] || "").trim();
   const boardDisplayLabel = (value: string) => {
     const key = resolveBoardKey(value);
     return boardMetaByKey[key]?.label ?? String(value || "").trim();
@@ -4516,6 +4532,9 @@ export default function ProjectDetailsPage() {
     }, 15000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const shouldComputeCnc = productionNav === "cnc";
+  const shouldComputeNesting = productionNav === "overview" || productionNav === "nesting";
 
   const formatUnlockTimer = (seconds: number) => {
     const s = Math.max(0, Math.floor(seconds));
@@ -5095,6 +5114,10 @@ export default function ProjectDetailsPage() {
     () => cutlistActivityFeed.filter((entry) => (entry.scope || "production") === "initial"),
     [cutlistActivityFeed],
   );
+
+  useEffect(() => {
+    cutlistActivityFeedRef.current = cutlistActivityFeed;
+  }, [cutlistActivityFeed]);
 
   const salesRooms = useMemo(() => {
     const base = salesRoomNames.length ? salesRoomNames : [];
@@ -7866,18 +7889,28 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     if (!project) {
       cutlistActivityProjectHydratedRef.current = false;
+      cutlistActivityHydratedProjectIdRef.current = "";
       lastPersistedCutlistActivityJsonRef.current = "";
+      cutlistActivityFeedRef.current = [];
       setCutlistActivityFeed([]);
       setCutlistActivityEnteringIds({});
       cutlistActivityNextIdRef.current = 1;
       return;
     }
+    const projectId = String(project.id || "").trim();
+    const isNewProject = cutlistActivityHydratedProjectIdRef.current !== projectId;
     const restored = projectCutlistActivityFeed.slice(-120);
     const serialized = JSON.stringify(serializeCutlistActivityFeedForProject(restored));
+    const shouldReplaceFeed =
+      isNewProject || !cutlistActivityProjectHydratedRef.current;
     lastPersistedCutlistActivityJsonRef.current = serialized;
     cutlistActivityProjectHydratedRef.current = true;
-    setCutlistActivityFeed(restored);
-    setCutlistActivityEnteringIds({});
+    cutlistActivityHydratedProjectIdRef.current = projectId;
+    if (shouldReplaceFeed) {
+      cutlistActivityFeedRef.current = restored;
+      setCutlistActivityFeed(restored);
+      setCutlistActivityEnteringIds({});
+    }
     const maxId = restored.reduce((m, e) => Math.max(m, Number(e.id || 0)), 0);
     cutlistActivityNextIdRef.current = Math.max(maxId + 1, Date.now());
   }, [project, projectCutlistActivityFeed]);
@@ -8898,10 +8931,16 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const cutlistRowLabelFor = (row: Partial<CutlistRow>, fallback: string) => {
+    const partName = String(row.name || "").trim();
+    return partName || fallback;
+  };
+
   const validateCutlistRowInput = (
     row: Partial<CutlistRow>,
     partType: string,
     rowLabel: string,
+    opts?: { boardSheetText?: string },
   ): CutlistValidationIssue[] => {
     const errors: CutlistValidationIssue[] = [];
     const isDrawer = isDrawerPartType(partType);
@@ -8952,10 +8991,11 @@ export default function ProjectDetailsPage() {
     }
 
     if (board) {
-      const sheetText = String(boardSheetFor(board) || "").trim();
+      const sheetText = String(opts?.boardSheetText || boardSheetFor(board) || "").trim();
       const sizePair = parseSheetSizePair(sheetText);
       if (sizePair) {
         const maxEdge = Math.max(sizePair[0], sizePair[1]);
+        const minEdge = Math.min(sizePair[0], sizePair[1]);
         const overs: string[] = [];
         if (height != null && height > maxEdge) overs.push("Height");
         if (width != null && width > maxEdge) overs.push("Width");
@@ -8964,6 +9004,32 @@ export default function ProjectDetailsPage() {
           if (height != null && height > maxEdge) errors.push({ field: "height", message: `${rowLabel}: Height exceeds board sheet size (${sheetText}).` });
           if (width != null && width > maxEdge) errors.push({ field: "width", message: `${rowLabel}: Width exceeds board sheet size (${sheetText}).` });
           if (depth != null && depth > maxEdge) errors.push({ field: "depth", message: `${rowLabel}: Depth exceeds board sheet size (${sheetText}).` });
+        }
+        const grainValue = String(row.grainValue || "").trim();
+        const grainAxis = resolveGrainAxis(
+          grainValue,
+          String(row.height ?? ""),
+          String(row.width ?? ""),
+          String(row.depth ?? ""),
+        );
+        if (grainAxis) {
+          const grainDim =
+            grainAxis === "height" ? height :
+            grainAxis === "width" ? width :
+            depth;
+          const crossDims = [
+            grainAxis === "height" ? null : height,
+            grainAxis === "width" ? null : width,
+            grainAxis === "depth" ? null : depth,
+          ].filter((value): value is number => value != null);
+          const maxCrossDim = crossDims.length ? Math.max(...crossDims) : null;
+
+          if ((grainDim != null && grainDim > maxEdge) || (maxCrossDim != null && maxCrossDim > minEdge)) {
+            errors.push({
+              field: "grain",
+              message: `${rowLabel} | Grain: Doesnt fit on sheet`,
+            });
+          }
         }
       }
     }
@@ -9049,7 +9115,7 @@ export default function ProjectDetailsPage() {
   };
 
   const persistCutlistRows = async (nextRows: CutlistRow[]) => {
-    if (!project) return;
+    if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
     const ok = await updateProjectPatch(project, { cutlist: { rows } });
     if (ok) {
@@ -9062,22 +9128,23 @@ export default function ProjectDetailsPage() {
           : prevProject,
       );
     }
+    return ok;
   };
   const persistInitialCutlistRows = async (nextRows: CutlistRow[]) => {
-    if (!project) return;
+    if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
     const nextSales = {
       ...salesPayload,
       initialCutlist: { rows },
     } as Record<string, unknown>;
-    await persistSalesPatch(nextSales);
+    return await persistSalesPatch(nextSales);
   };
 
   const addCutlistRow = async () => {
     const singleErrors = validateCutlistRowInput(
       cutlistEntry as Partial<CutlistRow>,
       String(cutlistEntry.partType || "").trim(),
-      "Entry",
+      cutlistRowLabelFor(cutlistEntry as Partial<CutlistRow>, "Entry"),
     );
     if (singleErrors.length) {
       const warnings = { single: makeWarningMapForRow(singleErrors) };
@@ -9278,7 +9345,9 @@ export default function ProjectDetailsPage() {
 
   const addEditingDrawerHeightToken = (token: string) => {
     const next = [...parseDrawerHeightTokens(String(editingCellValue ?? "")), String(token || "").trim()].filter(Boolean);
-    setEditingCellValue(formatDrawerHeightTokens(next));
+    const nextValue = formatDrawerHeightTokens(next);
+    editingCellValueRef.current = nextValue;
+    setEditingCellValue(nextValue);
   };
 
   const removeEditingDrawerHeightToken = (token: string) => {
@@ -9286,7 +9355,9 @@ export default function ProjectDetailsPage() {
     const idx = next.findIndex((item) => item.toLowerCase() === String(token || "").trim().toLowerCase());
     if (idx < 0) return;
     next.splice(idx, 1);
-    setEditingCellValue(formatDrawerHeightTokens(next));
+    const nextValue = formatDrawerHeightTokens(next);
+    editingCellValueRef.current = nextValue;
+    setEditingCellValue(nextValue);
   };
 
   const setDraftInformationLines = (id: string, lines: string[]) => {
@@ -9349,7 +9420,7 @@ export default function ProjectDetailsPage() {
           adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
           includeInNesting: row.includeInNesting !== false,
         };
-        const rowErrors = validateCutlistRowInput(normalizedRow, partType, `Row ${idx + 1}`);
+        const rowErrors = validateCutlistRowInput(normalizedRow, partType, cutlistRowLabelFor(normalizedRow, `Row ${idx + 1}`));
         if (rowErrors.length) {
           rejectedIds.add(row.id);
           nextWarnings[row.id] = makeWarningMapForRow(rowErrors);
@@ -9497,6 +9568,20 @@ export default function ProjectDetailsPage() {
       adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(initialCutlistEntry.adjustableShelfDrilling) : "No",
       includeInNesting: false,
     };
+    const singleErrors = validateCutlistRowInput(
+      row,
+      partType,
+      cutlistRowLabelFor(row, "Entry"),
+      { boardSheetText: initialMeasureBoardSheetFor(String(row.board || "").trim()) },
+    );
+    if (singleErrors.length) {
+      const warnings = { initial_single: makeWarningMapForRow(singleErrors) };
+      setCutlistCellWarnings(warnings);
+      flashCutlistWarningCells(warnings);
+      logCutlistValidationIssues(singleErrors, partType);
+      return;
+    }
+    setCutlistCellWarnings({});
     const next = [...initialCutlistRows, row];
     setInitialCutlistRows(next);
     setInitialCutlistEntry(createEmptyCutlistEntry());
@@ -9685,8 +9770,10 @@ export default function ProjectDetailsPage() {
 
   const addInitialDraftRowsToCutlist = async () => {
     if (!project || !salesAccess.edit) return;
+    const rejectedIds = new Set<string>();
+    const nextWarnings: Record<string, Record<string, string>> = {};
     const accepted = initialCutlistDraftRows
-      .map((row) => {
+      .map((row, idx) => {
         const partType = String(row.partType || initialActiveCutlistPartType || "").trim();
         if (!partType) return null;
         const isCabinetry = isCabinetryPartType(partType);
@@ -9695,7 +9782,7 @@ export default function ProjectDetailsPage() {
         const defaults = defaultClashingForPartType(partType, row.board);
         const left = String(row.clashLeft ?? "").trim().toUpperCase() || defaults.left;
         const right = String(row.clashRight ?? "").trim().toUpperCase() || defaults.right;
-        return {
+        const normalizedRow = {
           ...row,
           id: `im_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           room: String(row.room || initialCutlistEntryRoom || defaultInitialCutlistRoom || "Project Cutlist"),
@@ -9711,8 +9798,26 @@ export default function ProjectDetailsPage() {
           adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
           includeInNesting: false,
         } satisfies CutlistRow;
+        const rowErrors = validateCutlistRowInput(
+          normalizedRow,
+          partType,
+          cutlistRowLabelFor(normalizedRow, `Row ${idx + 1}`),
+          { boardSheetText: initialMeasureBoardSheetFor(String(normalizedRow.board || "").trim()) },
+        );
+        if (rowErrors.length) {
+          rejectedIds.add(row.id);
+          nextWarnings[row.id] = makeWarningMapForRow(rowErrors);
+          logCutlistValidationIssues(rowErrors, partType);
+          return null;
+        }
+        return normalizedRow;
       })
       .filter(Boolean) as CutlistRow[];
+    setCutlistCellWarnings(nextWarnings);
+    flashCutlistWarningCells(nextWarnings);
+    if (rejectedIds.size) {
+      setInitialCutlistDraftRows((prev) => prev.filter((row) => !rejectedIds.has(row.id)));
+    }
     if (!accepted.length) return;
     const next = [...initialCutlistRows, ...accepted];
     setInitialCutlistRows(next);
@@ -9752,125 +9857,39 @@ export default function ProjectDetailsPage() {
   };
 
   const onEditingInformationLineChange = (index: number, value: string) => {
-    const lines = informationLinesFromValue(String(editingCellValue ?? ""));
+    const lines = informationLinesFromValue(String(editingCellValueRef.current ?? editingCellValue ?? ""));
     const next = [...lines];
     while (next.length <= index) next.push("");
     next[index] = value;
-    setEditingCellValue(informationValueFromLines(next));
+    editingCellValueRef.current = informationValueFromLines(next);
   };
 
   const onEditingAddInformationLine = () => {
-    const lines = informationLinesFromValue(String(editingCellValue ?? ""));
-    setEditingCellValue(informationValueFromLines([...lines, ""]));
+    const lines = informationLinesFromValue(String(editingCellValueRef.current ?? editingCellValue ?? ""));
+    const nextValue = informationValueFromLines([...lines, ""]);
+    editingCellValueRef.current = nextValue;
+    setEditingCellValue(nextValue);
   };
 
   const onEditingRemoveInformationLine = (index: number) => {
-    const lines = informationLinesFromValue(String(editingCellValue ?? ""));
+    const lines = informationLinesFromValue(String(editingCellValueRef.current ?? editingCellValue ?? ""));
     if (lines.length <= 1) {
+      editingCellValueRef.current = "";
       setEditingCellValue("");
       return;
     }
     const next = lines.filter((_, i) => i !== index);
-    setEditingCellValue(informationValueFromLines(next.length ? next : [""]));
+    const nextValue = informationValueFromLines(next.length ? next : [""]);
+    editingCellValueRef.current = nextValue;
+    setEditingCellValue(nextValue);
   };
 
   const effectiveCutlistRows = useMemo(() => {
-    if (!editingCell) return cutlistRows;
-    const target = editingCell;
-    const value = String(editingCellValue ?? "");
-    return cutlistRows.map((row) => {
-      if (row.id !== target.rowId) return row;
-      const updated: CutlistRow = { ...row };
-      switch (target.key) {
-        case "board":
-          updated.board = value;
-          if (!boardGrainFor(String(updated.board ?? "").trim())) {
-            updated.grainValue = "";
-            updated.grain = false;
-          }
-          break;
-        case "grain":
-          if (!boardGrainFor(String(updated.board ?? "").trim())) {
-            updated.grainValue = "";
-            updated.grain = false;
-            break;
-          }
-          updated.grainValue = String(value ?? "").trim();
-          updated.grain = Boolean(updated.grainValue);
-          break;
-        case "clashing":
-          if (isCabinetryPartType(updated.partType)) {
-            updated.clashing = "";
-            updated.clashLeft = "";
-            updated.clashRight = "";
-            updated.fixedShelf = String(editingFixedShelfRef.current ?? "").trim();
-            updated.adjustableShelf = String(editingAdjustableShelfRef.current ?? "").trim();
-            updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrillingRef.current);
-            updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrillingRef.current);
-          } else {
-            updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
-            const split = splitClashing(updated.clashing);
-            updated.clashLeft = split.left;
-            updated.clashRight = split.right;
-            updated.fixedShelf = "";
-            updated.adjustableShelf = "";
-            updated.fixedShelfDrilling = "No";
-            updated.adjustableShelfDrilling = "No";
-          }
-          break;
-        case "room":
-          updated.room = value || "Project Cutlist";
-          break;
-        case "partType":
-          updated.partType = value;
-          if (isCabinetryPartType(value)) {
-            updated.clashing = "";
-            updated.clashLeft = "";
-            updated.clashRight = "";
-            updated.fixedShelfDrilling = normalizeDrillingValue(updated.fixedShelfDrilling);
-            updated.adjustableShelfDrilling = normalizeDrillingValue(updated.adjustableShelfDrilling);
-          } else {
-            updated.fixedShelf = "";
-            updated.adjustableShelf = "";
-            updated.fixedShelfDrilling = "No";
-            updated.adjustableShelfDrilling = "No";
-            updated.clashing = joinClashing(String(updated.clashLeft ?? ""), String(updated.clashRight ?? ""));
-          }
-          if (isDrawerPartType(value)) {
-            const tokens = parseDrawerHeightTokens(String(updated.height ?? ""));
-            updated.height = formatDrawerHeightTokens(tokens);
-            updated.quantity = String(Math.max(1, tokens.length));
-          }
-          break;
-        case "height":
-          if (isDrawerPartType(updated.partType)) {
-            const tokens = parseDrawerHeightTokens(value);
-            updated.height = formatDrawerHeightTokens(tokens);
-            updated.quantity = String(Math.max(1, tokens.length));
-          } else {
-            updated.height = value;
-          }
-          break;
-        default:
-          updated[target.key] = value;
-          break;
-      }
-      return updated;
-    });
-  }, [
-    boardGrainFor,
-    cutlistRows,
-    editingAdjustableShelf,
-    editingAdjustableShelfDrilling,
-    editingCell,
-    editingCellValue,
-    editingClashLeft,
-    editingClashRight,
-    editingFixedShelf,
-    editingFixedShelfDrilling,
-    isCabinetryPartType,
-    isDrawerPartType,
-  ]);
+    // Keep heavy Production derivations tied to committed rows only.
+    // Live cell edits still render through the active input itself, but we avoid
+    // recalculating Nesting/CNC/Order summaries on every keystroke.
+    return cutlistRows;
+  }, [cutlistRows]);
 
   const visibleCutlistRows = useMemo(() => {
     const search = cutlistSearch.trim().toLowerCase();
@@ -10042,8 +10061,9 @@ export default function ProjectDetailsPage() {
   }, [cutlistRows, pendingDeleteRowsByGroup, initialCutlistRows, initialPendingDeleteRowsByGroup]);
 
   const cncSourceRows = useMemo(() => {
+    if (!shouldComputeCnc) return [];
     return effectiveCutlistRows.filter((row) => isPartTypeIncludedInCnc(row.partType));
-  }, [effectiveCutlistRows, isPartTypeIncludedInCnc]);
+  }, [effectiveCutlistRows, isPartTypeIncludedInCnc, shouldComputeCnc]);
 
   const cncExpandedRows = useMemo(() => {
     const out: CncDisplayRow[] = [];
@@ -10401,6 +10421,7 @@ export default function ProjectDetailsPage() {
   }, [companyDoc]);
 
   const nestingVisibleRows = useMemo(() => {
+    if (!shouldComputeNesting) return [];
     const q = String(nestingSearch || "").trim().toLowerCase();
     const expanded: CutlistRow[] = [];
     for (const row of effectiveCutlistRows) {
@@ -10485,10 +10506,12 @@ export default function ProjectDetailsPage() {
     isDrawerPartType,
     isPartTypeIncludedInNesting,
     nestingSearch,
+    shouldComputeNesting,
     nestingVisibilityMap,
   ]);
 
   const nestingRowsForSheetCount = useMemo(() => {
+    if (!shouldComputeNesting) return [];
     const expanded: CutlistRow[] = [];
     for (const row of effectiveCutlistRows) {
       if (!isPartTypeIncludedInNesting(row.partType)) continue;
@@ -10549,6 +10572,7 @@ export default function ProjectDetailsPage() {
     isCabinetryPartType,
     isDrawerPartType,
     isPartTypeIncludedInNesting,
+    shouldComputeNesting,
   ]);
 
   const nestingRowsByBoard = useMemo(() => {
@@ -10589,6 +10613,7 @@ export default function ProjectDetailsPage() {
   }, [boardDisplayLabel, nestingRowsForSheetCount, resolveBoardKey]);
 
   const nestingSidebarGroups = useMemo(() => {
+    if (!shouldComputeNesting) return [];
     const q = String(nestingSearch || "").trim().toLowerCase();
     const filtered = effectiveCutlistRows.filter((row) => {
       if (!isPartTypeIncludedInNesting(row.partType)) return false;
@@ -10615,7 +10640,7 @@ export default function ProjectDetailsPage() {
         }),
       }))
       .sort((a, b) => a.partType.localeCompare(b.partType));
-  }, [boardDisplayLabel, effectiveCutlistRows, isPartTypeIncludedInNesting, nestingSearch]);
+  }, [boardDisplayLabel, effectiveCutlistRows, isPartTypeIncludedInNesting, nestingSearch, shouldComputeNesting]);
 
   const nestingBoardLayouts = useMemo(() => {
     type FlatPiece = {
@@ -11331,25 +11356,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         setEditingAdjustableShelf(nextAdjustableShelf);
         setEditingFixedShelfDrilling(nextFixedShelfDrilling);
         setEditingAdjustableShelfDrilling(nextAdjustableShelfDrilling);
+        editingCellValueRef.current = "";
         setEditingCellValue("");
       } else {
         const split = splitClashing(row.clashing);
         setEditingClashLeft(split.left);
         setEditingClashRight(split.right);
+        editingCellValueRef.current = row.clashing ?? "";
         setEditingCellValue(row.clashing ?? "");
       }
       return;
     }
     if (key === "grain") {
       if (!boardGrainFor(String(row.board ?? "").trim())) return;
-      setEditingCellValue(String(row.grainValue ?? "").trim());
+      const nextValue = String(row.grainValue ?? "").trim();
+      editingCellValueRef.current = nextValue;
+      setEditingCellValue(nextValue);
       return;
     }
-    setEditingCellValue(String(row[key] ?? ""));
+    const nextValue = String(row[key] ?? "");
+    editingCellValueRef.current = nextValue;
+    setEditingCellValue(nextValue);
   };
 
   const cancelCellEdit = () => {
     setEditingCell(null);
+    editingCellValueRef.current = "";
     setEditingCellValue("");
     setEditingClashLeft("");
     setEditingClashRight("");
@@ -11371,7 +11403,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     try {
     const target = editingCell;
     const previousRow = cutlistRows.find((row) => row.id === target.rowId) ?? null;
-    const rawValue = overrideValue ?? editingCellValue;
+    const rawValue = overrideValue ?? editingCellValueRef.current ?? editingCellValue;
     const value = String(rawValue ?? "");
     const next = cutlistRows.map((row) => {
       if (row.id !== target.rowId) return row;
@@ -11452,11 +11484,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       }
       return updated;
     });
-    const validationKeys = new Set<CutlistEditableField>(["partType", "board", "name", "height", "width", "depth", "quantity"]);
+    const validationKeys = new Set<CutlistEditableField>(["partType", "board", "name", "height", "width", "depth", "quantity", "grain"]);
     if (validationKeys.has(target.key)) {
       const updatedRow = next.find((row) => row.id === target.rowId);
       if (updatedRow) {
-        const issues = validateCutlistRowInput(updatedRow, String(updatedRow.partType || "").trim(), "Entry");
+        const issues = validateCutlistRowInput(
+          updatedRow,
+          String(updatedRow.partType || "").trim(),
+          cutlistRowLabelFor(updatedRow, "Entry"),
+        );
         const targetIssue = issues.find((issue) => issue.field === target.key);
         if (targetIssue) {
           const warnings = { [target.rowId]: { [target.key]: targetIssue.message } };
@@ -11483,7 +11519,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       });
     }
     if (previousRow && updatedRow && target.key !== "partType") {
-      const trackedKeys = new Set<CutlistEditableField>(["board", "name", "height", "width", "depth", "quantity", "clashing"]);
+      const trackedKeys = new Set<CutlistEditableField>(["board", "name", "height", "width", "depth", "quantity", "clashing", "grain"]);
       if (trackedKeys.has(target.key)) {
         const before = cutlistValueForActivity(previousRow, target.key);
         const after = cutlistValueForActivity(updatedRow, target.key);
@@ -11500,6 +11536,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     setCutlistRows(next);
     setEditingCell(null);
+    editingCellValueRef.current = "";
     setEditingCellValue("");
     setEditingClashLeft("");
     setEditingClashRight("");
@@ -14050,6 +14087,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         }
       }
     }
+    const validationKeys = new Set<CutlistEditableField>(["partType", "board", "name", "height", "width", "depth", "quantity", "grain"]);
+    if (validationKeys.has(target.key)) {
+      const updatedRow = next.find((row) => row.id === target.rowId);
+      if (updatedRow) {
+        const issues = validateCutlistRowInput(
+          updatedRow,
+          String(updatedRow.partType || "").trim(),
+          cutlistRowLabelFor(updatedRow, "Entry"),
+          { boardSheetText: initialMeasureBoardSheetFor(String(updatedRow.board || "").trim()) },
+        );
+        const targetIssue = issues.find((issue) => issue.field === target.key);
+        if (targetIssue) {
+          const warnings = { [target.rowId]: { [target.key]: targetIssue.message } };
+          setCutlistCellWarnings((prev) => ({
+            ...prev,
+            [target.rowId]: {
+              ...(prev[target.rowId] || {}),
+              [target.key]: targetIssue.message,
+            },
+          }));
+          flashCutlistWarningCells(warnings);
+          logCutlistValidationIssues([targetIssue], updatedRow.partType);
+          return;
+        }
+        clearWarningForCell(target.rowId, target.key);
+      }
+    }
     setInitialCutlistRows(next);
     setInitialEditingCell(null);
     setInitialEditingCellValue("");
@@ -14057,12 +14121,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   };
 
   const saveAndBackFromInitialMeasure = async () => {
-    if (initialEditingCell) {
-      await commitInitialCellEdit();
-    } else {
-      await persistInitialCutlistRows(initialCutlistRows);
-    }
     setSalesNav("specifications");
+    if (initialEditingCell) {
+      void commitInitialCellEdit().then(() => {
+        setLockMessage("");
+      }).catch(() => {
+        setLockMessage("Could not save Initial Measure changes.");
+      });
+    } else {
+      void persistInitialCutlistRows(initialCutlistRows).then((ok) => {
+        if (!ok) {
+          setLockMessage("Could not save Initial Measure changes.");
+          return;
+        }
+        setLockMessage("");
+      });
+    }
   };
 
   const isInitialEditing = (rowId: string, key: CutlistEditableField) =>
@@ -14181,29 +14255,53 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     await persistOrderHingeDraft(next);
   };
   const onSaveAndBackFromCutlist = async () => {
-    await persistCutlistRows(cutlistRows);
     setProductionNav("overview");
     setNestingFullscreen(false);
+    void persistCutlistRows(cutlistRows).then((ok) => {
+      if (!ok) {
+        setLockMessage("Could not save Production Cutlist changes.");
+        return;
+      }
+      setLockMessage("");
+    });
   };
 
   const onSaveAndBackFromNesting = async () => {
-    await persistCutlistRows(cutlistRows);
     setProductionNav("overview");
     setNestingFullscreen(false);
     setNestingSheetPreview(null);
     setNestingPreviewHoverPieceId(null);
     setNestingTooltip(null);
+    void persistCutlistRows(cutlistRows).then((ok) => {
+      if (!ok) {
+        setLockMessage("Could not save Nesting changes.");
+        return;
+      }
+      setLockMessage("");
+    });
   };
 
   const onSaveAndBackFromCnc = async () => {
-    await persistCutlistRows(cutlistRows);
     setProductionNav("overview");
     setNestingFullscreen(false);
+    void persistCutlistRows(cutlistRows).then((ok) => {
+      if (!ok) {
+        setLockMessage("Could not save CNC changes.");
+        return;
+      }
+      setLockMessage("");
+    });
   };
   const onSaveAndBackFromOrder = async () => {
-    await persistCutlistRows(cutlistRows);
     setProductionNav("overview");
     setNestingFullscreen(false);
+    void persistCutlistRows(cutlistRows).then((ok) => {
+      if (!ok) {
+        setLockMessage("Could not save Order changes.");
+        return;
+      }
+      setLockMessage("");
+    });
   };
 
   const onPrintCnc = () => {
@@ -17771,10 +17869,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             ) : (
                                               <input
                                                 autoFocus
-                                                value={editingCellValue}
+                                                defaultValue={editingCellValue}
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
-                                                onChange={(e) => setEditingCellValue(numericOnlyText(e.target.value))}
+                                                onChange={(e) => {
+                                                  const next = numericOnlyText(e.target.value);
+                                                  editingCellValueRef.current = next;
+                                                  if (next !== e.currentTarget.value) {
+                                                    e.currentTarget.value = next;
+                                                  }
+                                                }}
                                                 onBlur={() => void commitCellEdit()}
                                                 onKeyDown={(e) => {
                                                   if (e.key === "Enter") {
@@ -18048,7 +18152,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         : idx === 0
                                                     }
                                                     data-cutlist-info-edit-row={row.id}
-                                                    value={line}
+                                                    defaultValue={line}
                                                     onChange={(e) => onEditingInformationLineChange(idx, e.target.value)}
                                                     onBlur={onInformationInputBlur}
                                                     onKeyDown={(e) => {
@@ -18106,10 +18210,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         {editing ? (
                                           <input
                                             autoFocus
-                                            value={editingCellValue}
+                                            defaultValue={editingCellValue}
                                             inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
                                             pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
-                                            onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
+                                            onChange={(e) => {
+                                              const next = isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value;
+                                              editingCellValueRef.current = next;
+                                              if (next !== e.currentTarget.value) {
+                                                e.currentTarget.value = next;
+                                              }
+                                            }}
                                             onBlur={() => void commitCellEdit()}
                                             onKeyDown={(e) => {
                                               if (e.key === "Enter") {
@@ -19636,19 +19746,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
           )}
 
-          {!productionAccess.view && resolvedTab === "general" && (
-            <div className="rounded-[10px] border px-3 py-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
-              <p className="text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>Production is locked for your role on this project.</p>
-            </div>
-          )}
-
           {resolvedTab === "general" && (
-            <div className="-mx-4 -mb-4 -mt-4 md:-mx-5 xl:mx-0 xl:mb-0 xl:mt-0">
-              <div className="space-y-4 px-3 sm:px-4 md:px-5 xl:px-0 xl:pt-0 xl:pb-0" style={{ backgroundColor: projectPalette.pageBg }}>
+            <div className="-mx-4 -mb-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg }}>
+              <div className="space-y-4 px-[22px] pb-4 pt-4 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="space-y-4">
                     <div ref={clientDetailsContainerRef}>
-                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                      <section className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
                         <CardHeader className="flex min-h-[50px] flex-row items-center justify-between border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
                           <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Client Details</CardTitle>
                           <button
@@ -19709,11 +19813,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                           ))}
                         </CardContent>
-                      </Card>
+                      </section>
                     </div>
 
                     <div ref={notesContainerRef}>
-                      <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                      <section className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
                         <CardHeader className="flex h-[50px] flex-row items-center justify-between overflow-hidden border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
                           <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Notes</CardTitle>
                           <div className="flex items-center justify-end gap-2">
@@ -19782,12 +19886,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             />
                           )}
                         </CardContent>
-                      </Card>
+                      </section>
                     </div>
                   </div>
 
                   <div className="space-y-4">
-                    <Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                    <section className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
                   <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Images</p>
                     <div className="ml-auto flex items-center gap-2">
@@ -19979,8 +20083,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
                     )}
                   </CardContent>
-                </Card>
-<Card className="shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]" style={{ backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                </section>
+<section className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
                   <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Files</p>
                     <div className="ml-auto flex items-center gap-2">
@@ -20135,7 +20239,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
                     )}
                   </CardContent>
-                </Card>
+                </section>
                 </div>
               </div>
               </div>
@@ -20143,7 +20247,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectPalette.pageBg }}>
+            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectTabAreaBg }}>
               <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
@@ -20495,7 +20599,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectPalette.pageBg }}>
+            <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectTabAreaBg }}>
               <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
@@ -21419,7 +21523,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
 
                       <section className="min-h-0 overflow-auto rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                        <div className="flex h-[46px] items-center justify-between border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                        <div className="flex h-[46px] items-center justify-between border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
                           <div className="inline-flex items-center gap-3 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
                             <span>Sheet H: {formatMm(nestingSettings.sheetHeight)} mm</span>
                             <span>Sheet W: {formatMm(nestingSettings.sheetWidth)} mm</span>
@@ -21449,7 +21553,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const qtySum = group.rows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
                             return (
                             <div key={group.boardKey} className="overflow-hidden rounded-[12px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
-                                <div className="flex h-[40px] items-center justify-between pl-3" style={{ backgroundColor: projectPalette.panelMuted }}>
+                                <div className="flex h-[40px] items-center justify-between pl-3" style={{ backgroundColor: productionContainerHeaderBg }}>
                                   <div className="inline-flex items-center gap-2">
                                     <p className="text-[13px] font-medium" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{group.boardLabel}</p>
                                     <span className="rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
@@ -21515,7 +21619,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
 
                     <section className="min-h-0 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                      <div className="flex h-[46px] items-center justify-between border-b px-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                      <div className="flex h-[46px] items-center justify-between border-b px-3" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
                         <p className="text-[13px] font-medium" style={{ color: projectPalette.text }}>Edit Visibility</p>
                         <button
                           type="button"
@@ -21638,7 +21742,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <>
                   <div className="grid gap-4 xl:grid-cols-[1fr_1.35fr_1.05fr]">
                   <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
                       <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Existing</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
@@ -21668,7 +21772,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
 
                   <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
                       <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cabinetry</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
@@ -21719,7 +21823,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
 
                   <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                    <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
                       <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Hardware</p>
                     </div>
                     <div className="space-y-3 p-3 text-[12px]">
@@ -21777,8 +21881,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
                 </div>
 
-                <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                  <div className="flex h-[50px] items-center justify-between border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
+                <section className="relative z-10 overflow-visible rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <div className="flex h-[50px] items-center justify-between rounded-t-[14px] border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Board Settings</p>
                     <button
                       type="button"
@@ -21825,7 +21929,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           >
                             <X size={13} className="mx-auto" strokeWidth={2.8} />
                           </button>
-                          <div className="relative">
+                          <div className="relative z-20">
                             <input
                               disabled={productionReadOnly}
                               value={row.colour}
@@ -21863,7 +21967,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 if (!filtered.length) return null;
                                 return (
                                   <div
-                                    className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
+                                    className="absolute left-0 top-[calc(100%+2px)] z-[120] max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]"
                                     style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
                                   >
                                     {filtered.map((colour) => (
@@ -21979,6 +22083,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "settings" && settingsAccess.view && (
+            <div className="-mx-4 -mb-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg }}>
+              <div className="space-y-4 px-[22px] pb-4 pt-4 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
             <div className="grid gap-4 xl:grid-cols-2">
               <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
                 <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
@@ -22201,6 +22307,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   ))}
                 </CardContent>
               </Card>
+            </div>
+              </div>
             </div>
           )}
 
