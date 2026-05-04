@@ -972,6 +972,8 @@ type CutlistRow = {
   adjustableShelf?: string;
   fixedShelfDrilling?: string;
   adjustableShelfDrilling?: string;
+  hingesUp?: string[];
+  hingesDown?: string[];
   information: string;
   grain: boolean;
   grainValue: string;
@@ -1127,6 +1129,7 @@ type CutlistEditableField =
   | "depth"
   | "quantity"
   | "clashing"
+  | "hinges"
   | "information"
   | "grain";
 type CutlistActivityEntry = {
@@ -1452,10 +1455,57 @@ function createEmptyCutlistEntry(): Omit<CutlistRow, "id" | "room"> {
     adjustableShelf: "",
     fixedShelfDrilling: "No",
     adjustableShelfDrilling: "No",
+    hingesUp: [],
+    hingesDown: [],
     information: "",
     grain: false,
     grainValue: "",
   };
+}
+
+function normalizeDoorHingeValues(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((value) => String(value ?? "").trim()).filter(Boolean);
+  }
+  const single = String(raw ?? "").trim();
+  return single ? [single] : [];
+}
+
+function doorHingeInputValues(values: string[]): string[] {
+  const cleaned = values.map((value) => String(value ?? "")).filter((value, index, arr) => {
+    if (value.trim()) return true;
+    return index === arr.length - 1;
+  });
+  if (!cleaned.length) return [""];
+  if (String(cleaned[cleaned.length - 1] ?? "").trim()) cleaned.push("");
+  return cleaned;
+}
+
+function updateDoorHingeValues(values: string[], index: number, nextValue: string): string[] {
+  const next = [...doorHingeInputValues(values)];
+  while (next.length <= index) next.push("");
+  next[index] = nextValue;
+  return next.filter((value, valueIndex, arr) => {
+    if (String(value ?? "").trim()) return true;
+    return valueIndex === arr.length - 1;
+  });
+}
+
+function maxDoorHingeValueForRowLike(row: {
+  height?: unknown;
+  width?: unknown;
+  depth?: unknown;
+}): number | null {
+  const toHingeNum = (value: unknown) => {
+    const parsed = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
+  const maxValue = Math.max(
+    toHingeNum(row.height),
+    toHingeNum(row.width),
+    toHingeNum(row.depth),
+  );
+  return maxValue > 0 ? Math.round(maxValue) : null;
 }
 
 function makeQuoteTemplateId(prefix: string) {
@@ -3267,9 +3317,11 @@ function normalizeSalesProducts(raw: unknown): SalesProductRow[] {
 function serializeCutlistRowsForStorage(
   rows: CutlistRow[],
   isCabinetryPartTypeFn: (partType: string) => boolean,
+  isDoorPartTypeFn: (partType: string) => boolean,
 ) {
   return rows.map((row, idx) => {
     const isCabinetry = isCabinetryPartTypeFn(row.partType);
+    const isDoor = isDoorPartTypeFn(row.partType);
     return {
       __id: idx + 1,
       __cutlist_key: row.id,
@@ -3281,18 +3333,49 @@ function serializeCutlistRowsForStorage(
       Width: row.width,
       Depth: row.depth,
       Quantity: row.quantity,
-      Clashing: isCabinetry
-        ? ""
-        : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing,
-      fixedShelf: isCabinetry ? String(row.fixedShelf ?? "") : "",
-      adjustableShelf: isCabinetry ? String(row.adjustableShelf ?? "") : "",
-      fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
-      adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
-      Information: row.information,
-      Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
-      includeInNesting: row.includeInNesting !== false,
-    };
+        Clashing: isCabinetry
+          ? ""
+          : joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) || row.clashing,
+        fixedShelf: isCabinetry ? String(row.fixedShelf ?? "") : "",
+        adjustableShelf: isCabinetry ? String(row.adjustableShelf ?? "") : "",
+        fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
+        adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
+        hingesUp: normalizeDoorHingeValues(row.hingesUp),
+        hingesDown: normalizeDoorHingeValues(row.hingesDown),
+        Information: row.information,
+        Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
+        includeInNesting: row.includeInNesting !== false,
+      };
   });
+}
+
+function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
+  return JSON.stringify(
+    rows.map((row) => ({
+      id: String(row.id ?? ""),
+      room: String(row.room ?? ""),
+      partType: String(row.partType ?? ""),
+      board: String(row.board ?? ""),
+      name: String(row.name ?? ""),
+      height: String(row.height ?? ""),
+      width: String(row.width ?? ""),
+      depth: String(row.depth ?? ""),
+      quantity: String(row.quantity ?? ""),
+      clashing: String(row.clashing ?? ""),
+      clashLeft: String(row.clashLeft ?? ""),
+      clashRight: String(row.clashRight ?? ""),
+        fixedShelf: String(row.fixedShelf ?? ""),
+        adjustableShelf: String(row.adjustableShelf ?? ""),
+        fixedShelfDrilling: String(row.fixedShelfDrilling ?? ""),
+        adjustableShelfDrilling: String(row.adjustableShelfDrilling ?? ""),
+        hingesUp: normalizeDoorHingeValues(row.hingesUp),
+        hingesDown: normalizeDoorHingeValues(row.hingesDown),
+        information: String(row.information ?? ""),
+        grain: Boolean(row.grain),
+        grainValue: String(row.grainValue ?? ""),
+        includeInNesting: row.includeInNesting !== false,
+      })),
+  );
 }
 
 function normalizeCompanySalesProducts(raw: unknown): string[] {
@@ -3328,6 +3411,7 @@ export default function ProjectDetailsPage() {
   const [isUploadingProjectImages, setIsUploadingProjectImages] = useState(false);
   const [projectImageUploadProgress, setProjectImageUploadProgress] = useState(0);
   const [isDeletingProjectImage, setIsDeletingProjectImage] = useState(false);
+  const projectRef = useRef<Project | null>(null);
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
   const [quoteProjectTextDrafts, setQuoteProjectTextDrafts] = useState<Record<string, string>>({});
   const deferredQuoteProjectTextDrafts = useDeferredValue(quoteProjectTextDrafts);
@@ -3541,6 +3625,9 @@ export default function ProjectDetailsPage() {
   const boardColourEditStartRef = useRef<Record<string, string>>({});
   const [productionCutlist, setProductionCutlist] = useState<Cutlist | null>(null);
   const [cutlistRows, setCutlistRows] = useState<CutlistRow[]>([]);
+  const cutlistRowsJsonRef = useRef("");
+  const pendingCutlistRowsJsonRef = useRef("");
+  const isPersistingCutlistRowsRef = useRef(false);
   const [cutlistSearch, setCutlistSearch] = useState("");
   const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
   const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
@@ -3553,6 +3640,10 @@ export default function ProjectDetailsPage() {
   const [initialActiveCutlistPartType, setInitialActiveCutlistPartType] = useState("");
   const [initialCutlistDraftRows, setInitialCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
   const [initialCutlistDraftInitialized, setInitialCutlistDraftInitialized] = useState(false);
+  const isPersistingInitialCutlistRowsRef = useRef(false);
+  const initialCutlistRowsJsonRef = useRef("");
+  const pendingInitialCutlistRowsJsonRef = useRef("");
+  const initialCutlistHydratedProjectIdRef = useRef("");
   const [cncSearch, setCncSearch] = useState("");
   const [cncPartTypeFilter, setCncPartTypeFilter] = useState("All Part Types");
   const [cncExportMenuOpen, setCncExportMenuOpen] = useState(false);
@@ -3622,14 +3713,19 @@ export default function ProjectDetailsPage() {
   const [editingAdjustableShelf, setEditingAdjustableShelf] = useState("");
   const [editingFixedShelfDrilling, setEditingFixedShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
   const [editingAdjustableShelfDrilling, setEditingAdjustableShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
+  const [editingHingesUp, setEditingHingesUp] = useState<string[]>([]);
+  const [editingHingesDown, setEditingHingesDown] = useState<string[]>([]);
   const editingFixedShelfRef = useRef("");
   const editingAdjustableShelfRef = useRef("");
   const editingFixedShelfDrillingRef = useRef<"No" | "Even Spacing" | "Centre">("No");
   const editingAdjustableShelfDrillingRef = useRef<"No" | "Even Spacing" | "Centre">("No");
+  const editingHingesUpRef = useRef<string[]>([]);
+  const editingHingesDownRef = useRef<string[]>([]);
   const isCommittingCutlistCellRef = useRef(false);
   const [editingInfoFocusLine, setEditingInfoFocusLine] = useState<{ rowId: string; lineIndex: number } | null>(null);
   const [expandedCabinetryRows, setExpandedCabinetryRows] = useState<Record<string, boolean>>({});
   const [expandedDrawerRows, setExpandedDrawerRows] = useState<Record<string, boolean>>({});
+  const [expandedDoorRows, setExpandedDoorRows] = useState<Record<string, boolean>>({});
   const [cutlistJumpTarget, setCutlistJumpTarget] = useState<{
     parentRowId: string;
     kind: "cab" | "drw" | null;
@@ -4179,6 +4275,23 @@ export default function ProjectDetailsPage() {
     };
   }, [quoteCompanyLogoPath]);
   useEffect(() => {
+    initialCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(initialCutlistRows);
+  }, [initialCutlistRows]);
+
+  useEffect(() => {
+    cutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(cutlistRows);
+  }, [cutlistRows]);
+
+  useEffect(() => {
+    const projectId = String(project?.id || "").trim();
+    if (!projectId) {
+      initialCutlistHydratedProjectIdRef.current = "";
+      setInitialCutlistRows([]);
+      return;
+    }
+    if (initialCutlistHydratedProjectIdRef.current === projectId) {
+      return;
+    }
     const rawCutlist = (salesPayload as Record<string, unknown>).initialCutlist;
     const rawRows =
       rawCutlist && typeof rawCutlist === "object" && Array.isArray((rawCutlist as Record<string, unknown>).rows)
@@ -4204,22 +4317,25 @@ export default function ProjectDetailsPage() {
           clashing,
           clashLeft: String(item.clashLeft ?? split.left ?? "").trim().toUpperCase(),
           clashRight: String(item.clashRight ?? split.right ?? "").trim().toUpperCase(),
-          fixedShelf: String(item.fixedShelf ?? item.FixedShelf ?? ""),
-          adjustableShelf: String(item.adjustableShelf ?? item.AdjustableShelf ?? ""),
-          fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item.FixedShelfDrilling ?? "No"),
-          adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item.AdjustableShelfDrilling ?? "No"),
-          information: String(item.Information ?? item.information ?? ""),
-          grain: grainParsed.grain,
-          grainValue: grainParsed.grainValue,
-          includeInNesting:
+            fixedShelf: String(item.fixedShelf ?? item.FixedShelf ?? ""),
+            adjustableShelf: String(item.adjustableShelf ?? item.AdjustableShelf ?? ""),
+            fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item.FixedShelfDrilling ?? "No"),
+            adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item.AdjustableShelfDrilling ?? "No"),
+            hingesUp: normalizeDoorHingeValues(item.hingesUp ?? item.HingesUp ?? item.hingeUp ?? item.HingeUp),
+            hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
+            information: String(item.Information ?? item.information ?? ""),
+            grain: grainParsed.grain,
+            grainValue: grainParsed.grainValue,
+            includeInNesting:
             !(
               item.includeInNesting === false ||
               String(item.includeInNesting ?? "").trim().toLowerCase() === "false"
             ),
-        } satisfies CutlistRow;
-      });
+          } satisfies CutlistRow;
+        });
+    initialCutlistHydratedProjectIdRef.current = projectId;
     setInitialCutlistRows(mapped);
-  }, [salesPayload]);
+  }, [project]);
   const boardBaseLabelFromRow = (row: ProductionBoardRow) => {
     const colour = String(row.colour || "").trim();
     const thicknessRaw = String(row.thickness || "").trim();
@@ -4298,7 +4414,29 @@ export default function ProjectDetailsPage() {
   const boardSheetFor = (value: string) => boardSheetByLabel[resolveBoardKey(value)] ?? "";
   const boardLacquerFor = (value: string) => Boolean(boardLacquerByLabel[resolveBoardKey(value)]);
   const boardThicknessFor = (value: string) => boardThicknessByLabel[resolveBoardKey(value)] ?? 0;
-  const boardGrainFor = (value: string) => Boolean(boardGrainByLabel[resolveBoardKey(value)]);
+  const boardGrainFor = (value: string) => {
+    const raw = String(value || "").trim();
+    if (!raw) return false;
+    const resolved = resolveBoardKey(raw);
+    if (Boolean(boardGrainByLabel[resolved])) return true;
+    if (resolved !== raw && Boolean(boardGrainByLabel[raw])) return true;
+    return Object.entries(boardMetaByKey).some(([key, meta]) => {
+      if (!meta?.grain) return false;
+      return key === raw || key === resolved || String(meta.label || "").trim() === raw;
+    });
+  };
+  const productionBoardAllowsGrainForValue = (value: string) => {
+    const raw = String(value || "").trim();
+    if (!raw) return false;
+    if (boardGrainFor(raw)) return true;
+    const display = String(boardDisplayLabel(raw) || "").trim();
+    if (display && boardGrainFor(display)) return true;
+    return cutlistBoardOptions.some((option) => {
+      const optionDisplay = String(boardDisplayLabel(option) || "").trim();
+      if (!optionDisplay || optionDisplay !== display) return false;
+      return boardGrainFor(option);
+    });
+  };
   const initialMeasureBoardGrainMap = useMemo(() => {
     const out: Record<string, boolean> = {};
     for (const row of companySalesProductConfigs) {
@@ -4344,6 +4482,8 @@ export default function ProjectDetailsPage() {
       String(initialCutlistEntry.grainValue ?? "").trim().length > 0,
     [salesProductRows, initialCutlistRows, initialCutlistDraftRows, initialCutlistEntry, initialMeasureBoardGrainMap],
   );
+  const selectedCutlistEntryBoardAllowsGrain = productionBoardAllowsGrainForValue(String(cutlistEntry.board || "").trim());
+  const showSingleCutlistEntryGrain = showCutlistGrainColumn || selectedCutlistEntryBoardAllowsGrain;
   const grainDimensionOptions = (height: string, width: string, depth: string) => {
     const h = String(height ?? "").trim();
     const w = String(width ?? "").trim();
@@ -4710,6 +4850,23 @@ export default function ProjectDetailsPage() {
   const isDrawerPartType = (partType: string) =>
     Boolean(partTypeDrawerMap[String(partType || "").trim().toLowerCase()]);
 
+  const partTypeDoorMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const isDoor = Boolean(item.door ?? item.isDoor ?? false);
+      out[name.trim().toLowerCase()] = isDoor;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isDoorPartType = (partType: string) =>
+    Boolean(partTypeDoorMap[String(partType || "").trim().toLowerCase()]);
+
   const partTypeAutoClashMap = useMemo(() => {
     const out: Record<string, { left: string; right: string }> = {};
     const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
@@ -4920,8 +5077,13 @@ export default function ProjectDetailsPage() {
   const cutlistValueForActivity = (row: CutlistRow, key: CutlistEditableField) => {
     if (key === "board") return boardDisplayLabel(String(row.board || "").trim());
     if (key === "grain") return String(row.grainValue || "").trim();
-    if (key === "clashing") {
-      if (isCabinetryPartType(row.partType)) {
+    if (key === "hinges") {
+      const up = normalizeDoorHingeValues(row.hingesUp).join(", ");
+      const down = normalizeDoorHingeValues(row.hingesDown).join(", ");
+      return `Up ${up || "-"} | Down ${down || "-"}`;
+    }
+      if (key === "clashing") {
+        if (isCabinetryPartType(row.partType)) {
         const fs = String(row.fixedShelf || "").trim();
         const as = String(row.adjustableShelf || "").trim();
         const fd = normalizeDrillingValue(row.fixedShelfDrilling);
@@ -6343,15 +6505,16 @@ export default function ProjectDetailsPage() {
     return next;
   }, [activeDisabledQuotePlaceholderKeySet, quoteTemplateReplacements]);
   const persistSalesPatch = async (nextSalesRaw: Record<string, unknown>) => {
-    if (!project) return false;
+    const activeProject = projectRef.current ?? project;
+    if (!activeProject) return false;
     const finalSales = { ...nextSalesRaw } as Record<string, unknown>;
 
     const nextProjectSettings = {
-      ...((project.projectSettings ?? {}) as Record<string, unknown>),
+      ...((activeProject.projectSettings ?? {}) as Record<string, unknown>),
       sales: finalSales,
     };
 
-    const ok = await updateProjectPatch(project, {
+    const ok = await updateProjectPatch(activeProject, {
       sales: finalSales,
       salesJson: JSON.stringify(finalSales),
       projectSettings: nextProjectSettings,
@@ -6729,6 +6892,9 @@ export default function ProjectDetailsPage() {
   const toggleDrawerRowExpand = (rowId: string) => {
     setExpandedDrawerRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
   };
+  const toggleDoorRowExpand = (rowId: string) => {
+    setExpandedDoorRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
+  };
 
   const createDraftCutlistRow = (
     partType: string,
@@ -6742,9 +6908,9 @@ export default function ProjectDetailsPage() {
     const seededRight = String(seed?.clashRight ?? split.right ?? "").trim().toUpperCase();
     const left = seededLeft || defaults.left;
     const right = seededRight || defaults.right;
-    return {
-      id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      room: room || "Project Cutlist",
+      return {
+        id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        room: room || "Project Cutlist",
       partType,
       board,
       name: String(seed?.name ?? ""),
@@ -6755,15 +6921,17 @@ export default function ProjectDetailsPage() {
       clashing: joinClashing(left, right),
       clashLeft: left,
       clashRight: right,
-      fixedShelf: String(seed?.fixedShelf ?? ""),
-      adjustableShelf: String(seed?.adjustableShelf ?? ""),
-      fixedShelfDrilling: normalizeDrillingValue(seed?.fixedShelfDrilling),
-      adjustableShelfDrilling: normalizeDrillingValue(seed?.adjustableShelfDrilling),
-      information: String(seed?.information ?? ""),
-      grain: Boolean(seed?.grain ?? false),
-      grainValue: String(seed?.grainValue ?? ""),
+        fixedShelf: String(seed?.fixedShelf ?? ""),
+        adjustableShelf: String(seed?.adjustableShelf ?? ""),
+        fixedShelfDrilling: normalizeDrillingValue(seed?.fixedShelfDrilling),
+        adjustableShelfDrilling: normalizeDrillingValue(seed?.adjustableShelfDrilling),
+        hingesUp: normalizeDoorHingeValues(seed?.hingesUp),
+        hingesDown: normalizeDoorHingeValues(seed?.hingesDown),
+        information: String(seed?.information ?? ""),
+        grain: Boolean(seed?.grain ?? false),
+        grainValue: String(seed?.grainValue ?? ""),
+      };
     };
-  };
 
   const onChangeTab = async (value: string) => {
     if (value === "sales" && !salesAccess.view) {
@@ -6832,6 +7000,10 @@ export default function ProjectDetailsPage() {
 
     void load();
   }, [params.projectId, user?.uid]);
+
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   useEffect(() => {
     const loadAccess = async () => {
@@ -7670,6 +7842,20 @@ export default function ProjectDetailsPage() {
             includeInNesting,
           };
         });
+        const mappedJson = serializeCutlistRowsSnapshot(mapped);
+        if (pendingCutlistRowsJsonRef.current) {
+          if (mappedJson === pendingCutlistRowsJsonRef.current) {
+            pendingCutlistRowsJsonRef.current = "";
+          } else {
+            return;
+          }
+        }
+        if (mappedJson === cutlistRowsJsonRef.current) {
+          return;
+        }
+        if (isPersistingCutlistRowsRef.current) {
+          return;
+        }
         setCutlistRows(mapped);
         setNestingVisibilityMap(
           Object.fromEntries(mapped.map((row) => [row.id, row.includeInNesting !== false])),
@@ -7708,12 +7894,28 @@ export default function ProjectDetailsPage() {
           adjustableShelf: String(legacy.adjustableShelf ?? legacy["Adjustable Shelf"] ?? ""),
           fixedShelfDrilling: normalizeDrillingValue(legacy.fixedShelfDrilling ?? legacy["Fixed Shelf Drilling"]),
           adjustableShelfDrilling: normalizeDrillingValue(legacy.adjustableShelfDrilling ?? legacy["Adjustable Shelf Drilling"]),
+          hingesUp: normalizeDoorHingeValues(legacy.hingesUp ?? legacy["Hinges Up"] ?? legacy.hingeUp),
+          hingesDown: normalizeDoorHingeValues(legacy.hingesDown ?? legacy["Hinges Down"] ?? legacy.hingeDown),
           information: String(part.information ?? legacy.Information ?? ""),
           grain: grainParsed.grain,
           grainValue: grainParsed.grainValue,
           includeInNesting: true,
         };
       });
+      const mappedJson = serializeCutlistRowsSnapshot(mapped);
+      if (pendingCutlistRowsJsonRef.current) {
+        if (mappedJson === pendingCutlistRowsJsonRef.current) {
+          pendingCutlistRowsJsonRef.current = "";
+        } else {
+          return;
+        }
+      }
+      if (mappedJson === cutlistRowsJsonRef.current) {
+        return;
+      }
+      if (isPersistingCutlistRowsRef.current) {
+        return;
+      }
       setCutlistRows(mapped);
       setNestingVisibilityMap(
         Object.fromEntries(mapped.map((row) => [row.id, row.includeInNesting !== false])),
@@ -7747,6 +7949,7 @@ export default function ProjectDetailsPage() {
           collapsedCutlistGroups?: Record<string, boolean>;
           expandedCabinetryRows?: Record<string, boolean>;
           expandedDrawerRows?: Record<string, boolean>;
+          expandedDoorRows?: Record<string, boolean>;
           cutlistActivityFeed?: CutlistActivityEntry[];
         };
         if (typeof parsed.cutlistRoomFilter === "string" && parsed.cutlistRoomFilter.trim()) {
@@ -7832,6 +8035,9 @@ export default function ProjectDetailsPage() {
         if (parsed.expandedDrawerRows && typeof parsed.expandedDrawerRows === "object") {
           setExpandedDrawerRows(parsed.expandedDrawerRows);
         }
+        if (parsed.expandedDoorRows && typeof parsed.expandedDoorRows === "object") {
+          setExpandedDoorRows(parsed.expandedDoorRows);
+        }
       }
     } catch {
       // Ignore invalid local state and continue with defaults.
@@ -7859,6 +8065,7 @@ export default function ProjectDetailsPage() {
       collapsedCutlistGroups,
       expandedCabinetryRows,
       expandedDrawerRows,
+      expandedDoorRows,
     };
     try {
       window.localStorage.setItem(cutlistUiStateStorageKey, JSON.stringify(payload));
@@ -7884,6 +8091,7 @@ export default function ProjectDetailsPage() {
     collapsedCutlistGroups,
     expandedCabinetryRows,
     expandedDrawerRows,
+    expandedDoorRows,
   ]);
 
   useEffect(() => {
@@ -7927,12 +8135,14 @@ export default function ProjectDetailsPage() {
       const nextFeeds = serializeCutlistActivityFeedForProject(cutlistActivityFeed);
       const nextSerializedInner = JSON.stringify(nextFeeds);
       if (nextSerializedInner === lastPersistedCutlistActivityJsonRef.current) return;
+      const activeProject = projectRef.current;
+      if (!activeProject) return;
       const nextProjectSettings = {
-        ...((project.projectSettings ?? {}) as Record<string, unknown>),
+        ...((activeProject.projectSettings ?? {}) as Record<string, unknown>),
         cutlistActivityFeeds: nextFeeds,
       };
       void (async () => {
-        const ok = await updateProjectPatch(project, {
+        const ok = await updateProjectPatch(activeProject, {
           projectSettings: nextProjectSettings,
           projectSettingsJson: JSON.stringify(nextProjectSettings),
         });
@@ -7942,7 +8152,10 @@ export default function ProjectDetailsPage() {
           prev
             ? {
                 ...prev,
-                projectSettings: nextProjectSettings,
+                projectSettings: {
+                  ...(prev.projectSettings ?? {}),
+                  ...nextProjectSettings,
+                },
               }
             : prev,
         );
@@ -9113,31 +9326,67 @@ export default function ProjectDetailsPage() {
       return next;
     });
   };
+  const showDoorHingeLimitWarning = (rowKey: string, fieldKey: string, rowLabel: string, maxValue: number) => {
+    const name = String(rowLabel || "").trim() || "Entry";
+    const message = `${name} | Hinges: Can't exceed ${maxValue}`;
+    const warnings = { [rowKey]: { [fieldKey]: message } };
+    setCutlistCellWarnings((prev) => ({
+      ...prev,
+      [rowKey]: {
+        ...(prev[rowKey] || {}),
+        [fieldKey]: message,
+      },
+    }));
+    flashCutlistWarningCells(warnings);
+    logCutlistActivity(message, {
+      action: "Clear",
+      actionKind: "clear",
+      dedupeKey: `warn:hinges:${rowKey}:${fieldKey}:${maxValue}`,
+    });
+  };
 
   const persistCutlistRows = async (nextRows: CutlistRow[]) => {
     if (!project) return false;
-    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
-    const ok = await updateProjectPatch(project, { cutlist: { rows } });
-    if (ok) {
-      setProject((prevProject) =>
-        prevProject
-          ? {
-              ...prevProject,
-              cutlist: { rows },
-            }
-          : prevProject,
-      );
+    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
+    pendingCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
+    isPersistingCutlistRowsRef.current = true;
+    try {
+      const ok = await updateProjectPatch(project, { cutlist: { rows } });
+      if (ok) {
+        setProject((prevProject) =>
+          prevProject
+            ? {
+                ...prevProject,
+                cutlist: { rows },
+              }
+            : prevProject,
+        );
+      } else {
+        pendingCutlistRowsJsonRef.current = "";
+      }
+      return ok;
+    } finally {
+      isPersistingCutlistRowsRef.current = false;
     }
-    return ok;
   };
   const persistInitialCutlistRows = async (nextRows: CutlistRow[]) => {
     if (!project) return false;
-    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
+    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
     const nextSales = {
       ...salesPayload,
       initialCutlist: { rows },
     } as Record<string, unknown>;
-    return await persistSalesPatch(nextSales);
+    pendingInitialCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
+    isPersistingInitialCutlistRowsRef.current = true;
+    try {
+      const ok = await persistSalesPatch(nextSales);
+      if (!ok) {
+        pendingInitialCutlistRowsJsonRef.current = "";
+      }
+      return ok;
+    } finally {
+      isPersistingInitialCutlistRowsRef.current = false;
+    }
   };
 
   const addCutlistRow = async () => {
@@ -9153,10 +9402,11 @@ export default function ProjectDetailsPage() {
       logCutlistValidationIssues(singleErrors, cutlistEntry.partType);
       return;
     }
-    setCutlistCellWarnings({});
-    const isCabinetry = isCabinetryPartType(cutlistEntry.partType);
-    const isDrawer = isDrawerPartType(cutlistEntry.partType);
-    const drawerTokens = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
+      setCutlistCellWarnings({});
+      const isCabinetry = isCabinetryPartType(cutlistEntry.partType);
+      const isDrawer = isDrawerPartType(cutlistEntry.partType);
+      const isDoor = isDoorPartType(cutlistEntry.partType);
+      const drawerTokens = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
     const defaults = defaultClashingForPartType(cutlistEntry.partType, cutlistEntry.board);
     const left = String(cutlistEntry.clashLeft ?? "").trim().toUpperCase() || defaults.left;
     const right = String(cutlistEntry.clashRight ?? "").trim().toUpperCase() || defaults.right;
@@ -9166,15 +9416,17 @@ export default function ProjectDetailsPage() {
       ...cutlistEntry,
       height: isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(cutlistEntry.height ?? ""),
       quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(cutlistEntry.quantity ?? "1"),
-      clashing: isCabinetry ? "" : joinClashing(left, right),
-      clashLeft: isCabinetry ? "" : left,
-      clashRight: isCabinetry ? "" : right,
-      fixedShelf: isCabinetry ? String(cutlistEntry.fixedShelf ?? "") : "",
-      adjustableShelf: isCabinetry ? String(cutlistEntry.adjustableShelf ?? "") : "",
-      fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(cutlistEntry.fixedShelfDrilling) : "No",
-      adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(cutlistEntry.adjustableShelfDrilling) : "No",
-      includeInNesting: true,
-    };
+        clashing: isCabinetry ? "" : joinClashing(left, right),
+        clashLeft: isCabinetry ? "" : left,
+        clashRight: isCabinetry ? "" : right,
+        fixedShelf: isCabinetry ? String(cutlistEntry.fixedShelf ?? "") : "",
+        adjustableShelf: isCabinetry ? String(cutlistEntry.adjustableShelf ?? "") : "",
+        fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(cutlistEntry.fixedShelfDrilling) : "No",
+        adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(cutlistEntry.adjustableShelfDrilling) : "No",
+        hingesUp: isDoor ? normalizeDoorHingeValues(cutlistEntry.hingesUp) : [],
+        hingesDown: isDoor ? normalizeDoorHingeValues(cutlistEntry.hingesDown) : [],
+        includeInNesting: true,
+      };
     const next = [...cutlistRows, row];
     setCutlistRows(next);
     logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, {
@@ -9191,14 +9443,16 @@ export default function ProjectDetailsPage() {
       clashing: "",
       clashLeft: "",
       clashRight: "",
-      fixedShelf: "",
-      adjustableShelf: "",
-      fixedShelfDrilling: "No",
-      adjustableShelfDrilling: "No",
-      information: "",
-      grain: false,
-      grainValue: "",
-    });
+        fixedShelf: "",
+        adjustableShelf: "",
+        fixedShelfDrilling: "No",
+        adjustableShelfDrilling: "No",
+        hingesUp: [],
+        hingesDown: [],
+        information: "",
+        grain: false,
+        grainValue: "",
+      });
     await persistCutlistRows(next);
   };
 
@@ -9234,7 +9488,7 @@ export default function ProjectDetailsPage() {
       const currentLeft = String(prev.clashLeft ?? "").trim().toUpperCase();
       const currentRight = String(prev.clashRight ?? "").trim().toUpperCase();
       const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
-      const grainAllowed = !!(board && boardGrainFor(String(board).trim()));
+      const grainAllowed = !!(board && productionBoardAllowsGrainForValue(String(board).trim()));
       const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
       const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
       return {
@@ -9257,7 +9511,7 @@ export default function ProjectDetailsPage() {
         const currentLeft = String(row.clashLeft ?? "").trim().toUpperCase();
         const currentRight = String(row.clashRight ?? "").trim().toUpperCase();
         const lacquerBoard = !!(board && boardLacquerFor(String(board).trim()));
-        const grainAllowed = !!(board && boardGrainFor(String(board).trim()));
+        const grainAllowed = !!(board && productionBoardAllowsGrainForValue(String(board).trim()));
         const clashLeft = lacquerBoard ? "" : currentLeft || defaults.left;
         const clashRight = lacquerBoard ? "" : currentRight || defaults.right;
         return {
@@ -9400,10 +9654,11 @@ export default function ProjectDetailsPage() {
     const nextWarnings: Record<string, Record<string, string>> = {};
     const accepted = cutlistDraftRows
       .map((row, idx) => {
-        const partType = String(row.partType || activeCutlistPartType || "").trim();
-        const isCabinetry = isCabinetryPartType(partType);
-        const isDrawer = isDrawerPartType(partType);
-        const drawerTokens = parseDrawerHeightTokens(String(row.height ?? ""));
+          const partType = String(row.partType || activeCutlistPartType || "").trim();
+          const isCabinetry = isCabinetryPartType(partType);
+          const isDrawer = isDrawerPartType(partType);
+          const isDoor = isDoorPartType(partType);
+          const drawerTokens = parseDrawerHeightTokens(String(row.height ?? ""));
         const normalizedHeight = isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(row.height || "").trim();
         const normalizedRow = {
           ...row,
@@ -9413,13 +9668,15 @@ export default function ProjectDetailsPage() {
           name: String(row.name || "").trim(),
           height: normalizedHeight,
           quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(row.quantity ?? "").trim(),
-          clashing: isCabinetry ? "" : joinClashing(String(row.clashLeft || ""), String(row.clashRight || "")),
-          fixedShelf: isCabinetry ? String(row.fixedShelf || "") : "",
-          adjustableShelf: isCabinetry ? String(row.adjustableShelf || "") : "",
-          fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
-          adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
-          includeInNesting: row.includeInNesting !== false,
-        };
+            clashing: isCabinetry ? "" : joinClashing(String(row.clashLeft || ""), String(row.clashRight || "")),
+            fixedShelf: isCabinetry ? String(row.fixedShelf || "") : "",
+            adjustableShelf: isCabinetry ? String(row.adjustableShelf || "") : "",
+            fixedShelfDrilling: isCabinetry ? normalizeDrillingValue(row.fixedShelfDrilling) : "No",
+            adjustableShelfDrilling: isCabinetry ? normalizeDrillingValue(row.adjustableShelfDrilling) : "No",
+            hingesUp: isDoor ? normalizeDoorHingeValues(row.hingesUp) : [],
+            hingesDown: isDoor ? normalizeDoorHingeValues(row.hingesDown) : [],
+            includeInNesting: row.includeInNesting !== false,
+          };
         const rowErrors = validateCutlistRowInput(normalizedRow, partType, cutlistRowLabelFor(normalizedRow, `Row ${idx + 1}`));
         if (rowErrors.length) {
           rejectedIds.add(row.id);
@@ -9855,6 +10112,133 @@ export default function ProjectDetailsPage() {
       return { ...prev, information: informationValueFromLines(next.length ? next : [""]) };
     });
   };
+
+  const onCutlistEntryHingeChange = (direction: "up" | "down", index: number, value: string) => {
+    setCutlistEntry((prev) => ({
+      ...prev,
+      hingesUp: direction === "up" ? updateDoorHingeValues(normalizeDoorHingeValues(prev.hingesUp), index, value) : normalizeDoorHingeValues(prev.hingesUp),
+      hingesDown: direction === "down" ? updateDoorHingeValues(normalizeDoorHingeValues(prev.hingesDown), index, value) : normalizeDoorHingeValues(prev.hingesDown),
+    }));
+  };
+
+  const onDraftCutlistHingeChange = (id: string, direction: "up" | "down", index: number, value: string) => {
+    const row = cutlistDraftRows.find((item) => item.id === id);
+    if (!row) return;
+    if (direction === "up") {
+      updateDraftCutlistRow(id, {
+        hingesUp: updateDoorHingeValues(normalizeDoorHingeValues(row.hingesUp), index, value),
+      });
+      return;
+    }
+    updateDraftCutlistRow(id, {
+      hingesDown: updateDoorHingeValues(normalizeDoorHingeValues(row.hingesDown), index, value),
+    });
+  };
+
+  const renderDoorHingeEditor = ({
+    upValues,
+    downValues,
+    onChange,
+    disabled,
+    bg,
+    border,
+    text,
+    rowKey,
+    rowLabel,
+    maxValue,
+    onBlur,
+  }: {
+    upValues: string[];
+    downValues: string[];
+    onChange: (direction: "up" | "down", index: number, value: string) => void;
+    disabled: boolean;
+    bg: string;
+    border: string;
+    text: string;
+    rowKey: string;
+    rowLabel: string;
+    maxValue?: number | null;
+    onBlur?: () => void;
+  }) => (
+    <div className="grid min-h-[40px] w-max min-w-[520px] content-center gap-[2px] text-left text-[9px]">
+      {(["up", "down"] as const).map((direction) => {
+        const values = direction === "up" ? doorHingeInputValues(upValues) : doorHingeInputValues(downValues);
+        return (
+          <div key={`hinge_${direction}`} className="flex items-center gap-[3px] whitespace-nowrap">
+            <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none">
+              {direction === "up" ? "Hinges" : ""}
+            </span>
+            <span className="inline-flex w-[20px] shrink-0 items-center justify-end font-bold leading-none">
+              {direction === "up" ? "Up" : "Down"}
+            </span>
+            <div className="flex min-w-[450px] flex-nowrap gap-[4px] overflow-visible">
+              {values.map((value, index) => {
+                const fieldKey = `hinges_${direction}_${index}`;
+                return (
+                  <input
+                    key={`hinge_${direction}_${index}`}
+                    disabled={disabled}
+                    value={value}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    title={warningForCell(rowKey, fieldKey) || undefined}
+                    onChange={(e) => {
+                      const raw = numericOnlyText(e.target.value);
+                      if (raw && Number.isFinite(maxValue) && maxValue != null) {
+                        const numericValue = Number.parseInt(raw, 10) || 0;
+                        if (numericValue > maxValue) {
+                          showDoorHingeLimitWarning(rowKey, fieldKey, rowLabel, maxValue);
+                          return;
+                        }
+                      }
+                      clearWarningForCell(rowKey, fieldKey);
+                      onChange(direction, index, raw);
+                    }}
+                    onBlur={onBlur}
+                    className={`h-[18px] w-[44px] shrink-0 rounded-[5px] border bg-transparent px-0 text-center text-[9px] ${warningClassForCell(rowKey, fieldKey)}`}
+                    style={warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderDoorHingeDisplay = (upValues: string[], downValues: string[]) => (
+    <div className="grid min-h-[40px] w-max min-w-[520px] content-center gap-[2px] text-left text-[9px]">
+      <div className="flex items-center gap-[3px] whitespace-nowrap">
+        <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none">
+          Hinges
+        </span>
+        <span className="inline-flex w-[20px] shrink-0 items-center justify-end font-bold leading-none">Up</span>
+        <div className="flex min-w-[450px] flex-nowrap gap-[4px] overflow-visible">
+          {normalizeDoorHingeValues(upValues).length > 0
+            ? normalizeDoorHingeValues(upValues).map((value, index) => (
+                <span key={`hinge_up_view_${index}`} className="inline-flex w-[44px] shrink-0 items-center justify-center">
+                  {value}
+                </span>
+              ))
+            : <span></span>}
+        </div>
+      </div>
+      <div className="flex items-center gap-[3px] whitespace-nowrap">
+        <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none"></span>
+        <span className="inline-flex w-[20px] shrink-0 items-center justify-end font-bold leading-none">Down</span>
+        <div className="flex min-w-[450px] flex-nowrap gap-[4px] overflow-visible">
+          {normalizeDoorHingeValues(downValues).length > 0
+            ? normalizeDoorHingeValues(downValues).map((value, index) => (
+                <span key={`hinge_down_view_${index}`} className="inline-flex w-[44px] shrink-0 items-center justify-center">
+                  {value}
+                </span>
+              ))
+            : <span></span>}
+        </div>
+      </div>
+    </div>
+  );
 
   const onEditingInformationLineChange = (index: number, value: string) => {
     const lines = informationLinesFromValue(String(editingCellValueRef.current ?? editingCellValue ?? ""));
@@ -11342,6 +11726,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     } else {
       setEditingInfoFocusLine(null);
     }
+    if (key === "hinges") {
+      const nextHingesUp = normalizeDoorHingeValues(row.hingesUp);
+      const nextHingesDown = normalizeDoorHingeValues(row.hingesDown);
+      editingHingesUpRef.current = nextHingesUp;
+      editingHingesDownRef.current = nextHingesDown;
+      setEditingHingesUp(nextHingesUp);
+      setEditingHingesDown(nextHingesDown);
+      editingCellValueRef.current = "";
+      setEditingCellValue("");
+      return;
+    }
     if (key === "clashing") {
       if (isCabinetryPartType(row.partType)) {
         const nextFixedShelf = String(row.fixedShelf ?? "");
@@ -11356,10 +11751,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         setEditingAdjustableShelf(nextAdjustableShelf);
         setEditingFixedShelfDrilling(nextFixedShelfDrilling);
         setEditingAdjustableShelfDrilling(nextAdjustableShelfDrilling);
-        editingCellValueRef.current = "";
-        setEditingCellValue("");
-      } else {
-        const split = splitClashing(row.clashing);
+          editingCellValueRef.current = "";
+          setEditingCellValue("");
+        } else if (isDoorPartType(row.partType)) {
+          const split = splitClashing(row.clashing);
+          setEditingClashLeft(String(row.clashLeft ?? split.left ?? ""));
+          setEditingClashRight(String(row.clashRight ?? split.right ?? ""));
+          editingCellValueRef.current = "";
+          setEditingCellValue("");
+        } else {
+          const split = splitClashing(row.clashing);
         setEditingClashLeft(split.left);
         setEditingClashRight(split.right);
         editingCellValueRef.current = row.clashing ?? "";
@@ -11387,14 +11788,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     setEditingClashRight("");
     editingFixedShelfRef.current = "";
     editingAdjustableShelfRef.current = "";
-    editingFixedShelfDrillingRef.current = "No";
-    editingAdjustableShelfDrillingRef.current = "No";
-    setEditingFixedShelf("");
-    setEditingAdjustableShelf("");
-    setEditingFixedShelfDrilling("No");
-    setEditingAdjustableShelfDrilling("No");
-    setEditingInfoFocusLine(null);
-  };
+      editingFixedShelfDrillingRef.current = "No";
+      editingAdjustableShelfDrillingRef.current = "No";
+      editingHingesUpRef.current = [];
+      editingHingesDownRef.current = [];
+      setEditingFixedShelf("");
+      setEditingAdjustableShelf("");
+      setEditingFixedShelfDrilling("No");
+      setEditingAdjustableShelfDrilling("No");
+      setEditingHingesUp([]);
+      setEditingHingesDown([]);
+      setEditingInfoFocusLine(null);
+    };
 
   const commitCellEdit = async (overrideValue?: string) => {
     if (!editingCell) return;
@@ -11425,20 +11830,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           updated.grainValue = String(value ?? "").trim();
           updated.grain = Boolean(updated.grainValue);
           break;
-        case "clashing":
-          if (isCabinetryPartType(updated.partType)) {
-            updated.clashing = "";
-            updated.clashLeft = "";
-            updated.clashRight = "";
-            updated.fixedShelf = String(editingFixedShelf ?? "").trim();
-            updated.adjustableShelf = String(editingAdjustableShelf ?? "").trim();
-            updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrilling);
-            updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrilling);
-          } else {
-            updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
-            const split = splitClashing(updated.clashing);
-            updated.clashLeft = split.left;
-            updated.clashRight = split.right;
+        case "hinges":
+          updated.hingesUp = normalizeDoorHingeValues(editingHingesUp);
+          updated.hingesDown = normalizeDoorHingeValues(editingHingesDown);
+          break;
+          case "clashing":
+            if (isCabinetryPartType(updated.partType)) {
+              updated.clashing = "";
+              updated.clashLeft = "";
+              updated.clashRight = "";
+              updated.fixedShelf = String(editingFixedShelf ?? "").trim();
+              updated.adjustableShelf = String(editingAdjustableShelf ?? "").trim();
+              updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrilling);
+              updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrilling);
+            } else if (isDoorPartType(updated.partType)) {
+              updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
+              {
+                const split = splitClashing(updated.clashing);
+                updated.clashLeft = split.left;
+                updated.clashRight = split.right;
+              }
+            } else {
+              updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
+              const split = splitClashing(updated.clashing);
+              updated.clashLeft = split.left;
+              updated.clashRight = split.right;
             updated.fixedShelf = "";
             updated.adjustableShelf = "";
             updated.fixedShelfDrilling = "No";
@@ -11542,13 +11958,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     setEditingClashRight("");
     editingFixedShelfRef.current = "";
     editingAdjustableShelfRef.current = "";
-    editingFixedShelfDrillingRef.current = "No";
-    editingAdjustableShelfDrillingRef.current = "No";
-    setEditingFixedShelf("");
-    setEditingAdjustableShelf("");
-    setEditingFixedShelfDrilling("No");
-    setEditingAdjustableShelfDrilling("No");
-    setEditingInfoFocusLine(null);
+      editingFixedShelfDrillingRef.current = "No";
+      editingAdjustableShelfDrillingRef.current = "No";
+      editingHingesUpRef.current = [];
+      editingHingesDownRef.current = [];
+      setEditingFixedShelf("");
+      setEditingAdjustableShelf("");
+      setEditingFixedShelfDrilling("No");
+      setEditingAdjustableShelfDrilling("No");
+      setEditingHingesUp([]);
+      setEditingHingesDown([]);
+      setEditingInfoFocusLine(null);
     await persistCutlistRows(next);
     } finally {
       isCommittingCutlistCellRef.current = false;
@@ -11592,6 +12012,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   useEffect(() => {
     editingAdjustableShelfDrillingRef.current = editingAdjustableShelfDrilling;
   }, [editingAdjustableShelfDrilling]);
+
+  useEffect(() => {
+    editingHingesUpRef.current = editingHingesUp;
+  }, [editingHingesUp]);
+
+  useEffect(() => {
+    editingHingesDownRef.current = editingHingesDown;
+  }, [editingHingesDown]);
 
   const jumpToCutlistFromDerivedRowId = (rowId: string) => {
     const parsed = parseDerivedNestingRowId(rowId);
@@ -13998,6 +14426,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setInitialEditingCellValue(String(row.grainValue ?? "").trim());
       return;
     }
+    if (key === "hinges") {
+      return;
+    }
     setInitialEditingCell({ rowId: row.id, key });
     if (key === "clashing") {
       setInitialEditingCellValue(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")));
@@ -14048,6 +14479,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           break;
         case "partType":
           updated.partType = value;
+          break;
+        case "hinges":
           break;
         case "height":
         case "width":
@@ -16628,7 +17061,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           style={{ borderTopColor: color, borderBottomColor: color }}
                         >
                           <div
-                            className="flex h-[50px] items-center justify-between border-b pl-0"
+                            onClick={() => toggleInitialCutlistGroup(group.partType)}
+                            className="flex h-[50px] cursor-pointer items-center justify-between border-b pl-0"
                             style={{
                               backgroundColor: palette.titleBarBg,
                               color: groupTextColor,
@@ -16665,7 +17099,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <div className="flex h-full items-center">
                               <button
                                 type="button"
-                                onClick={() => toggleInitialCutlistGroup(group.partType)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleInitialCutlistGroup(group.partType);
+                                }}
                                 className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
                                 style={{
                                   borderLeftColor: palette.divider,
@@ -17209,18 +17646,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
                         style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
                       >
-                        {col.key === "clashing" ? (draftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                          {col.key === "clashing" ? (draftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
                       </p>
                     ))}
                   </div>
                   <div className="space-y-1">
-                    {cutlistDraftRows.map((draft) => {
-                      const color = partTypeColors[draft.partType] ?? "#CBD5E1";
-                      const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
-                      const draftFieldBg = lightenHex(color, 0.12);
-                      const draftFieldBorder = darkenHex(color, 0.2);
-                      const draftIsCabinetry = isCabinetryPartType(draft.partType);
-                      const draftBoardAllowsGrain = initialMeasureBoardGrainFor(String(draft.board ?? "").trim());
+                      {cutlistDraftRows.map((draft) => {
+                        const color = partTypeColors[draft.partType] ?? "#CBD5E1";
+                        const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
+                        const draftFieldBg = lightenHex(color, 0.12);
+                        const draftFieldBorder = darkenHex(color, 0.2);
+                        const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                        const draftIsDoor = isDoorPartType(draft.partType);
+                        const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
                       const draftGrainValue = String(draft.grainValue ?? "").trim();
                       const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
                       const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
@@ -17232,11 +17670,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       const depthWarn = warningForCell(draft.id, "depth");
                       const quantityWarn = warningForCell(draft.id, "quantity");
                       return (
-                        <div
-                          key={draft.id}
-                          className="relative grid items-center gap-2 overflow-visible border-y px-1 py-1"
-                          style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
-                        >
+                          <div
+                            key={draft.id}
+                            className={`relative grid gap-2 overflow-visible border-y px-1 py-1 ${draftIsDoor ? "items-start" : "items-center"}`}
+                            style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                          >
                           <button
                             type="button"
                             disabled={productionReadOnly}
@@ -17260,16 +17698,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               onChange={(next) => onDraftBoardChange(draft.id, next)}
                             />
                           </div>
-                          <PartNameSuggestionInput
-                            disabled={productionReadOnly}
-                            title={nameWarn || undefined}
-                            value={draft.name}
-                            options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                            onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
-                            containerStyle={cutlistEntryCellStyle("name")}
-                            className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                            style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                          />
+                          <div
+                            className="relative z-[20] grid gap-[4px] overflow-visible"
+                            style={cutlistEntryCellStyle("name")}
+                          >
+                            <PartNameSuggestionInput
+                              disabled={productionReadOnly}
+                              title={nameWarn || undefined}
+                              value={draft.name}
+                              options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                              onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                              style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                            />
+                            {draftIsDoor ? (
+                              <div className="relative h-[40px] w-0 overflow-visible">
+                                <div className="pointer-events-auto absolute left-0 top-0">
+                                  {renderDoorHingeEditor({
+                                    upValues: normalizeDoorHingeValues(draft.hingesUp),
+                                    downValues: normalizeDoorHingeValues(draft.hingesDown),
+                                  onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
+                                  disabled: productionReadOnly,
+                                  bg: draftFieldBg,
+                                  border: draftFieldBorder,
+                                  text: draftTextColor,
+                                  rowKey: draft.id,
+                                  rowLabel: cutlistRowLabelFor(draft, "Entry"),
+                                  maxValue: maxDoorHingeValueForRowLike(draft),
+                                })}
+                              </div>
+                            </div>
+                            ) : null}
+                          </div>
                           {isDrawerPartType(draft.partType) ? (
                             <div style={cutlistEntryCellStyle("height")}>
                             <DrawerHeightDropdown
@@ -17434,7 +17894,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   text={draftTextColor}
                                   size="default"
                                   getSize={() => ""}
-                                  getLabel={(v) => v}
+                                  getLabel={(v) => v || (draftBoardAllowsGrain ? "Select" : "")}
                                   onChange={(v) =>
                                     updateDraftCutlistRow(draft.id, {
                                       grainValue: v,
@@ -17515,7 +17975,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           style={{ borderTopColor: color, borderBottomColor: color }}
                         >
                           <div
-                            className="flex h-[50px] items-center justify-between border-b pl-0"
+                            onClick={() => toggleCutlistGroup(group.partType)}
+                            className="flex h-[50px] cursor-pointer items-center justify-between border-b pl-0"
                             style={{
                               backgroundColor: palette.titleBarBg,
                               color: groupTextColor,
@@ -17552,7 +18013,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <div className="flex h-full items-center">
                               <button
                                 type="button"
-                                onClick={() => toggleCutlistGroup(group.partType)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleCutlistGroup(group.partType);
+                                }}
                                 className="flex h-[50px] min-w-[52px] items-center justify-center border-l text-current"
                                 style={{
                                   borderLeftColor: palette.divider,
@@ -17593,9 +18057,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 const infoLines = informationLinesFromValue(String(row.information ?? ""));
                                 const rowIsCabinetry = isCabinetryPartType(row.partType);
                                 const rowIsDrawer = isDrawerPartType(row.partType);
+                                const rowIsDoor = isDoorPartType(row.partType);
                                 const rowPendingDelete = pendingGroupRows.includes(row.id);
                                 const cabinetryOpen = Boolean(expandedCabinetryRows[row.id]);
                                 const drawerOpen = Boolean(expandedDrawerRows[row.id]);
+                                const doorOpen = Boolean(expandedDoorRows[row.id]);
                                 const cabinetryPieces = rowIsCabinetry ? buildCabinetryDerivedPieces(row) : [];
                                 const drawerPieces = rowIsDrawer ? buildDrawerDerivedPieces(row) : [];
                                 const spillInfoToSubRows = rowIsCabinetry || rowIsDrawer;
@@ -17641,7 +18107,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       </button>
                                       <button
                                         type="button"
-                                        disabled={!(rowIsCabinetry || rowIsDrawer)}
+                                        disabled={!(rowIsCabinetry || rowIsDrawer || rowIsDoor)}
                                         onClick={() => {
                                           if (rowIsCabinetry) {
                                             toggleCabinetryRowExpand(row.id);
@@ -17649,19 +18115,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           }
                                           if (rowIsDrawer) {
                                             toggleDrawerRowExpand(row.id);
+                                            return;
+                                          }
+                                          if (rowIsDoor) {
+                                            toggleDoorRowExpand(row.id);
                                           }
                                         }}
-                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer) ? "" : "invisible pointer-events-none"}`}
+                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer || rowIsDoor) ? "" : "invisible pointer-events-none"}`}
                                         style={{
                                           backgroundColor: color,
                                           borderColor: darkenHex(color, 0.18),
                                         }}
-                                        title={(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "Collapse pieces" : "Expand pieces"}
+                                        title={(rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "Collapse details" : "Expand details"}
                                       >
                                         <img
                                           src="/Arrow.png"
                                           alt="Expand"
-                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : drawerOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
+                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
                                           style={{ filter: groupTextColor === "#FFFFFF" ? "invert(1) brightness(2)" : "none" }}
                                         />
                                       </button>
@@ -18113,7 +18583,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   )}
                                                 </div>
                                               )
-                                              : row.clashing
+                                              : rowIsDoor
+                                                ? row.clashing
+                                                : row.clashing
                                           )}
                                         </td>
                                       );
@@ -18353,6 +18825,73 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     })}
                                   </tr>
                                 ))}
+                                {rowIsDoor && doorOpen && (
+                                  <tr
+                                    key={`${row.id}_door_hinges`}
+                                    data-cutlist-subrow-parent={row.id}
+                                    data-cutlist-subrow-key="door_hinges"
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
+                                    {showRoomColumnInList && (
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                        {row.room}
+                                      </td>
+                                    )}
+                                    {cutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      const alignClass = cutlistCellAlignClass(key);
+                                      const editingDoorHinges = isEditing(row.id, "hinges");
+                                      return (
+                                        <td
+                                          key={`${row.id}_door_hinges_${col.key}`}
+                                          className={`px-2 py-[3px] align-middle text-[11px] ${alignClass}`}
+                                          onDoubleClick={() => {
+                                            if (col.key !== "name") return;
+                                            startCellEdit(row, "hinges");
+                                          }}
+                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                        >
+                                          {col.key === "name"
+                                            ? editingDoorHinges
+                                              ? renderDoorHingeEditor({
+                                                  upValues: editingHingesUp,
+                                                  downValues: editingHingesDown,
+                                                  onChange: (direction, index, next) => {
+                                                    if (direction === "up") {
+                                                      const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
+                                                      editingHingesUpRef.current = values;
+                                                      setEditingHingesUp(values);
+                                                      return;
+                                                    }
+                                                    const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
+                                                    editingHingesDownRef.current = values;
+                                                    setEditingHingesDown(values);
+                                                  },
+                                                  disabled: productionReadOnly,
+                                                  bg: "#FFFFFF",
+                                                  border: "#94A3B8",
+                                                  text: "#0F172A",
+                                                  rowKey: row.id,
+                                                  rowLabel: cutlistRowLabelFor(row, "Entry"),
+                                                  maxValue: maxDoorHingeValueForRowLike(row),
+                                                  onBlur: () => {
+                                                    window.setTimeout(() => {
+                                                      void commitCellEdit();
+                                                    }, 0);
+                                                  },
+                                                })
+                                              : renderDoorHingeDisplay(
+                                                  normalizeDoorHingeValues(row.hingesUp),
+                                                  normalizeDoorHingeValues(row.hingesDown),
+                                                )
+                                            : ""}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                )}
                                 </Fragment>
                                 );
                               })}
@@ -20793,7 +21332,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </p>
                             ))}
                           </div>
-                          <div className="grid gap-2 border-y px-1 py-1" style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
+                            <div className={`grid gap-2 border-y px-1 py-1 ${isDoorPartType(cutlistEntry.partType) ? "items-start" : ""}`} style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                             <p></p>
                             <div style={cutlistEntryCellStyle("board")}>
                               <BoardPillDropdown
@@ -20810,16 +21349,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 onChange={onCutlistEntryBoardChange}
                               />
                             </div>
-                            <PartNameSuggestionInput
-                              disabled={productionReadOnly}
-                              title={warningForCell("single", "name") || undefined}
-                              value={cutlistEntry.name}
-                              options={productionPartNameSuggestionsForRoom(cutlistEntryRoom, cutlistEntry.name)}
-                              onChange={(next) => setCutlistEntry((prev) => ({ ...prev, name: next }))}
-                              containerStyle={cutlistEntryCellStyle("name")}
-                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
-                              style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
-                            />
+                            <div
+                              className="relative z-[20] grid gap-[4px] overflow-visible"
+                              style={cutlistEntryCellStyle("name")}
+                            >
+                              <PartNameSuggestionInput
+                                disabled={productionReadOnly}
+                                title={warningForCell("single", "name") || undefined}
+                                value={cutlistEntry.name}
+                                options={productionPartNameSuggestionsForRoom(cutlistEntryRoom, cutlistEntry.name)}
+                                onChange={(next) => setCutlistEntry((prev) => ({ ...prev, name: next }))}
+                                className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
+                                style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
+                              />
+                              {isDoorPartType(cutlistEntry.partType) ? (
+                                <div className="relative h-[40px] w-0 overflow-visible">
+                                  <div className="pointer-events-auto absolute left-0 top-0">
+                                    {renderDoorHingeEditor({
+                                      upValues: normalizeDoorHingeValues(cutlistEntry.hingesUp),
+                                      downValues: normalizeDoorHingeValues(cutlistEntry.hingesDown),
+                                      onChange: onCutlistEntryHingeChange,
+                                      disabled: productionReadOnly,
+                                      bg: activeCutlistEntryFieldBg,
+                                      border: activeCutlistEntryFieldBorder,
+                                      text: activeCutlistEntryTextColor,
+                                      rowKey: "single",
+                                      rowLabel: cutlistRowLabelFor(cutlistEntry as Partial<CutlistRow>, "Entry"),
+                                      maxValue: maxDoorHingeValueForRowLike(cutlistEntry),
+                                    })}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
                             {isDrawerPartType(cutlistEntry.partType) ? (
                               <div style={cutlistEntryCellStyle("height")}>
                                 <DrawerHeightDropdown
@@ -20841,34 +21402,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
                             <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
                             <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
-                            <div style={cutlistEntrySubCellStyle("clashing", 0)}>
-                              <BoardPillDropdown
-                                value={cutlistEntry.clashLeft ?? ""}
-                                options={CLASH_LEFT_OPTIONS}
-                                disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)}
-                                bg={activeCutlistEntryFieldBg}
-                                border={activeCutlistEntryFieldBorder}
-                                text={activeCutlistEntryTextColor}
-                                size="default"
-                                getSize={() => ""}
-                                getLabel={(v) => v}
-                                onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashLeft: v }))}
-                              />
-                            </div>
-                            <div style={cutlistEntrySubCellStyle("clashing", 1)}>
-                              <BoardPillDropdown
-                                value={cutlistEntry.clashRight ?? ""}
-                                options={CLASH_RIGHT_OPTIONS}
-                                disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)}
-                                bg={activeCutlistEntryFieldBg}
-                                border={activeCutlistEntryFieldBorder}
-                                text={activeCutlistEntryTextColor}
-                                size="default"
-                                getSize={() => ""}
-                                getLabel={(v) => v}
-                                onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashRight: v }))}
-                              />
-                            </div>
+                            <>
+                              <div style={cutlistEntrySubCellStyle("clashing", 0)}>
+                                <BoardPillDropdown
+                                  value={cutlistEntry.clashLeft ?? ""}
+                                  options={CLASH_LEFT_OPTIONS}
+                                  disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)}
+                                  bg={activeCutlistEntryFieldBg}
+                                  border={activeCutlistEntryFieldBorder}
+                                  text={activeCutlistEntryTextColor}
+                                  size="default"
+                                  getSize={() => ""}
+                                  getLabel={(v) => v}
+                                  onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashLeft: v }))}
+                                />
+                              </div>
+                              <div style={cutlistEntrySubCellStyle("clashing", 1)}>
+                                <BoardPillDropdown
+                                  value={cutlistEntry.clashRight ?? ""}
+                                  options={CLASH_RIGHT_OPTIONS}
+                                  disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)}
+                                  bg={activeCutlistEntryFieldBg}
+                                  border={activeCutlistEntryFieldBorder}
+                                  text={activeCutlistEntryTextColor}
+                                  size="default"
+                                  getSize={() => ""}
+                                  getLabel={(v) => v}
+                                  onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashRight: v }))}
+                                />
+                              </div>
+                            </>
                             <div className="grid gap-[2px]" style={cutlistEntryCellStyle("information")}>
                               {informationLinesFromValue(cutlistEntry.information).map((line, idx) => (
                                 <div key={`entry_info_${idx}`} className="flex items-center gap-[3px]">
@@ -20895,31 +21458,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </div>
                               ))}
                             </div>
-                            {showCutlistGrainColumn && (
-                              boardGrainFor(String(cutlistEntry.board ?? "").trim()) ? (
-                                <div style={cutlistEntryCellStyle("grain")}>
-                                  <BoardPillDropdown
-                                    value={String(cutlistEntry.grainValue ?? "")}
-                                    options={grainDimensionOptionsForRow(cutlistEntry)}
-                                    disabled={productionReadOnly}
-                                    bg={activeCutlistEntryFieldBg}
-                                    border={activeCutlistEntryFieldBorder}
-                                    text={activeCutlistEntryTextColor}
-                                    size="default"
-                                    getSize={() => ""}
-                                    getLabel={(v) => v}
-                                    onChange={(v) =>
-                                      setCutlistEntry((prev) => ({
-                                        ...prev,
-                                        grainValue: v,
-                                        grain: Boolean(String(v).trim()),
-                                      }))
-                                    }
-                                  />
-                                </div>
-                              ) : (
-                                <div style={cutlistEntryCellStyle("grain")} />
-                              )
+                            {showSingleCutlistEntryGrain && (
+                              <div style={cutlistEntryCellStyle("grain")}>
+                                <BoardPillDropdown
+                                  value={String(cutlistEntry.grainValue ?? "")}
+                                  options={selectedCutlistEntryBoardAllowsGrain ? grainDimensionOptionsForRow(cutlistEntry) : []}
+                                  disabled={productionReadOnly}
+                                  bg={activeCutlistEntryFieldBg}
+                                  border={activeCutlistEntryFieldBorder}
+                                  text={activeCutlistEntryTextColor}
+                                  size="default"
+                                  getSize={() => ""}
+                                  getLabel={(v) => v || (selectedCutlistEntryBoardAllowsGrain ? "Select" : "")}
+                                  onChange={(v) =>
+                                    setCutlistEntry((prev) => ({
+                                      ...prev,
+                                      grainValue: v,
+                                      grain: Boolean(String(v).trim()),
+                                    }))
+                                  }
+                                />
+                              </div>
                             )}
                           </div>
                           <button
@@ -20971,7 +21530,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 )}
                                 {cutlistListColumnDefs.map((col) => (
                                   (() => {
-                                    const headerLabel = col.key === "clashing" && flatListShowsShelvesHeader ? "Shelves" : col.label;
+                                    const headerLabel =
+                                      col.key === "clashing" && flatListShowsShelvesHeader ? "Shelves" : col.label;
                                     return (
                                   <th
                                     key={col.label}
@@ -21129,7 +21689,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         );
                                       }
                                     if (col.key === "grain") {
-                                        const rowBoardAllowsGrain = boardGrainFor(String(row.board ?? "").trim());
+                                        const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
                                         return (
                                           <td
                                             key={`${row.id}_${col.label}`}
@@ -21164,6 +21724,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (col.key === "clashing") {
                                         const rowIsCabinetry = isCabinetryPartType(row.partType);
+                                        const rowIsDoor = isDoorPartType(row.partType);
                                         return (
                                           <td
                                             key={`${row.id}_${col.label}`}
@@ -21306,6 +21867,62 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     )}
                                                   </div>
                                                 </div>
+                                              ) : rowIsDoor ? (
+                                                <div className="grid content-start gap-[4px] text-left">
+                                                  <div className="grid grid-cols-2 gap-1">
+                                                    <BoardPillDropdown
+                                                      value={editingClashLeft}
+                                                      options={CLASH_LEFT_OPTIONS}
+                                                      disabled={productionReadOnly || isDrawerPartType(row.partType)}
+                                                      bg="#FFFFFF"
+                                                      border="#94A3B8"
+                                                      text="#0F172A"
+                                                      size="compact"
+                                                      getSize={() => ""}
+                                                      getLabel={(v) => v}
+                                                      onChange={(next) => setEditingClashLeft(next)}
+                                                    />
+                                                    <BoardPillDropdown
+                                                      value={editingClashRight}
+                                                      options={CLASH_RIGHT_OPTIONS}
+                                                      disabled={productionReadOnly || isDrawerPartType(row.partType)}
+                                                      bg="#FFFFFF"
+                                                      border="#94A3B8"
+                                                      text="#0F172A"
+                                                      size="compact"
+                                                      getSize={() => ""}
+                                                      getLabel={(v) => v}
+                                                      onChange={(next) => setEditingClashRight(next)}
+                                                    />
+                                                  </div>
+                                                  {renderDoorHingeEditor({
+                                                    upValues: editingHingesUp,
+                                                    downValues: editingHingesDown,
+                                                    onChange: (direction, index, next) => {
+                                                      if (direction === "up") {
+                                                        const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
+                                                        editingHingesUpRef.current = values;
+                                                        setEditingHingesUp(values);
+                                                        return;
+                                                      }
+                                                      const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
+                                                      editingHingesDownRef.current = values;
+                                                      setEditingHingesDown(values);
+                                                    },
+                                                    disabled: productionReadOnly,
+                                                    bg: "#FFFFFF",
+                                                    border: "#94A3B8",
+                                                    text: "#0F172A",
+                                                    rowKey: row.id,
+                                                    rowLabel: cutlistRowLabelFor(row, "Entry"),
+                                                    maxValue: maxDoorHingeValueForRowLike(row),
+                                                    onBlur: () => {
+                                                      window.setTimeout(() => {
+                                                        void commitCellEdit();
+                                                      }, 0);
+                                                    },
+                                                  })}
+                                                </div>
                                               ) : (
                                               <div className="grid grid-cols-2 gap-1">
                                                   <BoardPillDropdown
@@ -21369,6 +21986,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       </span>
                                                       <span>{normalizeDrillingValue(row.adjustableShelfDrilling)}</span>
                                                     </div>
+                                                  )}
+                                                </div>
+                                              ) : rowIsDoor ? (
+                                                <div className="grid content-start gap-[4px] text-left">
+                                                  <div>{row.clashing}</div>
+                                                  {renderDoorHingeDisplay(
+                                                    normalizeDoorHingeValues(row.hingesUp),
+                                                    normalizeDoorHingeValues(row.hingesDown),
                                                   )}
                                                 </div>
                                               ) : (

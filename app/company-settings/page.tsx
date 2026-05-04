@@ -47,6 +47,7 @@ type PartTypeRow = {
   color: string;
   cabinetry: boolean;
   drawer: boolean;
+  door: boolean;
   autoClashLeft: string;
   autoClashRight: string;
   initialMeasure: boolean;
@@ -600,12 +601,12 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
 
 function normalizePartTypes(raw: unknown): PartTypeRow[] {
   const defaults: PartTypeRow[] = [
-    { name: "Front", color: "#F2D57A", cabinetry: false, drawer: false, autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
-    { name: "Panel", color: "#C6E8AE", cabinetry: false, drawer: false, autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
-    { name: "Extra", color: "#B7A4EB", cabinetry: false, drawer: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
-    { name: "Drawer", color: "#B8D8F8", cabinetry: false, drawer: true, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
-    { name: "Cabinet", color: "#4B5563", cabinetry: true, drawer: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
-    { name: "Special Panel", color: "#BF1D1D", cabinetry: false, drawer: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: false },
+    { name: "Front", color: "#F2D57A", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
+    { name: "Panel", color: "#C6E8AE", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
+    { name: "Extra", color: "#B7A4EB", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Drawer", color: "#B8D8F8", cabinetry: false, drawer: true, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Cabinet", color: "#4B5563", cabinetry: true, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Special Panel", color: "#BF1D1D", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: false },
   ];
   if (!Array.isArray(raw)) return defaults;
   const out = raw
@@ -618,6 +619,7 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
         color: toStr(row.color, "#7D99B3"),
         cabinetry: Boolean(row.cabinetry ?? row.isCabinetry ?? false),
         drawer: Boolean(row.drawer ?? row.isDrawer ?? false),
+        door: Boolean(row.door ?? row.isDoor ?? false),
         autoClashLeft: toStr(row.autoClashLeft ?? row.clashLeft),
         autoClashRight: toStr(row.autoClashRight ?? row.clashRight),
         initialMeasure: Boolean(row.initialMeasure ?? row.inInitialMeasure ?? false),
@@ -2230,16 +2232,17 @@ export default function CompanySettingsPage() {
         .map((row) => {
           const name = toStr(row.name);
           if (!name) return null;
-          return {
-            name,
-            color: toStr(row.color, "#7D99B3"),
-            cabinetry: Boolean(row.cabinetry),
-            drawer: Boolean(row.drawer),
-            autoClashLeft: toStr(row.autoClashLeft),
-            autoClashRight: toStr(row.autoClashRight),
-            initialMeasure: Boolean(row.initialMeasure),
-            inCutlists: Boolean(row.inCutlists),
-            inNesting: Boolean(row.inNesting),
+            return {
+              name,
+              color: toStr(row.color, "#7D99B3"),
+              cabinetry: Boolean(row.cabinetry),
+              drawer: Boolean(row.drawer),
+              door: Boolean(row.door),
+              autoClashLeft: toStr(row.autoClashLeft),
+              autoClashRight: toStr(row.autoClashRight),
+              initialMeasure: Boolean(row.initialMeasure),
+              inCutlists: Boolean(row.inCutlists),
+              inNesting: Boolean(row.inNesting),
           };
         })
         .filter(Boolean),
@@ -3312,19 +3315,20 @@ export default function CompanySettingsPage() {
                   <div className="xl:col-span-2">
                     <Panel title="Part Types">
                       <div className="space-y-2 text-[12px]">
-                        <div className="grid grid-cols-[26px_1.2fr_90px_80px_80px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                        <div className="grid grid-cols-[26px_1.2fr_90px_80px_80px_80px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
                           <p></p>
                           <p>Name</p>
                           <p>Color</p>
                           <p>Cabinetry</p>
                           <p>Drawer</p>
+                          <p>Doors</p>
                           <p className="text-center">Autoclash</p>
                           <p>Initial Measure</p>
                           <p>Incl in Cutlists</p>
                           <p>Incl in Nesting</p>
                         </div>
                         {partTypes.map((row, idx) => (
-                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[26px_1.2fr_90px_80px_80px_140px_110px_110px_110px] items-center gap-2">
+                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[26px_1.2fr_90px_80px_80px_80px_140px_110px_110px_110px] items-center gap-2">
                             <button onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
                             <input value={row.name} onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
                             <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#7D99B3"}>
@@ -3338,6 +3342,7 @@ export default function CompanySettingsPage() {
                             </label>
                             <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.cabinetry} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, cabinetry: !v.cabinetry } : v)))} /></label>
                             <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.drawer} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, drawer: !v.drawer } : v)))} /></label>
+                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.door} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, door: !v.door } : v)))} /></label>
                             <div className="grid grid-cols-2 gap-1">
                               <select
                                 value={row.autoClashLeft}
@@ -3365,7 +3370,7 @@ export default function CompanySettingsPage() {
                             <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.inNesting} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inNesting: !v.inNesting } : v)))} /></label>
                           </div>
                         ))}
-                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", cabinetry: false, drawer: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Part Type</button>
+                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Part Type</button>
                       </div>
                     </Panel>
                   </div>

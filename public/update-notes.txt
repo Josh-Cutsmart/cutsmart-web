@@ -1,9 +1,17 @@
 Version: v0.2.3
 
 whatsNew: [
-<u><b>General:</u></b>
--
+<u><b>Production Cutlist:</u></b>
+- Added hinges setting for "Door" part types.
+- Fixed grain drop down not showing up for grained board.
+- Added a safeguard for hinge positon against dimension sizes.
+- The entire bar at the top of the cutlist list is now clickable for collapse mode.
 
+<u><b>Initial Measure:</u></b>
+- Fixed Cutlist list rows not persisting after being entered.
+
+<u><b>Company Settings:</u></b>
+- Added a tickbox for "Doors" part type which gives hinges option in the production cutlist.
 
 ]
 
