@@ -70,7 +70,15 @@ type ZapierLeadsSettings = {
   webhookSecret: string;
   fieldLayout: LeadFieldLayoutRow[];
 };
-type LeadProjectFieldTarget = "" | "clientName" | "clientPhone" | "clientEmail" | "projectAddress" | "projectNotes";
+type LeadProjectFieldTarget =
+  | ""
+  | "clientName"
+  | "clientFirstName"
+  | "clientLastName"
+  | "clientPhone"
+  | "clientEmail"
+  | "projectAddress"
+  | "projectNotes";
 type LeadFieldLayoutRow = {
   key: string;
   label: string;
@@ -83,6 +91,8 @@ type LeadFieldLayoutRow = {
 const LEAD_PROJECT_FIELD_TARGET_OPTIONS: Array<{ value: LeadProjectFieldTarget; label: string }> = [
   { value: "", label: "Not Used" },
   { value: "clientName", label: "Client Name" },
+  { value: "clientFirstName", label: "Client First Name" },
+  { value: "clientLastName", label: "Client Last Name" },
   { value: "clientPhone", label: "Client Phone" },
   { value: "clientEmail", label: "Client Email" },
   { value: "projectAddress", label: "Project Address" },
@@ -101,6 +111,7 @@ type PendingOwnerTransferState = {
 const desktopPermissionKeys = [
   "company.*",
   "company.dashboard.view",
+  "company.clients",
   "leads.*",
   "projects.create",
   "projects.create.other",
@@ -127,6 +138,7 @@ const desktopPermissionKeys = [
 const permissionLabels: Record<string, string> = {
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
+  "company.clients": "company.clients - Access Client Profiles",
   "leads.*": "leads.* - Access Leads and Deleted Leads",
   "projects.create": "projects.create - Create Projects",
   "projects.create.other": "projects.create.other - Change Project Creator / Handover Project",
@@ -169,6 +181,8 @@ const ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT = "cutsmart:zapier-leads-visibility-
 const LEAD_PROJECT_FIELD_TARGET_VALUES = new Set<LeadProjectFieldTarget>([
   "",
   "clientName",
+  "clientFirstName",
+  "clientLastName",
   "clientPhone",
   "clientEmail",
   "projectAddress",

@@ -1,17 +1,15 @@
-Version: v0.2.4
+Version: v0.2.5
 
 whatsNew: [
+<u><b>General:</u></b>
+- Added "Clients" Tab - an automatic phonebook of exisiting clients with client details and more.
+- Clients used when creating a project now save in memory.
+
 <u><b>Production Cutlist:</u></b>
-- Added hinges setting for "Door" part types.
-- Fixed grain drop down not showing up for grained board.
-- Added a safeguard for hinge positon against dimension sizes.
-- The entire bar at the top of the cutlist list is now clickable for collapse mode.
+- Fixed Clashing drop down not committing edits in the Cutlist List
+- Fixed Cabinetry row showing up in Cutlist Entry on every reload.
 
-<u><b>Initial Measure:</u></b>
-- Fixed Cutlist list rows not persisting after being entered.
-
-<u><b>Company Settings:</u></b>
-- Added a tickbox for "Doors" part type which gives hinges option in the production cutlist.
-
+<u><b>New Project:</u></b>
+- Now has "First" and "Last" Name fields.
 ]
 

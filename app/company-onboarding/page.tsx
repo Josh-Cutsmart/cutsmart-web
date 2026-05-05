@@ -36,6 +36,7 @@ const DEFAULT_COMPANY_ROLE_DEFS = [
     permissions: {
       "company.*": true,
       "company.dashboard.view": true,
+      "company.clients": true,
       "leads.*": true,
       "projects.create": true,
       "projects.view": true,
@@ -64,6 +65,7 @@ const DEFAULT_COMPANY_ROLE_DEFS = [
     permissions: {
       "company.*": true,
       "company.dashboard.view": true,
+      "company.clients": true,
       "leads.*": true,
       "projects.create": true,
       "projects.view": true,
@@ -393,6 +395,20 @@ export default function CompanyOnboardingPage() {
         updatedAt: serverTimestamp(),
         updatedAtIso: new Date().toISOString(),
       }, { merge: true });
+
+      await setDoc(
+        doc(db, "companies", companyId, "clients", "__meta"),
+        {
+          id: "__meta",
+          companyId,
+          type: "clients-meta",
+          createdAt: serverTimestamp(),
+          createdAtIso: new Date().toISOString(),
+          updatedAt: serverTimestamp(),
+          updatedAtIso: new Date().toISOString(),
+        },
+        { merge: true },
+      );
 
       await setDoc(doc(db, "users", user.uid), {
         email: user.email || "",

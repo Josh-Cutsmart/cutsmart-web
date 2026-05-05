@@ -201,6 +201,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
   return {
     id,
     companyId: String(data.companyId ?? ""),
+    clientId: String(data.clientId ?? "").trim() || undefined,
     name: String(data.name ?? "Untitled Project"),
     customer: customer || "Unknown Customer",
     createdAt: toIsoString(data.createdAtIso ?? data.createdAt, new Date().toISOString()),
@@ -1175,14 +1176,29 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
     return false;
   }
 
+  const nowIso = new Date().toISOString();
+  const completedStatus = isCompletedClientProjectStatus(newStatus);
+  const nextProjectSnapshot: Project = {
+    ...project,
+    statusLabel: newStatus,
+    status: toProjectStatus(newStatus),
+    updatedAt: nowIso,
+  };
+
   try {
     const topLevelRef = doc(db, "projects", project.id);
     const topLevelSnap = await getDoc(topLevelRef);
     if (topLevelSnap.exists()) {
       await updateDoc(topLevelRef, {
         status: newStatus,
-        updatedAtIso: new Date().toISOString(),
+        updatedAtIso: nowIso,
       });
+      if (normalizeClientEmail(project.clientEmail)) {
+        await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
+          countCompletedProject: completedStatus,
+          syncOnly: false,
+        });
+      }
       return true;
     }
   } catch {
@@ -1206,8 +1222,14 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
 
     await updateDoc(jobsSnap.docs[0].ref, {
       status: newStatus,
-      updatedAtIso: new Date().toISOString(),
+      updatedAtIso: nowIso,
     });
+    if (normalizeClientEmail(project.clientEmail)) {
+      await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
+        countCompletedProject: completedStatus,
+        syncOnly: false,
+      });
+    }
     return true;
   } catch {
     return false;
@@ -1726,6 +1748,602 @@ export async function fetchCompanyDoc(companyId: string): Promise<Record<string,
   } catch {
     return null;
   }
+}
+
+export type CompanyClientProjectHistoryRow = {
+  projectId: string;
+  projectName: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+  statusLabel: string;
+  customer: string;
+  clientEmail: string;
+  clientPhone: string;
+  clientAddress: string;
+};
+
+export type CompanyClientRow = {
+  id: string;
+  companyId: string;
+  name: string;
+  email: string;
+  emailNormalized: string;
+  phone: string;
+  address: string;
+  notes: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+  firstProjectAtIso: string;
+  lastProjectAtIso: string;
+  lastProjectId: string;
+  projectCount: number;
+  history: CompanyClientProjectHistoryRow[];
+};
+
+export async function fetchCompanyActiveProjectIds(companyId: string): Promise<Set<string>> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return new Set<string>();
+  const ids = new Set<string>();
+  try {
+    const projects = await collectCompanyProjectsForClients(cid);
+    for (const project of projects) {
+      if (String(project.id || "").trim()) {
+        ids.add(String(project.id || "").trim());
+      }
+    }
+  } catch {
+    // ignore and return best-effort set
+  }
+  return ids;
+}
+
+export function normalizeClientEmail(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeClientPhone(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/\D+/g, "");
+}
+
+function normalizeClientNameKey(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function normalizeClientAddressKey(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isCompletedClientProjectStatus(value: unknown): boolean {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  return normalized === "complete" || normalized === "completed";
+}
+
+function buildCompanyClientIdFromEmail(emailNormalized: string): string {
+  const safe = String(emailNormalized || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return `client_${safe || "unknown"}`;
+}
+
+function buildCompanyClientMatchKeyFromProject(project: Project): string {
+  const emailNormalized = normalizeClientEmail(project.clientEmail);
+  if (emailNormalized) {
+    return buildCompanyClientIdFromEmail(emailNormalized);
+  }
+  const phoneNormalized = normalizeClientPhone(project.clientPhone);
+  if (phoneNormalized) {
+    return `client_phone_${phoneNormalized}`;
+  }
+  const nameKey = normalizeClientNameKey(project.customer);
+  const addressKey = normalizeClientAddressKey(project.clientAddress);
+  if (nameKey && addressKey) {
+    return `client_${nameKey}_${addressKey}`;
+  }
+  if (nameKey) {
+    return `client_${nameKey}`;
+  }
+  return `client_${String(project.id || "unknown").trim().toLowerCase()}`;
+}
+
+function createCompanyClientUid(): string {
+  return `client_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildCompanyClientProjectHistory(project: Project): CompanyClientProjectHistoryRow {
+  return {
+    projectId: String(project.id || "").trim(),
+    projectName: String(project.name || "").trim() || "Untitled Project",
+    createdAtIso: String(project.createdAt || "").trim(),
+    updatedAtIso: String(project.updatedAt || project.createdAt || "").trim(),
+    statusLabel: String(project.statusLabel || project.status || "").trim() || "New",
+    customer: String(project.customer || "").trim(),
+    clientEmail: String(project.clientEmail || "").trim(),
+    clientPhone: String(project.clientPhone || "").trim(),
+    clientAddress: String(project.clientAddress || "").trim(),
+  };
+}
+
+function buildCompanyClientRowFromProject(project: Project): CompanyClientRow {
+  const emailNormalized = normalizeClientEmail(project.clientEmail);
+  return {
+    id: String(project.clientId || buildCompanyClientMatchKeyFromProject(project)).trim(),
+    companyId: String(project.companyId || "").trim(),
+    name: String(project.customer || "").trim(),
+    email: String(project.clientEmail || "").trim(),
+    emailNormalized,
+    phone: String(project.clientPhone || "").trim(),
+    address: String(project.clientAddress || "").trim(),
+    notes: String(project.notes || "").trim(),
+    createdAtIso: String(project.createdAt || project.updatedAt || "").trim(),
+    updatedAtIso: String(project.updatedAt || project.createdAt || "").trim(),
+    firstProjectAtIso: String(project.createdAt || project.updatedAt || "").trim(),
+    lastProjectAtIso: String(project.updatedAt || project.createdAt || "").trim(),
+    lastProjectId: String(project.id || "").trim(),
+    projectCount: isCompletedClientProjectStatus(project.statusLabel || project.status) ? 1 : 0,
+    history: isCompletedClientProjectStatus(project.statusLabel || project.status)
+      ? [buildCompanyClientProjectHistory(project)]
+      : [],
+  };
+}
+
+function projectMatchesClientRow(project: Project, row: CompanyClientRow): boolean {
+  const projectEmail = normalizeClientEmail(project.clientEmail);
+  const rowEmail = normalizeClientEmail(row.emailNormalized || row.email);
+  if (projectEmail && rowEmail) {
+    return projectEmail === rowEmail;
+  }
+
+  const projectPhone = normalizeClientPhone(project.clientPhone);
+  const rowPhone = normalizeClientPhone(row.phone);
+  if (projectPhone && rowPhone) {
+    return projectPhone === rowPhone;
+  }
+
+  const projectName = normalizeClientNameKey(project.customer);
+  const rowName = normalizeClientNameKey(row.name);
+  const projectAddress = normalizeClientAddressKey(project.clientAddress);
+  const rowAddress = normalizeClientAddressKey(row.address);
+  if (projectName && rowName && projectAddress && rowAddress) {
+    return projectName === rowName && projectAddress === rowAddress;
+  }
+  if (projectName && rowName) {
+    return projectName === rowName;
+  }
+  return false;
+}
+
+async function findMatchingCompanyClientRow(companyId: string, project: Project): Promise<CompanyClientRow | null> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return null;
+  try {
+    const snap = await getDocs(collection(db, "companies", cid, "clients"));
+    for (const docSnap of snap.docs) {
+      if (docSnap.id === "__meta") continue;
+      const row = buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
+      if (projectMatchesClientRow(project, row)) {
+        return row;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function findMatchingClientIdInMap(
+  merged: Map<string, CompanyClientRow>,
+  project: Project,
+): string | null {
+  for (const [rowId, row] of merged.entries()) {
+    if (projectMatchesClientRow(project, row)) {
+      return rowId;
+    }
+  }
+  return null;
+}
+
+function pickEarlierIso(...values: Array<string | undefined>): string {
+  const valid = values
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && Number.isFinite(Date.parse(value)));
+  if (!valid.length) return "";
+  return valid.sort((a, b) => Date.parse(a) - Date.parse(b))[0] || "";
+}
+
+function pickLaterIso(...values: Array<string | undefined>): string {
+  const valid = values
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && Number.isFinite(Date.parse(value)));
+  if (!valid.length) return "";
+  return valid.sort((a, b) => Date.parse(b) - Date.parse(a))[0] || "";
+}
+
+function buildCompanyClientRowFromDoc(
+  companyId: string,
+  id: string,
+  data: Record<string, unknown>,
+): CompanyClientRow {
+  const rawHistory = Array.isArray(data.history) ? (data.history as Record<string, unknown>[]) : [];
+  return {
+    id: String(id || "").trim(),
+    companyId: String(companyId || "").trim(),
+    name: String(data.name ?? data.customer ?? "").trim(),
+    email: String(data.email ?? "").trim(),
+    emailNormalized: normalizeClientEmail(data.emailNormalized ?? data.email),
+    phone: String(data.phone ?? data.clientPhone ?? "").trim(),
+    address: String(data.address ?? data.clientAddress ?? "").trim(),
+    notes: String(data.notes ?? "").trim(),
+    createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+    updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
+    firstProjectAtIso: toIsoString(data.firstProjectAtIso ?? data.firstProjectAt, ""),
+    lastProjectAtIso: toIsoString(data.lastProjectAtIso ?? data.lastProjectAt, ""),
+    lastProjectId: String(data.lastProjectId ?? "").trim(),
+    projectCount: Number(data.projectCount ?? 0) || 0,
+    history: rawHistory.map((row) => ({
+      projectId: String(row.projectId ?? "").trim(),
+      projectName: String(row.projectName ?? "").trim(),
+      createdAtIso: toIsoString(row.createdAtIso ?? row.createdAt, ""),
+      updatedAtIso: toIsoString(row.updatedAtIso ?? row.updatedAt, ""),
+      statusLabel: String(row.statusLabel ?? "").trim(),
+      customer: String(row.customer ?? "").trim(),
+      clientEmail: String(row.clientEmail ?? "").trim(),
+      clientPhone: String(row.clientPhone ?? "").trim(),
+      clientAddress: String(row.clientAddress ?? "").trim(),
+    })),
+  };
+}
+
+async function ensureCompanyClientsSection(companyId: string): Promise<void> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return;
+  const nowIso = new Date().toISOString();
+  await setDoc(
+    doc(db, "companies", cid, "clients", "__meta"),
+    {
+      id: "__meta",
+      companyId: cid,
+      type: "clients-meta",
+      updatedAt: serverTimestamp(),
+      updatedAtIso: nowIso,
+      createdAt: serverTimestamp(),
+      createdAtIso: nowIso,
+    },
+    { merge: true },
+  );
+}
+
+async function collectCompanyProjectsForClients(companyId: string): Promise<Project[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return [];
+  const projectDocsById = new Map<string, Record<string, unknown>>();
+
+  try {
+    const jobsSnap = await getDocs(collection(db, "companies", cid, "jobs"));
+    for (const docSnap of jobsSnap.docs) {
+      projectDocsById.set(String(docSnap.id || "").trim(), (docSnap.data() ?? {}) as Record<string, unknown>);
+    }
+  } catch {
+    // Keep going so client rows can still derive from any other available project source.
+  }
+
+  try {
+    const topLevelProjectsSnap = await getDocs(query(collection(db, "projects"), where("companyId", "==", cid), limit(500)));
+    for (const docSnap of topLevelProjectsSnap.docs) {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const projectId = String(data.id ?? docSnap.id).trim();
+      if (!projectId || projectDocsById.has(projectId)) continue;
+      projectDocsById.set(projectId, data);
+    }
+  } catch {
+    // Legacy mirror only. Company jobs should still be enough to populate Clients.
+  }
+
+  const projects: Project[] = [];
+  for (const [docId, rawData] of projectDocsById.entries()) {
+    const project = normalizeProject(docId, rawData);
+    project.companyId = cid;
+    if (
+      !normalizeClientEmail(project.clientEmail) &&
+      !normalizeClientPhone(project.clientPhone) &&
+      !String(project.customer || "").trim()
+    ) {
+      continue;
+    }
+    projects.push(project);
+  }
+  return projects;
+}
+
+async function syncCompanyClientProfileFromProjectInternal(
+  project: Project,
+  options?: { countCompletedProject?: boolean; syncOnly?: boolean },
+): Promise<{ ok: boolean; clientId?: string }> {
+  const cid = String(project?.companyId || "").trim();
+  const email = String(project?.clientEmail || "").trim();
+  const emailNormalized = normalizeClientEmail(email);
+  const phoneNormalized = normalizeClientPhone(project?.clientPhone);
+  const customerName = String(project?.customer || "").trim();
+  if (!db || !cid || (!emailNormalized && !phoneNormalized && !customerName)) {
+    return { ok: false };
+  }
+
+    const nowIso = new Date().toISOString();
+
+    try {
+      await ensureCompanyClientsSection(cid);
+      const matchedRow =
+        String(project.clientId || "").trim()
+          ? null
+          : await findMatchingCompanyClientRow(cid, project);
+      const clientId = String(project.clientId || matchedRow?.id || createCompanyClientUid()).trim();
+      const clientRef = doc(db, "companies", cid, "clients", clientId);
+      const existingSnap = await getDoc(clientRef);
+      const existing = existingSnap.exists() ? ((existingSnap.data() ?? {}) as Record<string, unknown>) : null;
+      const currentRow = existing
+        ? buildCompanyClientRowFromDoc(cid, clientId, existing)
+        : matchedRow;
+    const currentHistory = currentRow?.history.slice() ?? [];
+    const currentCompletedIds = Array.isArray(existing?.completedProjectIds)
+      ? (existing?.completedProjectIds as unknown[]).map((value) => String(value ?? "").trim()).filter(Boolean)
+      : [];
+    const shouldCountCompletedProject =
+      Boolean(options?.countCompletedProject) && isCompletedClientProjectStatus(project.statusLabel || project.status);
+    if (
+      shouldCountCompletedProject &&
+      String(project.id || "").trim() &&
+      !currentCompletedIds.includes(String(project.id || "").trim())
+    ) {
+      currentCompletedIds.push(String(project.id || "").trim());
+      currentHistory.push(buildCompanyClientProjectHistory(project));
+    }
+
+    const sortedHistory = currentHistory
+      .slice()
+      .sort((a, b) => Date.parse(b.updatedAtIso || b.createdAtIso || "") - Date.parse(a.updatedAtIso || a.createdAtIso || ""));
+    const oldestHistory = currentHistory
+      .slice()
+      .sort((a, b) => Date.parse(a.updatedAtIso || a.createdAtIso || "") - Date.parse(b.updatedAtIso || b.createdAtIso || ""))[0];
+    const latestHistory = sortedHistory[0];
+    const projectCreatedIso = String(project.createdAt || project.updatedAt || "").trim();
+    const projectUpdatedIso = String(project.updatedAt || project.createdAt || "").trim();
+    const payload: Record<string, unknown> = {
+      id: clientId,
+      companyId: cid,
+      name: String(project.customer || currentRow?.name || "").trim(),
+      email: emailNormalized || email,
+      emailNormalized,
+      phone: String(project.clientPhone || currentRow?.phone || "").trim(),
+      address: String(project.clientAddress || currentRow?.address || "").trim(),
+      notes: String(currentRow?.notes || "").trim(),
+      createdAt: existing ? (existing.createdAt ?? serverTimestamp()) : serverTimestamp(),
+      createdAtIso: currentRow?.createdAtIso || nowIso,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: nowIso,
+      firstProjectAtIso: pickEarlierIso(
+        oldestHistory?.createdAtIso,
+        oldestHistory?.updatedAtIso,
+        currentRow?.firstProjectAtIso,
+        projectCreatedIso,
+      ),
+      lastProjectAtIso: pickLaterIso(
+        projectUpdatedIso,
+        latestHistory?.updatedAtIso,
+        latestHistory?.createdAtIso,
+        currentRow?.lastProjectAtIso,
+      ),
+      lastProjectId: String(project.id || "").trim() || latestHistory?.projectId || currentRow?.lastProjectId || "",
+      projectCount: currentCompletedIds.length,
+      completedProjectIds: currentCompletedIds,
+      history: sortedHistory,
+    };
+    await setDoc(clientRef, payload, { merge: true });
+    if (!options?.syncOnly && String(project.clientId || "").trim() !== clientId) {
+      await updateProjectPatch(project, { clientId });
+    }
+    return { ok: true, clientId };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function backfillCompanyClientsFromProjects(companyId: string): Promise<void> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return;
+  try {
+    await ensureCompanyClientsSection(cid);
+    const projects = await collectCompanyProjectsForClients(cid);
+    for (const project of projects) {
+      await syncCompanyClientProfileFromProjectInternal(project, {
+        countCompletedProject: isCompletedClientProjectStatus(project.statusLabel || project.status),
+        syncOnly: true,
+      });
+    }
+  } catch {
+    // ignore client backfill errors
+  }
+}
+
+export async function fetchCompanyClients(companyId: string): Promise<CompanyClientRow[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return [];
+
+  const merged = new Map<string, CompanyClientRow>();
+
+    try {
+      const projects = await collectCompanyProjectsForClients(cid);
+      for (const project of projects) {
+        const derived = buildCompanyClientRowFromProject(project);
+        const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
+        const existing = merged.get(matchId);
+        if (!existing) {
+          merged.set(matchId, { ...derived, id: matchId });
+          continue;
+        }
+        const existingStamp = Date.parse(existing.lastProjectAtIso || existing.updatedAtIso || existing.createdAtIso || "");
+        const nextStamp = Date.parse(derived.lastProjectAtIso || derived.updatedAtIso || derived.createdAtIso || "");
+        if (nextStamp > existingStamp) {
+          merged.set(matchId, {
+            ...existing,
+            ...derived,
+            id: matchId,
+            history: existing.history.length ? existing.history : derived.history,
+            projectCount: Math.max(existing.projectCount, derived.projectCount),
+            firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, derived.firstProjectAtIso),
+            lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, derived.lastProjectAtIso),
+          });
+        }
+      }
+  } catch {
+    // keep going so persisted client rows can still load
+  }
+
+  try {
+    const clientsSnap = await getDocs(collection(db, "companies", cid, "clients"));
+    const persistedRows = clientsSnap.docs
+      .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
+      .filter((row) => row.id && row.id !== "__meta")
+      .map((row) => ({
+        ...row,
+        history: row.history.slice().sort((a, b) => Date.parse(b.updatedAtIso || b.createdAtIso || "") - Date.parse(a.updatedAtIso || a.createdAtIso || "")),
+      }));
+    for (const row of persistedRows) {
+      const matchId =
+        findMatchingClientIdInMap(merged, {
+          id: row.lastProjectId,
+          companyId: row.companyId,
+          name: row.lastProjectId || row.id,
+          customer: row.name,
+          clientEmail: row.email,
+          clientPhone: row.phone,
+          clientAddress: row.address,
+          createdAt: row.createdAtIso,
+          updatedAt: row.updatedAtIso,
+          createdByUid: "",
+          createdByName: "",
+          status: "draft",
+          statusLabel: "New",
+          priority: "medium",
+          deletedAt: "",
+          dueDate: "",
+          estimatedSheets: 0,
+          assignedTo: "",
+          tags: [],
+          notes: row.notes,
+          region: "",
+          projectFiles: [],
+          projectImages: [],
+          projectSettings: {},
+        } as Project) || row.id;
+      const existing = merged.get(matchId);
+      if (!existing) {
+        merged.set(matchId, { ...row, id: matchId });
+        continue;
+      }
+      merged.set(matchId, {
+        ...existing,
+        ...row,
+        id: matchId,
+        history: row.history.length ? row.history : existing.history,
+        projectCount: Math.max(existing.projectCount, row.projectCount),
+        firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, row.firstProjectAtIso),
+        lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, row.lastProjectAtIso),
+        lastProjectId: row.lastProjectId || existing.lastProjectId,
+      });
+    }
+  } catch {
+    // derived client rows are still enough to render the phonebook
+  }
+
+  try {
+    void backfillCompanyClientsFromProjects(cid);
+  } catch {
+    // background backfill only
+  }
+
+  return Array.from(merged.values()).sort((a, b) => {
+    const aStamp = Date.parse(a.lastProjectAtIso || a.updatedAtIso || a.createdAtIso || "");
+    const bStamp = Date.parse(b.lastProjectAtIso || b.updatedAtIso || b.createdAtIso || "");
+    return bStamp - aStamp;
+  });
+}
+
+export async function syncCompanyClientProfileFromProject(
+  project: Project,
+): Promise<{ ok: boolean; clientId?: string }> {
+  return syncCompanyClientProfileFromProjectInternal(project, { syncOnly: false });
+}
+
+export async function upsertCompanyClientProfileOnProjectCreate(input: {
+  companyId: string;
+  projectId: string;
+  projectName: string;
+  customer: string;
+  clientEmail?: string;
+  clientPhone?: string;
+  clientAddress?: string;
+  notes?: string;
+  createdAtIso: string;
+  updatedAtIso?: string;
+  statusLabel?: string;
+  createdByUid?: string;
+  createdByName?: string;
+  assignedToUid?: string;
+  assignedToName?: string;
+  assignedTo?: string;
+  tags?: string[];
+  projectImages?: string[];
+  projectFiles?: Array<Record<string, unknown>>;
+  projectSettings?: Record<string, unknown>;
+}): Promise<{ ok: boolean; clientId?: string }> {
+  const projectLike: Project = {
+    id: String(input.projectId || "").trim(),
+    companyId: String(input.companyId || "").trim(),
+    name: String(input.projectName || "").trim() || "Untitled Project",
+    customer: String(input.customer || "").trim(),
+    createdAt: String(input.createdAtIso || "").trim(),
+    createdByUid: String(input.createdByUid || "").trim(),
+    createdByName: String(input.createdByName || "").trim() || "Unknown",
+    assignedToUid: String(input.assignedToUid || "").trim() || undefined,
+    assignedToName: String(input.assignedToName || "").trim() || undefined,
+    assignedTo: String(input.assignedTo || "").trim() || "Unassigned",
+    status: "draft",
+    statusLabel: String(input.statusLabel || "").trim() || "New",
+    priority: "medium",
+    updatedAt: String(input.updatedAtIso || input.createdAtIso || "").trim(),
+    deletedAt: "",
+    dueDate: "",
+    estimatedSheets: 0,
+    tags: Array.isArray(input.tags) ? input.tags.map((item) => String(item || "").trim()).filter(Boolean) : [],
+    notes: String(input.notes || "").trim(),
+    clientPhone: String(input.clientPhone || "").trim(),
+    clientEmail: String(input.clientEmail || "").trim(),
+    clientAddress: String(input.clientAddress || "").trim(),
+    region: "",
+    projectFiles: Array.isArray(input.projectFiles) ? input.projectFiles : [],
+    projectImages: Array.isArray(input.projectImages) ? input.projectImages.map(String) : [],
+    projectSettings:
+      input.projectSettings && typeof input.projectSettings === "object"
+        ? input.projectSettings
+        : {},
+    cutlist: { rows: [] },
+  };
+
+  return syncCompanyClientProfileFromProjectInternal(projectLike, { syncOnly: true });
 }
 
 export type CompanyLeadRow = {

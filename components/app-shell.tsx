@@ -18,6 +18,7 @@ import {
   Settings,
   Tag,
   Trash2,
+  Users,
   UserCog,
   X,
 } from "lucide-react";
@@ -29,8 +30,10 @@ import {
   fetchUserUpdateNoticeSeenVersions,
   markUserUpdateNoticeSeen,
   resyncCompanyProjectTagUsage,
-  saveCompanyDocPatchDetailed,
-} from "@/lib/firestore-data";
+    saveCompanyDocPatchDetailed,
+    syncCompanyClientProfileFromProject,
+    upsertCompanyClientProfileOnProjectCreate,
+  } from "@/lib/firestore-data";
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -64,6 +67,7 @@ const companyAccessMemoryCacheByKey: Record<string, CompanyAccessCache> = {};
 
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/clients", label: "Clients", icon: Users },
   { href: "/leads", label: "Leads", icon: Inbox },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
   { href: "/changelog", label: "Changelog", icon: Search },
@@ -210,7 +214,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const { user, logout, isDemoMode } = useAuth();
   const [showNewProject, setShowNewProject] = useState(false);
   const [projectName, setProjectName] = useState("");
-  const [clientName, setClientName] = useState("");
+  const [clientFirstName, setClientFirstName] = useState("");
+  const [clientLastName, setClientLastName] = useState("");
   const [clientPhone, setClientPhone] = useState("");
   const [clientEmail, setClientEmail] = useState("");
   const [projectAddress, setProjectAddress] = useState("");
@@ -295,6 +300,12 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     return normalizedEffectivePermissions.includes("leads.*");
   }, [normalizedEffectivePermissions, roleForUi]);
 
+  const canAccessClients = useMemo(() => {
+    const role = roleForUi;
+    if (role === "owner" || role === "admin") return true;
+    return hasPermissionKey(normalizedEffectivePermissions, "company.clients");
+  }, [normalizedEffectivePermissions, roleForUi]);
+
   const visibleTopNav = useMemo(
     () =>
       topNav.filter((item) => {
@@ -304,12 +315,15 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         if (item.href === "/leads") {
           return canAccessLeads && isZapierLeadsEnabled;
         }
+        if (item.href === "/clients") {
+          return canAccessClients;
+        }
         if (item.href === "/company-settings") {
           return canAccessCompanySettings;
         }
         return true;
       }),
-    [canAccessCompanySettings, canAccessDashboard, canAccessLeads, isZapierLeadsEnabled],
+    [canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads, isZapierLeadsEnabled],
   );
 
   useLayoutEffect(() => {
@@ -331,10 +345,21 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const splitFullName = (value: string) => {
+      const parts = String(value || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      if (!parts.length) return { firstName: "", lastName: "" };
+      if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+      return { firstName: parts[0] || "", lastName: parts.slice(1).join(" ") };
+    };
     const onOpenNewProject = (event: Event) => {
       const detail = (event as CustomEvent<NewProjectPrefillPayload | undefined>).detail ?? {};
+      const fallbackName = splitFullName(String(detail.clientName || "").trim());
       setProjectName(String(detail.projectName || "").trim());
-      setClientName(String(detail.clientName || "").trim());
+      setClientFirstName(String(detail.clientFirstName || fallbackName.firstName || "").trim());
+      setClientLastName(String(detail.clientLastName || fallbackName.lastName || "").trim());
       setClientPhone(formatMobileLikeDesktop(String(detail.clientPhone || "")));
       setClientEmail(String(detail.clientEmail || "").trim());
       setProjectAddress(String(detail.projectAddress || "").trim());
@@ -855,11 +880,12 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       } catch {
         // ignore
       }
-    }
-    setProjectName("");
-    setClientName("");
-    setClientPhone("");
-    setClientEmail("");
+      }
+      setProjectName("");
+      setClientFirstName("");
+      setClientLastName("");
+      setClientPhone("");
+      setClientEmail("");
     setProjectAddress("");
     setProjectNotes("");
     setIsNewProjectNotesEditing(false);
@@ -1096,7 +1122,9 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const onCreateProject = async () => {
     if (creatingProject) return;
     const name = String(projectName || "").trim();
-    const customer = String(clientName || "").trim();
+    const firstName = String(clientFirstName || "").trim();
+    const lastName = String(clientLastName || "").trim();
+    const customer = [firstName, lastName].filter(Boolean).join(" ").trim();
     if (!name) {
       setProjectFormError("Project Name is required.");
       return;
@@ -1164,13 +1192,15 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         rooms: [],
         quoteExtrasIncluded: defaultQuoteExtras,
       };
-      await setDoc(doc(db, "companies", companyId, "jobs", projectId), {
-        id: projectId,
-        companyId,
-        name,
-        customer,
-        clientName: customer,
-        client: customer,
+        await setDoc(doc(db, "companies", companyId, "jobs", projectId), {
+          id: projectId,
+          companyId,
+          name,
+          customer,
+          clientFirstName: firstName,
+          clientLastName: lastName,
+          clientName: customer,
+          client: customer,
         clientNumber: clientPhone.trim(),
         clientPhone: clientPhone.trim(),
         clientEmail: clientEmail.trim(),
@@ -1196,6 +1226,82 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         sales,
         salesJson: JSON.stringify(sales),
       });
+        try {
+          const clientCreateResult = await fetch("/api/clients", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId,
+              companyId,
+              projectName: name,
+              customer,
+              createdAtIso: nowIso,
+              updatedAtIso: nowIso,
+              createdByUid: user?.uid ?? "",
+              createdByName: user?.displayName ?? "CutSmart User",
+              assignedToUid: assignedUid,
+              assignedToName: assignedName,
+              assignedTo: assignedName,
+              statusLabel: defaultProjectStatus || "New",
+              tags,
+              notes: projectNotes,
+              clientPhone: clientPhone.trim(),
+              clientEmail: clientEmail.trim(),
+              clientAddress: projectAddress.trim(),
+              projectFiles: [],
+              projectImages: uploadedImageUrls,
+              projectSettings,
+            }),
+          });
+          const clientCreateJson = (await clientCreateResult.json().catch(() => null)) as { ok?: boolean; clientId?: string } | null;
+          if (!clientCreateJson?.ok) {
+            await upsertCompanyClientProfileOnProjectCreate({
+              projectId,
+              companyId,
+              projectName: name,
+              customer,
+              createdAtIso: nowIso,
+              updatedAtIso: nowIso,
+              createdByUid: user?.uid ?? "",
+              createdByName: user?.displayName ?? "CutSmart User",
+              assignedToUid: assignedUid,
+              assignedToName: assignedName,
+              assignedTo: assignedName,
+              statusLabel: defaultProjectStatus || "New",
+              tags,
+              notes: projectNotes,
+              clientPhone: clientPhone.trim(),
+              clientEmail: clientEmail.trim(),
+              clientAddress: projectAddress.trim(),
+              projectFiles: [],
+              projectImages: uploadedImageUrls,
+              projectSettings,
+            });
+          }
+        } catch {
+          await upsertCompanyClientProfileOnProjectCreate({
+            projectId,
+            companyId,
+            projectName: name,
+            customer,
+            createdAtIso: nowIso,
+            updatedAtIso: nowIso,
+            createdByUid: user?.uid ?? "",
+            createdByName: user?.displayName ?? "CutSmart User",
+            assignedToUid: assignedUid,
+            assignedToName: assignedName,
+            assignedTo: assignedName,
+            statusLabel: defaultProjectStatus || "New",
+            tags,
+            notes: projectNotes,
+            clientPhone: clientPhone.trim(),
+            clientEmail: clientEmail.trim(),
+            clientAddress: projectAddress.trim(),
+            projectFiles: [],
+            projectImages: uploadedImageUrls,
+            projectSettings,
+          });
+        }
       if (tags.length > 0) {
         await resyncCompanyProjectTagUsage(companyId);
       }
@@ -1605,15 +1711,23 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                   placeholder="Project name"
                 />
               </div>
-              <div className={modalRowClass}>
-                <p className={modalLabelClass}>Client Name</p>
-                <input
-                  value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
-                  className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                  placeholder="Client name"
-                />
-              </div>
+                <div className={modalRowClass}>
+                  <p className={modalLabelClass}>Client Name</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      value={clientFirstName}
+                      onChange={(e) => setClientFirstName(e.target.value)}
+                      className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                      placeholder="First"
+                    />
+                    <input
+                      value={clientLastName}
+                      onChange={(e) => setClientLastName(e.target.value)}
+                      className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                      placeholder="Last"
+                    />
+                  </div>
+                </div>
               <div className={modalRowClass}>
                 <p className={modalLabelClass}>Client Phone</p>
                 <input

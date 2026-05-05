@@ -19,6 +19,7 @@ export interface CompanyMember {
 export interface Project {
   id: string;
   companyId: string;
+  clientId?: string;
   name: string;
   customer: string;
   createdAt: string;

@@ -20,7 +20,15 @@ const RESERVED_LEAD_FIELD_KEYS = new Set([
   "status",
 ]);
 
-type LeadProjectFieldTarget = "" | "clientName" | "clientPhone" | "clientEmail" | "projectAddress" | "projectNotes";
+type LeadProjectFieldTarget =
+  | ""
+  | "clientName"
+  | "clientFirstName"
+  | "clientLastName"
+  | "clientPhone"
+  | "clientEmail"
+  | "projectAddress"
+  | "projectNotes";
 type LeadFieldLayoutRow = {
   key: string;
   label: string;
@@ -182,19 +190,21 @@ function normalizeLeadFieldLayout(raw: unknown): LeadFieldLayoutRow[] {
       const key = String(row.key || "").trim();
       if (!key) return null;
       const label = String(row.label || "").trim() || formatLeadFieldLabel(key);
-      return {
-        key,
-        label,
-        showInRow: Boolean(row.showInRow),
-        showInDetail: row.showInDetail == null ? true : Boolean(row.showInDetail),
-        order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
-        projectFieldTarget: ([
-          "",
-          "clientName",
-          "clientPhone",
-          "clientEmail",
-          "projectAddress",
-          "projectNotes",
+        return {
+          key,
+          label,
+          showInRow: Boolean(row.showInRow),
+          showInDetail: row.showInDetail == null ? true : Boolean(row.showInDetail),
+          order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
+          projectFieldTarget: ([
+            "",
+            "clientName",
+            "clientFirstName",
+            "clientLastName",
+            "clientPhone",
+            "clientEmail",
+            "projectAddress",
+            "projectNotes",
         ] as LeadProjectFieldTarget[]).includes(String(row.projectFieldTarget || "").trim() as LeadProjectFieldTarget)
           ? (String(row.projectFieldTarget || "").trim() as LeadProjectFieldTarget)
           : "",
@@ -351,16 +361,31 @@ function suggestProjectName(clientName: string) {
   return parts[parts.length - 1] || parts[0] || "";
 }
 
-function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLayoutRow[]): NewProjectPrefillPayload {
-  const fields = getLeadDynamicFields(lead);
+function splitClientName(fullName: string) {
+  const parts = String(fullName || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) {
+    return { firstName: "", lastName: "" };
+  }
+  if (parts.length === 1) {
+    return { firstName: parts[0], lastName: "" };
+  }
+  return {
+    firstName: parts[0] || "",
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
+function buildLeadClientNameParts(fields: LeadDynamicField[], fieldLayout: LeadFieldLayoutRow[]) {
   const findMappedField = (target: LeadProjectFieldTarget) => {
     const mapped = fieldLayout.find((row) => row.projectFieldTarget === target);
     if (!mapped) return null;
-    return (
-      fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(mapped.key)) || null
-    );
+    return fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(mapped.key)) || null;
   };
-  const nameField =
+
+  const explicitNameField =
     findMappedField("clientName") ||
     findBestLeadField(fields, [/client\s*name/, /full\s*name/, /(^|[^a-z])name([^a-z]|$)/], (field) => {
       const haystack = `${field.key} ${field.label}`.toLowerCase();
@@ -371,6 +396,63 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
       return words.length >= 2 && /^[a-z ,.'-]+$/i.test(field.value.trim());
     }) ||
     null;
+
+  const firstNameField =
+    findMappedField("clientFirstName") ||
+    findBestLeadField(fields, [/(^|[^a-z])first([^a-z]|$)/, /first\s*name/, /given\s*name/]) ||
+    null;
+  const lastNameField =
+    findMappedField("clientLastName") ||
+    findBestLeadField(fields, [/(^|[^a-z])last([^a-z]|$)/, /last\s*name/, /surname/, /family\s*name/]) ||
+    null;
+
+  if (explicitNameField?.value) {
+    const split = splitClientName(explicitNameField.value);
+    return {
+      fullName: explicitNameField.value.trim(),
+      firstName: firstNameField?.value?.trim() || split.firstName,
+      lastName: lastNameField?.value?.trim() || split.lastName,
+    };
+  }
+
+  const firstName = String(firstNameField?.value || "").trim();
+  const lastName = String(lastNameField?.value || "").trim();
+  return {
+    fullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
+    firstName,
+    lastName,
+  };
+}
+
+function resolveLeadColumnValue(
+  fields: LeadDynamicField[],
+  column: LeadFieldLayoutRow,
+  fieldLayout: LeadFieldLayoutRow[],
+) {
+  const match = fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key));
+  if (match?.value) return match.value;
+
+  const nameParts = buildLeadClientNameParts(fields, fieldLayout);
+  if (column.projectFieldTarget === "clientName") return nameParts.fullName;
+  if (column.projectFieldTarget === "clientFirstName") return nameParts.firstName;
+  if (column.projectFieldTarget === "clientLastName") return nameParts.lastName;
+
+  const normalizedKey = normalizeLeadFieldKey(column.key);
+  if (["name", "fullname", "clientname"].includes(normalizedKey)) {
+    return nameParts.fullName;
+  }
+  return "";
+}
+
+function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLayoutRow[]): NewProjectPrefillPayload {
+  const fields = getLeadDynamicFields(lead);
+  const findMappedField = (target: LeadProjectFieldTarget) => {
+    const mapped = fieldLayout.find((row) => row.projectFieldTarget === target);
+    if (!mapped) return null;
+    return (
+      fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(mapped.key)) || null
+    );
+  };
   const emailField =
     findMappedField("clientEmail") ||
     findBestLeadField(fields, [/email/, /e-mail/], (field) => isLikelyEmailValue(field.value)) ||
@@ -381,10 +463,13 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
     findBestLeadField(fields, [/phone/, /mobile/, /cell/, /contact/], (field) => isLikelyPhoneValue(field.value)) ||
     fields.find((field) => isLikelyPhoneValue(field.value)) ||
     null;
-  const clientName = String(nameField?.value || "").trim();
+  const { fullName: clientName, firstName: clientFirstName, lastName: clientLastName } =
+    buildLeadClientNameParts(fields, fieldLayout);
   const notesField = findMappedField("projectNotes");
   return {
     projectName: suggestProjectName(clientName),
+    clientFirstName,
+    clientLastName,
     clientName,
     clientPhone: String(phoneField?.value || "").trim(),
     clientEmail: String(emailField?.value || "").trim(),
@@ -571,10 +656,12 @@ export default function LeadsPage() {
       return searchable.some((value) => String(value || "").toLowerCase().includes(query));
     });
     const sorted = [...filtered];
-    const leadLabel = (lead: CompanyLeadRow) => {
-      const firstVisible = getLeadDynamicFields(lead)[0]?.value || "";
-      return String(firstVisible || lead.name || lead.email || lead.phone || "").trim().toLowerCase();
-    };
+      const leadLabel = (lead: CompanyLeadRow) => {
+        const fields = getLeadDynamicFields(lead);
+        const derivedName = buildLeadClientNameParts(fields, mergedFieldLayout).fullName;
+        const firstVisible = fields[0]?.value || "";
+        return String(derivedName || firstVisible || lead.name || lead.email || lead.phone || "").trim().toLowerCase();
+      };
     const leadTimestamp = (lead: CompanyLeadRow) => {
       const raw = String(lead.createdAtIso || lead.submittedAtIso || lead.updatedAtIso || "").trim();
       const parsed = raw ? new Date(raw).getTime() : 0;
@@ -1106,21 +1193,19 @@ export default function LeadsPage() {
                               No preview fields configured yet.
                             </span>
                           ) : (
-                            rowFields.map((column) => {
-                              const match = leadFields.find(
-                                (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
-                              );
-                              return (
-                                <span
-                                  key={`${lead.id}:${column.key}`}
-                                  className="min-w-0 overflow-hidden text-left"
-                                >
-                                  <p className="truncate whitespace-nowrap text-[12px] font-semibold" style={{ color: palette.textSoft }}>
-                                    {match?.value || "-"}
-                                  </p>
-                                </span>
-                              );
-                            })
+                              rowFields.map((column) => {
+                                const value = resolveLeadColumnValue(leadFields, column, mergedFieldLayout);
+                                return (
+                                  <span
+                                    key={`${lead.id}:${column.key}`}
+                                    className="min-w-0 overflow-hidden text-left"
+                                  >
+                                    <p className="truncate whitespace-nowrap text-[12px] font-semibold" style={{ color: palette.textSoft }}>
+                                      {value || "-"}
+                                    </p>
+                                  </span>
+                                );
+                              })
                           )}
                           <div className="text-right">
                             <p className="whitespace-nowrap text-[11px] font-semibold" style={{ color: palette.textMuted }}>
@@ -1180,25 +1265,23 @@ export default function LeadsPage() {
                               </p>
                             ) : (
                               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                                {detailFields.map((column) => {
-                                  const match = leadFields.find(
-                                    (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
-                                  );
-                                  return (
-                                    <div
-                                      key={`${lead.id}:detail:${column.key}`}
-                                      className="rounded-[12px] border px-3 py-2"
-                                      style={{ borderColor: palette.border, backgroundColor: palette.panelBg }}
-                                    >
+                                  {detailFields.map((column) => {
+                                    const value = resolveLeadColumnValue(leadFields, column, mergedFieldLayout);
+                                    return (
+                                      <div
+                                        key={`${lead.id}:detail:${column.key}`}
+                                        className="rounded-[12px] border px-3 py-2"
+                                        style={{ borderColor: palette.border, backgroundColor: palette.panelBg }}
+                                      >
                                       <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: palette.textMuted }}>
                                         {column.label}
                                       </p>
-                                      <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: palette.textSoft }}>
-                                        {match?.value || "-"}
-                                      </p>
-                                    </div>
-                                  );
-                                })}
+                                        <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: palette.textSoft }}>
+                                          {value || "-"}
+                                        </p>
+                                      </div>
+                                    );
+                                  })}
                               </div>
                             )}
                           </div>

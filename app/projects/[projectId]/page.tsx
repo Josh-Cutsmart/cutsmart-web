@@ -26,6 +26,7 @@ import {
   grantTempProductionAccess,
   resyncCompanyProjectTagUsage,
   saveCompanyDocPatch,
+  syncCompanyClientProfileFromProject,
   softDeleteProject,
   updateProjectPatch,
   updateProjectStatus,
@@ -2680,6 +2681,9 @@ type BoardPillDropdownProps = {
   getSize: (value: string) => string;
   getLabel: (value: string) => string;
   onChange: (value: string) => void;
+  onBlur?: () => void;
+  onCommit?: () => void;
+  onCancel?: () => void;
 };
 
 type PartNameSuggestionOption = {
@@ -2695,6 +2699,10 @@ type CompactPlainDropdownProps = {
   disabled?: boolean;
   onChange: (value: string) => void;
   placeholder?: string;
+  autoFocus?: boolean;
+  onBlur?: () => void;
+  onCommit?: () => void;
+  onCancel?: () => void;
 };
 
 function CompactPlainDropdown({
@@ -2703,18 +2711,39 @@ function CompactPlainDropdown({
   disabled,
   onChange,
   placeholder = "",
+  autoFocus,
+  onBlur,
+  onCommit,
+  onCancel,
 }: CompactPlainDropdownProps) {
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const blurTimeoutRef = useRef<number | null>(null);
+  const suppressNextBlurRef = useRef(false);
 
   const refreshRect = () => {
     if (!buttonRef.current) return;
     const r = buttonRef.current.getBoundingClientRect();
     setRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+
+  useEffect(() => {
+    return () => {
+      if (blurTimeoutRef.current != null) {
+        window.clearTimeout(blurTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    window.setTimeout(() => {
+      buttonRef.current?.focus();
+    }, 0);
+  }, [autoFocus]);
 
   useEffect(() => {
     if (!open) return;
@@ -2724,7 +2753,10 @@ function CompactPlainDropdown({
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
       const inMenu = Boolean(menuRef.current?.contains(target));
-      if (!inHost && !inMenu) setOpen(false);
+      if (!inHost && !inMenu) {
+        setOpen(false);
+        onBlur?.();
+      }
     };
     const onWin = () => refreshRect();
     document.addEventListener("mousedown", onDocDown);
@@ -2746,6 +2778,34 @@ function CompactPlainDropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
+        onBlur={() => {
+          blurTimeoutRef.current = window.setTimeout(() => {
+            if (suppressNextBlurRef.current) {
+              suppressNextBlurRef.current = false;
+              return;
+            }
+            const activeElement = document.activeElement as Node | null;
+            const inHost = Boolean(activeElement && hostRef.current?.contains(activeElement));
+            const inMenu = Boolean(activeElement && menuRef.current?.contains(activeElement));
+            if (!inHost && !inMenu) {
+              onBlur?.();
+            }
+          }, 120);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+            onCommit?.();
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+            onCancel?.();
+          }
+        }}
         className="pointer-events-auto h-6 w-full rounded-[4px] border border-[#94A3B8] bg-white px-1 pr-5 text-left text-[11px] text-[#0F172A] disabled:opacity-70"
       >
         <span className="truncate">{selected || placeholder}</span>
@@ -2766,10 +2826,18 @@ function CompactPlainDropdown({
               onMouseDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (blurTimeoutRef.current != null) {
+                  window.clearTimeout(blurTimeoutRef.current);
+                  blurTimeoutRef.current = null;
+                }
+                suppressNextBlurRef.current = true;
               }}
               onClick={() => {
                 onChange("");
                 setOpen(false);
+                window.setTimeout(() => {
+                  buttonRef.current?.focus();
+                }, 0);
               }}
               className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[#64748B] hover:bg-[#F8FAFC]"
             >
@@ -2782,10 +2850,18 @@ function CompactPlainDropdown({
                 onMouseDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  if (blurTimeoutRef.current != null) {
+                    window.clearTimeout(blurTimeoutRef.current);
+                    blurTimeoutRef.current = null;
+                  }
+                  suppressNextBlurRef.current = true;
                 }}
                 onClick={() => {
                   onChange(opt);
                   setOpen(false);
+                  window.setTimeout(() => {
+                    buttonRef.current?.focus();
+                  }, 0);
                 }}
                 className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[#0F172A] hover:bg-[#F8FAFC]"
               >
@@ -2829,18 +2905,32 @@ function BoardPillDropdown({
   getSize,
   getLabel,
   onChange,
+  onBlur,
+  onCommit,
+  onCancel,
 }: BoardPillDropdownProps) {
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const blurTimeoutRef = useRef<number | null>(null);
+  const suppressNextClickRef = useRef(false);
+  const suppressNextBlurRef = useRef(false);
 
   const refreshRect = () => {
     if (!buttonRef.current) return;
     const r = buttonRef.current.getBoundingClientRect();
     setRect({ left: r.left, top: r.bottom + 2, width: r.width });
   };
+
+  useEffect(() => {
+    return () => {
+      if (blurTimeoutRef.current != null) {
+        window.clearTimeout(blurTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -2850,7 +2940,10 @@ function BoardPillDropdown({
       if (!target) return;
       const inHost = Boolean(hostRef.current?.contains(target));
       const inMenu = Boolean(menuRef.current?.contains(target));
-      if (!inHost && !inMenu) setOpen(false);
+      if (!inHost && !inMenu) {
+        setOpen(false);
+        onBlur?.();
+      }
     };
     const onWin = () => refreshRect();
     document.addEventListener("mousedown", onDocDown);
@@ -2867,6 +2960,12 @@ function BoardPillDropdown({
   const selectedLabel = getLabel(value);
   const compact = size === "compact";
 
+  const focusTriggerAfterSelection = () => {
+    window.setTimeout(() => {
+      buttonRef.current?.focus();
+    }, 0);
+  };
+
   return (
     <div ref={hostRef} className="relative z-[60] pointer-events-auto">
       <button
@@ -2874,7 +2973,46 @@ function BoardPillDropdown({
         type="button"
         disabled={disabled}
         title={title}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (suppressNextClickRef.current) {
+            suppressNextClickRef.current = false;
+            return;
+          }
+          setOpen((v) => !v);
+        }}
+        onBlur={() => {
+          blurTimeoutRef.current = window.setTimeout(() => {
+            if (suppressNextBlurRef.current) {
+              suppressNextBlurRef.current = false;
+              return;
+            }
+            const activeElement = document.activeElement as Node | null;
+            const inHost = Boolean(activeElement && hostRef.current?.contains(activeElement));
+            const inMenu = Boolean(activeElement && menuRef.current?.contains(activeElement));
+            if (!inHost && !inMenu) {
+              onBlur?.();
+            }
+          }, 120);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            if (open) {
+              setOpen(false);
+              onCommit?.();
+            } else {
+              suppressNextClickRef.current = true;
+              onCommit?.();
+            }
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            setOpen(false);
+            onCancel?.();
+          }
+        }}
         className={`pointer-events-auto relative w-full border text-left disabled:opacity-70 ${compact ? "h-6 rounded-[4px] px-1 text-[11px]" : "h-8 rounded-[8px] px-2 text-[12px]"} ${className ?? ""}`}
         style={{ backgroundColor: bg, borderColor: border, color: text }}
       >
@@ -2927,8 +3065,14 @@ function BoardPillDropdown({
             <button
               type="button"
               onClick={() => {
+                if (blurTimeoutRef.current != null) {
+                  window.clearTimeout(blurTimeoutRef.current);
+                  blurTimeoutRef.current = null;
+                }
+                suppressNextBlurRef.current = true;
                 onChange("");
                 setOpen(false);
+                focusTriggerAfterSelection();
               }}
               className={`flex w-full items-center text-left text-[#64748B] hover:bg-[#F8FAFC] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
             >
@@ -2944,10 +3088,16 @@ function BoardPillDropdown({
                   onMouseDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (blurTimeoutRef.current != null) {
+                      window.clearTimeout(blurTimeoutRef.current);
+                      blurTimeoutRef.current = null;
+                    }
+                    suppressNextBlurRef.current = true;
                   }}
                     onClick={() => {
                       onChange(opt);
                       setOpen(false);
+                      focusTriggerAfterSelection();
                     }}
                    className={`flex w-full items-center text-left text-[#0F172A] hover:bg-[#F8FAFC] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
                 >
@@ -3709,6 +3859,8 @@ export default function ProjectDetailsPage() {
   const editingCellValueRef = useRef("");
   const [editingClashLeft, setEditingClashLeft] = useState("");
   const [editingClashRight, setEditingClashRight] = useState("");
+  const editingClashLeftRef = useRef("");
+  const editingClashRightRef = useRef("");
   const [editingFixedShelf, setEditingFixedShelf] = useState("");
   const [editingAdjustableShelf, setEditingAdjustableShelf] = useState("");
   const [editingFixedShelfDrilling, setEditingFixedShelfDrilling] = useState<"No" | "Even Spacing" | "Centre">("No");
@@ -4665,6 +4817,7 @@ export default function ProjectDetailsPage() {
     }
     prevResolvedTabRef.current = resolvedTab;
   }, [resolvedTab]);
+
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -7836,6 +7989,8 @@ export default function ProjectDetailsPage() {
             adjustableShelf: String(item.adjustableShelf ?? item["Adjustable Shelf"] ?? ""),
             fixedShelfDrilling: normalizeDrillingValue(item.fixedShelfDrilling ?? item["Fixed Shelf Drilling"]),
             adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item["Adjustable Shelf Drilling"]),
+            hingesUp: normalizeDoorHingeValues(item.hingesUp ?? item.HingesUp ?? item.hingeUp ?? item.HingeUp),
+            hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
             information: String(item.Information ?? item.information ?? item.info ?? ""),
             grain: grainParsed.grain,
             grainValue: grainParsed.grainValue,
@@ -7936,6 +8091,10 @@ export default function ProjectDetailsPage() {
           cutlistRoomFilter?: string;
           cutlistPartTypeFilter?: string;
           cutlistSearch?: string;
+          cutlistEntryRoom?: string;
+          activeCutlistPartType?: string;
+          cutlistEntry?: Partial<Omit<CutlistRow, "id" | "room">>;
+          cutlistDraftRows?: Array<Partial<CutlistDraftRow>>;
           initialCutlistRoomFilter?: string;
           initialCutlistPartTypeFilter?: string;
           initialCutlistSearch?: string;
@@ -7960,6 +8119,55 @@ export default function ProjectDetailsPage() {
         }
         if (typeof parsed.cutlistSearch === "string") {
           setCutlistSearch(parsed.cutlistSearch);
+        }
+        if (typeof parsed.cutlistEntryRoom === "string" && parsed.cutlistEntryRoom.trim()) {
+          setCutlistEntryRoom(parsed.cutlistEntryRoom);
+        }
+        if (typeof parsed.activeCutlistPartType === "string") {
+          setActiveCutlistPartType(parsed.activeCutlistPartType);
+        }
+        if (parsed.cutlistEntry && typeof parsed.cutlistEntry === "object") {
+          const savedEntry = parsed.cutlistEntry;
+          setCutlistEntry({
+            ...createEmptyCutlistEntry(),
+            partType: String(savedEntry.partType ?? ""),
+            board: String(savedEntry.board ?? ""),
+            name: String(savedEntry.name ?? ""),
+            height: String(savedEntry.height ?? ""),
+            width: String(savedEntry.width ?? ""),
+            depth: String(savedEntry.depth ?? ""),
+            quantity: String(savedEntry.quantity ?? "1"),
+            clashing: String(savedEntry.clashing ?? ""),
+            clashLeft: String(savedEntry.clashLeft ?? ""),
+            clashRight: String(savedEntry.clashRight ?? ""),
+            fixedShelf: String(savedEntry.fixedShelf ?? ""),
+            adjustableShelf: String(savedEntry.adjustableShelf ?? ""),
+            fixedShelfDrilling: normalizeDrillingValue(savedEntry.fixedShelfDrilling),
+            adjustableShelfDrilling: normalizeDrillingValue(savedEntry.adjustableShelfDrilling),
+            hingesUp: normalizeDoorHingeValues(savedEntry.hingesUp),
+            hingesDown: normalizeDoorHingeValues(savedEntry.hingesDown),
+            information: String(savedEntry.information ?? ""),
+            grain: Boolean(savedEntry.grain ?? false),
+            grainValue: String(savedEntry.grainValue ?? ""),
+          });
+        }
+        if (Array.isArray(parsed.cutlistDraftRows)) {
+          const restoredDrafts = parsed.cutlistDraftRows
+            .filter((row) => row && typeof row === "object")
+            .map((row, idx) => {
+              const item = row as Partial<CutlistDraftRow>;
+              const partType = String(item.partType ?? "").trim();
+              const room = String(item.room ?? "Project Cutlist").trim() || "Project Cutlist";
+              const restored = createDraftCutlistRow(partType, room, item);
+              return {
+                ...restored,
+                id: String(item.id ?? `draft_restored_${idx + 1}`),
+                room,
+                partType,
+              };
+            });
+          setCutlistDraftRows(restoredDrafts);
+          setCutlistDraftInitialized(true);
         }
         if (typeof parsed.initialCutlistRoomFilter === "string" && parsed.initialCutlistRoomFilter.trim()) {
           setInitialCutlistRoomFilter(parsed.initialCutlistRoomFilter);
@@ -8052,6 +8260,10 @@ export default function ProjectDetailsPage() {
       cutlistRoomFilter,
       cutlistPartTypeFilter,
       cutlistSearch,
+      cutlistEntryRoom,
+      activeCutlistPartType,
+      cutlistEntry,
+      cutlistDraftRows,
       initialCutlistRoomFilter,
       initialCutlistPartTypeFilter,
       initialCutlistSearch,
@@ -8078,6 +8290,10 @@ export default function ProjectDetailsPage() {
     cutlistRoomFilter,
     cutlistPartTypeFilter,
     cutlistSearch,
+    cutlistEntryRoom,
+    activeCutlistPartType,
+    cutlistEntry,
+    cutlistDraftRows,
     initialCutlistRoomFilter,
     initialCutlistPartTypeFilter,
     initialCutlistSearch,
@@ -8329,7 +8545,16 @@ export default function ProjectDetailsPage() {
     setIsSavingGeneralDetails(true);
     const ok = await updateProjectPatch(project, patch as Record<string, unknown>);
     if (ok) {
+      const nextProject = { ...project, ...patch };
       setProject((prev) => (prev ? { ...prev, ...patch } : prev));
+      const shouldSyncClientProfile =
+        "customer" in patch ||
+        "clientPhone" in patch ||
+        "clientEmail" in patch ||
+        "clientAddress" in patch;
+      if (shouldSyncClientProfile && String(nextProject.clientEmail || "").trim()) {
+        void syncCompanyClientProfileFromProject(nextProject);
+      }
       setLockMessage("");
     } else {
       setLockMessage("Could not save project details.");
@@ -10147,6 +10372,7 @@ export default function ProjectDetailsPage() {
     rowLabel,
     maxValue,
     onBlur,
+    onCommit,
   }: {
     upValues: string[];
     downValues: string[];
@@ -10158,9 +10384,10 @@ export default function ProjectDetailsPage() {
     rowKey: string;
     rowLabel: string;
     maxValue?: number | null;
-    onBlur?: () => void;
+    onBlur?: (event: ReactFocusEvent<HTMLInputElement>) => void;
+    onCommit?: () => void;
   }) => (
-    <div className="grid min-h-[40px] w-max min-w-[520px] content-center gap-[2px] text-left text-[9px]">
+    <div className="grid min-h-[40px] w-full min-w-0 content-center gap-[2px] text-left text-[9px]">
       {(["up", "down"] as const).map((direction) => {
         const values = direction === "up" ? doorHingeInputValues(upValues) : doorHingeInputValues(downValues);
         return (
@@ -10171,7 +10398,7 @@ export default function ProjectDetailsPage() {
             <span className="inline-flex w-[20px] shrink-0 items-center justify-end font-bold leading-none">
               {direction === "up" ? "Up" : "Down"}
             </span>
-            <div className="flex min-w-[450px] flex-nowrap gap-[4px] overflow-visible">
+            <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
               {values.map((value, index) => {
                 const fieldKey = `hinges_${direction}_${index}`;
                 return (
@@ -10195,6 +10422,12 @@ export default function ProjectDetailsPage() {
                       onChange(direction, index, raw);
                     }}
                     onBlur={onBlur}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        onCommit?.();
+                      }
+                    }}
                     className={`h-[18px] w-[44px] shrink-0 rounded-[5px] border bg-transparent px-0 text-center text-[9px] ${warningClassForCell(rowKey, fieldKey)}`}
                     style={warningStyleForCell(rowKey, fieldKey, { backgroundColor: bg, borderColor: border, color: text })}
                   />
@@ -10208,13 +10441,13 @@ export default function ProjectDetailsPage() {
   );
 
   const renderDoorHingeDisplay = (upValues: string[], downValues: string[]) => (
-    <div className="grid min-h-[40px] w-max min-w-[520px] content-center gap-[2px] text-left text-[9px]">
+    <div className="grid min-h-[40px] w-full min-w-0 content-center gap-[2px] text-left text-[9px]">
       <div className="flex items-center gap-[3px] whitespace-nowrap">
         <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none">
           Hinges
         </span>
         <span className="inline-flex w-[20px] shrink-0 items-center justify-end font-bold leading-none">Up</span>
-        <div className="flex min-w-[450px] flex-nowrap gap-[4px] overflow-visible">
+        <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
           {normalizeDoorHingeValues(upValues).length > 0
             ? normalizeDoorHingeValues(upValues).map((value, index) => (
                 <span key={`hinge_up_view_${index}`} className="inline-flex w-[44px] shrink-0 items-center justify-center">
@@ -10227,7 +10460,7 @@ export default function ProjectDetailsPage() {
       <div className="flex items-center gap-[3px] whitespace-nowrap">
         <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none"></span>
         <span className="inline-flex w-[20px] shrink-0 items-center justify-end font-bold leading-none">Down</span>
-        <div className="flex min-w-[450px] flex-nowrap gap-[4px] overflow-visible">
+        <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
           {normalizeDoorHingeValues(downValues).length > 0
             ? normalizeDoorHingeValues(downValues).map((value, index) => (
                 <span key={`hinge_down_view_${index}`} className="inline-flex w-[44px] shrink-0 items-center justify-center">
@@ -11755,12 +11988,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           setEditingCellValue("");
         } else if (isDoorPartType(row.partType)) {
           const split = splitClashing(row.clashing);
-          setEditingClashLeft(String(row.clashLeft ?? split.left ?? ""));
-          setEditingClashRight(String(row.clashRight ?? split.right ?? ""));
+          const nextLeft = String(row.clashLeft ?? split.left ?? "");
+          const nextRight = String(row.clashRight ?? split.right ?? "");
+          editingClashLeftRef.current = nextLeft;
+          editingClashRightRef.current = nextRight;
+          setEditingClashLeft(nextLeft);
+          setEditingClashRight(nextRight);
           editingCellValueRef.current = "";
           setEditingCellValue("");
         } else {
           const split = splitClashing(row.clashing);
+        editingClashLeftRef.current = split.left;
+        editingClashRightRef.current = split.right;
         setEditingClashLeft(split.left);
         setEditingClashRight(split.right);
         editingCellValueRef.current = row.clashing ?? "";
@@ -11784,6 +12023,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     setEditingCell(null);
     editingCellValueRef.current = "";
     setEditingCellValue("");
+    editingClashLeftRef.current = "";
+    editingClashRightRef.current = "";
     setEditingClashLeft("");
     setEditingClashRight("");
     editingFixedShelfRef.current = "";
@@ -11831,8 +12072,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           updated.grain = Boolean(updated.grainValue);
           break;
         case "hinges":
-          updated.hingesUp = normalizeDoorHingeValues(editingHingesUp);
-          updated.hingesDown = normalizeDoorHingeValues(editingHingesDown);
+          updated.hingesUp = normalizeDoorHingeValues(editingHingesUpRef.current);
+          updated.hingesDown = normalizeDoorHingeValues(editingHingesDownRef.current);
           break;
           case "clashing":
             if (isCabinetryPartType(updated.partType)) {
@@ -11843,18 +12084,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               updated.adjustableShelf = String(editingAdjustableShelf ?? "").trim();
               updated.fixedShelfDrilling = normalizeDrillingValue(editingFixedShelfDrilling);
               updated.adjustableShelfDrilling = normalizeDrillingValue(editingAdjustableShelfDrilling);
-            } else if (isDoorPartType(updated.partType)) {
-              updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
-              {
+              } else if (isDoorPartType(updated.partType)) {
+               updated.clashing = joinClashing(editingClashLeftRef.current, editingClashRightRef.current).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
+                {
+                  const split = splitClashing(updated.clashing);
+                  updated.clashLeft = split.left;
+                  updated.clashRight = split.right;
+                }
+              } else {
+               updated.clashing = joinClashing(editingClashLeftRef.current, editingClashRightRef.current).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
                 const split = splitClashing(updated.clashing);
                 updated.clashLeft = split.left;
                 updated.clashRight = split.right;
-              }
-            } else {
-              updated.clashing = joinClashing(editingClashLeft, editingClashRight).trim().toUpperCase().replace(/\b2SH\b/g, "2S");
-              const split = splitClashing(updated.clashing);
-              updated.clashLeft = split.left;
-              updated.clashRight = split.right;
             updated.fixedShelf = "";
             updated.adjustableShelf = "";
             updated.fixedShelfDrilling = "No";
@@ -11996,6 +12237,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       void commitCellEdit();
     }, 0);
   };
+
+  const onDoorHingeInputBlur = (event: ReactFocusEvent<HTMLInputElement>, rowId: string) => {
+    const editorRoot = event.currentTarget.closest(`[data-cutlist-door-hinges-edit="${rowId}"]`);
+    window.setTimeout(() => {
+      const activeElement = document.activeElement as HTMLElement | null;
+      if (!editingCell || editingCell.rowId !== rowId || editingCell.key !== "hinges") return;
+      if (editorRoot && activeElement && editorRoot.contains(activeElement)) return;
+      void commitCellEdit();
+    }, 0);
+  };
+
+  useEffect(() => {
+    if (!editingCell || editingCell.key !== "clashing") return;
+    const rowId = editingCell.rowId;
+    const onDocumentMouseDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const editorRoot = document.querySelector(`[data-cutlist-clashing-edit="${rowId}"]`) as HTMLElement | null;
+      const inEditorRoot = Boolean(editorRoot?.contains(target));
+      const inClashDropdown = Boolean(target.closest?.('[data-cutlist-clash-dropdown="1"]'));
+      if (inEditorRoot || inClashDropdown) return;
+      window.setTimeout(() => {
+        void commitCellEdit();
+      }, 0);
+    };
+    document.addEventListener("mousedown", onDocumentMouseDown, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocumentMouseDown, true);
+    };
+  }, [editingCell, commitCellEdit]);
 
   useEffect(() => {
     editingFixedShelfRef.current = editingFixedShelf;
@@ -18148,7 +18419,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           autoFocus
                                           title={warningForCell(row.id, "room") || undefined}
                                           value={editingCellValue}
-                                          onChange={(e) => setEditingCellValue(e.target.value)}
+                                          onChange={(e) => {
+                                            editingCellValueRef.current = e.target.value;
+                                            setEditingCellValue(e.target.value);
+                                          }}
                                           onBlur={() => void commitCellEdit()}
                                           onKeyDown={(e) => {
                                             if (e.key === "Enter") {
@@ -18190,7 +18464,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             <select
                                               autoFocus
                                               value={editingCellValue}
-                                              onChange={(e) => setEditingCellValue(e.target.value)}
+                                              onChange={(e) => {
+                                                editingCellValueRef.current = e.target.value;
+                                                setEditingCellValue(e.target.value);
+                                              }}
                                               onBlur={() => void commitCellEdit()}
                                               onKeyDown={(e) => {
                                                 if (e.key === "Enter") {
@@ -18517,37 +18794,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 </div>
                                               </div>
                                             ) : (
-                                              <div className="grid grid-cols-2 gap-1">
-                                                <BoardPillDropdown
+                                              <div data-cutlist-clashing-edit={row.id} className="grid grid-cols-2 gap-1">
+                                                <CompactPlainDropdown
+                                                  autoFocus
                                                   value={editingClashLeft}
                                                   options={CLASH_LEFT_OPTIONS}
                                                   disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                                  bg="#FFFFFF"
-                                                  border="#94A3B8"
-                                                  text="#0F172A"
-                                                  size="compact"
-                                                  matchDrawerArrow={isDrawerPartType(row.partType)}
-                                                  getSize={() => ""}
-                                                  getLabel={(v) => v}
-                                                  onChange={(next) => setEditingClashLeft(next)}
+                                                  onChange={(next) => {
+                                                    editingClashLeftRef.current = next;
+                                                    setEditingClashLeft(next);
+                                                  }}
+                                                  onCommit={() => void commitCellEdit()}
+                                                  onCancel={cancelCellEdit}
                                                 />
-                                                <BoardPillDropdown
+                                                <CompactPlainDropdown
                                                   value={editingClashRight}
                                                   options={CLASH_RIGHT_OPTIONS}
                                                   disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                                  bg="#FFFFFF"
-                                                  border="#94A3B8"
-                                                  text="#0F172A"
-                                                  size="compact"
-                                                  matchDrawerArrow={isDrawerPartType(row.partType)}
-                                                  getSize={() => ""}
-                                                  getLabel={(v) => v}
                                                   onChange={(next) => {
+                                                    editingClashRightRef.current = next;
                                                     setEditingClashRight(next);
-                                                    window.setTimeout(() => {
-                                                      void commitCellEdit();
-                                                    }, 0);
                                                   }}
+                                                  onCommit={() => void commitCellEdit()}
+                                                  onCancel={cancelCellEdit}
                                                 />
                                               </div>
                                             )
@@ -18855,33 +19124,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         >
                                           {col.key === "name"
                                             ? editingDoorHinges
-                                              ? renderDoorHingeEditor({
-                                                  upValues: editingHingesUp,
-                                                  downValues: editingHingesDown,
-                                                  onChange: (direction, index, next) => {
-                                                    if (direction === "up") {
-                                                      const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
-                                                      editingHingesUpRef.current = values;
-                                                      setEditingHingesUp(values);
-                                                      return;
-                                                    }
-                                                    const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
-                                                    editingHingesDownRef.current = values;
-                                                    setEditingHingesDown(values);
-                                                  },
-                                                  disabled: productionReadOnly,
-                                                  bg: "#FFFFFF",
-                                                  border: "#94A3B8",
-                                                  text: "#0F172A",
-                                                  rowKey: row.id,
-                                                  rowLabel: cutlistRowLabelFor(row, "Entry"),
-                                                  maxValue: maxDoorHingeValueForRowLike(row),
-                                                  onBlur: () => {
-                                                    window.setTimeout(() => {
-                                                      void commitCellEdit();
-                                                    }, 0);
-                                                  },
-                                                })
+                                              ? (
+                                                <div data-cutlist-door-hinges-edit={row.id}>
+                                                  {renderDoorHingeEditor({
+                                                    upValues: editingHingesUp,
+                                                    downValues: editingHingesDown,
+                                                    onChange: (direction, index, next) => {
+                                                      if (direction === "up") {
+                                                        const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
+                                                        editingHingesUpRef.current = values;
+                                                        setEditingHingesUp(values);
+                                                        return;
+                                                      }
+                                                      const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
+                                                      editingHingesDownRef.current = values;
+                                                      setEditingHingesDown(values);
+                                                    },
+                                                    disabled: productionReadOnly,
+                                                    bg: "#FFFFFF",
+                                                    border: "#94A3B8",
+                                                      text: "#0F172A",
+                                                      rowKey: row.id,
+                                                      rowLabel: cutlistRowLabelFor(row, "Entry"),
+                                                      maxValue: maxDoorHingeValueForRowLike(row),
+                                                      onBlur: (event) => onDoorHingeInputBlur(event, row.id),
+                                                      onCommit: () => void commitCellEdit(),
+                                                    })}
+                                                  </div>
+                                                )
                                               : renderDoorHingeDisplay(
                                                   normalizeDoorHingeValues(row.hingesUp),
                                                   normalizeDoorHingeValues(row.hingesDown),
@@ -21571,7 +21841,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           <select
                                             autoFocus
                                             value={editingCellValue}
-                                            onChange={(e) => setEditingCellValue(e.target.value)}
+                                            onChange={(e) => {
+                                              editingCellValueRef.current = e.target.value;
+                                              setEditingCellValue(e.target.value);
+                                            }}
                                             onBlur={() => void commitCellEdit()}
                                             onKeyDown={(e) => {
                                               if (e.key === "Enter") {
@@ -21610,7 +21883,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               <select
                                                 autoFocus
                                                 value={editingCellValue}
-                                                onChange={(e) => setEditingCellValue(e.target.value)}
+                                                onChange={(e) => {
+                                                  editingCellValueRef.current = e.target.value;
+                                                  setEditingCellValue(e.target.value);
+                                                }}
                                                 onBlur={() => void commitCellEdit()}
                                                 onKeyDown={(e) => {
                                                   if (e.key === "Enter") {
@@ -21869,92 +22145,82 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 </div>
                                               ) : rowIsDoor ? (
                                                 <div className="grid content-start gap-[4px] text-left">
-                                                  <div className="grid grid-cols-2 gap-1">
-                                                    <BoardPillDropdown
+                                                  <div data-cutlist-clashing-edit={row.id} className="grid grid-cols-2 gap-1">
+                                                    <CompactPlainDropdown
+                                                      autoFocus
                                                       value={editingClashLeft}
                                                       options={CLASH_LEFT_OPTIONS}
                                                       disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                                      bg="#FFFFFF"
-                                                      border="#94A3B8"
-                                                      text="#0F172A"
-                                                      size="compact"
-                                                      getSize={() => ""}
-                                                      getLabel={(v) => v}
-                                                      onChange={(next) => setEditingClashLeft(next)}
+                                                      onChange={(next) => {
+                                                        editingClashLeftRef.current = next;
+                                                        setEditingClashLeft(next);
+                                                      }}
+                                                      onCommit={() => void commitCellEdit()}
+                                                      onCancel={cancelCellEdit}
                                                     />
-                                                    <BoardPillDropdown
+                                                    <CompactPlainDropdown
                                                       value={editingClashRight}
                                                       options={CLASH_RIGHT_OPTIONS}
                                                       disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                                      bg="#FFFFFF"
-                                                      border="#94A3B8"
-                                                      text="#0F172A"
-                                                      size="compact"
-                                                      getSize={() => ""}
-                                                      getLabel={(v) => v}
-                                                      onChange={(next) => setEditingClashRight(next)}
+                                                      onChange={(next) => {
+                                                        editingClashRightRef.current = next;
+                                                        setEditingClashRight(next);
+                                                      }}
+                                                      onCommit={() => void commitCellEdit()}
+                                                      onCancel={cancelCellEdit}
                                                     />
                                                   </div>
-                                                  {renderDoorHingeEditor({
-                                                    upValues: editingHingesUp,
-                                                    downValues: editingHingesDown,
-                                                    onChange: (direction, index, next) => {
-                                                      if (direction === "up") {
-                                                        const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
-                                                        editingHingesUpRef.current = values;
-                                                        setEditingHingesUp(values);
-                                                        return;
-                                                      }
-                                                      const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
-                                                      editingHingesDownRef.current = values;
-                                                      setEditingHingesDown(values);
-                                                    },
-                                                    disabled: productionReadOnly,
-                                                    bg: "#FFFFFF",
-                                                    border: "#94A3B8",
-                                                    text: "#0F172A",
-                                                    rowKey: row.id,
-                                                    rowLabel: cutlistRowLabelFor(row, "Entry"),
-                                                    maxValue: maxDoorHingeValueForRowLike(row),
-                                                    onBlur: () => {
-                                                      window.setTimeout(() => {
-                                                        void commitCellEdit();
-                                                      }, 0);
-                                                    },
-                                                  })}
-                                                </div>
+                                                  <div data-cutlist-door-hinges-edit={row.id}>
+                                                    {renderDoorHingeEditor({
+                                                      upValues: editingHingesUp,
+                                                      downValues: editingHingesDown,
+                                                      onChange: (direction, index, next) => {
+                                                        if (direction === "up") {
+                                                          const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
+                                                          editingHingesUpRef.current = values;
+                                                          setEditingHingesUp(values);
+                                                          return;
+                                                        }
+                                                        const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
+                                                        editingHingesDownRef.current = values;
+                                                        setEditingHingesDown(values);
+                                                      },
+                                                      disabled: productionReadOnly,
+                                                      bg: "#FFFFFF",
+                                                      border: "#94A3B8",
+                                                        text: "#0F172A",
+                                                        rowKey: row.id,
+                                                        rowLabel: cutlistRowLabelFor(row, "Entry"),
+                                                        maxValue: maxDoorHingeValueForRowLike(row),
+                                                        onBlur: (event) => onDoorHingeInputBlur(event, row.id),
+                                                        onCommit: () => void commitCellEdit(),
+                                                      })}
+                                                    </div>
+                                                  </div>
                                               ) : (
-                                              <div className="grid grid-cols-2 gap-1">
-                                                  <BoardPillDropdown
+                                                <div data-cutlist-clashing-edit={row.id} className="grid grid-cols-2 gap-1">
+                                                  <CompactPlainDropdown
+                                                    autoFocus
                                                     value={editingClashLeft}
                                                     options={CLASH_LEFT_OPTIONS}
                                                     disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                                    bg="#FFFFFF"
-                                                    border="#94A3B8"
-                                                    text="#0F172A"
-                                                    size="compact"
-                                                    matchDrawerArrow={isDrawerPartType(row.partType)}
-                                                    getSize={() => ""}
-                                                    getLabel={(v) => v}
-                                                    onChange={(next) => setEditingClashLeft(next)}
+                                                    onChange={(next) => {
+                                                      editingClashLeftRef.current = next;
+                                                      setEditingClashLeft(next);
+                                                    }}
+                                                    onCommit={() => void commitCellEdit()}
+                                                    onCancel={cancelCellEdit}
                                                   />
-                                                  <BoardPillDropdown
+                                                  <CompactPlainDropdown
                                                     value={editingClashRight}
                                                     options={CLASH_RIGHT_OPTIONS}
                                                     disabled={productionReadOnly || isDrawerPartType(row.partType)}
-                                                    bg="#FFFFFF"
-                                                    border="#94A3B8"
-                                                    text="#0F172A"
-                                                    size="compact"
-                                                    matchDrawerArrow={isDrawerPartType(row.partType)}
-                                                    getSize={() => ""}
-                                                    getLabel={(v) => v}
                                                     onChange={(next) => {
+                                                      editingClashRightRef.current = next;
                                                       setEditingClashRight(next);
-                                                      window.setTimeout(() => {
-                                                        void commitCellEdit();
-                                                      }, 0);
                                                     }}
+                                                    onCommit={() => void commitCellEdit()}
+                                                    onCancel={cancelCellEdit}
                                                   />
                                                 </div>
                                               )
