@@ -16,6 +16,23 @@ export interface CompanyMember {
   email: string;
 }
 
+export interface ProjectImageAnnotation {
+  id: string;
+  x: number;
+  y: number;
+  xPx?: number;
+  yPx?: number;
+  note: string;
+  createdByName?: string;
+  createdByColor?: string;
+}
+
+export interface ProjectImageItem {
+  url: string;
+  name: string;
+  annotations?: ProjectImageAnnotation[];
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -43,6 +60,7 @@ export interface Project {
   region?: string;
   projectFiles?: Array<Record<string, unknown>>;
   projectImages?: string[];
+  projectImageItems?: ProjectImageItem[];
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
 }

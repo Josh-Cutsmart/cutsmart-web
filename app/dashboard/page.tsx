@@ -205,6 +205,11 @@ function initials(text: string) {
   return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
 }
 
+function assignedDisplayName(project: Project) {
+  const value = String(project.assignedToName || project.assignedTo || "").trim();
+  return value.toLowerCase() === "unassigned" ? "" : value;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
@@ -339,7 +344,8 @@ export default function DashboardPage() {
       const fallbackCompanyId = String(items[0]?.companyId || "").trim();
       const companyId = storedCompanyId || fallbackCompanyId;
       const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
-      const userColorMap = await fetchUserColorMapByUids(creatorUids, companyId);
+      const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
+      const userColorMap = await fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId);
       setCreatorColorByUid(userColorMap);
       if (companyId) {
         const [companyDoc, members] = await Promise.all([
@@ -539,7 +545,7 @@ export default function DashboardPage() {
       }
 
       const tagsText = (project.tags || []).join(" ");
-      const haystack = `${project.name} ${project.createdByName} ${statusLabel} ${tagsText}`.toLowerCase();
+      const haystack = `${project.name} ${assignedDisplayName(project)} ${statusLabel} ${tagsText}`.toLowerCase();
       if (search && !haystack.includes(search.toLowerCase())) {
         return false;
       }
@@ -1352,16 +1358,20 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="mt-2 flex items-center gap-2 text-[12px]">
-                          <span
-                            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                            style={{
-                              backgroundColor:
-                                creatorColorByUid[String(project.createdByUid || "").trim()] || companyThemeColor,
-                            }}
-                          >
-                            {initials(project.createdByName)}
-                          </span>
-                          <span style={{ color: dashboardPalette.text }}>{project.createdByName || "-"}</span>
+                          {assignedDisplayName(project) ? (
+                            <>
+                              <span
+                                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                                style={{
+                                  backgroundColor:
+                                    creatorColorByUid[String(project.assignedToUid || "").trim()] || companyThemeColor,
+                                }}
+                              >
+                                {initials(assignedDisplayName(project))}
+                              </span>
+                              <span style={{ color: dashboardPalette.text }}>{assignedDisplayName(project)}</span>
+                            </>
+                          ) : null}
                         </div>
 
                         <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2" style={{ color: dashboardPalette.textSoft }}>
@@ -1392,7 +1402,7 @@ export default function DashboardPage() {
                     <tr className="border-b" style={{ borderBottomColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
                       <th className="pb-2 pl-[10px] text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Project Name</th>
                       <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Tags</th>
-                      <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Creator</th>
+                      <th className="pb-2 text-left text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Assigned</th>
                       <th className="pb-2 text-center text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Created</th>
                       <th className="pb-2 text-center text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>Modified</th>
                       <th className="w-[200px] pb-2 text-right text-[11px] font-bold" style={{ color: dashboardPalette.textMuted }}>
@@ -1458,16 +1468,20 @@ export default function DashboardPage() {
                       </td>
                       <td className="py-[7px]" style={{ backgroundColor: rowBg }}>
                         <div className="flex items-center gap-2 text-[12px]">
-                          <span
-                            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                            style={{
-                              backgroundColor:
-                                creatorColorByUid[String(project.createdByUid || "").trim()] || companyThemeColor,
-                            }}
-                          >
-                            {initials(project.createdByName)}
-                          </span>
-                          <span style={{ color: dashboardPalette.text }}>{project.createdByName || "-"}</span>
+                          {assignedDisplayName(project) ? (
+                            <>
+                              <span
+                                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                                style={{
+                                  backgroundColor:
+                                    creatorColorByUid[String(project.assignedToUid || "").trim()] || companyThemeColor,
+                                }}
+                              >
+                                {initials(assignedDisplayName(project))}
+                              </span>
+                              <span style={{ color: dashboardPalette.text }}>{assignedDisplayName(project)}</span>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                       <td className="py-[7px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.createdAt)}</td>

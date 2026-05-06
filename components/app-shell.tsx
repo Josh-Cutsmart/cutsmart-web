@@ -25,13 +25,14 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import {
   cleanupCompletedReportsForNewVersion,
+  fetchAppChangelogHistory,
   fetchCompanyDoc,
   fetchCompanyMembers,
   fetchUserUpdateNoticeSeenVersions,
   markUserUpdateNoticeSeen,
   resyncCompanyProjectTagUsage,
-    saveCompanyDocPatchDetailed,
     syncCompanyClientProfileFromProject,
+    syncAppChangelogHistory,
     upsertCompanyClientProfileOnProjectCreate,
   } from "@/lib/firestore-data";
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
@@ -40,6 +41,7 @@ import { Button } from "@/components/ui/button";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import type { ProjectImageItem } from "@/lib/types";
 import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
 import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -85,6 +87,30 @@ function hasPermissionKey(permissionKeys: string[] | undefined, key: string): bo
     const normalized = String(item || "").trim().toLowerCase();
     return normalized === "company.*" || normalized === target;
   });
+}
+
+function rolePriority(role: string): number {
+  const normalized = String(role || "").trim().toLowerCase();
+  if (normalized === "owner") return 3;
+  if (normalized === "admin") return 2;
+  return 1;
+}
+
+function mergeRoleValue(primary: string, fallback: string): string {
+  const first = String(primary || "").trim().toLowerCase();
+  const second = String(fallback || "").trim().toLowerCase();
+  if (!first) return second;
+  if (!second) return first;
+  return rolePriority(first) >= rolePriority(second) ? first : second;
+}
+
+function mergePermissionValues(primary: string[] | undefined, fallback: string[] | undefined): string[] {
+  return Array.from(
+    new Set([
+      ...(primary ?? []).map((item) => String(item || "").trim()).filter(Boolean),
+      ...(fallback ?? []).map((item) => String(item || "").trim()).filter(Boolean),
+    ]),
+  );
 }
 
 function initials(name: string) {
@@ -199,6 +225,7 @@ function notesHtmlIsEmpty(value: string): boolean {
 }
 
 type LocalPhoto = { id: string; file: File; previewUrl: string; aspectRatio: number };
+type PrefilledProjectImage = ProjectImageItem & { id: string };
 type StaffOption = { uid: string; name: string; email: string };
 type PreviewRect = { left: number; top: number; width: number; height: number };
 type PreviewAnimState = {
@@ -227,6 +254,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [isTagInputOpen, setIsTagInputOpen] = useState(false);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
+  const [prefilledProjectImages, setPrefilledProjectImages] = useState<PrefilledProjectImage[]>([]);
   const [hoveredPhotoId, setHoveredPhotoId] = useState("");
   const [previewPhotoId, setPreviewPhotoId] = useState("");
   const [previewAnim, setPreviewAnim] = useState<PreviewAnimState | null>(null);
@@ -269,35 +297,37 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const roleForUi = String(effectiveCompanyRole || user?.role || "").trim().toLowerCase();
 
   const canCreateForOthers = useMemo(() => {
-    const perms = normalizedEffectivePermissions;
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return perms.includes("projects.create.others");
+    return hasPermissionKey(normalizedEffectivePermissions, "projects.create.others");
   }, [normalizedEffectivePermissions, roleForUi]);
 
   const canCreateProject = useMemo(() => {
-    const perms = normalizedEffectivePermissions;
+    if (user) return true;
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return perms.includes("projects.create") || perms.includes("projects.create.others");
-  }, [normalizedEffectivePermissions, roleForUi]);
+    return (
+      hasPermissionKey(normalizedEffectivePermissions, "projects.create") ||
+      hasPermissionKey(normalizedEffectivePermissions, "projects.create.others")
+    );
+  }, [normalizedEffectivePermissions, roleForUi, user]);
 
   const canAccessCompanySettings = useMemo(() => {
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return normalizedEffectivePermissions.includes("company.settings");
+    return hasPermissionKey(normalizedEffectivePermissions, "company.settings");
   }, [normalizedEffectivePermissions, roleForUi]);
 
   const canAccessDashboard = useMemo(() => {
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return normalizedEffectivePermissions.includes("company.dashboard.view");
+    return hasPermissionKey(normalizedEffectivePermissions, "company.dashboard.view");
   }, [normalizedEffectivePermissions, roleForUi]);
 
   const canAccessLeads = useMemo(() => {
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return normalizedEffectivePermissions.includes("leads.*");
+    return hasPermissionKey(normalizedEffectivePermissions, "leads.*");
   }, [normalizedEffectivePermissions, roleForUi]);
 
   const canAccessClients = useMemo(() => {
@@ -306,25 +336,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     return hasPermissionKey(normalizedEffectivePermissions, "company.clients");
   }, [normalizedEffectivePermissions, roleForUi]);
 
-  const visibleTopNav = useMemo(
-    () =>
-      topNav.filter((item) => {
-        if (item.href === "/dashboard") {
-          return canAccessDashboard;
-        }
-        if (item.href === "/leads") {
-          return canAccessLeads && isZapierLeadsEnabled;
-        }
-        if (item.href === "/clients") {
-          return canAccessClients;
-        }
-        if (item.href === "/company-settings") {
-          return canAccessCompanySettings;
-        }
-        return true;
-      }),
-    [canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads, isZapierLeadsEnabled],
-  );
+  const visibleTopNav = useMemo(() => topNav, []);
 
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
@@ -357,6 +369,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     const onOpenNewProject = (event: Event) => {
       const detail = (event as CustomEvent<NewProjectPrefillPayload | undefined>).detail ?? {};
       const fallbackName = splitFullName(String(detail.clientName || "").trim());
+      const prefilledAssigneeUid = String(detail.assignedToUid || "").trim();
       setProjectName(String(detail.projectName || "").trim());
       setClientFirstName(String(detail.clientFirstName || fallbackName.firstName || "").trim());
       setClientLastName(String(detail.clientLastName || fallbackName.lastName || "").trim());
@@ -364,6 +377,42 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setClientEmail(String(detail.clientEmail || "").trim());
       setProjectAddress(String(detail.projectAddress || "").trim());
       setProjectNotes(String(detail.projectNotes || "").trim());
+      setPrefilledProjectImages(
+        Array.isArray(detail.projectImageItems) && detail.projectImageItems.length > 0
+          ? detail.projectImageItems
+              .map((item, idx) => ({
+                id: `prefilled_${idx}_${String(item?.url || "").trim()}`,
+                url: String(item?.url || "").trim(),
+                name: String(item?.name || "").trim(),
+                annotations: Array.isArray(item?.annotations)
+                  ? item.annotations
+                      .map((annotation) => ({
+                        id: String(annotation?.id || "").trim(),
+                        x: Number(annotation?.x ?? 0),
+                        y: Number(annotation?.y ?? 0),
+                        xPx: Number.isFinite(Number(annotation?.xPx)) ? Number(annotation?.xPx) : undefined,
+                        yPx: Number.isFinite(Number(annotation?.yPx)) ? Number(annotation?.yPx) : undefined,
+                        note: String(annotation?.note || "").trim(),
+                        createdByName: String(annotation?.createdByName || "").trim(),
+                        createdByColor: String(annotation?.createdByColor || "").trim(),
+                      }))
+                      .filter((annotation) => annotation.id && annotation.note)
+                  : [],
+              }))
+              .filter((item) => item.url)
+              .slice(0, 10)
+          : Array.isArray(detail.projectImages)
+            ? detail.projectImages
+                .map((url, idx) => ({
+                  id: `prefilled_${idx}_${String(url || "").trim()}`,
+                  url: String(url || "").trim(),
+                  name: "",
+                  annotations: [],
+                }))
+                .filter((item) => item.url)
+                .slice(0, 10)
+            : [],
+      );
       setProjectFormError("");
       setTagInput("");
       setTags([]);
@@ -374,6 +423,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setPreviewPhotoId("");
       setAssigneeSearch("");
       setAssigneeMenuOpen(false);
+      setAssigneeUid(prefilledAssigneeUid);
       setIsNewProjectNotesEditing(false);
       setShowNewProject(true);
     };
@@ -459,8 +509,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
       return;
     }
-    setEffectiveCompanyRole(cached.role || role);
-    setEffectiveCompanyPermissions(cached.permissionKeys);
+    setEffectiveCompanyRole(mergeRoleValue(cached.role, role));
+    setEffectiveCompanyPermissions(mergePermissionValues(cached.permissionKeys, Array.isArray(user?.permissions) ? user.permissions : []));
     setIsZapierLeadsEnabled(cached.isZapierLeadsEnabled);
   }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
 
@@ -589,26 +639,20 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         const directCompanyId = String(user?.companyId || "").trim();
         const fallbackMembership = !directCompanyId && uid ? await fetchPrimaryMembership(uid) : null;
         const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-        if (version && companyId) {
-          const companyDocData = await fetchCompanyDoc(companyId);
-          const existing = normalizeChangelogHistory((companyDocData as Record<string, unknown> | null)?.changelogHistory);
+        if (version) {
+          const existing = await fetchAppChangelogHistory();
           const matched = existing.find(
             (row) => String(row.version || "").trim().toLowerCase() === version.toLowerCase(),
           );
           const canonicalWhatsNew = String(matched?.whatsNew || whatsNew || "").trim();
           setUpdateNoticeText(canonicalWhatsNew);
-          const alreadyExists = Boolean(matched);
-          if (!alreadyExists) {
-            const nextHistory = [
-              ...existing,
-              {
-                version,
-                whatsNew: canonicalWhatsNew,
-                capturedAtIso: new Date().toISOString(),
-              },
-            ];
-            await saveCompanyDocPatchDetailed(companyId, { changelogHistory: nextHistory });
-          }
+          await syncAppChangelogHistory([
+            {
+              version,
+              whatsNew: canonicalWhatsNew,
+              capturedAtIso: matched?.capturedAtIso || new Date().toISOString(),
+            },
+          ]);
         } else {
           setUpdateNoticeText(whatsNew);
         }
@@ -667,15 +711,17 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       const cacheKey = buildCompanyAccessCacheKey(companyId, user.uid);
       const cached = readCompanyAccessCache(cacheKey);
       if (cached && !cancelled) {
-        setEffectiveCompanyRole(cached.role || String(user?.role || "").trim().toLowerCase());
-        setEffectiveCompanyPermissions(cached.permissionKeys);
+        setEffectiveCompanyRole(mergeRoleValue(cached.role, String(user?.role || "").trim().toLowerCase()));
+        setEffectiveCompanyPermissions(mergePermissionValues(cached.permissionKeys, Array.isArray(user?.permissions) ? user.permissions : []));
         setIsZapierLeadsEnabled(cached.isZapierLeadsEnabled);
-        return;
       }
       const companyAccess = await fetchCompanyAccess(companyId, user.uid);
       if (cancelled) return;
-      const nextRole = String(companyAccess?.role || user?.role || "").trim().toLowerCase();
-      const nextPermissions = companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []);
+      const nextRole = mergeRoleValue(String(companyAccess?.role || "").trim().toLowerCase(), String(user?.role || "").trim().toLowerCase());
+      const nextPermissions = mergePermissionValues(
+        companyAccess?.permissionKeys,
+        Array.isArray(user?.permissions) ? user.permissions : [],
+      );
       setEffectiveCompanyRole(nextRole);
       setEffectiveCompanyPermissions(nextPermissions);
       writeCompanyAccessCache(cacheKey, {
@@ -894,6 +940,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     setIsTagInputOpen(false);
     setShowTagSuggestions(false);
     setPhotos([]);
+    setPrefilledProjectImages([]);
     setPreviewPhotoId("");
     setPreviewAnim(null);
     setPreviewBackdropOpacity(0);
@@ -969,9 +1016,13 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       }),
     );
     setPhotos((prev) => {
-      const room = Math.max(0, 5 - prev.length);
+      const room = Math.max(0, 10 - prefilledProjectImages.length - prev.length);
       return [...prev, ...prepared.slice(0, room)];
     });
+  };
+
+  const removePrefilledProjectImage = (id: string) => {
+    setPrefilledProjectImages((prev) => prev.filter((image) => image.id !== id));
   };
 
   const removePhoto = (id: string) => {
@@ -1184,6 +1235,31 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         );
         uploadedImageUrls = uploaded.filter(Boolean);
       }
+      const projectImageUrls = [
+        ...prefilledProjectImages.map((image) => String(image.url || "").trim()).filter(Boolean),
+        ...uploadedImageUrls,
+      ].slice(0, 10);
+      const projectImageItems: ProjectImageItem[] = [
+        ...prefilledProjectImages.map((image) => ({
+          url: String(image.url || "").trim(),
+          name: String(image.name || "").trim(),
+          annotations: Array.isArray(image.annotations)
+            ? image.annotations.map((annotation) => ({
+                id: String(annotation.id || "").trim(),
+                x: Number(annotation.x ?? 0),
+                y: Number(annotation.y ?? 0),
+                xPx: Number.isFinite(Number(annotation.xPx)) ? Number(annotation.xPx) : undefined,
+                yPx: Number.isFinite(Number(annotation.yPx)) ? Number(annotation.yPx) : undefined,
+                note: String(annotation.note || "").trim(),
+                createdByName: String(annotation.createdByName || "").trim(),
+                createdByColor: String(annotation.createdByColor || "").trim(),
+              }))
+            : [],
+        })),
+        ...uploadedImageUrls.map((url) => ({ url, name: "", annotations: [] })),
+      ]
+        .filter((item) => item.url)
+        .slice(0, 10);
       const projectSettings = {
         boardTypes: [],
         projectPermissions: {},
@@ -1218,7 +1294,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         status: defaultProjectStatus || "New",
         tags,
         isDeleted: false,
-        projectImages: uploadedImageUrls,
+        projectImages: projectImageUrls,
+        projectImageItems,
         cutlist: { rows: [] },
         cutlistJson: { rows: [] },
         projectSettings,
@@ -1249,7 +1326,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               clientEmail: clientEmail.trim(),
               clientAddress: projectAddress.trim(),
               projectFiles: [],
-              projectImages: uploadedImageUrls,
+              projectImages: projectImageUrls,
+              projectImageItems,
               projectSettings,
             }),
           });
@@ -1274,7 +1352,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               clientEmail: clientEmail.trim(),
               clientAddress: projectAddress.trim(),
               projectFiles: [],
-              projectImages: uploadedImageUrls,
+              projectImages: projectImageUrls,
+              projectImageItems,
               projectSettings,
             });
           }
@@ -1298,7 +1377,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             clientEmail: clientEmail.trim(),
             clientAddress: projectAddress.trim(),
             projectFiles: [],
-            projectImages: uploadedImageUrls,
+            projectImages: projectImageUrls,
+            projectImageItems,
             projectSettings,
           });
         }
@@ -1906,12 +1986,18 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 </div>
               </div>
               <div className={modalRowClass}>
-                <p className={modalSectionLabelClass}>Photos (max 5)</p>
+                <p className={modalSectionLabelClass}>Photos (max 10)</p>
                 <div
                   className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5"
                 >
-                  {Array.from({ length: Math.min(photos.length + 1, 5) }).map((_, idx) => {
-                    const photo = photos[idx] ?? null;
+                  {Array.from({
+                    length: Math.min(prefilledProjectImages.length + photos.length + 1, 10),
+                  }).map((_, idx) => {
+                    const prefilledImage = prefilledProjectImages[idx] ?? null;
+                    const photo =
+                      idx >= prefilledProjectImages.length
+                        ? (photos[idx - prefilledProjectImages.length] ?? null)
+                        : null;
                     return (
                       <div
                         key={`photo_slot_${idx}`}
@@ -1919,7 +2005,54 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                         style={{ height: 88, minHeight: 88 }}
                         onMouseLeave={() => setHoveredPhotoId("")}
                       >
-                        {photo ? (
+                        {prefilledImage ? (
+                          <>
+                            <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (typeof window !== "undefined") {
+                                    window.open(prefilledImage.url, "_blank", "noopener,noreferrer");
+                                  }
+                                }}
+                                className="flex h-full w-full cursor-zoom-in items-center justify-center leading-none"
+                                title="Click to enlarge"
+                              >
+                                <img
+                                  src={prefilledImage.url}
+                                  alt={`Lead photo ${idx + 1}`}
+                                  className="block h-full w-full object-cover"
+                                  style={{ objectFit: "cover", objectPosition: "center" }}
+                                />
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removePrefilledProjectImage(prefilledImage.id)}
+                              className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
+                              style={{
+                                bottom: 6,
+                                width: 24,
+                                height: 24,
+                                border: "1px solid #7F1D1D",
+                                background: "#EF4444",
+                                boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
+                                opacity: 1,
+                              }}
+                              aria-label="Remove photo"
+                            >
+                              <img
+                                src="/trash.png"
+                                alt="Delete"
+                                className="object-contain"
+                                style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+                            </button>
+                          </>
+                        ) : photo ? (
                           <>
                             <div
                               className="relative flex h-full items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent"

@@ -127,6 +127,13 @@ type ClientRow = {
   history: ClientHistoryRow[];
 };
 
+function toSummaryClientRow(row: ClientRow): ClientRow {
+  return {
+    ...row,
+    history: [],
+  };
+}
+
 function buildHistoryFromProject(project: Record<string, unknown>): ClientHistoryRow {
   return {
     projectId: toStr(project.id),
@@ -312,8 +319,26 @@ export async function GET(request: NextRequest) {
   }
   const url = new URL(request.url);
   const companyId = toStr(url.searchParams.get("companyId"));
+  const mode = toStr(url.searchParams.get("mode")).toLowerCase();
+  const clientId = toStr(url.searchParams.get("clientId"));
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
+  }
+
+  if (mode === "detail") {
+    if (!clientId) {
+      return NextResponse.json({ ok: false, error: "missing-client-id" }, { status: 400 });
+    }
+    try {
+      const clientSnap = await adminDb.collection("companies").doc(companyId).collection("clients").doc(clientId).get();
+      if (!clientSnap.exists) {
+        return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
+      }
+      const client = buildClientFromDoc(companyId, clientSnap.id, (clientSnap.data() ?? {}) as Record<string, unknown>);
+      return NextResponse.json({ ok: true, client });
+    } catch {
+      return NextResponse.json({ ok: false, error: "client-detail-load-failed" }, { status: 500 });
+    }
   }
 
   const merged = new Map<string, ClientRow>();
@@ -355,7 +380,10 @@ export async function GET(request: NextRequest) {
     return aName.localeCompare(bName);
   });
 
-  return NextResponse.json({ ok: true, clients });
+  return NextResponse.json({
+    ok: true,
+    clients: mode === "summary" ? clients.map((row) => toSummaryClientRow(row)) : clients,
+  });
 }
 
 export async function POST(request: NextRequest) {

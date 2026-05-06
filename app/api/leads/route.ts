@@ -70,6 +70,101 @@ function toIsoString(value: unknown, fallback = "") {
   return fallback;
 }
 
+function normalizeLeadImageItems(
+  value: unknown,
+): Array<{ url: string; name: string; annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }> }> {
+  if (!Array.isArray(value)) return [];
+  const items: Array<{
+    url: string;
+    name: string;
+    annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }>;
+  }> = [];
+  for (const item of value) {
+    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+    const url = toStr(row?.url);
+    const name = toStr(row?.name);
+    const annotations: Array<{ id: string; x: number; y: number; xPx?: number; yPx?: number; note: string; createdByName?: string; createdByColor?: string }> = [];
+    if (Array.isArray(row?.annotations)) {
+      for (const annotation of row.annotations) {
+        const next =
+          annotation && typeof annotation === "object"
+            ? (annotation as Record<string, unknown>)
+            : null;
+        const id = toStr(next?.id);
+        const note = toStr(next?.note);
+        const x = Number(next?.x);
+        const y = Number(next?.y);
+        const xPx = Number(next?.xPx);
+        const yPx = Number(next?.yPx);
+        if (!id || !note || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        annotations.push({
+          id,
+          note,
+          x: Math.min(100, Math.max(0, x)),
+          y: Math.min(100, Math.max(0, y)),
+          xPx: Number.isFinite(xPx) ? Math.max(0, xPx) : undefined,
+          yPx: Number.isFinite(yPx) ? Math.max(0, yPx) : undefined,
+          createdByName: toStr(next?.createdByName),
+          createdByColor: toStr(next?.createdByColor),
+        });
+      }
+    }
+    if (!url) continue;
+    items.push({ url, name, annotations });
+    if (items.length >= 10) break;
+  }
+  return items;
+}
+
+function buildLeadResponse(
+  companyId: string,
+  docId: string,
+  data: Record<string, unknown>,
+  mode: "summary" | "detail" = "detail",
+) {
+  const imageItems = mode === "detail" ? normalizeLeadImageItems(data.imageItems) : [];
+  const summaryImageUrls = Array.isArray(data.imageUrls)
+    ? data.imageUrls.map(String).filter(Boolean)
+    : Array.isArray(data.imageItems)
+      ? normalizeLeadImageItems(data.imageItems).map((item) => item.url)
+      : [];
+  return {
+    id: String(data.id ?? docId),
+    companyId,
+    name: toStr(data.name),
+    email: toStr(data.email),
+    phone: toStr(data.phone),
+    message: mode === "detail" ? toStr(data.message) : "",
+    formName: toStr(data.formName),
+    submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
+    createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+    updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
+    deletedAtIso: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
+    isDeleted: Boolean(data.isDeleted),
+    source: toStr(data.source) || "zapier-form",
+    status: (() => {
+      const raw = toStr(data.status);
+      return raw || "New";
+    })(),
+    assignedToUid: toStr(data.assignedToUid),
+    assignedToName: toStr(data.assignedToName || data.assignedTo),
+    assignedTo: toStr(data.assignedTo || data.assignedToName),
+    imageItems,
+    imageUrls:
+      mode === "detail"
+        ? imageItems.length
+          ? imageItems.map((item) => item.url)
+          : Array.isArray(data.imageUrls)
+            ? data.imageUrls.map(String).filter(Boolean)
+            : []
+        : summaryImageUrls,
+    rawFields:
+      data.rawFields && typeof data.rawFields === "object"
+        ? (data.rawFields as Record<string, unknown>)
+        : undefined,
+  };
+}
+
 export async function GET(request: NextRequest) {
   if (!adminDb || !hasFirebaseAdminConfig) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
@@ -79,11 +174,27 @@ export async function GET(request: NextRequest) {
     url.searchParams.get("companyId"),
     url.searchParams.get("companyID"),
   );
+  const mode = pickFirstNonEmpty(url.searchParams.get("mode")).toLowerCase() === "detail" ? "detail" : "summary";
+  const leadId = pickFirstNonEmpty(
+    url.searchParams.get("leadId"),
+    url.searchParams.get("leadID"),
+  );
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
   }
 
   try {
+    if (mode === "detail") {
+      if (!leadId) {
+        return NextResponse.json({ ok: false, error: "missing-lead-id" }, { status: 400 });
+      }
+      const docSnap = await adminDb.collection("companies").doc(companyId).collection("leads").doc(leadId).get();
+      if (!docSnap.exists) {
+        return NextResponse.json({ ok: false, error: "lead-not-found" }, { status: 404 });
+      }
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      return NextResponse.json({ ok: true, lead: buildLeadResponse(companyId, docSnap.id, data, "detail") });
+    }
     const snap = await adminDb
       .collection("companies")
       .doc(companyId)
@@ -91,32 +202,9 @@ export async function GET(request: NextRequest) {
       .orderBy("createdAt", "desc")
       .limit(500)
       .get();
-    const leads = snap.docs.map((docSnap) => {
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      return {
-        id: String(data.id ?? docSnap.id),
-        companyId,
-        name: toStr(data.name),
-        email: toStr(data.email),
-        phone: toStr(data.phone),
-        message: toStr(data.message),
-        formName: toStr(data.formName),
-        submittedAtIso: toIsoString(data.submittedAtIso ?? data.submittedAt, ""),
-        createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
-        updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
-        deletedAtIso: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
-        isDeleted: Boolean(data.isDeleted),
-        source: toStr(data.source) || "zapier-form",
-        status: (() => {
-          const raw = toStr(data.status);
-          return raw || "New";
-        })(),
-        rawFields:
-          data.rawFields && typeof data.rawFields === "object"
-            ? (data.rawFields as Record<string, unknown>)
-            : undefined,
-      };
-    });
+    const leads = snap.docs.map((docSnap) =>
+      buildLeadResponse(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>, "summary"),
+    );
     return NextResponse.json({ ok: true, leads });
   } catch {
     return NextResponse.json({ ok: false, error: "lead-read-failed" }, { status: 500 });
@@ -233,6 +321,15 @@ export async function PATCH(request: NextRequest) {
     body.lead_status,
     url.searchParams.get("status"),
   );
+  const imageUrlsRaw =
+    body.imageUrls ??
+    body.images ??
+    body.leadImages ??
+    url.searchParams.get("imageUrls");
+  const imageItemsRaw =
+    body.imageItems ??
+    body.leadImageItems ??
+    body.imagesDetailed;
   const deleteModeRaw = pickFirstNonEmpty(
     body.deleteMode,
     body.deleted,
@@ -243,15 +340,47 @@ export async function PATCH(request: NextRequest) {
     url.searchParams.get("isDeleted"),
   );
   const hasDeleteMode = deleteModeRaw !== "";
+  const normalizedImageItems = normalizeLeadImageItems(imageItemsRaw);
+  const hasImageItems = normalizedImageItems.length > 0 || Array.isArray(imageItemsRaw);
+  const hasImageUrls =
+    typeof imageUrlsRaw === "string"
+      ? imageUrlsRaw.trim() !== ""
+      : Array.isArray(imageUrlsRaw);
+  const imageUrls = Array.isArray(imageUrlsRaw)
+    ? imageUrlsRaw.map((value) => toStr(value)).filter(Boolean).slice(0, 10)
+    : typeof imageUrlsRaw === "string"
+      ? imageUrlsRaw.split(",").map((value) => toStr(value)).filter(Boolean).slice(0, 10)
+      : [];
   const isDeleted =
     hasDeleteMode &&
     ["true", "1", "yes", "on"].includes(String(deleteModeRaw || "").trim().toLowerCase());
+  const assignedToUid = pickFirstNonEmpty(
+    body.assignedToUid,
+    body.assignedUid,
+    body.assigned_to_uid,
+    url.searchParams.get("assignedToUid"),
+  );
+  const assignedToName = pickFirstNonEmpty(
+    body.assignedToName,
+    body.assignedName,
+    body.assigned_to_name,
+    body.assignedTo,
+    url.searchParams.get("assignedToName"),
+  );
+  const hasAssignmentPatch =
+    Object.prototype.hasOwnProperty.call(body, "assignedToUid") ||
+    Object.prototype.hasOwnProperty.call(body, "assignedUid") ||
+    Object.prototype.hasOwnProperty.call(body, "assigned_to_uid") ||
+    Object.prototype.hasOwnProperty.call(body, "assignedToName") ||
+    Object.prototype.hasOwnProperty.call(body, "assignedName") ||
+    Object.prototype.hasOwnProperty.call(body, "assigned_to_name") ||
+    Object.prototype.hasOwnProperty.call(body, "assignedTo");
 
-  if (!companyId || !leadId || (!status && !hasDeleteMode)) {
+  if (!companyId || !leadId || (!status && !hasDeleteMode && !hasImageUrls && !hasImageItems && !hasAssignmentPatch)) {
     return NextResponse.json(
       {
         ok: false,
-        error: !companyId ? "missing-company-id" : !leadId ? "missing-lead-id" : "missing-status",
+        error: !companyId ? "missing-company-id" : !leadId ? "missing-lead-id" : "missing-patch-fields",
       },
       { status: 400 },
     );
@@ -277,8 +406,30 @@ export async function PATCH(request: NextRequest) {
       patch.deletedAt = isDeleted ? FieldValue.serverTimestamp() : "";
       patch.deletedAtIso = isDeleted ? updatedAtIso : "";
     }
+    if (hasImageItems) {
+      patch.imageItems = normalizedImageItems;
+      patch.imageUrls = normalizedImageItems.map((item) => item.url);
+    } else if (hasImageUrls) {
+      patch.imageUrls = imageUrls;
+      patch.imageItems = imageUrls.map((url) => ({ url, name: "" }));
+    }
+    if (hasAssignmentPatch) {
+      patch.assignedToUid = assignedToUid || "";
+      patch.assignedToName = assignedToName || "";
+      patch.assignedTo = assignedToName || "";
+    }
     await leadRef.update(patch);
-    return NextResponse.json({ ok: true, leadId, status, isDeleted, updatedAtIso });
+    return NextResponse.json({
+      ok: true,
+      leadId,
+      status,
+      isDeleted,
+      assignedToUid: hasAssignmentPatch ? assignedToUid : undefined,
+      assignedToName: hasAssignmentPatch ? assignedToName : undefined,
+      imageUrls: hasImageItems ? normalizedImageItems.map((item) => item.url) : imageUrls,
+      imageItems: hasImageItems ? normalizedImageItems : imageUrls.map((url) => ({ url, name: "" })),
+      updatedAtIso,
+    });
   } catch {
     return NextResponse.json({ ok: false, error: "lead-status-update-failed" }, { status: 500 });
   }

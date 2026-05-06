@@ -6,7 +6,7 @@ import { ChevronDown, ChevronRight, Search, Users } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
-import { fetchCompanyActiveProjectIds, fetchCompanyClients, fetchCompanyDoc, type CompanyClientRow } from "@/lib/firestore-data";
+import { fetchCompanyClientById, fetchCompanyClients, fetchCompanyDoc, type CompanyClientRow } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 
@@ -50,10 +50,12 @@ export default function ClientsPage() {
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [search, setSearch] = useState("");
   const [clients, setClients] = useState<CompanyClientRow[]>([]);
+  const [clientDetailsById, setClientDetailsById] = useState<Record<string, CompanyClientRow>>({});
   const [expandedClientId, setExpandedClientId] = useState("");
+  const [activeCompanyId, setActiveCompanyId] = useState("");
   const [companyName, setCompanyName] = useState("Company");
-  const [activeProjectIds, setActiveProjectIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [detailLoadingClientId, setDetailLoadingClientId] = useState("");
   const [permissionKeys, setPermissionKeys] = useState<string[]>([]);
   const [accessResolved, setAccessResolved] = useState(false);
 
@@ -82,7 +84,9 @@ export default function ClientsPage() {
       const activeCompanyId = storedCompanyId || String(user?.companyId || membership?.companyId || "").trim();
       if (!activeCompanyId) {
         if (!cancelled) {
+          setActiveCompanyId("");
           setClients([]);
+          setClientDetailsById({});
           setCompanyName("Company");
           setPermissionKeys(Array.isArray(user?.permissions) ? user.permissions : []);
           setAccessResolved(true);
@@ -95,6 +99,7 @@ export default function ClientsPage() {
         user?.uid ? fetchCompanyAccess(activeCompanyId, user.uid) : Promise.resolve(null),
       ]);
       if (cancelled) return;
+      setActiveCompanyId(activeCompanyId);
       const nextPermissionKeys = access?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []);
       setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
       setPermissionKeys(nextPermissionKeys);
@@ -103,14 +108,13 @@ export default function ClientsPage() {
       const permitted = role === "owner" || role === "admin" || hasPermissionKey(nextPermissionKeys, "company.clients");
       if (!permitted) {
         setClients([]);
-        setActiveProjectIds(new Set());
+        setClientDetailsById({});
         setLoading(false);
         return;
       }
-      const projectIdsPromise = fetchCompanyActiveProjectIds(activeCompanyId);
       let companyClients: CompanyClientRow[] = [];
       try {
-        const response = await fetch(`/api/clients?companyId=${encodeURIComponent(activeCompanyId)}`, {
+        const response = await fetch(`/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary`, {
           method: "GET",
           cache: "no-store",
         });
@@ -123,10 +127,9 @@ export default function ClientsPage() {
       } catch {
         companyClients = await fetchCompanyClients(activeCompanyId);
       }
-      const projectIds = await projectIdsPromise;
       if (cancelled) return;
       setClients(companyClients);
-      setActiveProjectIds(projectIds);
+      setClientDetailsById({});
       setLoading(false);
     };
     void load();
@@ -151,7 +154,6 @@ export default function ClientsPage() {
         client.email,
         client.phone,
         client.address,
-        ...client.history.map((row) => row.projectName),
       ]
         .join(" ")
         .toLowerCase()
@@ -187,6 +189,41 @@ export default function ClientsPage() {
   const textSoft = isDarkMode ? "#CBD5E1" : "#667085";
   const zebra = isDarkMode ? "#172131" : "#F8FAFC";
   const rowHover = isDarkMode ? "#1E293B" : "#F1F5F9";
+
+  useEffect(() => {
+    if (!expandedClientId || !activeCompanyId || clientDetailsById[expandedClientId]) return;
+    let cancelled = false;
+    const loadClientDetail = async () => {
+      setDetailLoadingClientId(expandedClientId);
+      let detail: CompanyClientRow | null = null;
+      try {
+        const response = await fetch(
+          `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=detail&clientId=${encodeURIComponent(expandedClientId)}`,
+          {
+            method: "GET",
+            cache: "no-store",
+          },
+        );
+        const json = (await response.json().catch(() => null)) as { ok?: boolean; client?: CompanyClientRow } | null;
+        if (response.ok && json?.ok && json.client) {
+          detail = json.client;
+        } else {
+          detail = await fetchCompanyClientById(activeCompanyId, expandedClientId);
+        }
+      } catch {
+        detail = await fetchCompanyClientById(activeCompanyId, expandedClientId);
+      }
+      if (cancelled) return;
+      if (detail) {
+        setClientDetailsById((prev) => ({ ...prev, [expandedClientId]: detail }));
+      }
+      setDetailLoadingClientId((current) => (current === expandedClientId ? "" : current));
+    };
+    void loadClientDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCompanyId, clientDetailsById, expandedClientId]);
 
   return (
     <ProtectedRoute>
@@ -284,6 +321,8 @@ export default function ClientsPage() {
                       </div>
                       {letterClients.map((client, index) => {
                         const expanded = expandedClientId === client.id;
+                        const detail = clientDetailsById[client.id] ?? client;
+                        const detailLoading = expanded && detailLoadingClientId === client.id && !clientDetailsById[client.id];
                         return (
                           <div key={client.id}>
                             <button
@@ -314,19 +353,24 @@ export default function ClientsPage() {
                             </button>
                             {expanded ? (
                               <div className="border-b px-4 py-4 md:px-5" style={{ borderColor: border, backgroundColor: index % 2 === 1 ? panelBg : zebra }}>
+                                {detailLoading ? (
+                                  <div className="rounded-[14px] border p-4 text-[13px]" style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>
+                                    Loading client details...
+                                  </div>
+                                ) : (
                                 <div className="grid gap-4 xl:grid-cols-[320px_1fr]">
                                   <div className="rounded-[14px] border p-4" style={{ borderColor: border, backgroundColor: panelBg }}>
                                     <p className="text-[12px] font-extrabold uppercase tracking-[0.8px]" style={{ color: text }}>
                                       Client Profile
                                     </p>
                                     <div className="mt-3 space-y-2 text-[12px]" style={{ color: textSoft }}>
-                                      <p><span className="font-semibold" style={{ color: text }}>Name:</span> {client.name || "-"}</p>
-                                      <p><span className="font-semibold" style={{ color: text }}>Email:</span> {client.email || "-"}</p>
-                                      <p><span className="font-semibold" style={{ color: text }}>Phone:</span> {client.phone || "-"}</p>
-                                      <p><span className="font-semibold" style={{ color: text }}>Address:</span> {client.address || "-"}</p>
-                                      <p><span className="font-semibold" style={{ color: text }}>First Project:</span> {client.firstProjectAtIso ? formatClientDate(client.firstProjectAtIso) : "-"}</p>
-                                      <p><span className="font-semibold" style={{ color: text }}>Last Project:</span> {client.lastProjectAtIso ? formatClientDate(client.lastProjectAtIso) : "-"}</p>
-                                      <p><span className="font-semibold" style={{ color: text }}>Time Since Last Project:</span> {client.lastProjectAtIso ? timeSinceLabel(client.lastProjectAtIso) : "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>Name:</span> {detail.name || "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>Email:</span> {detail.email || "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>Phone:</span> {detail.phone || "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>Address:</span> {detail.address || "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>First Project:</span> {detail.firstProjectAtIso ? formatClientDate(detail.firstProjectAtIso) : "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>Last Project:</span> {detail.lastProjectAtIso ? formatClientDate(detail.lastProjectAtIso) : "-"}</p>
+                                      <p><span className="font-semibold" style={{ color: text }}>Time Since Last Project:</span> {detail.lastProjectAtIso ? timeSinceLabel(detail.lastProjectAtIso) : "-"}</p>
                                     </div>
                                   </div>
                                   <div className="rounded-[14px] border p-4" style={{ borderColor: border, backgroundColor: panelBg }}>
@@ -334,8 +378,8 @@ export default function ClientsPage() {
                                       Project History
                                     </p>
                                     <div className="mt-3 space-y-2">
-                                      {client.history.map((history) => {
-                                        const canOpenProject = activeProjectIds.has(String(history.projectId || "").trim());
+                                      {detail.history.map((history) => {
+                                        const canOpenProject = Boolean(String(history.projectId || "").trim());
                                         const rowBody = (
                                           <div
                                             className="flex items-center justify-between rounded-[10px] border px-3 py-2 text-[12px] transition-colors"
@@ -373,6 +417,7 @@ export default function ClientsPage() {
                                     </div>
                                   </div>
                                 </div>
+                                )}
                               </div>
                             ) : null}
                           </div>

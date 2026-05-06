@@ -57,6 +57,12 @@ function rolePriority(role: UserRole): number {
   return 1;
 }
 
+function strongerRole(primary: UserRole | null | undefined, secondary: UserRole | null | undefined): UserRole {
+  const first = primary ?? "staff";
+  const second = secondary ?? "staff";
+  return rolePriority(first) >= rolePriority(second) ? first : second;
+}
+
 function bestMembership(items: MembershipInfo[]): MembershipInfo | null {
   if (!items.length) {
     return null;
@@ -206,6 +212,59 @@ function permissionKeysFromRoleDef(roleDef: unknown): string[] {
   }
   const keys = flattenPermissionObject(perms as Record<string, unknown>);
   return Array.from(keys);
+}
+
+async function fetchUserAccountAccess(uid: string): Promise<CompanyAccessInfo | null> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) {
+    return null;
+  }
+  try {
+    const snap = await getDoc(doc(db, "users", userId));
+    if (!snap.exists()) {
+      return null;
+    }
+    const data = (snap.data() ?? {}) as Record<string, unknown>;
+    const permissionKeys = collectPermissionKeys(data);
+    const role =
+      normalizeRole(data.roleId ?? data.role) ??
+      deriveRoleFromPermissions(permissionKeys) ??
+      null;
+    if (!role && !permissionKeys.length) {
+      return null;
+    }
+    return {
+      role: role ?? "staff",
+      permissionKeys,
+      roleId: normalizeRoleId(data.roleId ?? data.role) || undefined,
+      displayName: String(data.displayName ?? data.name ?? "").trim() || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function mergeAccessWithUserAccount(baseAccess: CompanyAccessInfo | null, accountAccess: CompanyAccessInfo | null): CompanyAccessInfo | null {
+  if (!baseAccess && !accountAccess) {
+    return null;
+  }
+  if (!baseAccess) {
+    return accountAccess;
+  }
+  if (!accountAccess) {
+    return baseAccess;
+  }
+  return {
+    role: strongerRole(baseAccess.role, accountAccess.role),
+    permissionKeys: Array.from(
+      new Set([
+        ...baseAccess.permissionKeys.map((value) => String(value || "").trim()).filter(Boolean),
+        ...accountAccess.permissionKeys.map((value) => String(value || "").trim()).filter(Boolean),
+      ]),
+    ),
+    roleId: baseAccess.roleId || accountAccess.roleId,
+    displayName: baseAccess.displayName || accountAccess.displayName,
+  };
 }
 
 async function fetchRolePermissionsForCompany(companyId: string, roleId: string): Promise<string[]> {
@@ -485,13 +544,14 @@ export async function fetchCompanyAccess(companyId: string, uid: string): Promis
 
   const cid = String(companyId).trim();
   const userId = String(uid).trim();
+  const accountAccess = await fetchUserAccountAccess(userId);
 
   // Primary path used by desktop: companies/{companyId}/memberships/{uid}
   try {
     const direct = await getDoc(doc(db, "companies", cid, "memberships", userId));
     if (direct.exists()) {
       const data = (direct.data() ?? {}) as Record<string, unknown>;
-      return await resolveMembershipToAccess(cid, userId, data);
+      return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
     }
   } catch {
     // continue fallbacks
@@ -512,7 +572,7 @@ export async function fetchCompanyAccess(companyId: string, uid: string): Promis
         continue;
       }
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      return await resolveMembershipToAccess(cid, userId, data);
+      return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
     }
   } catch {
     // ignore
@@ -530,13 +590,13 @@ export async function fetchCompanyAccess(companyId: string, uid: string): Promis
         continue;
       }
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      return await resolveMembershipToAccess(cid, userId, data);
+      return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
     }
   } catch {
-    return null;
+    return accountAccess;
   }
 
-  return null;
+  return accountAccess;
 }
 
 export async function resolveCompanyIdForUid(

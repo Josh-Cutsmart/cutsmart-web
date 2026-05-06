@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
@@ -38,7 +38,7 @@ import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
-import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
+import type { Cutlist, Project, ProjectChange, ProjectImageAnnotation, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { storage } from "@/lib/firebase";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -1342,6 +1342,37 @@ function collectProjectImageRefs(project: Project | null): string[] {
         .filter(Boolean)
     : [];
   return Array.from(new Set([...direct.map((v) => String(v || "").trim()), ...fromFiles])).filter(Boolean);
+}
+
+function normalizeProjectImageItemsForViewer(project: Project | null): ProjectImageItem[] {
+  if (!project) return [];
+  if (Array.isArray(project.projectImageItems) && project.projectImageItems.length > 0) {
+    return project.projectImageItems
+      .map((item) => ({
+        url: String(item?.url || "").trim(),
+        name: String(item?.name || "").trim(),
+        annotations: Array.isArray(item?.annotations)
+          ? item.annotations
+              .map((annotation) => ({
+                id: String(annotation?.id || "").trim(),
+                x: Number(annotation?.x ?? 0),
+                y: Number(annotation?.y ?? 0),
+                xPx: Number.isFinite(Number(annotation?.xPx)) ? Number(annotation?.xPx) : undefined,
+                yPx: Number.isFinite(Number(annotation?.yPx)) ? Number(annotation?.yPx) : undefined,
+                note: String(annotation?.note || "").trim(),
+                createdByName: String(annotation?.createdByName || "").trim(),
+                createdByColor: String(annotation?.createdByColor || "").trim(),
+              }))
+              .filter((annotation) => annotation.id && annotation.note) as ProjectImageAnnotation[]
+          : [],
+      }))
+      .filter((item) => item.url)
+      .slice(0, 10);
+  }
+  return collectProjectImageRefs(project)
+    .map((url) => ({ url: String(url || "").trim(), name: "", annotations: [] as ProjectImageAnnotation[] }))
+    .filter((item) => item.url)
+    .slice(0, 10);
 }
 
 async function resolveProjectImageUrl(raw: string): Promise<string> {
@@ -3556,7 +3587,29 @@ export default function ProjectDetailsPage() {
   const [changes, setChanges] = useState<ProjectChange[]>([]);
   const [quotes, setQuotes] = useState<SalesQuote[]>([]);
   const [projectImageUrls, setProjectImageUrls] = useState<string[]>([]);
+  const [projectImageItemsResolved, setProjectImageItemsResolved] = useState<Array<ProjectImageItem & { resolvedUrl: string }>>([]);
   const [selectedProjectImageIndex, setSelectedProjectImageIndex] = useState(0);
+  const [projectImageViewerOpen, setProjectImageViewerOpen] = useState(false);
+  const [projectImageViewerPinsVisible, setProjectImageViewerPinsVisible] = useState(true);
+  const [projectImageViewerCommentsCollapsed, setProjectImageViewerCommentsCollapsed] = useState(true);
+  const [projectImageViewerActiveAnnotationId, setProjectImageViewerActiveAnnotationId] = useState("");
+  const [projectImageViewerHighlightedAnnotationId, setProjectImageViewerHighlightedAnnotationId] = useState("");
+  const [projectImageViewerDraftAnnotation, setProjectImageViewerDraftAnnotation] = useState<{ x: number; y: number; xPx: number; yPx: number; note: string } | null>(null);
+  const [projectImageViewerEditingAnnotation, setProjectImageViewerEditingAnnotation] = useState<{ id: string; note: string; width?: number } | null>(null);
+  const [confirmDeleteProjectImageAnnotationId, setConfirmDeleteProjectImageAnnotationId] = useState("");
+  const [projectImageViewerNaturalSize, setProjectImageViewerNaturalSize] = useState({ width: 0, height: 0 });
+  const [projectImageViewerStageSize, setProjectImageViewerStageSize] = useState({ width: 0, height: 0 });
+  const [currentProjectUserPinColor, setCurrentProjectUserPinColor] = useState("");
+  const [projectImageViewerScale, setProjectImageViewerScale] = useState(1);
+  const [projectImageViewerOffset, setProjectImageViewerOffset] = useState({ x: 0, y: 0 });
+  const [projectImageViewerDragging, setProjectImageViewerDragging] = useState(false);
+  const [projectImageViewerDraggingAnnotation, setProjectImageViewerDraggingAnnotation] = useState<{
+    id: string;
+    x: number;
+    y: number;
+    xPx: number;
+    yPx: number;
+  } | null>(null);
   const [resolvedQuoteCompanyLogoUrl, setResolvedQuoteCompanyLogoUrl] = useState("");
   const [isUploadingProjectImages, setIsUploadingProjectImages] = useState(false);
   const [projectImageUploadProgress, setProjectImageUploadProgress] = useState(0);
@@ -3896,6 +3949,22 @@ export default function ProjectDetailsPage() {
   const orderHingeRowsByCategoryRef = useRef(orderHingeRowsByCategory);
   const projectImagesInputRef = useRef<HTMLInputElement | null>(null);
   const projectFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const projectImageViewerCommentsScrollRef = useRef<HTMLDivElement | null>(null);
+  const projectImageViewerCommentsDragStateRef = useRef<{ startX: number; startScrollLeft: number; moved: boolean } | null>(null);
+  const projectImageViewerCommentsHoverScrollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const projectImageViewerCommentsSuppressClickRef = useRef(false);
+  const projectImageViewerCommentEditTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const projectImageViewerDeleteConfirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const projectImageViewerDragStateRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const projectImageViewerAnnotationDragStateRef = useRef<{
+    annotationId: string;
+    moved: boolean;
+  } | null>(null);
+  const projectImageViewerAnnotationPendingPointRef = useRef<{ x: number; y: number; xPx: number; yPx: number } | null>(null);
+  const projectImageViewerAnnotationDragRafRef = useRef<number | null>(null);
+  const projectImageViewerSuppressPinClickRef = useRef(false);
+  const projectImageViewerElementRef = useRef<HTMLImageElement | null>(null);
+  const projectImageViewerStageRef = useRef<HTMLDivElement | null>(null);
   const projectImageThumbsRef = useRef<HTMLDivElement | null>(null);
   const projectImageViewportRef = useRef<HTMLDivElement | null>(null);
   const projectImagePreviewRef = useRef<HTMLImageElement | null>(null);
@@ -7264,16 +7333,25 @@ export default function ProjectDetailsPage() {
 
   useEffect(() => {
     const loadImages = async () => {
-      const refs = collectProjectImageRefs(project);
-      if (!refs.length) {
+      const items = normalizeProjectImageItemsForViewer(project);
+      if (!items.length) {
+        setProjectImageItemsResolved([]);
         setProjectImageUrls([]);
         return;
       }
-      const resolved = await Promise.all(refs.map((item) => resolveProjectImageUrl(item)));
-      setProjectImageUrls(Array.from(new Set(resolved.filter(Boolean))));
+      const resolved = (
+        await Promise.all(
+          items.map(async (item) => {
+            const resolvedUrl = await resolveProjectImageUrl(item.url);
+            return resolvedUrl ? { ...item, resolvedUrl } : null;
+          }),
+        )
+      ).filter(Boolean) as Array<ProjectImageItem & { resolvedUrl: string }>;
+      setProjectImageItemsResolved(resolved);
+      setProjectImageUrls(resolved.map((item) => item.resolvedUrl));
     };
     void loadImages();
-  }, [project?.id, project?.projectImages, project?.projectFiles]);
+  }, [project?.id, project?.projectImages, project?.projectImageItems, project?.projectFiles]);
 
   useEffect(() => {
     const loadFiles = async () => {
@@ -7307,6 +7385,220 @@ export default function ProjectDetailsPage() {
     });
   }, [projectImageUrls]);
 
+  const currentProjectImageEntry =
+    projectImageItemsResolved[selectedProjectImageIndex] ?? projectImageItemsResolved[0] ?? null;
+  const currentProjectImageAnnotations = currentProjectImageEntry?.annotations ?? [];
+  const currentProjectImageViewerUrl = String(currentProjectImageEntry?.resolvedUrl || "").trim();
+  const currentProjectImageViewerName = String(currentProjectImageEntry?.name || "").trim();
+
+  const projectImageClientName = String(project?.customer || project?.name || "Untitled Project").trim();
+
+  const getProjectImageAnnotationRenderPoint = (annotation: { x: number; y: number; xPx?: number; yPx?: number }) => {
+    const naturalWidth = Number(projectImageViewerNaturalSize.width || 0);
+    const naturalHeight = Number(projectImageViewerNaturalSize.height || 0);
+    if (
+      naturalWidth > 0 &&
+      naturalHeight > 0 &&
+      Number.isFinite(annotation.xPx) &&
+      Number.isFinite(annotation.yPx)
+    ) {
+      return {
+        left: `${Math.min(100, Math.max(0, (Number(annotation.xPx) / naturalWidth) * 100))}%`,
+        top: `${Math.min(100, Math.max(0, (Number(annotation.yPx) / naturalHeight) * 100))}%`,
+      };
+    }
+    return {
+      left: `${Math.min(100, Math.max(0, Number(annotation.x) || 0))}%`,
+      top: `${Math.min(100, Math.max(0, Number(annotation.y) || 0))}%`,
+    };
+  };
+
+  const fittedProjectImageViewerSize = useMemo(() => {
+    const naturalWidth = Number(projectImageViewerNaturalSize.width || 0);
+    const naturalHeight = Number(projectImageViewerNaturalSize.height || 0);
+    const stageWidth = Number(projectImageViewerStageSize.width || 0);
+    const stageHeight = Number(projectImageViewerStageSize.height || 0);
+    if (naturalWidth <= 0 || naturalHeight <= 0 || stageWidth <= 0 || stageHeight <= 0) {
+      return { width: 0, height: 0 };
+    }
+    const scale = Math.min(1, stageWidth / naturalWidth, stageHeight / naturalHeight);
+    return {
+      width: Math.max(1, Math.round(naturalWidth * scale)),
+      height: Math.max(1, Math.round(naturalHeight * scale)),
+    };
+  }, [projectImageViewerNaturalSize, projectImageViewerStageSize]);
+  const projectImageViewerSizeReady =
+    fittedProjectImageViewerSize.width > 0 && fittedProjectImageViewerSize.height > 0;
+
+  const syncProjectImageItemsInState = (
+    nextItems: ProjectImageItem[],
+    options?: { resetSelectedIndex?: boolean; keepResolvedUrlByCurrent?: boolean },
+  ) => {
+    const normalizedItems = nextItems.map((item) => ({
+      ...item,
+      url: String(item.url || "").trim(),
+      name: String(item.name || "").trim(),
+      annotations: Array.isArray(item.annotations) ? item.annotations : [],
+    }));
+    const nextResolved = normalizedItems.map((item, idx) => {
+      const preferred =
+        projectImageItemsResolved[idx]?.url === item.url
+          ? projectImageItemsResolved[idx]
+          : projectImageItemsResolved.find((entry) => entry.url === item.url);
+      return {
+        ...item,
+        resolvedUrl: String(preferred?.resolvedUrl || item.url).trim(),
+      };
+    });
+    setProject((current) =>
+      current
+        ? {
+            ...current,
+            projectImages: normalizedItems.map((item) => item.url).filter(Boolean),
+            projectImageItems: normalizedItems,
+          }
+        : current,
+    );
+    setProjectImageItemsResolved(nextResolved);
+    setProjectImageUrls(nextResolved.map((item) => item.resolvedUrl));
+    if (options?.resetSelectedIndex) {
+      setSelectedProjectImageIndex(0);
+    }
+  };
+
+  const persistProjectImageItems = async (nextItems: ProjectImageItem[]) => {
+    if (!project) return false;
+    syncProjectImageItemsInState(nextItems);
+    const nextUrls = nextItems.map((item) => String(item.url || "").trim()).filter(Boolean);
+    const ok = await updateProjectPatch(project, { projectImages: nextUrls, projectImageItems: nextItems });
+    return ok;
+  };
+
+  useEffect(() => {
+    if (!projectImageViewerOpen) {
+      setProjectImageViewerActiveAnnotationId("");
+      setProjectImageViewerCommentsCollapsed(true);
+      setProjectImageViewerDraftAnnotation(null);
+      setProjectImageViewerEditingAnnotation(null);
+      setProjectImageViewerHighlightedAnnotationId("");
+    }
+  }, [projectImageViewerOpen]);
+
+  useEffect(() => {
+    setProjectImageViewerActiveAnnotationId("");
+    setProjectImageViewerDraftAnnotation(null);
+    setProjectImageViewerEditingAnnotation(null);
+    setProjectImageViewerHighlightedAnnotationId("");
+    setProjectImageViewerCommentsCollapsed(true);
+    setProjectImageViewerNaturalSize({ width: 0, height: 0 });
+    setProjectImageViewerOffset({ x: 0, y: 0 });
+    setProjectImageViewerScale(1);
+    setProjectImageViewerDragging(false);
+    projectImageViewerDragStateRef.current = null;
+    projectImageViewerAnnotationDragStateRef.current = null;
+    projectImageViewerAnnotationPendingPointRef.current = null;
+    if (projectImageViewerAnnotationDragRafRef.current !== null) {
+      cancelAnimationFrame(projectImageViewerAnnotationDragRafRef.current);
+      projectImageViewerAnnotationDragRafRef.current = null;
+    }
+    projectImageViewerSuppressPinClickRef.current = false;
+    setProjectImageViewerDraggingAnnotation(null);
+  }, [selectedProjectImageIndex]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const uid = String(user?.uid || "").trim();
+    const companyId = String(project?.companyId || user?.companyId || "").trim();
+    if (!uid || !companyId) {
+      setCurrentProjectUserPinColor("");
+      return;
+    }
+    void fetchUserColorMapByUids([uid], companyId)
+      .then((map) => {
+        if (!cancelled) {
+          setCurrentProjectUserPinColor(String(map[uid] || "").trim());
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCurrentProjectUserPinColor("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.companyId, user?.companyId, user?.uid]);
+
+  useEffect(() => {
+    if (!projectImageViewerOpen || !currentProjectImageViewerUrl) return;
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (cancelled) return;
+      setProjectImageViewerNaturalSize({
+        width: Number(image.naturalWidth || 0),
+        height: Number(image.naturalHeight || 0),
+      });
+    };
+    image.onerror = () => {
+      if (!cancelled) {
+        setProjectImageViewerNaturalSize({ width: 0, height: 0 });
+      }
+    };
+    image.src = currentProjectImageViewerUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProjectImageViewerUrl, projectImageViewerOpen]);
+
+  useEffect(() => {
+    if (!projectImageViewerOpen || !currentProjectImageViewerUrl || typeof window === "undefined") return;
+    const updateStageSize = () => {
+      const rect = projectImageViewerStageRef.current?.getBoundingClientRect();
+      setProjectImageViewerStageSize({
+        width: Number(rect?.width || 0),
+        height: Number(rect?.height || 0),
+      });
+    };
+    updateStageSize();
+    const stageElement = projectImageViewerStageRef.current;
+    const resizeObserver =
+      stageElement && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            updateStageSize();
+          })
+        : null;
+    if (stageElement && resizeObserver) {
+      resizeObserver.observe(stageElement);
+    }
+    window.addEventListener("resize", updateStageSize);
+    return () => {
+      window.removeEventListener("resize", updateStageSize);
+      resizeObserver?.disconnect();
+    };
+  }, [currentProjectImageViewerUrl, projectImageViewerOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (projectImageViewerDeleteConfirmTimeoutRef.current) {
+        clearTimeout(projectImageViewerDeleteConfirmTimeoutRef.current);
+      }
+      if (projectImageViewerCommentsHoverScrollRef.current) {
+        clearInterval(projectImageViewerCommentsHoverScrollRef.current);
+      }
+      if (projectImageViewerAnnotationDragRafRef.current !== null) {
+        cancelAnimationFrame(projectImageViewerAnnotationDragRafRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const textarea = projectImageViewerCommentEditTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [projectImageViewerEditingAnnotation]);
+
   useEffect(() => {
     setSelectedProjectFileIndex((prev) => {
       if (projectFiles.length === 0) return 0;
@@ -7330,10 +7622,10 @@ export default function ProjectDetailsPage() {
     }
     if (isUploadingProjectImages) return;
 
-    const existing = collectProjectImageRefs(project);
-    const room = Math.max(0, 5 - existing.length);
+    const existing = normalizeProjectImageItemsForViewer(project);
+    const room = Math.max(0, 10 - existing.length);
     if (room <= 0) {
-      setLockMessage("Maximum 5 images allowed.");
+      setLockMessage("Maximum 10 images allowed.");
       return;
     }
 
@@ -7378,15 +7670,28 @@ export default function ProjectDetailsPage() {
           }
         }),
       );
-      const next = [...existing, ...uploaded.filter(Boolean)].slice(0, 5);
-      const ok = await updateProjectPatch(project, { projectImages: next });
+      const next = [
+        ...existing,
+        ...uploaded.filter(Boolean).map((url) => ({ url, name: "", annotations: [] as ProjectImageAnnotation[] })),
+      ].slice(0, 10);
+      const nextUrls = next.map((item) => item.url).filter(Boolean);
+      const ok = await updateProjectPatch(project, { projectImages: nextUrls, projectImageItems: next });
       if (!ok) {
         setLockMessage("Could not save uploaded image references.");
         return;
       }
-      setProject((prev) => (prev ? { ...prev, projectImages: next } : prev));
-      setProjectImageUrls(Array.from(new Set(next.filter(Boolean))));
-      setSelectedProjectImageIndex(Math.max(0, next.length - 1));
+      const nextResolved = (
+        await Promise.all(
+          next.map(async (item) => {
+            const resolvedUrl = await resolveProjectImageUrl(item.url);
+            return resolvedUrl ? { ...item, resolvedUrl } : null;
+          }),
+        )
+      ).filter(Boolean) as Array<ProjectImageItem & { resolvedUrl: string }>;
+      setProject((prev) => (prev ? { ...prev, projectImages: nextUrls, projectImageItems: next } : prev));
+      setProjectImageItemsResolved(nextResolved);
+      setProjectImageUrls(nextResolved.map((item) => item.resolvedUrl));
+      setSelectedProjectImageIndex(Math.max(0, nextResolved.length - 1));
       setLockMessage("");
     } catch {
       setLockMessage("Could not upload images.");
@@ -7661,27 +7966,14 @@ export default function ProjectDetailsPage() {
     if (!selectedUrl) return;
     setIsDeletingProjectImage(true);
     try {
-      const existingRefs = collectProjectImageRefs(project);
-      let removeIdx = -1;
-      for (let i = 0; i < existingRefs.length; i += 1) {
-        const src = String(existingRefs[i] || "").trim();
-        if (!src) continue;
-        if (src === selectedUrl) {
-          removeIdx = i;
-          break;
-        }
-        const resolved = await resolveProjectImageUrl(src);
-        if (resolved === selectedUrl) {
-          removeIdx = i;
-          break;
-        }
-      }
-      if (removeIdx < 0) {
+      const existingItems = normalizeProjectImageItemsForViewer(project);
+      const removeIdx = selectedProjectImageIndex;
+      if (removeIdx < 0 || removeIdx >= existingItems.length) {
         setLockMessage("Could not find selected image source.");
         return;
       }
 
-      const sourceToDelete = String(existingRefs[removeIdx] || "").trim();
+      const sourceToDelete = String(existingItems[removeIdx]?.url || "").trim();
       if (storage && sourceToDelete) {
         try {
           const normalized = /^https?:\/\//i.test(sourceToDelete) ? sourceToDelete : sourceToDelete.replace(/^\/+/, "");
@@ -7691,8 +7983,9 @@ export default function ProjectDetailsPage() {
         }
       }
 
-      const nextRefs = existingRefs.filter((_, i) => i !== removeIdx);
-      const ok = await updateProjectPatch(project, { projectImages: nextRefs });
+      const nextItems = existingItems.filter((_, i) => i !== removeIdx);
+      const nextRefs = nextItems.map((item) => item.url).filter(Boolean);
+      const ok = await updateProjectPatch(project, { projectImages: nextRefs, projectImageItems: nextItems });
       if (!ok) {
         setLockMessage("Could not delete selected image.");
         return;
@@ -7700,17 +7993,19 @@ export default function ProjectDetailsPage() {
 
       const nextResolved = (
         await Promise.all(
-          nextRefs.map(async (raw) => {
+          nextItems.map(async (item) => {
             try {
-              return await resolveProjectImageUrl(raw);
+              const resolvedUrl = await resolveProjectImageUrl(item.url);
+              return resolvedUrl ? { ...item, resolvedUrl } : null;
             } catch {
-              return "";
+              return null;
             }
           }),
         )
-      ).filter(Boolean);
-      setProject((prev) => (prev ? { ...prev, projectImages: nextRefs } : prev));
-      setProjectImageUrls(Array.from(new Set(nextResolved)));
+      ).filter(Boolean) as Array<ProjectImageItem & { resolvedUrl: string }>;
+      setProject((prev) => (prev ? { ...prev, projectImages: nextRefs, projectImageItems: nextItems } : prev));
+      setProjectImageItemsResolved(nextResolved);
+      setProjectImageUrls(nextResolved.map((item) => item.resolvedUrl));
       setSelectedProjectImageIndex((prev) => {
         if (nextResolved.length === 0) return 0;
         return Math.max(0, Math.min(prev, nextResolved.length - 1));
@@ -7840,6 +8135,316 @@ export default function ProjectDetailsPage() {
       if (total <= 0) return 0;
       return (prev + 1) % total;
     });
+  };
+
+  const handleProjectImageViewerClickForAnnotation = (event: ReactMouseEvent<HTMLImageElement>) => {
+    if (projectImageViewerDraggingAnnotation) return;
+    if (projectImageViewerScale > 1) return;
+    if (projectImageViewerActiveAnnotationId || projectImageViewerDraftAnnotation) {
+      setProjectImageViewerActiveAnnotationId("");
+      setProjectImageViewerDraftAnnotation(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const offsetX = event.clientX - rect.left;
+    const offsetY = event.clientY - rect.top;
+    const x = (offsetX / rect.width) * 100;
+    const y = (offsetY / rect.height) * 100;
+    const naturalWidth = Number(projectImageViewerNaturalSize.width || 0);
+    const naturalHeight = Number(projectImageViewerNaturalSize.height || 0);
+    const xPx = naturalWidth > 0 ? Math.round((offsetX / rect.width) * naturalWidth) : Math.round(offsetX);
+    const yPx = naturalHeight > 0 ? Math.round((offsetY / rect.height) * naturalHeight) : Math.round(offsetY);
+    setProjectImageViewerActiveAnnotationId("");
+    setProjectImageViewerDraftAnnotation({
+      x: Math.min(100, Math.max(0, Number(x.toFixed(2)))),
+      y: Math.min(100, Math.max(0, Number(y.toFixed(2)))),
+      xPx: Math.max(0, xPx),
+      yPx: Math.max(0, yPx),
+      note: "",
+    });
+  };
+
+  const closeProjectImageAnnotationOverlays = () => {
+    setProjectImageViewerActiveAnnotationId("");
+    setProjectImageViewerDraftAnnotation(null);
+    setProjectImageViewerHighlightedAnnotationId("");
+    setProjectImageViewerEditingAnnotation(null);
+  };
+
+  const buildProjectAnnotationPointFromClient = (clientX: number, clientY: number) => {
+    const rect = projectImageViewerElementRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    const offsetX = Math.min(rect.width, Math.max(0, clientX - rect.left));
+    const offsetY = Math.min(rect.height, Math.max(0, clientY - rect.top));
+    const x = Math.min(100, Math.max(0, Number(((offsetX / rect.width) * 100).toFixed(2))));
+    const y = Math.min(100, Math.max(0, Number(((offsetY / rect.height) * 100).toFixed(2))));
+    const naturalWidth = Number(projectImageViewerNaturalSize.width || 0);
+    const naturalHeight = Number(projectImageViewerNaturalSize.height || 0);
+    const xPx = naturalWidth > 0 ? Math.round((offsetX / rect.width) * naturalWidth) : Math.round(offsetX);
+    const yPx = naturalHeight > 0 ? Math.round((offsetY / rect.height) * naturalHeight) : Math.round(offsetY);
+    return {
+      x,
+      y,
+      xPx: Math.max(0, xPx),
+      yPx: Math.max(0, yPx),
+    };
+  };
+
+  const handleSaveProjectImageAnnotation = async () => {
+    if (selectedProjectImageIndex < 0 || !projectImageViewerDraftAnnotation) return;
+    const note = String(projectImageViewerDraftAnnotation.note || "").trim();
+    if (!note) return;
+    const existing = normalizeProjectImageItemsForViewer(project);
+    const nextItems = existing.map((item, idx) =>
+      idx === selectedProjectImageIndex
+        ? {
+            ...item,
+            annotations: [
+              ...(item.annotations ?? []),
+              {
+                id: `annotation_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+                x: projectImageViewerDraftAnnotation.x,
+                y: projectImageViewerDraftAnnotation.y,
+                xPx: projectImageViewerDraftAnnotation.xPx,
+                yPx: projectImageViewerDraftAnnotation.yPx,
+                note,
+                createdByName: String(user?.displayName || user?.email || "Unknown User").trim(),
+                createdByColor: String(currentProjectUserPinColor || companyThemeColor || "").trim() || companyThemeColor,
+              },
+            ],
+          }
+        : item,
+    );
+    const ok = await persistProjectImageItems(nextItems);
+    if (ok) {
+      setProjectImageViewerDraftAnnotation(null);
+    }
+  };
+
+  const handleMoveProjectImageAnnotation = async (
+    annotationId: string,
+    nextPoint: { x: number; y: number; xPx: number; yPx: number },
+  ) => {
+    const existing = normalizeProjectImageItemsForViewer(project);
+    const nextItems = existing.map((item, idx) =>
+      idx === selectedProjectImageIndex
+        ? {
+            ...item,
+            annotations: (item.annotations ?? []).map((annotation) =>
+              annotation.id === annotationId ? { ...annotation, ...nextPoint } : annotation,
+            ),
+          }
+        : item,
+    );
+    syncProjectImageItemsInState(nextItems);
+    await persistProjectImageItems(nextItems);
+  };
+
+  const handleSaveEditedProjectImageAnnotation = async () => {
+    if (selectedProjectImageIndex < 0 || !projectImageViewerEditingAnnotation) return;
+    const note = String(projectImageViewerEditingAnnotation.note || "").trim();
+    if (!note) return;
+    const existing = normalizeProjectImageItemsForViewer(project);
+    const nextItems = existing.map((item, idx) =>
+      idx === selectedProjectImageIndex
+        ? {
+            ...item,
+            annotations: (item.annotations ?? []).map((annotation) =>
+              annotation.id === projectImageViewerEditingAnnotation.id ? { ...annotation, note } : annotation,
+            ),
+          }
+        : item,
+    );
+    syncProjectImageItemsInState(nextItems);
+    setProjectImageViewerEditingAnnotation(null);
+    await persistProjectImageItems(nextItems);
+  };
+
+  const handleDeleteProjectImageAnnotation = async (annotationId: string) => {
+    const existing = normalizeProjectImageItemsForViewer(project);
+    const nextItems = existing.map((item, idx) =>
+      idx === selectedProjectImageIndex
+        ? {
+            ...item,
+            annotations: (item.annotations ?? []).filter((annotation) => annotation.id !== annotationId),
+          }
+        : item,
+    );
+    syncProjectImageItemsInState(nextItems);
+    if (projectImageViewerActiveAnnotationId === annotationId) {
+      setProjectImageViewerActiveAnnotationId("");
+    }
+    if (projectImageViewerHighlightedAnnotationId === annotationId) {
+      setProjectImageViewerHighlightedAnnotationId("");
+    }
+    if (projectImageViewerEditingAnnotation?.id === annotationId) {
+      setProjectImageViewerEditingAnnotation(null);
+    }
+    await persistProjectImageItems(nextItems);
+  };
+
+  const armDeleteProjectImageAnnotation = (annotationId: string) => {
+    setConfirmDeleteProjectImageAnnotationId(annotationId);
+    if (projectImageViewerDeleteConfirmTimeoutRef.current) {
+      clearTimeout(projectImageViewerDeleteConfirmTimeoutRef.current);
+    }
+    projectImageViewerDeleteConfirmTimeoutRef.current = setTimeout(() => {
+      setConfirmDeleteProjectImageAnnotationId((current) => (current === annotationId ? "" : current));
+      projectImageViewerDeleteConfirmTimeoutRef.current = null;
+    }, 5000);
+  };
+
+  const startProjectImageCommentsDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.closest("textarea, input, [data-project-image-comments-no-drag='true']")
+    ) {
+      return;
+    }
+    const container = projectImageViewerCommentsScrollRef.current;
+    if (!container) return;
+    projectImageViewerCommentsDragStateRef.current = {
+      startX: event.clientX,
+      startScrollLeft: container.scrollLeft,
+      moved: false,
+    };
+  };
+
+  const moveProjectImageCommentsDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const dragState = projectImageViewerCommentsDragStateRef.current;
+    const container = projectImageViewerCommentsScrollRef.current;
+    if (!dragState || !container) return;
+    if (Math.abs(event.clientX - dragState.startX) > 4) {
+      dragState.moved = true;
+      projectImageViewerCommentsSuppressClickRef.current = true;
+    }
+    container.scrollLeft = dragState.startScrollLeft - (event.clientX - dragState.startX);
+  };
+
+  const stopProjectImageCommentsDrag = () => {
+    projectImageViewerCommentsDragStateRef.current = null;
+    window.setTimeout(() => {
+      projectImageViewerCommentsSuppressClickRef.current = false;
+    }, 0);
+  };
+
+  const stopProjectImageCommentsHoverScroll = () => {
+    if (projectImageViewerCommentsHoverScrollRef.current) {
+      clearInterval(projectImageViewerCommentsHoverScrollRef.current);
+      projectImageViewerCommentsHoverScrollRef.current = null;
+    }
+  };
+
+  const startProjectImageCommentsHoverScroll = (direction: "left" | "right") => {
+    const container = projectImageViewerCommentsScrollRef.current;
+    if (!container) return;
+    stopProjectImageCommentsHoverScroll();
+    projectImageViewerCommentsHoverScrollRef.current = setInterval(() => {
+      const nextContainer = projectImageViewerCommentsScrollRef.current;
+      if (!nextContainer) return;
+      nextContainer.scrollLeft += direction === "left" ? -12 : 12;
+    }, 16);
+  };
+
+  const startProjectImageAnnotationDrag = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    annotation: { id: string; x: number; y: number; xPx?: number; yPx?: number },
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    projectImageViewerAnnotationDragStateRef.current = {
+      annotationId: annotation.id,
+      moved: false,
+    };
+    setProjectImageViewerDraggingAnnotation({
+      id: annotation.id,
+      x: annotation.x,
+      y: annotation.y,
+      xPx: Number.isFinite(annotation.xPx) ? Number(annotation.xPx) : 0,
+      yPx: Number.isFinite(annotation.yPx) ? Number(annotation.yPx) : 0,
+    });
+  };
+
+  const handleProjectImagePreviewWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -0.12 : 0.12;
+    setProjectImageViewerScale((current) => {
+      const next = Math.min(5, Math.max(1, Number((current + direction).toFixed(2))));
+      if (next === 1) {
+        setProjectImageViewerOffset({ x: 0, y: 0 });
+      }
+      return next;
+    });
+  };
+
+  const startProjectImagePreviewDrag = (event: ReactMouseEvent<HTMLElement>) => {
+    if (projectImageViewerScale <= 1) return;
+    event.preventDefault();
+    setProjectImageViewerDragging(true);
+    projectImageViewerDragStateRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: projectImageViewerOffset.x,
+      originY: projectImageViewerOffset.y,
+    };
+  };
+
+  const handleProjectImagePreviewDrag = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (projectImageViewerAnnotationDragStateRef.current) {
+      const nextPoint = buildProjectAnnotationPointFromClient(event.clientX, event.clientY);
+      if (!nextPoint) return;
+      const drag = projectImageViewerAnnotationDragStateRef.current;
+      drag.moved = true;
+      projectImageViewerSuppressPinClickRef.current = true;
+      projectImageViewerAnnotationPendingPointRef.current = nextPoint;
+      if (projectImageViewerAnnotationDragRafRef.current === null) {
+        projectImageViewerAnnotationDragRafRef.current = window.requestAnimationFrame(() => {
+          projectImageViewerAnnotationDragRafRef.current = null;
+          const point = projectImageViewerAnnotationPendingPointRef.current;
+          if (!point) return;
+          setProjectImageViewerDraggingAnnotation((current) =>
+            current
+              ? {
+                  ...current,
+                  ...point,
+                }
+              : null,
+          );
+        });
+      }
+      return;
+    }
+    if (!projectImageViewerDragging || !projectImageViewerDragStateRef.current) return;
+    const drag = projectImageViewerDragStateRef.current;
+    setProjectImageViewerOffset({
+      x: drag.originX + (event.clientX - drag.startX),
+      y: drag.originY + (event.clientY - drag.startY),
+    });
+  };
+
+  const stopProjectImagePreviewDrag = () => {
+    const annotationDrag = projectImageViewerAnnotationDragStateRef.current;
+    if (annotationDrag) {
+      projectImageViewerAnnotationDragStateRef.current = null;
+      if (projectImageViewerAnnotationDragRafRef.current !== null) {
+        cancelAnimationFrame(projectImageViewerAnnotationDragRafRef.current);
+        projectImageViewerAnnotationDragRafRef.current = null;
+      }
+      const pendingPoint = projectImageViewerAnnotationPendingPointRef.current;
+      if (annotationDrag.moved && pendingPoint) {
+        void handleMoveProjectImageAnnotation(annotationDrag.annotationId, {
+          x: pendingPoint.x,
+          y: pendingPoint.y,
+          xPx: pendingPoint.xPx,
+          yPx: pendingPoint.yPx,
+        });
+      }
+      projectImageViewerAnnotationPendingPointRef.current = null;
+      setProjectImageViewerDraggingAnnotation(null);
+      return;
+    }
+    setProjectImageViewerDragging(false);
+    projectImageViewerDragStateRef.current = null;
   };
 
   useEffect(() => {
@@ -20789,22 +21394,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <div className="flex items-start gap-3">
                         <div className="w-[88px] flex-none">
                           <div ref={projectImageThumbsRef} className="flex flex-col gap-[6px] pr-1">
-                          {projectImageUrls.map((url, idx) => {
+                          {projectImageItemsResolved.map((image, idx) => {
                             const selected = idx === selectedProjectImageIndex;
                             return (
                               <button
-                                key={`${url}_${idx}`}
+                                key={`${image.resolvedUrl}_${idx}`}
                                 type="button"
                                 onClick={() => setSelectedProjectImageIndex(idx)}
                                 className={`box-border flex w-full items-center justify-center overflow-hidden rounded-[8px] border transition ${
                                   selected ? "border-[#2F6BFF]" : "border-[#D8DEE8] hover:border-[#94A3B8]"
                                 }`}
                                 style={{ backgroundColor: projectPalette.panelMuted }}
-                                title={`Image ${idx + 1}`}
+                                title={String(image.name || "").trim() || `Image ${idx + 1}`}
                               >
                                 <img
-                                  src={url}
-                                  alt={`Project image ${idx + 1}`}
+                                  src={image.resolvedUrl}
+                                  alt={String(image.name || "").trim() || `Project image ${idx + 1}`}
                                   className="block h-full w-full object-cover"
                                   onLoad={() => {
                                     const el = projectImageThumbsRef.current;
@@ -20844,6 +21449,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             ref={projectImageViewportRef}
                             className="flex h-full w-full items-center justify-center overflow-hidden"
                             title="Alt + scroll to zoom, drag to pan"
+                            onClick={() => setProjectImageViewerOpen(true)}
                             onWheelCapture={onProjectImageWheel}
                             onWheel={onProjectImageWheel}
                             onPointerDown={onProjectImagePointerDown}
@@ -20856,8 +21462,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           >
                             <img
                               ref={projectImagePreviewRef}
-                              src={projectImageUrls[selectedProjectImageIndex] || projectImageUrls[0]}
-                              alt="Selected project image"
+                              src={currentProjectImageEntry?.resolvedUrl || projectImageUrls[selectedProjectImageIndex] || projectImageUrls[0]}
+                              alt={String(currentProjectImageEntry?.name || "").trim() || "Selected project image"}
                               className="block h-full w-auto object-contain"
                               style={{
                                 maxHeight: projectImageAreaHeight,
@@ -23340,6 +23946,592 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>,
             document.body,
           )}
+          {projectImageViewerOpen && currentProjectImageEntry && typeof document !== "undefined"
+            ? createPortal(
+                <div
+                  className="fixed inset-0 z-[2100] flex flex-col"
+                  style={{ backgroundColor: "#ffffff" }}
+                  onClick={(event) => {
+                    if (
+                      event.target === event.currentTarget &&
+                      (projectImageViewerActiveAnnotationId || projectImageViewerDraftAnnotation)
+                    ) {
+                      closeProjectImageAnnotationOverlays();
+                    }
+                  }}
+                >
+                  <style jsx global>{`
+                    @keyframes cutsmart-project-pin-bounce {
+                      0% { transform: translateY(0); }
+                      8% { transform: translateY(-5px); }
+                      14% { transform: translateY(0); }
+                      100% { transform: translateY(0); }
+                    }
+                  `}</style>
+                  <div className="flex h-14 shrink-0 items-center gap-3 border-b px-6" style={{ borderBottomColor: "#E2E8F0" }}>
+                    <div className="min-w-0">
+                      <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
+                        PROJECT PHOTOS
+                      </p>
+                      <p className="truncate text-[14px] font-medium" style={{ color: "#334155" }}>
+                        {projectImageClientName}
+                      </p>
+                    </div>
+                    <div className="min-w-0 flex-1 text-center">
+                      <p className="truncate text-[14px] font-bold" style={{ color: "#0F172A" }}>
+                        {currentProjectImageViewerName || `Image ${selectedProjectImageIndex + 1}`}
+                      </p>
+                      <p className="mt-[2px] text-[11px] font-semibold" style={{ color: "#64748B" }}>
+                        {`${selectedProjectImageIndex + 1} / ${projectImageItemsResolved.length}`}
+                      </p>
+                    </div>
+                    <div className="ml-auto flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setProjectImageViewerCommentsCollapsed((current) => !current)}
+                        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold"
+                        style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={projectImageViewerPinsVisible}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => {
+                            const nextChecked = event.currentTarget.checked;
+                            setProjectImageViewerPinsVisible(nextChecked);
+                            if (!nextChecked) {
+                              setProjectImageViewerActiveAnnotationId("");
+                            }
+                          }}
+                        />
+                        Comments
+                        <span
+                          aria-hidden="true"
+                          className="block h-[14px] w-[14px] shrink-0"
+                          style={{
+                            backgroundColor: "#64748B",
+                            transform: projectImageViewerCommentsCollapsed ? "rotate(180deg)" : "rotate(90deg)",
+                            transition: "transform 140ms ease",
+                            WebkitMaskImage: "url('/angle-right.png')",
+                            WebkitMaskRepeat: "no-repeat",
+                            WebkitMaskPosition: "center",
+                            WebkitMaskSize: "contain",
+                            maskImage: "url('/angle-right.png')",
+                            maskRepeat: "no-repeat",
+                            maskPosition: "center",
+                            maskSize: "contain",
+                          }}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProjectImageViewerOpen(false)}
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-full border"
+                        style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                        aria-label="Close project image viewer"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                  </div>
+                  {!projectImageViewerCommentsCollapsed ? (
+                    <div className="border-b px-6 py-0" style={{ borderBottomColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
+                      {currentProjectImageAnnotations.length > 0 ? (
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onMouseEnter={() => startProjectImageCommentsHoverScroll("left")}
+                            onMouseLeave={stopProjectImageCommentsHoverScroll}
+                            className="absolute left-0 top-0 z-[2] flex h-full w-10 items-center justify-center"
+                            style={{ backgroundColor: "#ffffff", borderRight: "1px solid #D7DEE8" }}
+                            aria-label="Scroll comments left"
+                          >
+                            <img src="/angle-left.png" alt="" className="h-[14px] w-[14px] object-contain brightness-0" />
+                          </button>
+                          <button
+                            type="button"
+                            onMouseEnter={() => startProjectImageCommentsHoverScroll("right")}
+                            onMouseLeave={stopProjectImageCommentsHoverScroll}
+                            className="absolute right-0 top-0 z-[2] flex h-full w-10 items-center justify-center"
+                            style={{ backgroundColor: "#ffffff", borderLeft: "1px solid #D7DEE8" }}
+                            aria-label="Scroll comments right"
+                          >
+                            <img src="/angle-right.png" alt="" className="h-[14px] w-[14px] object-contain brightness-0" />
+                          </button>
+                          <div
+                            ref={projectImageViewerCommentsScrollRef}
+                            className="flex overflow-x-auto whitespace-nowrap px-10 py-[6px]"
+                            onMouseDown={startProjectImageCommentsDrag}
+                            onMouseMove={moveProjectImageCommentsDrag}
+                            onMouseUp={stopProjectImageCommentsDrag}
+                            onMouseLeave={stopProjectImageCommentsDrag}
+                            style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+                          >
+                          {currentProjectImageAnnotations.map((annotation, idx) => (
+                            <div
+                              key={`${annotation.id}:viewer-list`}
+                              className="group/comment relative min-w-[240px] max-w-[min(480px,calc(100vw-120px))] shrink-0 border-r px-3 py-2 text-left last:border-r-0"
+                              style={{ borderRightColor: "#D7DEE8", backgroundColor: "#ffffff" }}
+                              onClick={() => {
+                                if (projectImageViewerCommentsSuppressClickRef.current) return;
+                                setProjectImageViewerDraftAnnotation(null);
+                                setProjectImageViewerActiveAnnotationId("");
+                                setProjectImageViewerEditingAnnotation(null);
+                                setProjectImageViewerHighlightedAnnotationId(annotation.id);
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex min-w-0 items-center gap-3">
+                                <span
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                                  style={{ backgroundColor: String(annotation.createdByColor || companyThemeColor).trim() || companyThemeColor }}
+                                >
+                                  {idx + 1}
+                                </span>
+                                <p className="truncate text-[13px] font-bold" style={{ color: "#0F172A" }}>
+                                  {String(annotation.createdByName || `Comment ${idx + 1}`).trim()}
+                                </p>
+                                </div>
+                                <div className="flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/comment:opacity-100">
+                                  <button
+                                    type="button"
+                                    data-project-image-comments-no-drag="true"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      if (projectImageViewerEditingAnnotation?.id === annotation.id) {
+                                        void handleSaveEditedProjectImageAnnotation();
+                                        return;
+                                      }
+                                      setProjectImageViewerEditingAnnotation({
+                                        id: annotation.id,
+                                        note: annotation.note,
+                                      });
+                                    }}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                    style={{
+                                      borderColor: projectImageViewerEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
+                                      backgroundColor: projectImageViewerEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
+                                      opacity: projectImageViewerEditingAnnotation?.id === annotation.id ? 1 : undefined,
+                                    }}
+                                  >
+                                    <span
+                                      aria-hidden="true"
+                                      className="block"
+                                      style={{
+                                        width: 13,
+                                        height: 13,
+                                        backgroundColor: projectImageViewerEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
+                                        WebkitMaskImage:
+                                          projectImageViewerEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                        WebkitMaskRepeat: "no-repeat",
+                                        WebkitMaskPosition: "center",
+                                        WebkitMaskSize: "contain",
+                                        maskImage:
+                                          projectImageViewerEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                        maskRepeat: "no-repeat",
+                                        maskPosition: "center",
+                                        maskSize: "contain",
+                                      }}
+                                    />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    data-project-image-comments-no-drag="true"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      if (confirmDeleteProjectImageAnnotationId !== annotation.id) {
+                                        armDeleteProjectImageAnnotation(annotation.id);
+                                        return;
+                                      }
+                                      if (projectImageViewerDeleteConfirmTimeoutRef.current) {
+                                        clearTimeout(projectImageViewerDeleteConfirmTimeoutRef.current);
+                                        projectImageViewerDeleteConfirmTimeoutRef.current = null;
+                                      }
+                                      setConfirmDeleteProjectImageAnnotationId("");
+                                      void handleDeleteProjectImageAnnotation(annotation.id);
+                                    }}
+                                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                    style={{
+                                      borderColor: confirmDeleteProjectImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
+                                      backgroundColor: confirmDeleteProjectImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
+                                    }}
+                                  >
+                                    <span
+                                      aria-hidden="true"
+                                      className="block"
+                                      style={{
+                                        width: 13,
+                                        height: 13,
+                                        backgroundColor: confirmDeleteProjectImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
+                                        WebkitMaskImage:
+                                          confirmDeleteProjectImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                        WebkitMaskRepeat: "no-repeat",
+                                        WebkitMaskPosition: "center",
+                                        WebkitMaskSize: "contain",
+                                        maskImage:
+                                          confirmDeleteProjectImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                        maskRepeat: "no-repeat",
+                                        maskPosition: "center",
+                                        maskSize: "contain",
+                                      }}
+                                    />
+                                  </button>
+                                </div>
+                              </div>
+                              {projectImageViewerEditingAnnotation?.id === annotation.id ? (
+                                <textarea
+                                  ref={projectImageViewerCommentEditTextareaRef}
+                                  value={projectImageViewerEditingAnnotation.note}
+                                  onChange={(event) => {
+                                    const nextValue = event.currentTarget.value;
+                                    setProjectImageViewerEditingAnnotation((current) =>
+                                      current ? { ...current, note: nextValue } : current,
+                                    );
+                                  }}
+                                  onBlur={(event) => {
+                                    const nextFocusTarget = event.relatedTarget;
+                                    if (
+                                      nextFocusTarget instanceof HTMLElement &&
+                                      nextFocusTarget.closest("[data-project-image-annotation-editor='true']")
+                                    ) {
+                                      return;
+                                    }
+                                    void handleSaveEditedProjectImageAnnotation();
+                                  }}
+                                  className="mt-2 block min-h-[80px] w-full resize-none border-0 bg-transparent p-0 text-[13px] outline-none"
+                                  style={{ color: "#334155" }}
+                                />
+                              ) : (
+                                <p className="mt-2 whitespace-pre-wrap text-[13px]" style={{ color: "#334155" }}>
+                                  {annotation.note}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="py-3 text-[12px] font-semibold" style={{ color: "#94A3B8" }}>
+                          No comments on this image yet.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                  <div
+                    ref={projectImageViewerStageRef}
+                    className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-6 py-4"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (event.target === event.currentTarget && (projectImageViewerActiveAnnotationId || projectImageViewerDraftAnnotation)) {
+                        closeProjectImageAnnotationOverlays();
+                      }
+                    }}
+                    onWheel={handleProjectImagePreviewWheel}
+                    onMouseMove={handleProjectImagePreviewDrag}
+                    onMouseUp={stopProjectImagePreviewDrag}
+                    onMouseLeave={stopProjectImagePreviewDrag}
+                  >
+                    <button
+                      type="button"
+                      onClick={showPrevProjectImage}
+                      disabled={projectImageItemsResolved.length <= 1}
+                      className="absolute left-6 top-1/2 z-[3] inline-flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border"
+                      style={{ borderColor: "#D7DEE8", backgroundColor: "#ffffff", boxShadow: "0 6px 20px rgba(15,23,42,0.12)" }}
+                    >
+                      <img src="/angle-left.png" alt="Previous" className="h-8 w-8 object-contain brightness-0" />
+                    </button>
+                    <div
+                      className="relative inline-flex items-center justify-center"
+                      onMouseDown={startProjectImagePreviewDrag}
+                      style={{
+                        width: projectImageViewerSizeReady ? `${fittedProjectImageViewerSize.width}px` : "1px",
+                        height: projectImageViewerSizeReady ? `${fittedProjectImageViewerSize.height}px` : "1px",
+                        transform: `translate(${projectImageViewerOffset.x}px, ${projectImageViewerOffset.y}px) scale(${projectImageViewerScale})`,
+                        transition: projectImageViewerDragging ? "none" : "transform 120ms ease",
+                        opacity: projectImageViewerSizeReady ? 1 : 0,
+                      }}
+                    >
+                      <img
+                        ref={projectImageViewerElementRef}
+                        src={currentProjectImageViewerUrl}
+                        alt={currentProjectImageViewerName || `Project image ${selectedProjectImageIndex + 1}`}
+                        className="block h-full w-full object-contain select-none"
+                        onClick={handleProjectImageViewerClickForAnnotation}
+                        draggable={false}
+                        style={{
+                          cursor:
+                            projectImageViewerScale > 1
+                              ? projectImageViewerDragging
+                                ? "grabbing"
+                                : "grab"
+                              : projectImageViewerActiveAnnotationId || projectImageViewerDraftAnnotation
+                                ? "pointer"
+                                : "crosshair",
+                        }}
+                      />
+                      {projectImageViewerPinsVisible
+                        ? currentProjectImageAnnotations.map((annotation, idx) => (
+                            <button
+                              key={`${annotation.id}:viewer-pin`}
+                              type="button"
+                              onMouseDown={(event) => startProjectImageAnnotationDrag(event, annotation)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (projectImageViewerSuppressPinClickRef.current) {
+                                  projectImageViewerSuppressPinClickRef.current = false;
+                                  return;
+                                }
+                                setProjectImageViewerDraftAnnotation(null);
+                                setProjectImageViewerHighlightedAnnotationId("");
+                                setProjectImageViewerEditingAnnotation(null);
+                                setProjectImageViewerActiveAnnotationId((current) =>
+                                  current === annotation.id ? "" : annotation.id,
+                                );
+                              }}
+                              className="absolute inline-flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] font-bold text-white"
+                              style={{
+                                ...getProjectImageAnnotationRenderPoint(
+                                  projectImageViewerDraggingAnnotation?.id === annotation.id
+                                    ? projectImageViewerDraggingAnnotation
+                                    : annotation,
+                                ),
+                                borderColor: "#ffffff",
+                                backgroundColor: String(annotation.createdByColor || companyThemeColor).trim() || companyThemeColor,
+                                boxShadow: "0 4px 10px rgba(15,23,42,0.18)",
+                                cursor:
+                                  projectImageViewerDraggingAnnotation?.id === annotation.id
+                                    ? "grabbing"
+                                    : "grab",
+                                animation:
+                                  projectImageViewerHighlightedAnnotationId === annotation.id
+                                    ? "cutsmart-project-pin-bounce 2s ease-in-out infinite"
+                                    : "none",
+                              }}
+                            >
+                              {idx + 1}
+                            </button>
+                          ))
+                        : null}
+                      {projectImageViewerPinsVisible
+                        ? currentProjectImageAnnotations.map((annotation, idx) =>
+                            projectImageViewerActiveAnnotationId === annotation.id ? (
+                              <div
+                                key={`${annotation.id}:viewer-note`}
+                                className="absolute z-[4] max-w-[min(420px,calc(100vw-180px))] -translate-x-1/2"
+                                style={{
+                                  ...getProjectImageAnnotationRenderPoint(annotation),
+                                  transform: "translateX(-50%) translateY(22px)",
+                                }}
+                              >
+                                <div
+                                  data-project-image-annotation-editor="true"
+                                  className="rounded-[12px] border px-3 py-2 shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
+                                  style={{ borderColor: "#D7DEE8", backgroundColor: "#ffffff" }}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
+                                      {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
+                                    </p>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (projectImageViewerEditingAnnotation?.id === annotation.id) {
+                                            void handleSaveEditedProjectImageAnnotation();
+                                            return;
+                                          }
+                                          setProjectImageViewerEditingAnnotation({
+                                            id: annotation.id,
+                                            note: annotation.note,
+                                          });
+                                        }}
+                                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                        style={{
+                                          borderColor: projectImageViewerEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
+                                          backgroundColor: projectImageViewerEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
+                                        }}
+                                      >
+                                        <span
+                                          aria-hidden="true"
+                                          className="block"
+                                          style={{
+                                            width: 13,
+                                            height: 13,
+                                            backgroundColor: projectImageViewerEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
+                                            WebkitMaskImage:
+                                              projectImageViewerEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                            WebkitMaskRepeat: "no-repeat",
+                                            WebkitMaskPosition: "center",
+                                            WebkitMaskSize: "contain",
+                                            maskImage:
+                                              projectImageViewerEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                            maskRepeat: "no-repeat",
+                                            maskPosition: "center",
+                                            maskSize: "contain",
+                                          }}
+                                        />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (confirmDeleteProjectImageAnnotationId !== annotation.id) {
+                                            armDeleteProjectImageAnnotation(annotation.id);
+                                            return;
+                                          }
+                                          if (projectImageViewerDeleteConfirmTimeoutRef.current) {
+                                            clearTimeout(projectImageViewerDeleteConfirmTimeoutRef.current);
+                                            projectImageViewerDeleteConfirmTimeoutRef.current = null;
+                                          }
+                                          setConfirmDeleteProjectImageAnnotationId("");
+                                          void handleDeleteProjectImageAnnotation(annotation.id);
+                                        }}
+                                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                        style={{
+                                          borderColor: confirmDeleteProjectImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
+                                          backgroundColor: confirmDeleteProjectImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
+                                        }}
+                                      >
+                                        <span
+                                          aria-hidden="true"
+                                          className="block"
+                                          style={{
+                                            width: 13,
+                                            height: 13,
+                                            backgroundColor: confirmDeleteProjectImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
+                                            WebkitMaskImage:
+                                              confirmDeleteProjectImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                            WebkitMaskRepeat: "no-repeat",
+                                            WebkitMaskPosition: "center",
+                                            WebkitMaskSize: "contain",
+                                            maskImage:
+                                              confirmDeleteProjectImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                            maskRepeat: "no-repeat",
+                                            maskPosition: "center",
+                                            maskSize: "contain",
+                                          }}
+                                        />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {projectImageViewerEditingAnnotation?.id === annotation.id ? (
+                                    <textarea
+                                      value={projectImageViewerEditingAnnotation.note}
+                                      onChange={(event) => {
+                                        const nextValue = event.currentTarget.value;
+                                        setProjectImageViewerEditingAnnotation((current) =>
+                                          current ? { ...current, note: nextValue } : current,
+                                        );
+                                      }}
+                                      onBlur={(event) => {
+                                        const nextFocusTarget = event.relatedTarget;
+                                        if (
+                                          nextFocusTarget instanceof HTMLElement &&
+                                          nextFocusTarget.closest("[data-project-image-annotation-editor='true']")
+                                        ) {
+                                          return;
+                                        }
+                                        void handleSaveEditedProjectImageAnnotation();
+                                      }}
+                                      className="mt-2 min-h-[80px] w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
+                                      style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                                    />
+                                  ) : (
+                                    <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "#334155" }}>
+                                      {annotation.note}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : null,
+                          )
+                        : null}
+                      {projectImageViewerDraftAnnotation ? (
+                        <div
+                          className="absolute z-[5] w-[min(420px,calc(100vw-48px))] -translate-x-1/2 rounded-[12px] border px-3 py-3 text-left"
+                          style={{
+                            ...getProjectImageAnnotationRenderPoint(projectImageViewerDraftAnnotation),
+                            transform: "translateX(-50%) translateY(22px)",
+                            borderColor: "#D7DEE8",
+                            backgroundColor: "#ffffff",
+                            boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                        >
+                          <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
+                            Add Note
+                          </p>
+                          <textarea
+                            value={projectImageViewerDraftAnnotation.note}
+                            onChange={(event) => {
+                              const nextValue = event.currentTarget.value;
+                              setProjectImageViewerDraftAnnotation((current) =>
+                                current ? { ...current, note: nextValue } : current,
+                              );
+                            }}
+                            placeholder="Add note for this point..."
+                            className="mt-2 min-h-[80px] w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
+                            style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                          />
+                          <div className="mt-3 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setProjectImageViewerDraftAnnotation(null)}
+                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold"
+                              style={{ borderColor: "#D7DEE8", color: "#64748B", backgroundColor: "#ffffff" }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleSaveProjectImageAnnotation()}
+                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold text-white"
+                              style={{ borderColor: companyThemeColor, backgroundColor: companyThemeColor }}
+                            >
+                              Save Note
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={showNextProjectImage}
+                      disabled={projectImageItemsResolved.length <= 1}
+                      className="absolute right-6 top-1/2 z-[3] inline-flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border"
+                      style={{ borderColor: "#D7DEE8", backgroundColor: "#ffffff", boxShadow: "0 6px 20px rgba(15,23,42,0.12)" }}
+                    >
+                      <img src="/angle-right.png" alt="Next" className="h-8 w-8 object-contain brightness-0" />
+                    </button>
+                  </div>
+                  <div className="shrink-0 border-t px-6 py-3" style={{ borderTopColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
+                    <div className="flex items-center justify-center gap-3 overflow-x-auto">
+                      {projectImageItemsResolved.map((image, idx) => (
+                        <button
+                          key={`${image.resolvedUrl}:viewer-thumb:${idx}`}
+                          type="button"
+                          onClick={() => setSelectedProjectImageIndex(idx)}
+                          className="overflow-hidden rounded-[10px] border"
+                          style={{
+                            width: 78,
+                            height: 78,
+                            borderColor: idx === selectedProjectImageIndex ? companyThemeColor : "#D7DEE8",
+                            boxShadow: idx === selectedProjectImageIndex ? `0 0 0 2px ${companyThemeColor}22` : "none",
+                          }}
+                        >
+                          <img src={image.resolvedUrl} alt={String(image.name || "").trim() || `Thumbnail ${idx + 1}`} className="h-full w-full object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
           {unlockEditModalPortal}
         </div>
       </AppShell>

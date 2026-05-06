@@ -1,15 +1,19 @@
-Version: v0.2.5
+Version: v0.2.6
 
 whatsNew: [
 <u><b>General:</u></b>
-- Added "Clients" Tab - an automatic phonebook of exisiting clients with client details and more.
-- Clients used when creating a project now save in memory.
+- Max image upload bumped up to 10 images.
 
-<u><b>Production Cutlist:</u></b>
-- Fixed Clashing drop down not committing edits in the Cutlist List
-- Fixed Cabinetry row showing up in Cutlist Entry on every reload.
+<u><b>Leads:</u></b>
+- Can now insert up to 10 images to a lead (images carry over to New Projects).
+- Images can have comments by pin (users icon colour) which will follow that image through the entire project.
+- Can now assign a user to a lead Before project creation.
 
 <u><b>New Project:</u></b>
-- Now has "First" and "Last" Name fields.
+- Up to 10 images can be added per project.
+
+<u><b>Application:</u></b>
+- Moved storage location for all data inside "Changelog" tab.
+
 ]
 

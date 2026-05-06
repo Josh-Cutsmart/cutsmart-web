@@ -1,29 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, limit, onSnapshot, orderBy, query, type QuerySnapshot, type DocumentData } from "firebase/firestore";
 import { Search } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import {
+  fetchAppChangelogHistory,
   fetchAppReports,
-  fetchCompanyDoc,
   setAppReportCompleted,
   submitAppReport,
   type AppReportKind,
   type AppReportRow,
 } from "@/lib/firestore-data";
 import { db } from "@/lib/firebase";
-import { fetchPrimaryMembership } from "@/lib/membership";
 import {
   normalizeChangelogHistory,
   parseUpdateNotesText,
   type UpdateChangelogEntry,
   updateNotesToDisplayHtml,
 } from "@/lib/update-notes-utils";
-
-const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 
 function detectDeviceType(): ReportDeviceType {
@@ -99,22 +96,9 @@ export default function ChangelogPage() {
     }
     let cancelled = false;
     const load = async () => {
-      const storedCompanyId = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
-      const directCompanyId = String(user?.companyId || "").trim();
-      const fallbackMembership = !directCompanyId ? await fetchPrimaryMembership(uid) : null;
-      const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-      if (!companyId) {
-        if (!cancelled) {
-          setEntries([]);
-          setActiveVersion("");
-        }
-        return;
-      }
-      const companyDoc = await fetchCompanyDoc(companyId);
+      const appRows = await fetchAppChangelogHistory();
       if (cancelled) return;
-      const rows = normalizeChangelogHistory(
-        (companyDoc as Record<string, unknown> | null)?.changelogHistory,
-      );
+      const rows = normalizeChangelogHistory(appRows);
       setEntries(rows);
       setActiveVersion(rows[0]?.version || "");
 
@@ -156,7 +140,7 @@ export default function ChangelogPage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, user?.companyId]);
+  }, [user?.uid]);
 
   useEffect(() => {
     if (!showDevReports || !isDevUser) return;
@@ -176,43 +160,82 @@ export default function ChangelogPage() {
       };
     }
     setReportsLoading(true);
-    const q = query(collection(db, "appReports"), orderBy("createdAt", "desc"), limit(500));
-    const unsubscribe = onSnapshot(
-      q,
-      (snap) => {
-        const rows: AppReportRow[] = snap.docs.map((docSnap) => {
-          const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-          const kindRaw = String(data.kind ?? "").trim().toLowerCase();
-          const kind: AppReportKind = kindRaw === "feature" ? "feature" : "issue";
-          const createdAtIso = String(data.createdAtIso ?? "");
-          const completedAtIso = String(data.completedAtIso ?? "");
-          return {
-            id: String(data.id ?? docSnap.id),
-            kind,
-            deviceType: ((): ReportDeviceType | "" => {
-              const raw = String(data.deviceType ?? "").trim().toLowerCase();
-              return raw === "desktop" || raw === "tablet" || raw === "mobile" ? raw : "";
-            })(),
-            subject: String(data.subject ?? ""),
-            body: String(data.body ?? ""),
-            createdAtIso,
-            appVersion: String(data.appVersion ?? ""),
-            reporterEmail: String(data.reporterEmail ?? ""),
-            reporterName: String(data.reporterName ?? ""),
-            reporterUid: String(data.reporterUid ?? ""),
-            completed: Boolean(data.completed),
-            completedAtIso,
-          };
-        });
-        setReports(rows);
+    const mapRows = (snap: QuerySnapshot<DocumentData>, forcedKind: AppReportKind) =>
+      snap.docs.map((docSnap) => {
+        const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+        const kindRaw = String(data.kind ?? "").trim().toLowerCase();
+        const kind: AppReportKind =
+          kindRaw === "feature" || kindRaw === "issue" ? kindRaw : forcedKind;
+        const createdAtIso = String(data.createdAtIso ?? "");
+        const completedAtIso = String(data.completedAtIso ?? "");
+        return {
+          id: String(data.id ?? docSnap.id),
+          kind,
+          deviceType: ((): ReportDeviceType | "" => {
+            const raw = String(data.deviceType ?? "").trim().toLowerCase();
+            return raw === "desktop" || raw === "tablet" || raw === "mobile" ? raw : "";
+          })(),
+          subject: String(data.subject ?? ""),
+          body: String(data.body ?? ""),
+          createdAtIso,
+          appVersion: String(data.appVersion ?? ""),
+          reporterEmail: String(data.reporterEmail ?? ""),
+          reporterName: String(data.reporterName ?? ""),
+          reporterUid: String(data.reporterUid ?? ""),
+          completed: Boolean(data.completed),
+          completedAtIso,
+        } as AppReportRow;
+      });
+    let reportRows: AppReportRow[] = [];
+    let featureRows: AppReportRow[] = [];
+    let readyCount = 0;
+    const publishRows = () => {
+      setReports(
+        [...reportRows, ...featureRows].sort((a, b) =>
+          String(b.createdAtIso || "").localeCompare(String(a.createdAtIso || "")),
+        ),
+      );
+      if (readyCount >= 2) {
         setReportsLoading(false);
+      }
+    };
+    const reportQuery = query(
+      collection(db, "Application", "changelog", "Reports"),
+      orderBy("createdAt", "desc"),
+      limit(500),
+    );
+    const featureQuery = query(
+      collection(db, "Application", "changelog", "Suggested feature"),
+      orderBy("createdAt", "desc"),
+      limit(500),
+    );
+    const unsubscribeReports = onSnapshot(
+      reportQuery,
+      (snap) => {
+        reportRows = mapRows(snap, "issue");
+        readyCount = Math.min(2, readyCount + 1);
+        publishRows();
       },
       () => {
-        setReportsLoading(false);
+        readyCount = Math.min(2, readyCount + 1);
+        publishRows();
+      },
+    );
+    const unsubscribeFeatures = onSnapshot(
+      featureQuery,
+      (snap) => {
+        featureRows = mapRows(snap, "feature");
+        readyCount = Math.min(2, readyCount + 1);
+        publishRows();
+      },
+      () => {
+        readyCount = Math.min(2, readyCount + 1);
+        publishRows();
       },
     );
     return () => {
-      unsubscribe();
+      unsubscribeReports();
+      unsubscribeFeatures();
     };
   }, [showDevReports, isDevUser]);
 

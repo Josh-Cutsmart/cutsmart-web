@@ -19,7 +19,8 @@ import {
 import { db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
-import type { Cutlist, Project, ProjectChange, SalesQuote } from "@/lib/types";
+import type { Cutlist, Project, ProjectChange, ProjectImageItem, SalesQuote } from "@/lib/types";
+import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
 
 function toIsoString(value: unknown, fallback = "") {
   if (!value) {
@@ -36,6 +37,28 @@ function toIsoString(value: unknown, fallback = "") {
   }
 
   return fallback;
+}
+
+function normalizeChangelogVersionId(version: string): string {
+  return String(version || "").trim().toLowerCase();
+}
+
+function appChangelogVersionsCollectionRef() {
+  return collection(db!, "Application", "changelog", "versions");
+}
+
+function appChangelogReportsCollectionRef() {
+  return collection(db!, "Application", "changelog", "Reports");
+}
+
+function appChangelogSuggestedFeaturesCollectionRef() {
+  return collection(db!, "Application", "changelog", "Suggested feature");
+}
+
+function appChangelogCollectionRefForKind(kind: AppReportKind) {
+  return kind === "feature"
+    ? appChangelogSuggestedFeaturesCollectionRef()
+    : appChangelogReportsCollectionRef();
 }
 
 function toProjectStatus(raw: unknown): Project["status"] {
@@ -124,6 +147,50 @@ function parseCutlistRows(data: Record<string, unknown>): unknown[] {
   return Array.isArray(container.rows) ? (container.rows as unknown[]) : [];
 }
 
+function normalizeProjectImageItems(value: unknown): ProjectImageItem[] {
+  if (!Array.isArray(value)) return [];
+  const items: ProjectImageItem[] = [];
+  for (const item of value) {
+    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+    const url = String(row?.url ?? "").trim();
+    if (!url) continue;
+    const annotations = Array.isArray(row?.annotations)
+      ? row.annotations
+          .map((annotation) => {
+            const next =
+              annotation && typeof annotation === "object"
+                ? (annotation as Record<string, unknown>)
+                : null;
+            const id = String(next?.id ?? "").trim();
+            const note = String(next?.note ?? "").trim();
+            const x = Number(next?.x);
+            const y = Number(next?.y);
+            if (!id || !note || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+            const xPx = Number(next?.xPx);
+            const yPx = Number(next?.yPx);
+            return {
+              id,
+              note,
+              x: Math.min(100, Math.max(0, x)),
+              y: Math.min(100, Math.max(0, y)),
+              xPx: Number.isFinite(xPx) ? Math.max(0, xPx) : undefined,
+              yPx: Number.isFinite(yPx) ? Math.max(0, yPx) : undefined,
+              createdByName: String(next?.createdByName ?? "").trim(),
+              createdByColor: String(next?.createdByColor ?? "").trim(),
+            };
+          })
+          .filter(Boolean) as NonNullable<ProjectImageItem["annotations"]>
+      : [];
+    items.push({
+      url,
+      name: String(row?.name ?? "").trim(),
+      annotations,
+    });
+    if (items.length >= 10) break;
+  }
+  return items;
+}
+
 function normalizeProject(id: string, data: Record<string, unknown>): Project {
   const rows = parseCutlistRows(data);
   const clientBlock =
@@ -197,6 +264,8 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     "ownerName",
     "createdByDisplayName",
   ]);
+  const projectImageItems = normalizeProjectImageItems(data.projectImageItems);
+  const projectImages = Array.isArray(data.projectImages) ? data.projectImages.map(String).filter(Boolean) : [];
 
   return {
     id,
@@ -229,7 +298,8 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     clientAddress,
     region: String(data.region ?? ""),
     projectFiles: Array.isArray(data.projectFiles) ? (data.projectFiles as Array<Record<string, unknown>>) : [],
-    projectImages: Array.isArray(data.projectImages) ? data.projectImages.map(String) : [],
+    projectImages: projectImages.length ? projectImages : projectImageItems.map((item) => item.url),
+    projectImageItems,
     projectSettings: settings,
     cutlist: parseCutlistContainer(data) ?? undefined,
   };
@@ -1750,6 +1820,84 @@ export async function fetchCompanyDoc(companyId: string): Promise<Record<string,
   }
 }
 
+export async function fetchAppChangelogHistory(): Promise<UpdateChangelogEntry[]> {
+  if (!db) {
+    return [];
+  }
+  try {
+    const snap = await getDocs(query(appChangelogVersionsCollectionRef(), orderBy("capturedAtIso", "desc"), limit(500)));
+    const rows = snap.docs
+      .map((docSnap) => {
+        const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+        return {
+          version: String(data.version || "").trim(),
+          whatsNew: String(data.whatsNew || ""),
+          capturedAtIso: String(data.capturedAtIso || ""),
+        } as UpdateChangelogEntry;
+      })
+      .filter((row) => row.version);
+    if (rows.length) {
+      return rows;
+    }
+    const legacySnap = await getDocs(query(collection(db, "appChangelogVersions"), orderBy("capturedAtIso", "desc"), limit(500)));
+    const legacyRows = legacySnap.docs
+      .map((docSnap) => {
+        const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+        return {
+          version: String(data.version || "").trim(),
+          whatsNew: String(data.whatsNew || ""),
+          capturedAtIso: String(data.capturedAtIso || ""),
+        } as UpdateChangelogEntry;
+      })
+      .filter((row) => row.version);
+    if (legacyRows.length) {
+      await syncAppChangelogHistory(legacyRows);
+    }
+    return legacyRows;
+  } catch {
+    return [];
+  }
+}
+
+export async function upsertAppChangelogVersion(entry: UpdateChangelogEntry): Promise<boolean> {
+  const version = String(entry.version || "").trim();
+  if (!db || !version) {
+    return false;
+  }
+  try {
+    const ref = doc(appChangelogVersionsCollectionRef(), normalizeChangelogVersionId(version));
+    await setDoc(
+      ref,
+      {
+        id: normalizeChangelogVersionId(version),
+        version,
+        whatsNew: String(entry.whatsNew || ""),
+        capturedAtIso: String(entry.capturedAtIso || "") || new Date().toISOString(),
+        updatedAt: serverTimestamp(),
+        updatedAtIso: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function syncAppChangelogHistory(entries: UpdateChangelogEntry[]): Promise<boolean> {
+  if (!db || !Array.isArray(entries) || entries.length === 0) {
+    return false;
+  }
+  let didWrite = false;
+  for (const entry of entries) {
+    const ok = await upsertAppChangelogVersion(entry);
+    if (ok) {
+      didWrite = true;
+    }
+  }
+  return didWrite;
+}
+
 export type CompanyClientProjectHistoryRow = {
   projectId: string;
   projectName: string;
@@ -1780,21 +1928,11 @@ export type CompanyClientRow = {
   history: CompanyClientProjectHistoryRow[];
 };
 
-export async function fetchCompanyActiveProjectIds(companyId: string): Promise<Set<string>> {
-  const cid = String(companyId || "").trim();
-  if (!db || !cid) return new Set<string>();
-  const ids = new Set<string>();
-  try {
-    const projects = await collectCompanyProjectsForClients(cid);
-    for (const project of projects) {
-      if (String(project.id || "").trim()) {
-        ids.add(String(project.id || "").trim());
-      }
-    }
-  } catch {
-    // ignore and return best-effort set
-  }
-  return ids;
+function toCompanyClientSummaryRow(row: CompanyClientRow): CompanyClientRow {
+  return {
+    ...row,
+    history: [],
+  };
 }
 
 export function normalizeClientEmail(value: unknown): string {
@@ -2184,89 +2322,51 @@ export async function fetchCompanyClients(companyId: string): Promise<CompanyCli
 
   const merged = new Map<string, CompanyClientRow>();
 
-    try {
-      const projects = await collectCompanyProjectsForClients(cid);
-      for (const project of projects) {
-        const derived = buildCompanyClientRowFromProject(project);
-        const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
-        const existing = merged.get(matchId);
-        if (!existing) {
-          merged.set(matchId, { ...derived, id: matchId });
-          continue;
-        }
-        const existingStamp = Date.parse(existing.lastProjectAtIso || existing.updatedAtIso || existing.createdAtIso || "");
-        const nextStamp = Date.parse(derived.lastProjectAtIso || derived.updatedAtIso || derived.createdAtIso || "");
-        if (nextStamp > existingStamp) {
-          merged.set(matchId, {
-            ...existing,
-            ...derived,
-            id: matchId,
-            history: existing.history.length ? existing.history : derived.history,
-            projectCount: Math.max(existing.projectCount, derived.projectCount),
-            firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, derived.firstProjectAtIso),
-            lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, derived.lastProjectAtIso),
-          });
-        }
-      }
-  } catch {
-    // keep going so persisted client rows can still load
-  }
-
   try {
     const clientsSnap = await getDocs(collection(db, "companies", cid, "clients"));
     const persistedRows = clientsSnap.docs
       .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
       .filter((row) => row.id && row.id !== "__meta")
-      .map((row) => ({
-        ...row,
-        history: row.history.slice().sort((a, b) => Date.parse(b.updatedAtIso || b.createdAtIso || "") - Date.parse(a.updatedAtIso || a.createdAtIso || "")),
-      }));
+      .map((row) => toCompanyClientSummaryRow(row));
     for (const row of persistedRows) {
-      const matchId =
-        findMatchingClientIdInMap(merged, {
-          id: row.lastProjectId,
-          companyId: row.companyId,
-          name: row.lastProjectId || row.id,
-          customer: row.name,
-          clientEmail: row.email,
-          clientPhone: row.phone,
-          clientAddress: row.address,
-          createdAt: row.createdAtIso,
-          updatedAt: row.updatedAtIso,
-          createdByUid: "",
-          createdByName: "",
-          status: "draft",
-          statusLabel: "New",
-          priority: "medium",
-          deletedAt: "",
-          dueDate: "",
-          estimatedSheets: 0,
-          assignedTo: "",
-          tags: [],
-          notes: row.notes,
-          region: "",
-          projectFiles: [],
-          projectImages: [],
-          projectSettings: {},
-        } as Project) || row.id;
+      merged.set(row.id, row);
+    }
+  } catch {
+    // continue into project-derived merge
+  }
+
+  try {
+    const projects = await collectCompanyProjectsForClients(cid);
+    for (const project of projects) {
+      const derived = toCompanyClientSummaryRow(buildCompanyClientRowFromProject(project));
+      const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
       const existing = merged.get(matchId);
       if (!existing) {
-        merged.set(matchId, { ...row, id: matchId });
+        merged.set(matchId, { ...derived, id: matchId });
         continue;
       }
+      const existingStamp = Date.parse(existing.lastProjectAtIso || existing.updatedAtIso || existing.createdAtIso || "");
+      const nextStamp = Date.parse(derived.lastProjectAtIso || derived.updatedAtIso || derived.createdAtIso || "");
       merged.set(matchId, {
         ...existing,
-        ...row,
+        ...(nextStamp > existingStamp ? derived : {}),
         id: matchId,
-        history: row.history.length ? row.history : existing.history,
-        projectCount: Math.max(existing.projectCount, row.projectCount),
-        firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, row.firstProjectAtIso),
-        lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, row.lastProjectAtIso),
-        lastProjectId: row.lastProjectId || existing.lastProjectId,
+        name: existing.name || derived.name,
+        email: existing.email || derived.email,
+        emailNormalized: existing.emailNormalized || derived.emailNormalized,
+        phone: existing.phone || derived.phone,
+        address: existing.address || derived.address,
+        projectCount: Math.max(existing.projectCount, derived.projectCount),
+        firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, derived.firstProjectAtIso),
+        lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, derived.lastProjectAtIso),
+        lastProjectId:
+          (nextStamp > existingStamp ? derived.lastProjectId : "") ||
+          existing.lastProjectId ||
+          derived.lastProjectId,
       });
     }
   } catch {
-    // derived client rows are still enough to render the phonebook
+    // ignore
   }
 
   try {
@@ -2276,10 +2376,23 @@ export async function fetchCompanyClients(companyId: string): Promise<CompanyCli
   }
 
   return Array.from(merged.values()).sort((a, b) => {
-    const aStamp = Date.parse(a.lastProjectAtIso || a.updatedAtIso || a.createdAtIso || "");
-    const bStamp = Date.parse(b.lastProjectAtIso || b.updatedAtIso || b.createdAtIso || "");
-    return bStamp - aStamp;
+    const aName = String(a.name || a.email).trim().toLowerCase();
+    const bName = String(b.name || b.email).trim().toLowerCase();
+    return aName.localeCompare(bName);
   });
+}
+
+export async function fetchCompanyClientById(companyId: string, clientId: string): Promise<CompanyClientRow | null> {
+  const cid = String(companyId || "").trim();
+  const id = String(clientId || "").trim();
+  if (!db || !cid || !id) return null;
+  try {
+    const snap = await getDoc(doc(db, "companies", cid, "clients", id));
+    if (!snap.exists()) return null;
+    return buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+  } catch {
+    return null;
+  }
 }
 
 export async function syncCompanyClientProfileFromProject(
@@ -2307,6 +2420,7 @@ export async function upsertCompanyClientProfileOnProjectCreate(input: {
   assignedTo?: string;
   tags?: string[];
   projectImages?: string[];
+  projectImageItems?: ProjectImageItem[];
   projectFiles?: Array<Record<string, unknown>>;
   projectSettings?: Record<string, unknown>;
 }): Promise<{ ok: boolean; clientId?: string }> {
@@ -2336,6 +2450,7 @@ export async function upsertCompanyClientProfileOnProjectCreate(input: {
     region: "",
     projectFiles: Array.isArray(input.projectFiles) ? input.projectFiles : [],
     projectImages: Array.isArray(input.projectImages) ? input.projectImages.map(String) : [],
+    projectImageItems: Array.isArray(input.projectImageItems) ? input.projectImageItems : [],
     projectSettings:
       input.projectSettings && typeof input.projectSettings === "object"
         ? input.projectSettings
@@ -2345,6 +2460,23 @@ export async function upsertCompanyClientProfileOnProjectCreate(input: {
 
   return syncCompanyClientProfileFromProjectInternal(projectLike, { syncOnly: true });
 }
+
+export type LeadImageAnnotation = {
+  id: string;
+  x: number;
+  y: number;
+  xPx?: number;
+  yPx?: number;
+  note: string;
+  createdByName?: string;
+  createdByColor?: string;
+};
+
+export type LeadImageItem = {
+  url: string;
+  name: string;
+  annotations?: LeadImageAnnotation[];
+};
 
 export type CompanyLeadRow = {
   id: string;
@@ -2361,8 +2493,53 @@ export type CompanyLeadRow = {
   isDeleted?: boolean;
   source: string;
   status: string;
+  assignedToUid?: string;
+  assignedToName?: string;
+  assignedTo?: string;
+  imageItems?: LeadImageItem[];
+  imageUrls?: string[];
   rawFields?: Record<string, unknown>;
 };
+
+function normalizeLeadImageItems(value: unknown): LeadImageItem[] {
+  if (!Array.isArray(value)) return [];
+  const items: LeadImageItem[] = [];
+  for (const item of value) {
+    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+    const url = String(row?.url ?? "").trim();
+    const name = String(row?.name ?? "").trim();
+    const annotations: LeadImageAnnotation[] = [];
+    if (Array.isArray(row?.annotations)) {
+      for (const annotation of row.annotations) {
+        const next =
+          annotation && typeof annotation === "object"
+            ? (annotation as Record<string, unknown>)
+            : null;
+        const id = String(next?.id ?? "").trim();
+        const note = String(next?.note ?? "").trim();
+        const x = Number(next?.x);
+        const y = Number(next?.y);
+        const xPx = Number(next?.xPx);
+        const yPx = Number(next?.yPx);
+        if (!id || !note || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        annotations.push({
+          id,
+          note,
+          x: Math.min(100, Math.max(0, x)),
+          y: Math.min(100, Math.max(0, y)),
+          xPx: Number.isFinite(xPx) ? Math.max(0, xPx) : undefined,
+          yPx: Number.isFinite(yPx) ? Math.max(0, yPx) : undefined,
+          createdByName: String(next?.createdByName ?? "").trim(),
+          createdByColor: String(next?.createdByColor ?? "").trim(),
+        });
+      }
+    }
+    if (!url) continue;
+    items.push({ url, name, annotations });
+    if (items.length >= 10) break;
+  }
+  return items;
+}
 
 function normalizeLeadStatus(value: unknown): CompanyLeadRow["status"] {
   const raw = String(value ?? "").trim();
@@ -2385,6 +2562,7 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
     );
     return snap.docs.map((docSnap) => {
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const imageItems = normalizeLeadImageItems(data.imageItems);
       return {
         id: String(data.id ?? docSnap.id),
         companyId: cid,
@@ -2400,6 +2578,15 @@ export async function fetchCompanyLeads(companyId: string): Promise<CompanyLeadR
         isDeleted: Boolean(data.isDeleted),
         source: String(data.source ?? "").trim() || "zapier-form",
         status: normalizeLeadStatus(data.status),
+        assignedToUid: String(data.assignedToUid ?? "").trim() || undefined,
+        assignedToName: String(data.assignedToName ?? data.assignedTo ?? "").trim() || undefined,
+        assignedTo: String(data.assignedTo ?? data.assignedToName ?? "").trim() || undefined,
+        imageItems,
+        imageUrls: imageItems.length
+          ? imageItems.map((item) => item.url)
+          : Array.isArray(data.imageUrls)
+            ? data.imageUrls.map(String).filter(Boolean)
+            : [],
         rawFields:
           data.rawFields && typeof data.rawFields === "object"
             ? (data.rawFields as Record<string, unknown>)
@@ -2442,6 +2629,8 @@ export async function createCompanyLead(
     formName?: string;
     source?: string;
     status?: string;
+    imageItems?: Array<{ url: string; name?: string; annotations?: LeadImageAnnotation[] }>;
+    imageUrls?: string[];
   },
 ): Promise<CompanyLeadRow | null> {
   const cid = String(companyId || "").trim();
@@ -2449,6 +2638,13 @@ export async function createCompanyLead(
   try {
     const leadRef = doc(collection(db, "companies", cid, "leads"));
     const createdAtIso = new Date().toISOString();
+    const imageItems = normalizeLeadImageItems(
+      Array.isArray(payload.imageItems)
+        ? payload.imageItems
+        : Array.isArray(payload.imageUrls)
+          ? payload.imageUrls.map((url) => ({ url, name: "" }))
+          : [],
+    );
     const nextLead: CompanyLeadRow = {
       id: leadRef.id,
       companyId: cid,
@@ -2462,6 +2658,8 @@ export async function createCompanyLead(
       updatedAtIso: createdAtIso,
       source: String(payload.source ?? "").trim() || "manual-entry",
       status: normalizeLeadStatus(payload.status ?? "New"),
+      imageItems,
+      imageUrls: imageItems.map((item) => item.url),
       rawFields:
         payload.rawFields && typeof payload.rawFields === "object"
           ? payload.rawFields
@@ -2479,6 +2677,8 @@ export async function createCompanyLead(
       submittedAt: nextLead.submittedAtIso,
       source: nextLead.source,
       status: nextLead.status,
+      imageItems: nextLead.imageItems,
+      imageUrls: nextLead.imageUrls,
       rawFields: nextLead.rawFields,
       createdAt: serverTimestamp(),
       createdAtIso,
@@ -3094,7 +3294,7 @@ export async function submitAppReport(input: {
   if (!reporterUid || !reporterEmail) return false;
   const nowIso = new Date().toISOString();
   try {
-    const reportRef = doc(collection(db, "appReports"));
+    const reportRef = doc(appChangelogCollectionRefForKind(kind as AppReportKind));
     await setDoc(reportRef, {
       id: reportRef.id,
       kind,
@@ -3121,9 +3321,7 @@ export async function submitAppReport(input: {
 export async function fetchAppReports(): Promise<AppReportRow[]> {
   if (!db) return [];
   try {
-    const snap = await getDocs(query(collection(db, "appReports"), orderBy("createdAt", "desc"), limit(500)));
-    return snap.docs
-      .map((docSnap) => {
+    const mapReportRow = (docSnap: QueryDocumentSnapshot) => {
         const data = (docSnap.data() ?? {}) as Record<string, unknown>;
         const kindRaw = String(data.kind ?? "").trim().toLowerCase();
         const kind: AppReportKind = kindRaw === "feature" ? "feature" : "issue";
@@ -3144,8 +3342,37 @@ export async function fetchAppReports(): Promise<AppReportRow[]> {
           completed: Boolean(data.completed),
           completedAtIso: toIsoString(data.completedAtIso ?? data.completedAt, ""),
         } as AppReportRow;
-      })
+    };
+    const [reportSnap, featureSnap] = await Promise.all([
+      getDocs(query(appChangelogReportsCollectionRef(), orderBy("createdAt", "desc"), limit(500))),
+      getDocs(query(appChangelogSuggestedFeaturesCollectionRef(), orderBy("createdAt", "desc"), limit(500))),
+    ]);
+    const rows = [...reportSnap.docs, ...featureSnap.docs]
+      .map(mapReportRow)
+      .filter((row) => row.subject || row.body)
+      .sort((a, b) => String(b.createdAtIso || "").localeCompare(String(a.createdAtIso || "")));
+    if (rows.length) {
+      return rows;
+    }
+    const [legacyNestedSnap, legacyTopLevelSnap] = await Promise.all([
+      getDocs(query(collection(db, "appChangelog", "global", "reports"), orderBy("createdAt", "desc"), limit(500))),
+      getDocs(query(collection(db, "appReports"), orderBy("createdAt", "desc"), limit(500))),
+    ]);
+    const legacyRows = [...legacyNestedSnap.docs, ...legacyTopLevelSnap.docs]
+      .map(mapReportRow)
       .filter((row) => row.subject || row.body);
+    for (const row of legacyRows) {
+      await setDoc(
+        doc(appChangelogCollectionRefForKind(row.kind), row.id),
+        {
+          ...row,
+          updatedAt: serverTimestamp(),
+          updatedAtIso: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+    }
+    return legacyRows;
   } catch {
     return [];
   }
@@ -3157,7 +3384,7 @@ export async function setAppReportCompleted(reportId: string, completed: boolean
   if (!id) return false;
   const nowIso = new Date().toISOString();
   try {
-    await updateDoc(doc(db, "appReports", id), {
+    await updateDoc(doc(appChangelogReportsCollectionRef(), id), {
       completed: Boolean(completed),
       completedAt: Boolean(completed) ? serverTimestamp() : null,
       completedAtIso: Boolean(completed) ? nowIso : "",
@@ -3166,7 +3393,40 @@ export async function setAppReportCompleted(reportId: string, completed: boolean
     });
     return true;
   } catch {
-    return false;
+    try {
+      await updateDoc(doc(appChangelogSuggestedFeaturesCollectionRef(), id), {
+        completed: Boolean(completed),
+        completedAt: Boolean(completed) ? serverTimestamp() : null,
+        completedAtIso: Boolean(completed) ? nowIso : "",
+        updatedAt: serverTimestamp(),
+        updatedAtIso: nowIso,
+      });
+      return true;
+    } catch {
+      try {
+        await updateDoc(doc(db, "appChangelog", "global", "reports", id), {
+          completed: Boolean(completed),
+          completedAt: Boolean(completed) ? serverTimestamp() : null,
+          completedAtIso: Boolean(completed) ? nowIso : "",
+          updatedAt: serverTimestamp(),
+          updatedAtIso: nowIso,
+        });
+        return true;
+      } catch {
+        try {
+          await updateDoc(doc(db, "appReports", id), {
+            completed: Boolean(completed),
+            completedAt: Boolean(completed) ? serverTimestamp() : null,
+            completedAtIso: Boolean(completed) ? nowIso : "",
+            updatedAt: serverTimestamp(),
+            updatedAtIso: nowIso,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
   }
 }
 
