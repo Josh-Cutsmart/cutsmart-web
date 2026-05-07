@@ -43,7 +43,11 @@ import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { ProjectImageItem } from "@/lib/types";
 import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
-import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
+import {
+  LEAD_PROJECT_CREATED_EVENT,
+  OPEN_NEW_PROJECT_EVENT,
+  type NewProjectPrefillPayload,
+} from "@/lib/new-project-bridge";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
@@ -85,7 +89,13 @@ function hasPermissionKey(permissionKeys: string[] | undefined, key: string): bo
   }
   return (permissionKeys ?? []).some((item) => {
     const normalized = String(item || "").trim().toLowerCase();
-    return normalized === "company.*" || normalized === target;
+    if (normalized === "company.*" || normalized === target) {
+      return true;
+    }
+    if (normalized === "leads.*" && (target === "leads.view" || target === "leads.view.others")) {
+      return true;
+    }
+    return false;
   });
 }
 
@@ -255,6 +265,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [prefilledProjectImages, setPrefilledProjectImages] = useState<PrefilledProjectImage[]>([]);
+  const [sourceLeadId, setSourceLeadId] = useState("");
+  const [sourceLeadCompanyId, setSourceLeadCompanyId] = useState("");
   const [hoveredPhotoId, setHoveredPhotoId] = useState("");
   const [previewPhotoId, setPreviewPhotoId] = useState("");
   const [previewAnim, setPreviewAnim] = useState<PreviewAnimState | null>(null);
@@ -327,7 +339,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const canAccessLeads = useMemo(() => {
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return hasPermissionKey(normalizedEffectivePermissions, "leads.*");
+    return hasPermissionKey(normalizedEffectivePermissions, "leads.view");
   }, [normalizedEffectivePermissions, roleForUi]);
 
   const canAccessClients = useMemo(() => {
@@ -377,6 +389,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setClientEmail(String(detail.clientEmail || "").trim());
       setProjectAddress(String(detail.projectAddress || "").trim());
       setProjectNotes(String(detail.projectNotes || "").trim());
+      setSourceLeadId(String(detail.sourceLeadId || "").trim());
+      setSourceLeadCompanyId(String(detail.sourceLeadCompanyId || "").trim());
       setPrefilledProjectImages(
         Array.isArray(detail.projectImageItems) && detail.projectImageItems.length > 0
           ? detail.projectImageItems
@@ -941,6 +955,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     setShowTagSuggestions(false);
     setPhotos([]);
     setPrefilledProjectImages([]);
+    setSourceLeadId("");
+    setSourceLeadCompanyId("");
     setPreviewPhotoId("");
     setPreviewAnim(null);
     setPreviewBackdropOpacity(0);
@@ -1384,6 +1400,17 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         }
       if (tags.length > 0) {
         await resyncCompanyProjectTagUsage(companyId);
+      }
+      if (typeof window !== "undefined" && sourceLeadId && sourceLeadCompanyId) {
+        window.dispatchEvent(
+          new CustomEvent(LEAD_PROJECT_CREATED_EVENT, {
+            detail: {
+              leadId: sourceLeadId,
+              companyId: sourceLeadCompanyId,
+              projectId,
+            },
+          }),
+        );
       }
       setShowNewProject(false);
       resetProjectForm();

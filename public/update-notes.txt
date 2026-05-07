@@ -1,19 +1,18 @@
-Version: v0.2.6
+Version: v0.2.7
 
 whatsNew: [
 <u><b>General:</u></b>
-- Max image upload bumped up to 10 images.
+- Users can now see the leads tab with leads that they have been assigned to.
 
-<u><b>Leads:</u></b>
-- Can now insert up to 10 images to a lead (images carry over to New Projects).
-- Images can have comments by pin (users icon colour) which will follow that image through the entire project.
-- Can now assign a user to a lead Before project creation.
+<u><b>Image Window (Leads/Project Details):</u></b>
+- Image pins now fade when another pin is selected.
+- Image comments no longer go off screen.
+- Image Pins now dont enlarge while zooming.
+- Removed scroll bar.
+- Fixed "Project Details" Image layout.
 
-<u><b>New Project:</u></b>
-- Up to 10 images can be added per project.
-
-<u><b>Application:</u></b>
-- Moved storage location for all data inside "Changelog" tab.
-
+<u><b>Changelog:</u></b>
+- Fixed save path for entire tab.
+- Reports now have pages and a filter for viewing per page.
 ]
 

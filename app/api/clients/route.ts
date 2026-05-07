@@ -175,7 +175,7 @@ function buildClientFromProject(companyId: string, project: Record<string, unkno
     firstProjectAtIso: createdAtIso,
     lastProjectAtIso: updatedAtIso || createdAtIso,
     lastProjectId: toStr(project.id),
-    projectCount: 0,
+    projectCount: 1,
     history,
   };
 }
@@ -331,10 +331,23 @@ export async function GET(request: NextRequest) {
     }
     try {
       const clientSnap = await adminDb.collection("companies").doc(companyId).collection("clients").doc(clientId).get();
-      if (!clientSnap.exists) {
+      if (clientSnap.exists) {
+        const client = buildClientFromDoc(companyId, clientSnap.id, (clientSnap.data() ?? {}) as Record<string, unknown>);
+        return NextResponse.json({ ok: true, client });
+      }
+      const merged = new Map<string, ClientRow>();
+      const jobsSnap = await adminDb.collection("companies").doc(companyId).collection("jobs").get();
+      jobsSnap.docs.forEach((docSnap) => {
+        const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+        const candidate = buildClientFromProject(companyId, { ...data, id: toStr(data.id) || docSnap.id });
+        if (!candidate.name && !candidate.email && !candidate.phone) return;
+        const matchId = findMatchingClientIdInMap(merged, { ...data, id: toStr(data.id) || docSnap.id }) || candidate.id;
+        merged.set(matchId, mergeClientRows(merged.get(matchId), { ...candidate, id: matchId }));
+      });
+      const client = merged.get(clientId);
+      if (!client) {
         return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
       }
-      const client = buildClientFromDoc(companyId, clientSnap.id, (clientSnap.data() ?? {}) as Record<string, unknown>);
       return NextResponse.json({ ok: true, client });
     } catch {
       return NextResponse.json({ ok: false, error: "client-detail-load-failed" }, { status: 500 });
@@ -382,7 +395,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    clients: mode === "summary" ? clients.map((row) => toSummaryClientRow(row)) : clients,
+    clients,
   });
 }
 

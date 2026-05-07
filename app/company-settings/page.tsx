@@ -112,7 +112,8 @@ const desktopPermissionKeys = [
   "company.*",
   "company.dashboard.view",
   "company.clients",
-  "leads.*",
+  "leads.view",
+  "leads.view.others",
   "projects.create",
   "projects.create.other",
   "projects.view",
@@ -139,7 +140,8 @@ const permissionLabels: Record<string, string> = {
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
   "company.clients": "company.clients - Access Client Profiles",
-  "leads.*": "leads.* - Access Leads and Deleted Leads",
+  "leads.view": "leads.view - Access Leads Tab (Own Assigned Leads)",
+  "leads.view.others": "leads.view.others - View All Leads For All Users",
   "projects.create": "projects.create - Create Projects",
   "projects.create.other": "projects.create.other - Change Project Creator / Handover Project",
   "projects.view": "projects.view - View Projects",
@@ -464,6 +466,9 @@ function normalizeRoles(raw: unknown): RoleRow[] {
           permissions.flatMap((permission) => {
             const clean = toStr(permission);
             if (!clean) return [];
+            if (clean === "leads.*") {
+              return ["leads.view", "leads.view.others"];
+            }
             if (clean === "projects.create.others") {
               return [clean, "projects.create.other", "projects.assign.other"];
             }

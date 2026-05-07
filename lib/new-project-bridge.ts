@@ -1,6 +1,7 @@
 import type { ProjectImageItem } from "@/lib/types";
 
 export const OPEN_NEW_PROJECT_EVENT = "cutsmart:open-new-project";
+export const LEAD_PROJECT_CREATED_EVENT = "cutsmart:lead-project-created";
 
 export type NewProjectPrefillPayload = {
   projectName?: string;
@@ -15,4 +16,6 @@ export type NewProjectPrefillPayload = {
   projectImageItems?: ProjectImageItem[];
   assignedToUid?: string;
   assignedToName?: string;
+  sourceLeadId?: string;
+  sourceLeadCompanyId?: string;
 };

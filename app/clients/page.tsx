@@ -129,7 +129,11 @@ export default function ClientsPage() {
       }
       if (cancelled) return;
       setClients(companyClients);
-      setClientDetailsById({});
+      setClientDetailsById(
+        Object.fromEntries(
+          companyClients.map((client) => [client.id, client]),
+        ),
+      );
       setLoading(false);
     };
     void load();

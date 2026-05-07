@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type Mouse
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, ImagePlus, Inbox, Plus, Search, X } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { ProtectedRoute } from "@/components/protected-route";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
@@ -11,7 +12,11 @@ import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type Com
 import { storage } from "@/lib/firebase";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
-import { OPEN_NEW_PROJECT_EVENT, type NewProjectPrefillPayload } from "@/lib/new-project-bridge";
+import {
+  LEAD_PROJECT_CREATED_EVENT,
+  OPEN_NEW_PROJECT_EVENT,
+  type NewProjectPrefillPayload,
+} from "@/lib/new-project-bridge";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
@@ -147,7 +152,13 @@ function hasPermissionKey(permissionKeys: string[] | undefined, key: string): bo
   if (!target) return false;
   return (permissionKeys ?? []).some((item) => {
     const normalized = String(item || "").trim().toLowerCase();
-    return normalized === "company.*" || normalized === target;
+    if (normalized === "company.*" || normalized === target) {
+      return true;
+    }
+    if (normalized === "leads.*" && (target === "leads.view" || target === "leads.view.others")) {
+      return true;
+    }
+    return false;
   });
 }
 
@@ -557,9 +568,11 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
 
 export default function LeadsPage() {
   const { user } = useAuth();
+  const currentUserUid = String(user?.uid || "").trim();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
   const [canAccessLeads, setCanAccessLeads] = useState(false);
+  const [canViewOtherLeads, setCanViewOtherLeads] = useState(false);
   const [activeCompanyId, setActiveCompanyId] = useState("");
   const [leads, setLeads] = useState<CompanyLeadRow[]>([]);
   const [leadDetailsById, setLeadDetailsById] = useState<Record<string, CompanyLeadRow>>({});
@@ -600,7 +613,10 @@ export default function LeadsPage() {
   const [leadImageDraftAnnotation, setLeadImageDraftAnnotation] = useState<{ x: number; y: number; xPx: number; yPx: number; note: string } | null>(null);
   const [leadImageActiveAnnotationId, setLeadImageActiveAnnotationId] = useState("");
   const [leadImageHighlightedAnnotationId, setLeadImageHighlightedAnnotationId] = useState("");
-  const [leadImageEditingAnnotation, setLeadImageEditingAnnotation] = useState<{ id: string; note: string; width?: number } | null>(null);
+  const [leadImageEditingAnnotation, setLeadImageEditingAnnotation] = useState<{ id: string; note: string; width?: number; height?: number } | null>(null);
+  const [leadImageListEditingAnnotation, setLeadImageListEditingAnnotation] = useState<{ id: string; note: string; width?: number } | null>(null);
+  const [leadImageActiveAnnotationBoxSize, setLeadImageActiveAnnotationBoxSize] = useState<{ id: string; width: number; height: number } | null>(null);
+  const [leadImageDraftAnnotationBoxSize, setLeadImageDraftAnnotationBoxSize] = useState<{ width: number; height: number } | null>(null);
   const [confirmDeleteLeadImageAnnotationId, setConfirmDeleteLeadImageAnnotationId] = useState("");
   const [leadImageExpandedAnnotationIds, setLeadImageExpandedAnnotationIds] = useState<Record<string, boolean>>({});
   const [leadImageOverflowAnnotationIds, setLeadImageOverflowAnnotationIds] = useState<Record<string, boolean>>({});
@@ -617,10 +633,15 @@ export default function LeadsPage() {
   const leadImageCommentsHoverScrollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const leadImageCommentsSuppressClickRef = useRef(false);
   const leadImageCommentEditTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const leadImageDragStateRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const leadImageDragStateRef = useRef<{ startX: number; startY: number; originX: number; originY: number; moved: boolean } | null>(null);
+  const leadImageSuppressImageClickRef = useRef(false);
   const leadImageAnnotationDragStateRef = useRef<{
     annotationId: string;
     moved: boolean;
+    startClientX: number;
+    startClientY: number;
+    originOverlayX: number;
+    originOverlayY: number;
   } | null>(null);
   const leadImageAnnotationPendingPointRef = useRef<{ x: number; y: number; xPx: number; yPx: number } | null>(null);
   const leadImageAnnotationDragRafRef = useRef<number | null>(null);
@@ -721,7 +742,13 @@ export default function LeadsPage() {
           | { ok?: boolean; leads?: CompanyLeadRow[] }
           | null;
         const fetchedLeads = response.ok && Array.isArray(detail?.leads) ? detail.leads.filter((lead) => !lead.isDeleted) : [];
-      const nextLeads = [...currentSampleLeads, ...fetchedLeads];
+      const visibleLeads = canViewOtherLeads
+        ? fetchedLeads
+        : fetchedLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
+      const visibleSampleLeads = canViewOtherLeads
+        ? currentSampleLeads
+        : currentSampleLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
+      const nextLeads = [...visibleSampleLeads, ...visibleLeads];
       setLeads(nextLeads);
       setLeadDetailsById((current) => {
         const nextIds = new Set(nextLeads.map((lead) => String(lead.id || "").trim()).filter(Boolean));
@@ -729,20 +756,24 @@ export default function LeadsPage() {
         return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
       });
     } catch {
-      setLeads(currentSampleLeads);
+      const visibleSampleLeads = canViewOtherLeads
+        ? currentSampleLeads
+        : currentSampleLeads.filter((lead) => String(lead.assignedToUid || "").trim() === currentUserUid);
+      setLeads(visibleSampleLeads);
       setLeadDetailsById((current) => {
-        const nextIds = new Set(currentSampleLeads.map((lead) => String(lead.id || "").trim()).filter(Boolean));
+        const nextIds = new Set(visibleSampleLeads.map((lead) => String(lead.id || "").trim()).filter(Boolean));
         const nextEntries = Object.entries(current).filter(([id]) => nextIds.has(id));
         return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
       });
     }
-  }, []);
+  }, [canViewOtherLeads, currentUserUid]);
 
   useEffect(() => {
     const run = async () => {
       if (!user?.uid) {
         setCompanyAccessResolved(true);
         setCanAccessLeads(false);
+        setCanViewOtherLeads(false);
         setIsLoading(false);
         return;
       }
@@ -759,6 +790,7 @@ export default function LeadsPage() {
       if (!companyId) {
         setCompanyAccessResolved(true);
         setCanAccessLeads(false);
+        setCanViewOtherLeads(false);
         setIsLoading(false);
         return;
       }
@@ -768,7 +800,14 @@ export default function LeadsPage() {
         fetchUserColorMapByUids([user.uid], companyId),
       ]);
       const role = String(access?.role || "").trim().toLowerCase();
-      const permitted = role === "owner" || role === "admin" || hasPermissionKey(access?.permissionKeys, "leads.*");
+      const permitted =
+        role === "owner" ||
+        role === "admin" ||
+        hasPermissionKey(access?.permissionKeys, "leads.view");
+      const canViewAll =
+        role === "owner" ||
+        role === "admin" ||
+        hasPermissionKey(access?.permissionKeys, "leads.view.others");
       setCompanyName(String(companyDoc?.name || "").trim());
       setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
       setCurrentUserPinColor(String(userColorMap[String(user.uid || "").trim()] || "").trim());
@@ -781,6 +820,7 @@ export default function LeadsPage() {
       );
       setCompanyAccessResolved(true);
       setCanAccessLeads(permitted);
+      setCanViewOtherLeads(canViewAll);
       if (!permitted) {
         setLeads([]);
         setIsLoading(false);
@@ -806,6 +846,10 @@ export default function LeadsPage() {
       const id = String(leadId || "").trim();
       if (!id || !activeCompanyId) return null;
       if (leadDetailsById[id]) return leadDetailsById[id];
+      const summaryLead = leads.find((lead) => String(lead.id || "").trim() === id) ?? null;
+      if (!canViewOtherLeads && summaryLead && String(summaryLead.assignedToUid || "").trim() !== currentUserUid) {
+        return null;
+      }
       setDetailLoadingLeadId(id);
       try {
         const response = await fetch(
@@ -817,6 +861,9 @@ export default function LeadsPage() {
         );
         const detail = (await response.json().catch(() => null)) as { ok?: boolean; lead?: CompanyLeadRow } | null;
         if (response.ok && detail?.ok && detail.lead) {
+          if (!canViewOtherLeads && String(detail.lead.assignedToUid || "").trim() !== currentUserUid) {
+            return null;
+          }
           setLeadDetailsById((current) => ({ ...current, [id]: detail.lead! }));
           return detail.lead;
         }
@@ -827,7 +874,7 @@ export default function LeadsPage() {
         setDetailLoadingLeadId((current) => (current === id ? "" : current));
       }
     },
-    [activeCompanyId, leadDetailsById],
+    [activeCompanyId, canViewOtherLeads, currentUserUid, leadDetailsById, leads],
   );
 
   useEffect(() => {
@@ -1016,6 +1063,43 @@ export default function LeadsPage() {
     },
     [leadImageNaturalSize],
   );
+  const getLeadAnnotationPopupStyle = useCallback(
+    (annotation: { x: number; y: number; xPx?: number; yPx?: number }) => {
+      const naturalWidth = Number(leadImageNaturalSize.width || 0);
+      const naturalHeight = Number(leadImageNaturalSize.height || 0);
+      const percentX =
+        naturalWidth > 0 && Number.isFinite(annotation.xPx)
+          ? Math.min(100, Math.max(0, (Number(annotation.xPx) / naturalWidth) * 100))
+          : Math.min(100, Math.max(0, Number(annotation.x) || 0));
+      const percentY =
+        naturalHeight > 0 && Number.isFinite(annotation.yPx)
+          ? Math.min(100, Math.max(0, (Number(annotation.yPx) / naturalHeight) * 100))
+          : Math.min(100, Math.max(0, Number(annotation.y) || 0));
+      const popupGap = leadImagePreviewScale > 1 ? Math.max(8, Math.round(22 / leadImagePreviewScale)) : 22;
+      const horizontalTransform =
+        percentX <= 20 ? "translateX(0)" : percentX >= 80 ? "translateX(-100%)" : "translateX(-50%)";
+      const verticalTransform =
+        percentY >= 72 ? `translateY(calc(-100% - ${popupGap}px))` : `translateY(${popupGap}px)`;
+      return {
+        left: `${percentX}%`,
+        top: `${percentY}%`,
+        transform: `${horizontalTransform} ${verticalTransform}`,
+        transformOrigin:
+          percentX <= 20
+            ? percentY >= 72
+              ? "left bottom"
+              : "left top"
+            : percentX >= 80
+              ? percentY >= 72
+                ? "right bottom"
+                : "right top"
+              : percentY >= 72
+                ? "center bottom"
+                : "center top",
+      };
+    },
+    [leadImageNaturalSize, leadImagePreviewScale],
+  );
   const fittedLeadImageSize = useMemo(() => {
     const naturalWidth = Number(leadImageNaturalSize.width || 0);
     const naturalHeight = Number(leadImageNaturalSize.height || 0);
@@ -1031,6 +1115,66 @@ export default function LeadsPage() {
     };
   }, [leadImageNaturalSize, leadImageStageSize]);
   const leadImageSizeReady = fittedLeadImageSize.width > 0 && fittedLeadImageSize.height > 0;
+  const getLeadAnnotationPopupScreenStyle = useCallback(
+    (
+      annotation: { x: number; y: number; xPx?: number; yPx?: number },
+      options?: { width?: number; height?: number },
+    ) => {
+      const naturalWidth = Number(leadImageNaturalSize.width || 0);
+      const naturalHeight = Number(leadImageNaturalSize.height || 0);
+      const percentX =
+        naturalWidth > 0 && Number.isFinite(annotation.xPx)
+          ? Math.min(100, Math.max(0, (Number(annotation.xPx) / naturalWidth) * 100))
+          : Math.min(100, Math.max(0, Number(annotation.x) || 0));
+      const percentY =
+        naturalHeight > 0 && Number.isFinite(annotation.yPx)
+          ? Math.min(100, Math.max(0, (Number(annotation.yPx) / naturalHeight) * 100))
+          : Math.min(100, Math.max(0, Number(annotation.y) || 0));
+      const stageWidth = Number(leadImageStageSize.width || 0);
+      const stageHeight = Number(leadImageStageSize.height || 0);
+      const imageWidth = Number(fittedLeadImageSize.width || 0);
+      const imageHeight = Number(fittedLeadImageSize.height || 0);
+      const visibleImageLeft = Math.max(0, stageWidth / 2 + leadImagePreviewOffset.x - (imageWidth * leadImagePreviewScale) / 2);
+      const visibleImageRight = Math.min(stageWidth, stageWidth / 2 + leadImagePreviewOffset.x + (imageWidth * leadImagePreviewScale) / 2);
+      const visibleImageTop = Math.max(0, stageHeight / 2 + leadImagePreviewOffset.y - (imageHeight * leadImagePreviewScale) / 2);
+      const visibleImageBottom = Math.min(stageHeight, stageHeight / 2 + leadImagePreviewOffset.y + (imageHeight * leadImagePreviewScale) / 2);
+      const margin = 12;
+      const availableWidth = Math.max(160, visibleImageRight - visibleImageLeft - margin * 2);
+      const availableHeight = Math.max(96, visibleImageBottom - visibleImageTop - margin * 2);
+      const popupWidth = Math.min(availableWidth, Math.min(480, Math.max(240, Number(options?.width || 320))));
+      const popupHeight = Math.min(availableHeight, Math.max(96, Number(options?.height || 128)));
+      const popupGap = leadImagePreviewScale > 1 ? Math.max(8, Math.round(22 / leadImagePreviewScale)) : 22;
+      const baseX = (percentX / 100) * imageWidth;
+      const baseY = (percentY / 100) * imageHeight;
+      const pinX = stageWidth / 2 + leadImagePreviewOffset.x + (baseX - imageWidth / 2) * leadImagePreviewScale;
+      const pinY = stageHeight / 2 + leadImagePreviewOffset.y + (baseY - imageHeight / 2) * leadImagePreviewScale;
+      const preferAbove = percentY >= 72;
+      const preferLeft = percentX >= 80;
+      const preferRight = percentX <= 20;
+
+      let left = preferLeft ? pinX : preferRight ? pinX - popupWidth : pinX - popupWidth / 2;
+      const minLeft = visibleImageLeft + margin;
+      const maxLeft = Math.max(minLeft, visibleImageRight - popupWidth - margin);
+      left = Math.min(maxLeft, Math.max(minLeft, left));
+
+      let top = preferAbove ? pinY - popupHeight - popupGap : pinY + popupGap;
+      const minTop = visibleImageTop + margin;
+      const maxTop = Math.max(minTop, visibleImageBottom - popupHeight - margin);
+      top = Math.min(maxTop, Math.max(minTop, top));
+
+      return {
+        left: `${left}px`,
+        top: `${top}px`,
+        maxWidth: `${availableWidth}px`,
+        maxHeight: `${availableHeight}px`,
+      };
+    },
+    [fittedLeadImageSize, leadImageNaturalSize, leadImagePreviewOffset, leadImagePreviewScale, leadImageStageSize],
+  );
+  const leadImageAnnotationUiScale = useMemo(
+    () => (leadImagePreviewScale > 0 ? 1 / leadImagePreviewScale : 1),
+    [leadImagePreviewScale],
+  );
 
   const warmLeadImageUrl = useCallback((url: string) => {
     const normalized = String(url || "").trim();
@@ -1073,6 +1217,9 @@ export default function LeadsPage() {
     setLeadImageActiveAnnotationId("");
     setLeadImageHighlightedAnnotationId("");
     setLeadImageEditingAnnotation(null);
+    setLeadImageListEditingAnnotation(null);
+    setLeadImageActiveAnnotationBoxSize(null);
+    setLeadImageDraftAnnotationBoxSize(null);
     setLeadImageCommentsCollapsed(true);
     setLeadImageThumbnailsCollapsed(false);
     setLeadImageNaturalSize({ width: 0, height: 0 });
@@ -1428,10 +1575,85 @@ export default function LeadsPage() {
     const fullLead = (await loadLeadDetail(lead.id)) ?? getLeadById(lead.id) ?? lead;
     window.dispatchEvent(
       new CustomEvent<NewProjectPrefillPayload>(OPEN_NEW_PROJECT_EVENT, {
-        detail: buildLeadProjectPrefill(fullLead, mergedFieldLayout),
+        detail: {
+          ...buildLeadProjectPrefill(fullLead, mergedFieldLayout),
+          sourceLeadId: String(fullLead.id || "").trim(),
+          sourceLeadCompanyId: String(fullLead.companyId || "").trim(),
+        },
       }),
     );
   };
+
+  const archiveLeadAfterProjectCreate = useCallback(
+    async (leadId: string, companyId: string) => {
+      const id = String(leadId || "").trim();
+      const cid = String(companyId || "").trim();
+      if (!id || !cid) return;
+      const lead = getLeadById(id);
+      if (!lead) return;
+
+      let didArchive = false;
+      if (isTemporarySampleLead(lead)) {
+        sampleLeadsRef.current[cid] = (sampleLeadsRef.current[cid] || []).filter((item) => item.id !== id);
+        persistSampleLeads(cid, sampleLeadsRef.current[cid]);
+        didArchive = true;
+      } else {
+        const response = await fetch("/api/leads", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyId: cid,
+            leadId: id,
+            isDeleted: true,
+          }),
+        }).catch(() => null);
+        didArchive = Boolean(response?.ok);
+      }
+
+      if (!didArchive) return;
+      setLeads((current) => current.filter((item) => item.id !== id));
+      setLeadDetailsById((current) => {
+        if (!current[id]) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setOpenLeadId((current) => (current === id ? "" : current));
+      setLeadImagesLeadId((current) => (current === id ? "" : current));
+      setAssignLeadId((current) => (current === id ? "" : current));
+      setConfirmDeleteLeadId((current) => (current === id ? "" : current));
+      if (!isTemporarySampleLead(lead) && typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent(LEAD_ARCHIVE_UPDATED_EVENT, {
+            detail: {
+              companyId: cid,
+              leadId: id,
+              isDeleted: true,
+            },
+          }),
+        );
+        void loadLeads(cid);
+      }
+    },
+    [getLeadById, loadLeads],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onLeadProjectCreated = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ leadId?: string; companyId?: string; projectId?: string }>
+      ).detail;
+      const leadId = String(detail?.leadId || "").trim();
+      const companyId = String(detail?.companyId || "").trim();
+      if (!leadId || !companyId) return;
+      void archiveLeadAfterProjectCreate(leadId, companyId);
+    };
+    window.addEventListener(LEAD_PROJECT_CREATED_EVENT, onLeadProjectCreated as EventListener);
+    return () => {
+      window.removeEventListener(LEAD_PROJECT_CREATED_EVENT, onLeadProjectCreated as EventListener);
+    };
+  }, [archiveLeadAfterProjectCreate]);
 
   const openAssignLeadModal = (lead: CompanyLeadRow) => {
     setAssignLeadId(lead.id);
@@ -1445,6 +1667,20 @@ export default function LeadsPage() {
     setAssignSearch("");
     setAssignSelectedUid("");
   };
+
+  useEffect(() => {
+    if (!openLeadId) return;
+    if (!leads.some((lead) => String(lead.id || "").trim() === openLeadId)) {
+      setOpenLeadId("");
+    }
+  }, [leads, openLeadId]);
+
+  useEffect(() => {
+    if (!assignLeadId) return;
+    if (!leads.some((lead) => String(lead.id || "").trim() === assignLeadId)) {
+      closeAssignLeadModal();
+    }
+  }, [assignLeadId, closeAssignLeadModal, leads]);
 
   const handleAssignLead = async () => {
     if (!assignLead || !assignSelectedUid || assigningLeadId) return;
@@ -1461,13 +1697,14 @@ export default function LeadsPage() {
           : row,
       );
       persistSampleLeads(assignLead.companyId, sampleLeadsRef.current[assignLead.companyId]);
-      setLeads((current) =>
-        current.map((row) =>
+      setLeads((current) => {
+        const nextRows = current.map((row) =>
           row.id === assignLead.id
             ? { ...row, assignedToUid: member.uid, assignedToName: assignedName, assignedTo: assignedName, updatedAtIso }
             : row,
-        ),
-      );
+        );
+        return canViewOtherLeads ? nextRows : nextRows.filter((row) => String(row.assignedToUid || "").trim() === currentUserUid);
+      });
       setAssigningLeadId("");
       closeAssignLeadModal();
       return;
@@ -1483,13 +1720,14 @@ export default function LeadsPage() {
       }),
     }).catch(() => null);
     if (response?.ok) {
-      setLeads((current) =>
-        current.map((row) =>
+      setLeads((current) => {
+        const nextRows = current.map((row) =>
           row.id === assignLead.id
             ? { ...row, assignedToUid: member.uid, assignedToName: assignedName, assignedTo: assignedName, updatedAtIso }
             : row,
-        ),
-      );
+        );
+        return canViewOtherLeads ? nextRows : nextRows.filter((row) => String(row.assignedToUid || "").trim() === currentUserUid);
+      });
       closeAssignLeadModal();
       void loadLeads(assignLead.companyId);
     }
@@ -1515,6 +1753,13 @@ export default function LeadsPage() {
     setLeadImageThumbnailsCollapsed(false);
     leadImageDragStateRef.current = null;
   };
+
+  useEffect(() => {
+    if (!leadImagesLeadId) return;
+    if (!leads.some((lead) => String(lead.id || "").trim() === leadImagesLeadId)) {
+      closeLeadImagesModal();
+    }
+  }, [closeLeadImagesModal, leadImagesLeadId, leads]);
 
   const handleUploadLeadImages = async (lead: CompanyLeadRow, incomingFiles: File[] | FileList | null) => {
     const files = Array.from(incomingFiles ?? []).filter((file) => file.type.startsWith("image/"));
@@ -1608,10 +1853,15 @@ export default function LeadsPage() {
 
   const handleLeadImageClickForAnnotation = (event: ReactMouseEvent<HTMLImageElement>) => {
     if (leadImageDraggingAnnotation) return;
-    if (leadImagePreviewScale > 1) return;
+    if (leadImageSuppressImageClickRef.current) {
+      leadImageSuppressImageClickRef.current = false;
+      return;
+    }
     if (leadImageActiveAnnotationId || leadImageDraftAnnotation) {
       setLeadImageActiveAnnotationId("");
       setLeadImageDraftAnnotation(null);
+      setLeadImageEditingAnnotation(null);
+      setLeadImageListEditingAnnotation(null);
       return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1674,20 +1924,27 @@ export default function LeadsPage() {
     setLeadImageDraftAnnotation(null);
     setLeadImageHighlightedAnnotationId("");
     setLeadImageEditingAnnotation(null);
+    setLeadImageListEditingAnnotation(null);
   }, []);
 
   const buildLeadAnnotationPointFromClient = useCallback(
     (clientX: number, clientY: number) => {
-      const rect = leadImageElementRef.current?.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-      const offsetX = Math.min(rect.width, Math.max(0, clientX - rect.left));
-      const offsetY = Math.min(rect.height, Math.max(0, clientY - rect.top));
-      const x = Math.min(100, Math.max(0, Number(((offsetX / rect.width) * 100).toFixed(2))));
-      const y = Math.min(100, Math.max(0, Number(((offsetY / rect.height) * 100).toFixed(2))));
+      const dragState = leadImageAnnotationDragStateRef.current;
+      const imageWidth = Number(fittedLeadImageSize.width || 0);
+      const imageHeight = Number(fittedLeadImageSize.height || 0);
+      if (!dragState || imageWidth <= 0 || imageHeight <= 0 || leadImagePreviewScale <= 0) return null;
+      const overlayX =
+        dragState.originOverlayX + (clientX - dragState.startClientX) / leadImagePreviewScale;
+      const overlayY =
+        dragState.originOverlayY + (clientY - dragState.startClientY) / leadImagePreviewScale;
+      const offsetX = Math.min(imageWidth, Math.max(0, overlayX));
+      const offsetY = Math.min(imageHeight, Math.max(0, overlayY));
+      const x = Math.min(100, Math.max(0, Number(((offsetX / imageWidth) * 100).toFixed(2))));
+      const y = Math.min(100, Math.max(0, Number(((offsetY / imageHeight) * 100).toFixed(2))));
       const naturalWidth = Number(leadImageNaturalSize.width || 0);
       const naturalHeight = Number(leadImageNaturalSize.height || 0);
-      const xPx = naturalWidth > 0 ? Math.round((offsetX / rect.width) * naturalWidth) : Math.round(offsetX);
-      const yPx = naturalHeight > 0 ? Math.round((offsetY / rect.height) * naturalHeight) : Math.round(offsetY);
+      const xPx = naturalWidth > 0 ? Math.round((offsetX / imageWidth) * naturalWidth) : Math.round(offsetX);
+      const yPx = naturalHeight > 0 ? Math.round((offsetY / imageHeight) * naturalHeight) : Math.round(offsetY);
       return {
         x,
         y,
@@ -1695,7 +1952,7 @@ export default function LeadsPage() {
         yPx: Math.max(0, yPx),
       };
     },
-    [leadImageNaturalSize],
+    [fittedLeadImageSize, leadImageNaturalSize, leadImagePreviewScale],
   );
 
   const handleMoveLeadImageAnnotation = useCallback(
@@ -1748,6 +2005,31 @@ export default function LeadsPage() {
     await saveLeadImages(optimisticLead, nextItems);
   }, [leadImageEditingAnnotation, leadImagePreviewIndex, leadImagesLead, saveLeadImages, syncLeadImagesInState]);
 
+  const handleSaveEditedLeadImageListAnnotation = useCallback(async () => {
+    if (!leadImagesLead || leadImagePreviewIndex < 0 || !leadImageListEditingAnnotation) return;
+    const note = String(leadImageListEditingAnnotation.note || "").trim();
+    if (!note) return;
+    const existing = normalizeLeadImageItems(leadImagesLead);
+    const nextItems = existing.map((item, idx) =>
+      idx === leadImagePreviewIndex
+        ? {
+            ...item,
+            annotations: (item.annotations ?? []).map((annotation) =>
+              annotation.id === leadImageListEditingAnnotation.id ? { ...annotation, note } : annotation,
+            ),
+          }
+        : item,
+    );
+    const optimisticLead = {
+      ...leadImagesLead,
+      imageUrls: nextItems.map((item) => item.url),
+      imageItems: nextItems,
+    };
+    syncLeadImagesInState(leadImagesLead, nextItems);
+    setLeadImageListEditingAnnotation(null);
+    await saveLeadImages(optimisticLead, nextItems);
+  }, [leadImageListEditingAnnotation, leadImagePreviewIndex, leadImagesLead, saveLeadImages, syncLeadImagesInState]);
+
   const handleDeleteLeadImageAnnotation = useCallback(async (annotationId: string) => {
     if (!leadImagesLead || leadImagePreviewIndex < 0) return;
     const existing = normalizeLeadImageItems(leadImagesLead);
@@ -1774,10 +2056,14 @@ export default function LeadsPage() {
     if (leadImageEditingAnnotation?.id === annotationId) {
       setLeadImageEditingAnnotation(null);
     }
+    if (leadImageListEditingAnnotation?.id === annotationId) {
+      setLeadImageListEditingAnnotation(null);
+    }
     await saveLeadImages(optimisticLead, nextItems);
   }, [
     leadImageActiveAnnotationId,
     leadImageEditingAnnotation,
+    leadImageListEditingAnnotation,
     leadImageHighlightedAnnotationId,
     leadImagePreviewIndex,
     leadImagesLead,
@@ -1870,7 +2156,7 @@ export default function LeadsPage() {
     if (!textarea) return;
     textarea.style.height = "0px";
     textarea.style.height = `${textarea.scrollHeight}px`;
-  }, [leadImageEditingAnnotation]);
+  }, [leadImageEditingAnnotation, leadImageListEditingAnnotation]);
 
   const startLeadImageAnnotationDrag = (
     event: ReactMouseEvent<HTMLButtonElement>,
@@ -1878,9 +2164,25 @@ export default function LeadsPage() {
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    const naturalWidth = Number(leadImageNaturalSize.width || 0);
+    const naturalHeight = Number(leadImageNaturalSize.height || 0);
+    const imageWidth = Number(fittedLeadImageSize.width || 0);
+    const imageHeight = Number(fittedLeadImageSize.height || 0);
+    const percentX =
+      naturalWidth > 0 && Number.isFinite(annotation.xPx)
+        ? Math.min(100, Math.max(0, (Number(annotation.xPx) / naturalWidth) * 100))
+        : Math.min(100, Math.max(0, Number(annotation.x) || 0));
+    const percentY =
+      naturalHeight > 0 && Number.isFinite(annotation.yPx)
+        ? Math.min(100, Math.max(0, (Number(annotation.yPx) / naturalHeight) * 100))
+        : Math.min(100, Math.max(0, Number(annotation.y) || 0));
     leadImageAnnotationDragStateRef.current = {
       annotationId: annotation.id,
       moved: false,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originOverlayX: (percentX / 100) * imageWidth,
+      originOverlayY: (percentY / 100) * imageHeight,
     };
     setLeadImageDraggingAnnotation({
       id: annotation.id,
@@ -1906,12 +2208,12 @@ export default function LeadsPage() {
   const startLeadImagePreviewDrag = (event: ReactMouseEvent<HTMLElement>) => {
     if (leadImagePreviewScale <= 1) return;
     event.preventDefault();
-    setLeadImagePreviewDragging(true);
     leadImageDragStateRef.current = {
       startX: event.clientX,
       startY: event.clientY,
       originX: leadImagePreviewOffset.x,
       originY: leadImagePreviewOffset.y,
+      moved: false,
     };
   };
 
@@ -1940,11 +2242,18 @@ export default function LeadsPage() {
       }
       return;
     }
-    if (!leadImagePreviewDragging || !leadImageDragStateRef.current) return;
+    if (!leadImageDragStateRef.current) return;
     const drag = leadImageDragStateRef.current;
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!drag.moved) {
+      if (Math.hypot(deltaX, deltaY) < 4) return;
+      drag.moved = true;
+      setLeadImagePreviewDragging(true);
+    }
     setLeadImagePreviewOffset({
-      x: drag.originX + (event.clientX - drag.startX),
-      y: drag.originY + (event.clientY - drag.startY),
+      x: drag.originX + deltaX,
+      y: drag.originY + deltaY,
     });
   };
 
@@ -1969,6 +2278,13 @@ export default function LeadsPage() {
       setLeadImageDraggingAnnotation(null);
       return;
     }
+    const imageDrag = leadImageDragStateRef.current;
+    if (imageDrag?.moved) {
+      leadImageSuppressImageClickRef.current = true;
+      window.setTimeout(() => {
+        leadImageSuppressImageClickRef.current = false;
+      }, 0);
+    }
     setLeadImagePreviewDragging(false);
     leadImageDragStateRef.current = null;
   };
@@ -1981,6 +2297,8 @@ export default function LeadsPage() {
     setLeadImageDraftAnnotation(null);
     setLeadImageActiveAnnotationId("");
     setLeadImageEditingAnnotation(null);
+    setLeadImageActiveAnnotationBoxSize(null);
+    setLeadImageDraftAnnotationBoxSize(null);
     setLeadImageDraggingAnnotation(null);
     leadImageDragStateRef.current = null;
     leadImageAnnotationDragStateRef.current = null;
@@ -2832,673 +3150,553 @@ export default function LeadsPage() {
             </div>,
             document.body,
           )}
-        {leadImagesLead &&
-          activeLeadImagePreviewUrl &&
-          typeof document !== "undefined" &&
-          createPortal(
-            <div
-              className="fixed inset-0 z-[260] flex flex-col"
-              style={{ backgroundColor: "#ffffff" }}
-            >
-              <style jsx global>{`
-                @keyframes cutsmart-lead-pin-bounce {
-                  0% { transform: translateY(0); }
-                  8% { transform: translateY(-5px); }
-                  14% { transform: translateY(0); }
-                  18% { transform: translateY(-2px); }
-                  22%, 100% { transform: translateY(0); }
-                }
-                .cutsmart-lead-comments-strip {
-                  -ms-overflow-style: none;
-                  scrollbar-width: none;
-                }
-                .cutsmart-lead-comments-strip::-webkit-scrollbar {
-                  display: none;
-                }
-              `}</style>
-              <div
-                className="border-b"
-                style={{ borderColor: "#D7DEE8" }}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="grid h-[56px] grid-cols-[1fr_auto_1fr] items-center px-6">
-                  <div className="min-w-0 text-left">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <p className="shrink-0 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
-                        Lead Photos
-                      </p>
-                      <span className="shrink-0 text-[14px] font-medium" style={{ color: "#6B7280" }}>
-                        |
-                      </span>
-                      <p className="truncate text-[14px] font-medium" style={{ color: "#334155" }}>
-                        {leadImageClientName}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="px-4 text-center">
-                    <p className="text-[14px] font-bold" style={{ color: "#0F172A" }}>
-                      {activeLeadImagePreviewName || `Image ${leadImagePreviewIndex + 1}`}
-                    </p>
-                    <p className="mt-[2px] text-[11px] font-semibold" style={{ color: "#64748B" }}>
-                      {`${leadImagePreviewIndex + 1} / ${leadImageUrls.length}`}
-                    </p>
-                  </div>
-                  <div className="ml-auto flex items-center gap-3">
+        {leadImagesLead && activeLeadImagePreviewUrl ? (
+          <FullscreenImageViewerShell
+            open={Boolean(leadImagesLead && activeLeadImagePreviewUrl)}
+            zIndex={260}
+            titleLabel="LEAD PHOTOS"
+            subjectName={leadImageClientName}
+            imageName={activeLeadImagePreviewName || `Image ${leadImagePreviewIndex + 1}`}
+            imageIndex={leadImagePreviewIndex}
+            imageCount={leadImageUrls.length}
+            commentsCollapsed={leadImageCommentsCollapsed}
+            pinsVisible={leadImagePinsVisible}
+            onToggleComments={() => setLeadImageCommentsCollapsed((current) => !current)}
+            onPinsVisibleChange={(nextChecked) => {
+              setLeadImagePinsVisible(nextChecked);
+              if (!nextChecked) {
+                closeLeadImageAnnotationOverlays();
+              }
+            }}
+            onClose={() => openLeadImagePreview(-1)}
+            commentsSection={
+              activeLeadImageAnnotations.length > 0 ? (
+                <div className="border-t px-6 py-0" style={{ borderColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
+                  <div className="relative">
                     <button
                       type="button"
-                      onClick={() => setLeadImageCommentsCollapsed((current) => !current)}
-                      className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold"
-                      style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                      onMouseEnter={() => startLeadImageCommentsHoverScroll("left")}
+                      onMouseLeave={stopLeadImageCommentsHoverScroll}
+                      className="absolute inset-y-0 -left-6 z-[2] flex w-7 items-center justify-center"
+                      style={{ backgroundColor: "#ffffff", borderRight: "1px solid #E2E8F0" }}
+                      aria-label="Scroll comments left"
                     >
-                      <input
-                        type="checkbox"
-                        checked={leadImagePinsVisible}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => {
-                          const nextChecked = event.currentTarget.checked;
-                          setLeadImagePinsVisible(nextChecked);
-                          if (!nextChecked) {
-                            closeLeadImageAnnotationOverlays();
-                          }
-                        }}
-                        className="h-4 w-4 rounded border"
-                        style={{ accentColor: companyThemeColor }}
-                        aria-label="Show pins"
-                      />
-                      Comments
+                      <span className="inline-flex items-center justify-center" style={{ width: 12, height: 12 }}>
+                        <span
+                          aria-hidden="true"
+                          className="block"
+                          style={{
+                            width: 12,
+                            height: 12,
+                            backgroundColor: "#334155",
+                            WebkitMaskImage: "url('/angle-left.png')",
+                            WebkitMaskRepeat: "no-repeat",
+                            WebkitMaskPosition: "center",
+                            WebkitMaskSize: "contain",
+                            maskImage: "url('/angle-left.png')",
+                            maskRepeat: "no-repeat",
+                            maskPosition: "center",
+                            maskSize: "contain",
+                          }}
+                        />
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onMouseEnter={() => startLeadImageCommentsHoverScroll("right")}
+                      onMouseLeave={stopLeadImageCommentsHoverScroll}
+                      className="absolute inset-y-0 -right-6 z-[2] flex w-7 items-center justify-center"
+                      style={{ backgroundColor: "#ffffff", borderLeft: "1px solid #E2E8F0" }}
+                      aria-label="Scroll comments right"
+                    >
+                      <span className="inline-flex items-center justify-center" style={{ width: 12, height: 12 }}>
+                        <span
+                          aria-hidden="true"
+                          className="block"
+                          style={{
+                            width: 12,
+                            height: 12,
+                            backgroundColor: "#334155",
+                            WebkitMaskImage: "url('/angle-right.png')",
+                            WebkitMaskRepeat: "no-repeat",
+                            WebkitMaskPosition: "center",
+                            WebkitMaskSize: "contain",
+                            maskImage: "url('/angle-right.png')",
+                            maskRepeat: "no-repeat",
+                            maskPosition: "center",
+                            maskSize: "contain",
+                          }}
+                        />
+                      </span>
+                    </button>
+                    <div
+                      ref={leadImageCommentsScrollRef}
+                      className="cutsmart-image-viewer-comments-strip flex items-stretch gap-0 overflow-x-auto overflow-y-hidden px-0"
+                      onMouseDown={startLeadImageCommentsDrag}
+                      onMouseMove={moveLeadImageCommentsDrag}
+                      onMouseUp={stopLeadImageCommentsDrag}
+                      onMouseLeave={() => {
+                        stopLeadImageCommentsDrag();
+                        stopLeadImageCommentsHoverScroll();
+                      }}
+                      style={{ cursor: leadImageCommentsDragStateRef.current ? "grabbing" : "grab" }}
+                    >
+                      {activeLeadImageAnnotations.map((annotation, idx) => (
+                        <div
+                          key={`${annotation.id}:list`}
+                          className="group/comment relative min-w-[240px] max-w-[min(480px,calc(100vw-120px))] shrink-0 self-stretch px-3 py-0"
+                          data-lead-image-annotation-list-card="true"
+                          onClick={() => {
+                            if (leadImageCommentsSuppressClickRef.current) {
+                              return;
+                            }
+                            setLeadImageDraftAnnotation(null);
+                            setLeadImageActiveAnnotationId("");
+                            setLeadImageListEditingAnnotation(null);
+                            setLeadImageHighlightedAnnotationId((current) =>
+                              current === annotation.id ? "" : annotation.id,
+                            );
+                          }}
+                          style={{
+                            backgroundColor:
+                              leadImageHighlightedAnnotationId === annotation.id ? `${companyThemeColor}12` : "#ffffff",
+                            width:
+                              leadImageListEditingAnnotation?.id === annotation.id && leadImageListEditingAnnotation.width
+                                ? `${leadImageListEditingAnnotation.width}px`
+                                : undefined,
+                          }}
+                        >
+                          {idx > 0 ? (
+                            <span
+                              aria-hidden="true"
+                              className="absolute bottom-0 left-0 top-0 w-px"
+                              style={{ backgroundColor: "#E2E8F0" }}
+                            />
+                          ) : null}
+                          <div className="flex h-full min-w-0 flex-1 flex-col text-left">
+                            <div className="-mx-3 mb-0 flex items-center justify-between gap-3 border-b px-3 py-1.5" style={{ borderColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
+                              <div className="min-w-0 flex items-center gap-3">
+                                <span
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                                  style={{ backgroundColor: String(annotation.createdByColor || "").trim() || companyThemeColor }}
+                                >
+                                  {idx + 1}
+                                </span>
+                                <span className="min-w-0 truncate text-[13px] font-bold" style={{ color: "#334155" }}>
+                                  {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
+                                </span>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (leadImageCommentsSuppressClickRef.current) {
+                                      return;
+                                    }
+                                    if (leadImageListEditingAnnotation?.id === annotation.id) {
+                                      void handleSaveEditedLeadImageListAnnotation();
+                                      return;
+                                    }
+                                    setLeadImageDraftAnnotation(null);
+                                    setLeadImageActiveAnnotationId("");
+                                    setLeadImageHighlightedAnnotationId(annotation.id);
+                                    const listCard = event.currentTarget.closest("[data-lead-image-annotation-list-card='true']");
+                                    const measuredWidth =
+                                      listCard instanceof HTMLElement ? Math.round(listCard.getBoundingClientRect().width) : undefined;
+                                    setLeadImageListEditingAnnotation({
+                                      id: annotation.id,
+                                      note: annotation.note,
+                                      width: measuredWidth,
+                                    });
+                                  }}
+                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border opacity-0 transition-opacity group-hover/comment:opacity-100"
+                                  data-lead-image-comments-no-drag="true"
+                                  style={{
+                                    borderColor: leadImageListEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
+                                    backgroundColor: leadImageListEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
+                                    opacity: leadImageListEditingAnnotation?.id === annotation.id ? 1 : undefined,
+                                  }}
+                                  aria-label={leadImageListEditingAnnotation?.id === annotation.id ? "Save comment" : "Edit comment"}
+                                >
+                                  <span
+                                    aria-hidden="true"
+                                    className="block"
+                                    style={{
+                                      width: 14,
+                                      height: 14,
+                                      backgroundColor: leadImageListEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
+                                      WebkitMaskImage:
+                                        leadImageListEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                      WebkitMaskRepeat: "no-repeat",
+                                      WebkitMaskPosition: "center",
+                                      WebkitMaskSize: "contain",
+                                      maskImage:
+                                        leadImageListEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                      maskRepeat: "no-repeat",
+                                      maskPosition: "center",
+                                      maskSize: "contain",
+                                    }}
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (leadImageCommentsSuppressClickRef.current) {
+                                      return;
+                                    }
+                                    if (confirmDeleteLeadImageAnnotationId !== annotation.id) {
+                                      armDeleteLeadImageAnnotation(annotation.id);
+                                      return;
+                                    }
+                                    if (leadImageDeleteConfirmTimeoutRef.current) {
+                                      clearTimeout(leadImageDeleteConfirmTimeoutRef.current);
+                                      leadImageDeleteConfirmTimeoutRef.current = null;
+                                    }
+                                    setConfirmDeleteLeadImageAnnotationId("");
+                                    void handleDeleteLeadImageAnnotation(annotation.id);
+                                  }}
+                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border opacity-0 transition-opacity group-hover/comment:opacity-100"
+                                  data-lead-image-comments-no-drag="true"
+                                  style={{
+                                    borderColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
+                                    backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
+                                    opacity: confirmDeleteLeadImageAnnotationId === annotation.id ? 1 : undefined,
+                                  }}
+                                  aria-label="Delete comment"
+                                >
+                                  <span
+                                    aria-hidden="true"
+                                    className="block"
+                                    style={{
+                                      width: 14,
+                                      height: 14,
+                                      backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
+                                      WebkitMaskImage:
+                                        confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                      WebkitMaskRepeat: "no-repeat",
+                                      WebkitMaskPosition: "center",
+                                      WebkitMaskSize: "contain",
+                                      maskImage:
+                                        confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                      maskRepeat: "no-repeat",
+                                      maskPosition: "center",
+                                      maskSize: "contain",
+                                    }}
+                                  />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="relative min-w-0 flex-1 pt-1 pb-[5px]">
+                              {leadImageListEditingAnnotation?.id === annotation.id ? (
+                                <textarea
+                                  ref={leadImageCommentEditTextareaRef}
+                                  value={leadImageListEditingAnnotation.note}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                                  onChange={(event) => {
+                                    const nextValue = event.currentTarget.value;
+                                    setLeadImageListEditingAnnotation((current) =>
+                                      current ? { ...current, note: nextValue } : current,
+                                    );
+                                  }}
+                                  onBlur={(event) => {
+                                    const nextFocusTarget = event.relatedTarget;
+                                    if (
+                                      nextFocusTarget instanceof HTMLElement &&
+                                      nextFocusTarget.closest("[data-lead-image-annotation-list-editor='true']")
+                                    ) {
+                                      return;
+                                    }
+                                    void handleSaveEditedLeadImageListAnnotation();
+                                  }}
+                                  rows={1}
+                                  className="block w-full resize-none overflow-hidden bg-transparent px-0 py-0 text-[12px] font-semibold leading-[18px] outline-none"
+                                  style={{ borderColor: "transparent", color: "#334155", backgroundColor: "transparent" }}
+                                />
+                              ) : (
+                                <span
+                                  ref={(node) => updateLeadImageAnnotationOverflow(annotation.id, node)}
+                                  className="block w-full whitespace-pre-wrap text-left text-[12px] font-semibold leading-[18px]"
+                                  style={{
+                                    color: "#334155",
+                                    maxHeight: leadImageExpandedAnnotationIds[annotation.id] ? "none" : "72px",
+                                    overflow: leadImageExpandedAnnotationIds[annotation.id] ? "visible" : "hidden",
+                                  }}
+                                >
+                                  {annotation.note}
+                                </span>
+                              )}
+                              {(leadImageOverflowAnnotationIds[annotation.id] || leadImageExpandedAnnotationIds[annotation.id]) &&
+                              leadImageListEditingAnnotation?.id !== annotation.id ? (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setLeadImageExpandedAnnotationIds((current) => ({
+                                      ...current,
+                                      [annotation.id]: !current[annotation.id],
+                                    }));
+                                  }}
+                                  className="absolute bottom-[10px] right-0 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold opacity-0 transition-opacity group-hover/comment:opacity-100"
+                                  data-lead-image-comments-no-drag="true"
+                                  style={{
+                                    color: "#334155",
+                                    borderColor: "#D7DEE8",
+                                    backgroundColor: "#ffffff",
+                                    boxShadow: "0 2px 6px rgba(15,23,42,0.08)",
+                                  }}
+                                >
+                                  {leadImageExpandedAnnotationIds[annotation.id] ? "less" : "more"}
+                                  <span
+                                    aria-hidden="true"
+                                    className="block"
+                                    style={{
+                                      width: 10,
+                                      height: 10,
+                                      backgroundColor: "#334155",
+                                      transform: leadImageExpandedAnnotationIds[annotation.id] ? "rotate(180deg)" : "rotate(0deg)",
+                                      WebkitMaskImage: "url('/angle-down.png')",
+                                      WebkitMaskRepeat: "no-repeat",
+                                      WebkitMaskPosition: "center",
+                                      WebkitMaskSize: "contain",
+                                      maskImage: "url('/angle-down.png')",
+                                      maskRepeat: "no-repeat",
+                                      maskPosition: "center",
+                                      maskSize: "contain",
+                                    }}
+                                  />
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="border-t px-6 py-0" style={{ borderColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
+                  <p className="text-[12px] font-semibold" style={{ color: "#94A3B8" }}>
+                    No comments on this image yet.
+                  </p>
+                </div>
+              )
+            }
+            stageSection={
+              <>
+                <style jsx global>{`
+                  @keyframes cutsmart-lead-pin-bounce {
+                    0% { margin-top: 0; }
+                    8% { margin-top: -5px; }
+                    14% { margin-top: 0; }
+                    18% { margin-top: -2px; }
+                    22%, 100% { margin-top: 0; }
+                  }
+                `}</style>
+                <div
+                  className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-6 py-4"
+                  ref={leadImageStageRef}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (event.target === event.currentTarget && (leadImageActiveAnnotationId || leadImageDraftAnnotation)) {
+                      closeLeadImageAnnotationOverlays();
+                    }
+                  }}
+                  onWheel={handleLeadImagePreviewWheel}
+                  onMouseMove={handleLeadImagePreviewDrag}
+                  onMouseUp={stopLeadImagePreviewDrag}
+                  onMouseLeave={stopLeadImagePreviewDrag}
+                >
+                  {leadImageUrls.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLeadImagePreview(
+                          leadImagePreviewIndex <= 0 ? leadImageUrls.length - 1 : leadImagePreviewIndex - 1,
+                        )
+                      }
+                      className="absolute left-6 top-1/2 z-[3] inline-flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border"
+                      style={{
+                        borderColor: "#D7DEE8",
+                        backgroundColor: "rgba(255,255,255,0.94)",
+                        color: "#334155",
+                        boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
+                      }}
+                      aria-label="Previous image"
+                    >
                       <span
                         aria-hidden="true"
-                        className="block shrink-0"
+                        className="pointer-events-none block"
                         style={{
-                          width: 14,
-                          height: 14,
-                          backgroundColor: "#64748B",
-                          transform: leadImageCommentsCollapsed ? "rotate(180deg)" : "rotate(90deg)",
-                          transition: "transform 140ms ease",
-                          WebkitMaskImage: "url('/angle-right.png')",
+                          width: 34,
+                          height: 34,
+                          transform: "translateX(-3px)",
+                          backgroundColor: "#334155",
+                          WebkitMaskImage: "url('/angle-left.png')",
                           WebkitMaskRepeat: "no-repeat",
                           WebkitMaskPosition: "center",
                           WebkitMaskSize: "contain",
-                          maskImage: "url('/angle-right.png')",
+                          maskImage: "url('/angle-left.png')",
                           maskRepeat: "no-repeat",
                           maskPosition: "center",
                           maskSize: "contain",
                         }}
                       />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => openLeadImagePreview(-1)}
-                      className="inline-flex h-10 w-10 items-center justify-center rounded-full border"
-                      style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
-                      aria-label="Close image preview"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                </div>
-                {!leadImageCommentsCollapsed ? (
-                  <div className="border-t px-6 py-0" style={{ borderColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
-                    {activeLeadImageAnnotations.length > 0 ? (
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onMouseEnter={() => startLeadImageCommentsHoverScroll("left")}
-                          onMouseLeave={stopLeadImageCommentsHoverScroll}
-                          className="absolute inset-y-0 -left-6 z-[2] flex w-7 items-center justify-center"
-                          style={{
-                            backgroundColor: "#ffffff",
-                            borderRight: "1px solid #E2E8F0",
-                          }}
-                          aria-label="Scroll comments left"
-                        >
-                          <span
-                            className="inline-flex items-center justify-center"
-                            style={{
-                              width: 12,
-                              height: 12,
-                            }}
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="block"
-                              style={{
-                                width: 12,
-                                height: 12,
-                                backgroundColor: "#334155",
-                                WebkitMaskImage: "url('/angle-left.png')",
-                                WebkitMaskRepeat: "no-repeat",
-                                WebkitMaskPosition: "center",
-                                WebkitMaskSize: "contain",
-                                maskImage: "url('/angle-left.png')",
-                                maskRepeat: "no-repeat",
-                                maskPosition: "center",
-                                maskSize: "contain",
-                              }}
-                            />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          onMouseEnter={() => startLeadImageCommentsHoverScroll("right")}
-                          onMouseLeave={stopLeadImageCommentsHoverScroll}
-                          className="absolute inset-y-0 -right-6 z-[2] flex w-7 items-center justify-center"
-                          style={{
-                            backgroundColor: "#ffffff",
-                            borderLeft: "1px solid #E2E8F0",
-                          }}
-                          aria-label="Scroll comments right"
-                        >
-                          <span
-                            className="inline-flex items-center justify-center"
-                            style={{
-                              width: 12,
-                              height: 12,
-                            }}
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="block"
-                              style={{
-                                width: 12,
-                                height: 12,
-                                backgroundColor: "#334155",
-                                WebkitMaskImage: "url('/angle-right.png')",
-                                WebkitMaskRepeat: "no-repeat",
-                                WebkitMaskPosition: "center",
-                                WebkitMaskSize: "contain",
-                                maskImage: "url('/angle-right.png')",
-                                maskRepeat: "no-repeat",
-                                maskPosition: "center",
-                                maskSize: "contain",
-                              }}
-                            />
-                          </span>
-                        </button>
-                        <div
-                          ref={leadImageCommentsScrollRef}
-                          className="cutsmart-lead-comments-strip flex items-stretch gap-0 overflow-x-auto overflow-y-hidden px-0"
-                          onMouseDown={startLeadImageCommentsDrag}
-                          onMouseMove={moveLeadImageCommentsDrag}
-                          onMouseUp={stopLeadImageCommentsDrag}
-                          onMouseLeave={() => {
-                            stopLeadImageCommentsDrag();
-                            stopLeadImageCommentsHoverScroll();
-                          }}
-                          style={{ cursor: leadImageCommentsDragStateRef.current ? "grabbing" : "grab" }}
-                        >
-                          {activeLeadImageAnnotations.map((annotation, idx) => (
-                            <div
-                              key={`${annotation.id}:list`}
-                              className="group/comment relative min-w-[240px] max-w-[min(480px,calc(100vw-120px))] shrink-0 self-stretch px-3 py-0"
-                              data-lead-image-annotation-list-card="true"
-                              onClick={() => {
-                                if (leadImageCommentsSuppressClickRef.current) {
-                                  return;
-                                }
-                                setLeadImageDraftAnnotation(null);
-                                setLeadImageActiveAnnotationId("");
-                                setLeadImageEditingAnnotation(null);
-                                setLeadImageHighlightedAnnotationId((current) =>
-                                  current === annotation.id ? "" : annotation.id,
-                                );
-                              }}
-                              style={{
-                                backgroundColor:
-                                  leadImageHighlightedAnnotationId === annotation.id ? `${companyThemeColor}12` : "#ffffff",
-                                width:
-                                  leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.width
-                                    ? `${leadImageEditingAnnotation.width}px`
-                                    : undefined,
-                              }}
-                            >
-                              {idx > 0 ? (
-                                <span
-                                  aria-hidden="true"
-                                  className="absolute bottom-0 left-0 top-0 w-px"
-                                  style={{ backgroundColor: "#E2E8F0" }}
-                                />
-                              ) : null}
-                              <div className="flex h-full min-w-0 flex-1 flex-col text-left">
-                                <div className="-mx-3 mb-0 flex items-center justify-between gap-3 border-b px-3 py-1.5" style={{ borderColor: "#E2E8F0", backgroundColor: "#ffffff" }}>
-                                  <div className="min-w-0 flex items-center gap-3">
-                                    <span
-                                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
-                                      style={{
-                                        backgroundColor: String(annotation.createdByColor || "").trim() || companyThemeColor,
-                                      }}
-                                    >
-                                      {idx + 1}
-                                    </span>
-                                    <span className="min-w-0 truncate text-[13px] font-bold" style={{ color: "#334155" }}>
-                                      {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
-                                    </span>
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-3">
-                                    <button
-                                      type="button"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (leadImageCommentsSuppressClickRef.current) {
-                                          return;
-                                        }
-                                        if (leadImageEditingAnnotation?.id === annotation.id) {
-                                          void handleSaveEditedLeadImageAnnotation();
-                                          return;
-                                        }
-                                        setLeadImageDraftAnnotation(null);
-                                        setLeadImageActiveAnnotationId("");
-                                        setLeadImageHighlightedAnnotationId(annotation.id);
-                                        const listCard = event.currentTarget.closest("[data-lead-image-annotation-list-card='true']");
-                                        const measuredWidth =
-                                          listCard instanceof HTMLElement ? Math.round(listCard.getBoundingClientRect().width) : undefined;
-                                        setLeadImageEditingAnnotation({
-                                          id: annotation.id,
-                                          note: annotation.note,
-                                          width: measuredWidth,
-                                        });
-                                      }}
-                                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border opacity-0 transition-opacity group-hover/comment:opacity-100"
-                                      data-lead-image-comments-no-drag="true"
-                                      style={{
-                                        borderColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
-                                        backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
-                                        opacity: leadImageEditingAnnotation?.id === annotation.id ? 1 : undefined,
-                                      }}
-                                      aria-label={leadImageEditingAnnotation?.id === annotation.id ? "Save comment" : "Edit comment"}
-                                    >
-                                      <span
-                                        aria-hidden="true"
-                                        className="block"
-                                        style={{
-                                          width: 14,
-                                          height: 14,
-                                          backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
-                                          WebkitMaskImage:
-                                            leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
-                                          WebkitMaskRepeat: "no-repeat",
-                                          WebkitMaskPosition: "center",
-                                          WebkitMaskSize: "contain",
-                                          maskImage:
-                                            leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
-                                          maskRepeat: "no-repeat",
-                                          maskPosition: "center",
-                                          maskSize: "contain",
-                                        }}
-                                      />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (leadImageCommentsSuppressClickRef.current) {
-                                          return;
-                                        }
-                                        if (confirmDeleteLeadImageAnnotationId !== annotation.id) {
-                                          armDeleteLeadImageAnnotation(annotation.id);
-                                          return;
-                                        }
-                                        if (leadImageDeleteConfirmTimeoutRef.current) {
-                                          clearTimeout(leadImageDeleteConfirmTimeoutRef.current);
-                                          leadImageDeleteConfirmTimeoutRef.current = null;
-                                        }
-                                        setConfirmDeleteLeadImageAnnotationId("");
-                                        void handleDeleteLeadImageAnnotation(annotation.id);
-                                      }}
-                                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border opacity-0 transition-opacity group-hover/comment:opacity-100"
-                                      data-lead-image-comments-no-drag="true"
-                                      style={{
-                                        borderColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
-                                        backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
-                                        opacity: confirmDeleteLeadImageAnnotationId === annotation.id ? 1 : undefined,
-                                      }}
-                                      aria-label="Delete comment"
-                                    >
-                                      <span
-                                        aria-hidden="true"
-                                        className="block"
-                                        style={{
-                                          width: 14,
-                                          height: 14,
-                                          backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
-                                          WebkitMaskImage:
-                                            confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
-                                          WebkitMaskRepeat: "no-repeat",
-                                          WebkitMaskPosition: "center",
-                                          WebkitMaskSize: "contain",
-                                          maskImage:
-                                            confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
-                                          maskRepeat: "no-repeat",
-                                          maskPosition: "center",
-                                          maskSize: "contain",
-                                        }}
-                                      />
-                                    </button>
-                                  </div>
-                                </div>
-                                <div className="relative min-w-0 flex-1 pt-1 pb-[5px]">
-                                  {leadImageEditingAnnotation?.id === annotation.id ? (
-                                    <>
-                                      <textarea
-                                        ref={leadImageCommentEditTextareaRef}
-                                        value={leadImageEditingAnnotation.note}
-                                        onClick={(event) => event.stopPropagation()}
-                                        onMouseDown={(event) => event.stopPropagation()}
-                                        onChange={(event) => {
-                                          const nextValue = event.currentTarget.value;
-                                          setLeadImageEditingAnnotation((current) =>
-                                            current ? { ...current, note: nextValue } : current,
-                                          );
-                                        }}
-                                        onBlur={(event) => {
-                                          const nextFocusTarget = event.relatedTarget;
-                                          if (
-                                            nextFocusTarget instanceof HTMLElement &&
-                                            nextFocusTarget.closest("[data-lead-image-annotation-list-editor='true']")
-                                          ) {
-                                            return;
-                                          }
-                                          void handleSaveEditedLeadImageAnnotation();
-                                        }}
-                                        rows={1}
-                                        className="block w-full resize-none overflow-hidden bg-transparent px-0 py-0 text-[12px] font-semibold leading-[18px] outline-none"
-                                        style={{ borderColor: "transparent", color: "#334155", backgroundColor: "transparent" }}
-                                      />
-                                    </>
-                                  ) : (
-                                    <span
-                                      ref={(node) => updateLeadImageAnnotationOverflow(annotation.id, node)}
-                                      className="block w-full whitespace-pre-wrap text-left text-[12px] font-semibold leading-[18px]"
-                                      style={{
-                                        color: "#334155",
-                                        maxHeight: leadImageExpandedAnnotationIds[annotation.id] ? "none" : "72px",
-                                        overflow: leadImageExpandedAnnotationIds[annotation.id] ? "visible" : "hidden",
-                                      }}
-                                    >
-                                      {annotation.note}
-                                    </span>
-                                  )}
-                                  {(leadImageOverflowAnnotationIds[annotation.id] || leadImageExpandedAnnotationIds[annotation.id]) &&
-                                  leadImageEditingAnnotation?.id !== annotation.id ? (
-                                    <button
-                                      type="button"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        setLeadImageExpandedAnnotationIds((current) => ({
-                                          ...current,
-                                          [annotation.id]: !current[annotation.id],
-                                        }));
-                                      }}
-                                      className="absolute bottom-[10px] right-0 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold opacity-0 transition-opacity group-hover/comment:opacity-100"
-                                      data-lead-image-comments-no-drag="true"
-                                      style={{
-                                        color: "#334155",
-                                        borderColor: "#D7DEE8",
-                                        backgroundColor: "#ffffff",
-                                        boxShadow: "0 2px 6px rgba(15,23,42,0.08)",
-                                      }}
-                                    >
-                                      {leadImageExpandedAnnotationIds[annotation.id] ? "less" : "more"}
-                                      <span
-                                        aria-hidden="true"
-                                        className="block"
-                                        style={{
-                                          width: 10,
-                                          height: 10,
-                                          backgroundColor: "#334155",
-                                          transform: leadImageExpandedAnnotationIds[annotation.id] ? "rotate(180deg)" : "rotate(0deg)",
-                                          WebkitMaskImage: "url('/angle-down.png')",
-                                          WebkitMaskRepeat: "no-repeat",
-                                          WebkitMaskPosition: "center",
-                                          WebkitMaskSize: "contain",
-                                          maskImage: "url('/angle-down.png')",
-                                          maskRepeat: "no-repeat",
-                                          maskPosition: "center",
-                                          maskSize: "contain",
-                                        }}
-                                      />
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <p className="text-[12px] font-semibold" style={{ color: "#94A3B8" }}>
-                        No comments on this image yet.
-                      </p>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-              <div
-                className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-6 py-4"
-                ref={leadImageStageRef}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (event.target === event.currentTarget && (leadImageActiveAnnotationId || leadImageDraftAnnotation)) {
-                    closeLeadImageAnnotationOverlays();
-                  }
-                }}
-                onWheel={handleLeadImagePreviewWheel}
-                onMouseMove={handleLeadImagePreviewDrag}
-                onMouseUp={stopLeadImagePreviewDrag}
-                onMouseLeave={stopLeadImagePreviewDrag}
-              >
-                {leadImageUrls.length > 1 ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openLeadImagePreview(
-                        leadImagePreviewIndex <= 0 ? leadImageUrls.length - 1 : leadImagePreviewIndex - 1,
-                      )
-                    }
-                    className="absolute left-6 top-1/2 z-[3] inline-flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border"
+                  ) : null}
+                  <div
+                    className="relative inline-flex items-center justify-center"
+                    onMouseDown={startLeadImagePreviewDrag}
                     style={{
-                      borderColor: "#D7DEE8",
-                      backgroundColor: "rgba(255,255,255,0.94)",
-                      color: "#334155",
-                      boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
+                      width: leadImageSizeReady ? `${fittedLeadImageSize.width}px` : "1px",
+                      height: leadImageSizeReady ? `${fittedLeadImageSize.height}px` : "1px",
+                      transform: `translate(${leadImagePreviewOffset.x}px, ${leadImagePreviewOffset.y}px) scale(${leadImagePreviewScale})`,
+                      transition: leadImagePreviewDragging ? "none" : "transform 120ms ease",
+                      opacity: leadImageSizeReady ? 1 : 0,
                     }}
-                    aria-label="Previous image"
                   >
-                    <span
-                      aria-hidden="true"
-                      className="pointer-events-none block"
+                    <img
+                      ref={leadImageElementRef}
+                      src={resolveLeadImageSrc(activeLeadImagePreviewUrl)}
+                      alt={`Lead preview ${leadImagePreviewIndex + 1}`}
+                      className="block h-full w-full object-contain select-none"
+                      loading="eager"
+                      decoding="async"
+                      onClick={handleLeadImageClickForAnnotation}
+                      draggable={false}
                       style={{
-                        width: 34,
-                        height: 34,
-                        transform: "translateX(-3px)",
-                        backgroundColor: "#334155",
-                        WebkitMaskImage: "url('/angle-left.png')",
-                        WebkitMaskRepeat: "no-repeat",
-                        WebkitMaskPosition: "center",
-                        WebkitMaskSize: "contain",
-                        maskImage: "url('/angle-left.png')",
-                        maskRepeat: "no-repeat",
-                        maskPosition: "center",
-                        maskSize: "contain",
+                        cursor:
+                          leadImagePreviewDragging
+                            ? "grabbing"
+                            : leadImageActiveAnnotationId || leadImageDraftAnnotation
+                              ? "pointer"
+                              : "crosshair",
                       }}
                     />
-                  </button>
-                ) : null}
-                <div
-                  className="relative inline-flex items-center justify-center"
-                  onMouseDown={startLeadImagePreviewDrag}
-                  style={{
-                    width: leadImageSizeReady ? `${fittedLeadImageSize.width}px` : "1px",
-                    height: leadImageSizeReady ? `${fittedLeadImageSize.height}px` : "1px",
-                    transform: `translate(${leadImagePreviewOffset.x}px, ${leadImagePreviewOffset.y}px) scale(${leadImagePreviewScale})`,
-                    transition: leadImagePreviewDragging ? "none" : "transform 120ms ease",
-                    opacity: leadImageSizeReady ? 1 : 0,
-                  }}
-                >
-                  <img
-                    ref={leadImageElementRef}
-                    src={resolveLeadImageSrc(activeLeadImagePreviewUrl)}
-                    alt={`Lead preview ${leadImagePreviewIndex + 1}`}
-                    className="block h-full w-full object-contain select-none"
-                    loading="eager"
-                    decoding="async"
-                    onClick={handleLeadImageClickForAnnotation}
-                    draggable={false}
-                    style={{
-                      cursor:
-                        leadImagePreviewScale > 1
-                          ? leadImagePreviewDragging
-                            ? "grabbing"
-                            : "grab"
-                          : leadImageActiveAnnotationId || leadImageDraftAnnotation
-                            ? "pointer"
-                            : "crosshair",
-                    }}
-                  />
-                  {leadImagePinsVisible ? activeLeadImageAnnotations.map((annotation, idx) => (
-                    <button
-                      key={annotation.id}
-                      type="button"
-                      onMouseDown={(event) => startLeadImageAnnotationDrag(event, annotation)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (leadImageSuppressPinClickRef.current) {
-                          leadImageSuppressPinClickRef.current = false;
-                          return;
-                        }
-                        setLeadImageDraftAnnotation(null);
-                        setLeadImageHighlightedAnnotationId("");
-                        setLeadImageEditingAnnotation(null);
-                        setLeadImageActiveAnnotationId((current) => (current === annotation.id ? "" : annotation.id));
-                      }}
-                      className="absolute inline-flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] font-bold text-white"
-                      style={{
-                        ...getLeadAnnotationRenderPoint(
-                          leadImageDraggingAnnotation?.id === annotation.id ? leadImageDraggingAnnotation : annotation,
-                        ),
-                        borderColor: "#ffffff",
-                        backgroundColor: String(annotation.createdByColor || "").trim() || companyThemeColor,
-                        boxShadow: "0 4px 10px rgba(15,23,42,0.18)",
-                        cursor:
-                          leadImageDraggingAnnotation?.id === annotation.id
-                            ? "grabbing"
-                            : "grab",
-                        animation:
-                          leadImageHighlightedAnnotationId === annotation.id
-                            ? "cutsmart-lead-pin-bounce 2s ease-in-out infinite"
-                            : "none",
-                      }}
-                    >
-                      {idx + 1}
-                    </button>
-                  )) : null}
-                  {leadImagePinsVisible ? activeLeadImageAnnotations.map((annotation, idx) =>
-                    leadImageActiveAnnotationId === annotation.id ? (
-                      <div
-                        key={`${annotation.id}:note`}
-                        data-lead-image-annotation-editor="true"
-                        className="absolute z-[4] min-w-[240px] max-w-[min(480px,calc(100vw-48px))] -translate-x-1/2 rounded-[12px] border px-3 py-2 text-left"
-                        style={{
-                          ...getLeadAnnotationRenderPoint(annotation),
-                          transform: "translateX(-50%) translateY(22px)",
-                          borderColor: "#D7DEE8",
-                          backgroundColor: "#ffffff",
-                          boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
-                        }}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
-                            {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
-                          </p>
-                          <div className="flex items-center gap-1">
+                    {leadImagePinsVisible ? activeLeadImageAnnotations.map((annotation, idx) =>
+                      leadImageActiveAnnotationId === annotation.id ? (
+                        <div
+                          key={`${annotation.id}:note`}
+                          data-lead-image-annotation-editor="true"
+                          className="absolute z-[4] min-w-[240px] max-w-[min(480px,calc(100vw-48px))] rounded-[12px] border px-3 py-2 text-left"
+                          style={{
+                            ...getLeadAnnotationPopupStyle(annotation),
+                            borderColor: "#D7DEE8",
+                            backgroundColor: "#ffffff",
+                            boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
+                            transform: `${getLeadAnnotationPopupStyle(annotation).transform} scale(${leadImageAnnotationUiScale})`,
+                            width:
+                              leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.width
+                                ? `${leadImageEditingAnnotation.width}px`
+                                : undefined,
+                            height:
+                              leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.height
+                                ? `${leadImageEditingAnnotation.height}px`
+                                : undefined,
+                            visibility: "hidden",
+                            pointerEvents: "none",
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
+                              {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
+                            </p>
+                            <div className="flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => {
+                              onClick={(event) => {
                                 if (leadImageEditingAnnotation?.id === annotation.id) {
                                   void handleSaveEditedLeadImageAnnotation();
                                   return;
                                 }
+                                const popup = event.currentTarget.closest("[data-lead-image-annotation-editor='true']");
+                                const measuredWidth =
+                                  popup instanceof HTMLElement ? Math.round(popup.getBoundingClientRect().width) : undefined;
+                                const measuredHeight =
+                                  popup instanceof HTMLElement ? Math.round(popup.getBoundingClientRect().height) : undefined;
                                 setLeadImageEditingAnnotation({
                                   id: annotation.id,
                                   note: annotation.note,
+                                  width: measuredWidth,
+                                  height: measuredHeight,
                                 });
                               }}
                               className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
                               style={{
                                 borderColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
-                                backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
-                              }}
-                              aria-label={leadImageEditingAnnotation?.id === annotation.id ? "Save note" : "Edit note"}
-                            >
-                              <span
-                                aria-hidden="true"
-                                className="block"
-                                style={{
-                                  width: 13,
-                                  height: 13,
-                                  backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
-                                  WebkitMaskImage:
-                                    leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
-                                  WebkitMaskRepeat: "no-repeat",
-                                  WebkitMaskPosition: "center",
-                                  WebkitMaskSize: "contain",
-                                  maskImage:
-                                    leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
-                                  maskRepeat: "no-repeat",
-                                  maskPosition: "center",
-                                  maskSize: "contain",
+                                  backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
                                 }}
-                              />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (confirmDeleteLeadImageAnnotationId !== annotation.id) {
-                                  armDeleteLeadImageAnnotation(annotation.id);
-                                  return;
-                                }
-                                if (leadImageDeleteConfirmTimeoutRef.current) {
-                                  clearTimeout(leadImageDeleteConfirmTimeoutRef.current);
-                                  leadImageDeleteConfirmTimeoutRef.current = null;
-                                }
-                                setConfirmDeleteLeadImageAnnotationId("");
-                                void handleDeleteLeadImageAnnotation(annotation.id);
-                              }}
-                              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
-                              style={{
-                                borderColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
-                                backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
-                              }}
-                              aria-label="Delete note"
-                            >
-                              <span
-                                aria-hidden="true"
-                                className="block"
-                                style={{
-                                  width: 13,
-                                  height: 13,
-                                  backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
-                                  WebkitMaskImage:
-                                    confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
-                                  WebkitMaskRepeat: "no-repeat",
-                                  WebkitMaskPosition: "center",
-                                  WebkitMaskSize: "contain",
-                                  maskImage:
-                                    confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
-                                  maskRepeat: "no-repeat",
-                                  maskPosition: "center",
-                                  maskSize: "contain",
+                                aria-label={leadImageEditingAnnotation?.id === annotation.id ? "Save note" : "Edit note"}
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="block"
+                                  style={{
+                                    width: 13,
+                                    height: 13,
+                                    backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
+                                    WebkitMaskImage:
+                                      leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                    WebkitMaskRepeat: "no-repeat",
+                                    WebkitMaskPosition: "center",
+                                    WebkitMaskSize: "contain",
+                                    maskImage:
+                                      leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                    maskRepeat: "no-repeat",
+                                    maskPosition: "center",
+                                    maskSize: "contain",
+                                  }}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (confirmDeleteLeadImageAnnotationId !== annotation.id) {
+                                    armDeleteLeadImageAnnotation(annotation.id);
+                                    return;
+                                  }
+                                  if (leadImageDeleteConfirmTimeoutRef.current) {
+                                    clearTimeout(leadImageDeleteConfirmTimeoutRef.current);
+                                    leadImageDeleteConfirmTimeoutRef.current = null;
+                                  }
+                                  setConfirmDeleteLeadImageAnnotationId("");
+                                  void handleDeleteLeadImageAnnotation(annotation.id);
                                 }}
-                              />
-                            </button>
+                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                style={{
+                                  borderColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
+                                  backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
+                                }}
+                                aria-label="Delete note"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="block"
+                                  style={{
+                                    width: 13,
+                                    height: 13,
+                                    backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
+                                    WebkitMaskImage:
+                                      confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                    WebkitMaskRepeat: "no-repeat",
+                                    WebkitMaskPosition: "center",
+                                    WebkitMaskSize: "contain",
+                                    maskImage:
+                                      confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                    maskRepeat: "no-repeat",
+                                    maskPosition: "center",
+                                    maskSize: "contain",
+                                  }}
+                                />
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                        {leadImageEditingAnnotation?.id === annotation.id ? (
-                          <>
+                          {leadImageEditingAnnotation?.id === annotation.id ? (
                             <textarea
                               value={leadImageEditingAnnotation.note}
+                              onWheel={(event) => event.stopPropagation()}
                               onChange={(event) => {
                                 const nextValue = event.currentTarget.value;
                                 setLeadImageEditingAnnotation((current) =>
@@ -3515,206 +3713,454 @@ export default function LeadsPage() {
                                 }
                                 void handleSaveEditedLeadImageAnnotation();
                               }}
-                              className="mt-2 min-h-[80px] w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
-                              style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                              className="mt-2 w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
+                              style={{
+                                minHeight:
+                                  leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.height
+                                    ? `${Math.max(48, leadImageEditingAnnotation.height - 44)}px`
+                                    : "80px",
+                                height:
+                                  leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.height
+                                    ? `${Math.max(48, leadImageEditingAnnotation.height - 44)}px`
+                                    : undefined,
+                                borderColor: "#D7DEE8",
+                                color: "#334155",
+                                backgroundColor: "#ffffff",
+                              }}
                             />
-                          </>
-                        ) : (
-                          <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "#334155" }}>
-                            {annotation.note}
-                          </p>
-                        )}
-                      </div>
-                    ) : null,
-                  ) : null}
-                  {leadImageDraftAnnotation ? (
-                    <div
-                      className="absolute z-[5] w-[min(420px,calc(100vw-48px))] -translate-x-1/2 rounded-[12px] border px-3 py-3 text-left"
-                      style={{
-                        ...getLeadAnnotationRenderPoint(leadImageDraftAnnotation),
-                        transform: "translateX(-50%) translateY(22px)",
-                        borderColor: "#D7DEE8",
-                        backgroundColor: "#ffffff",
-                        boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
-                      }}
-                      onClick={(event) => event.stopPropagation()}
-                      onMouseDown={(event) => event.stopPropagation()}
+                          ) : (
+                            <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "#334155" }}>
+                              {annotation.note}
+                            </p>
+                          )}
+                        </div>
+                      ) : null,
+                    ) : null}
+                    {leadImageDraftAnnotation ? (
+                      <div
+                        className="absolute z-[5] w-[min(420px,calc(100vw-48px))] rounded-[12px] border px-3 py-3 text-left"
+                        style={{
+                          ...getLeadAnnotationPopupStyle(leadImageDraftAnnotation),
+                          borderColor: "#D7DEE8",
+                          backgroundColor: "#ffffff",
+                          boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
+                          transform: `${getLeadAnnotationPopupStyle(leadImageDraftAnnotation).transform} scale(${leadImageAnnotationUiScale})`,
+                          visibility: "hidden",
+                          pointerEvents: "none",
+                        }}
                     >
-                      <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
-                        Add Note
-                      </p>
+                        <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
+                          Add Note
+                        </p>
                       <textarea
                         value={leadImageDraftAnnotation.note}
+                        onWheel={(event) => event.stopPropagation()}
                         onChange={(event) => {
                           const nextValue = event.currentTarget.value;
                           setLeadImageDraftAnnotation((current) =>
-                            current ? { ...current, note: nextValue } : current,
-                          );
-                        }}
-                        placeholder="Add note for this point..."
-                        className="mt-2 min-h-[80px] w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
-                        style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
-                      />
-                      <div className="mt-3 flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setLeadImageDraftAnnotation(null)}
-                          className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold"
-                          style={{ borderColor: "#D7DEE8", color: "#64748B", backgroundColor: "#ffffff" }}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleSaveLeadImageAnnotation()}
-                          className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold text-white"
-                          style={{ borderColor: companyThemeColor, backgroundColor: companyThemeColor }}
-                        >
-                          Save Note
-                        </button>
+                              current ? { ...current, note: nextValue } : current,
+                            );
+                          }}
+                          placeholder="Add note for this point..."
+                          className="mt-2 min-h-[80px] w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
+                          style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                        />
+                        <div className="mt-3 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setLeadImageDraftAnnotation(null)}
+                            className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold"
+                            style={{ borderColor: "#D7DEE8", color: "#64748B", backgroundColor: "#ffffff" }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleSaveLeadImageAnnotation()}
+                            className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold text-white"
+                            style={{ borderColor: companyThemeColor, backgroundColor: companyThemeColor }}
+                          >
+                            Save Note
+                          </button>
+                        </div>
                       </div>
+                    ) : null}
+                  </div>
+                  {leadImagePinsVisible ? (
+                    <div
+                      className="pointer-events-none absolute z-[1]"
+                      style={{
+                        left: "50%",
+                        top: "50%",
+                        width: leadImageSizeReady ? `${fittedLeadImageSize.width}px` : "1px",
+                        height: leadImageSizeReady ? `${fittedLeadImageSize.height}px` : "1px",
+                        transform: `translate(calc(-50% + ${leadImagePreviewOffset.x}px), calc(-50% + ${leadImagePreviewOffset.y}px)) scale(${leadImagePreviewScale})`,
+                        transformOrigin: "center center",
+                        transition: leadImagePreviewDragging ? "none" : "transform 120ms ease",
+                        opacity: leadImageSizeReady ? 1 : 0,
+                      }}
+                    >
+                      {activeLeadImageAnnotations.map((annotation, idx) => (
+                        <button
+                          key={`${annotation.id}:overlay-pin`}
+                          type="button"
+                          onMouseDown={(event) => startLeadImageAnnotationDrag(event, annotation)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (leadImageSuppressPinClickRef.current) {
+                              leadImageSuppressPinClickRef.current = false;
+                              return;
+                            }
+                            setLeadImageDraftAnnotation(null);
+                            setLeadImageHighlightedAnnotationId("");
+                            setLeadImageEditingAnnotation(null);
+                            setLeadImageActiveAnnotationId((current) => (current === annotation.id ? "" : annotation.id));
+                          }}
+                          className="pointer-events-auto absolute inline-flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-[11px] font-bold text-white"
+                          style={{
+                            ...getLeadAnnotationRenderPoint(
+                              leadImageDraggingAnnotation?.id === annotation.id ? leadImageDraggingAnnotation : annotation,
+                            ),
+                            borderColor: "#ffffff",
+                            backgroundColor: String(annotation.createdByColor || "").trim() || companyThemeColor,
+                            boxShadow: "0 4px 10px rgba(15,23,42,0.18)",
+                            transform: `translate(-50%, -50%) scale(${leadImageAnnotationUiScale})`,
+                            opacity:
+                              (leadImageActiveAnnotationId || leadImageHighlightedAnnotationId) &&
+                              leadImageActiveAnnotationId !== annotation.id &&
+                              leadImageHighlightedAnnotationId !== annotation.id
+                                ? 0.25
+                                : 1,
+                            cursor:
+                              leadImageDraggingAnnotation?.id === annotation.id
+                                ? "grabbing"
+                                : "grab",
+                            animation:
+                              leadImageHighlightedAnnotationId === annotation.id
+                                ? "cutsmart-lead-pin-bounce 2s ease-in-out infinite"
+                                : "none",
+                          }}
+                        >
+                          {idx + 1}
+                        </button>
+                      ))}
                     </div>
                   ) : null}
-                </div>
-                {leadImageUrls.length > 1 ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openLeadImagePreview(
-                        leadImagePreviewIndex >= leadImageUrls.length - 1 ? 0 : leadImagePreviewIndex + 1,
-                      )
-                    }
-                    className="absolute right-6 top-1/2 z-[3] inline-flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border"
-                    style={{
-                      borderColor: "#D7DEE8",
-                      backgroundColor: "rgba(255,255,255,0.94)",
-                      color: "#334155",
-                      boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
-                    }}
-                    aria-label="Next image"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="pointer-events-none block"
+                  {leadImagePinsVisible ? (
+                    <div className="pointer-events-none absolute inset-0 z-[10]">
+                      {activeLeadImageAnnotations.map((annotation, idx) =>
+                        leadImageActiveAnnotationId === annotation.id ? (
+                          <div
+                            key={`${annotation.id}:screen-note`}
+                            data-lead-image-annotation-editor="true"
+                            className="pointer-events-auto absolute flex min-w-[240px] max-w-[min(480px,calc(100vw-48px))] flex-col rounded-[12px] border px-3 py-2 text-left"
+                            ref={(node) => {
+                              if (!node) return;
+                              const width = Math.round(node.getBoundingClientRect().width);
+                              const height = Math.max(112, Math.round(node.getBoundingClientRect().height));
+                              setLeadImageActiveAnnotationBoxSize((current) =>
+                                current?.id === annotation.id && current.width === width && current.height === height
+                                  ? current
+                                  : { id: annotation.id, width, height },
+                              );
+                            }}
+                            style={{
+                              ...getLeadAnnotationPopupScreenStyle(annotation, {
+                                width:
+                                  leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.width
+                                    ? leadImageEditingAnnotation.width
+                                    : leadImageActiveAnnotationBoxSize?.id === annotation.id && leadImageActiveAnnotationBoxSize.width
+                                      ? leadImageActiveAnnotationBoxSize.width
+                                    : 320,
+                                height:
+                                  leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.height
+                                      ? Math.max(112, leadImageEditingAnnotation.height)
+                                    : leadImageActiveAnnotationBoxSize?.id === annotation.id && leadImageActiveAnnotationBoxSize.height
+                                      ? leadImageActiveAnnotationBoxSize.height
+                                    : 112,
+                              }),
+                              borderColor: "#D7DEE8",
+                              backgroundColor: "#ffffff",
+                              boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
+                              overflowY: "auto",
+                              width:
+                                leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.width
+                                  ? `${leadImageEditingAnnotation.width}px`
+                                  : undefined,
+                              height:
+                                leadImageEditingAnnotation?.id === annotation.id && leadImageEditingAnnotation.height
+                                  ? `${Math.max(112, leadImageEditingAnnotation.height)}px`
+                                  : undefined,
+                            }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                            onWheel={(event) => event.stopPropagation()}
+                          >
+                            <div className="flex shrink-0 items-start justify-between gap-2">
+                              <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
+                                {String(annotation.createdByName || "").trim() || `Comment ${idx + 1}`}
+                              </p>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    if (leadImageEditingAnnotation?.id === annotation.id) {
+                                      void handleSaveEditedLeadImageAnnotation();
+                                      return;
+                                    }
+                                    const popup = event.currentTarget.closest("[data-lead-image-annotation-editor='true']");
+                                    const measuredWidth =
+                                      popup instanceof HTMLElement ? Math.round(popup.getBoundingClientRect().width) : undefined;
+                                    const measuredHeight =
+                                      popup instanceof HTMLElement ? Math.max(112, Math.round(popup.getBoundingClientRect().height)) : undefined;
+                                    setLeadImageEditingAnnotation({
+                                      id: annotation.id,
+                                      note: annotation.note,
+                                      width: measuredWidth,
+                                      height: measuredHeight,
+                                    });
+                                  }}
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                  style={{
+                                    borderColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#D7DEE8",
+                                    backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#15803D" : "#ffffff",
+                                  }}
+                                  aria-label={leadImageEditingAnnotation?.id === annotation.id ? "Save note" : "Edit note"}
+                                >
+                                  <span
+                                    aria-hidden="true"
+                                    className="block"
+                                    style={{
+                                      width: 13,
+                                      height: 13,
+                                      backgroundColor: leadImageEditingAnnotation?.id === annotation.id ? "#ffffff" : "#64748B",
+                                      WebkitMaskImage:
+                                        leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                      WebkitMaskRepeat: "no-repeat",
+                                      WebkitMaskPosition: "center",
+                                      WebkitMaskSize: "contain",
+                                      maskImage:
+                                        leadImageEditingAnnotation?.id === annotation.id ? "url('/tick.png')" : "url('/edit.png')",
+                                      maskRepeat: "no-repeat",
+                                      maskPosition: "center",
+                                      maskSize: "contain",
+                                    }}
+                                  />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (confirmDeleteLeadImageAnnotationId !== annotation.id) {
+                                      armDeleteLeadImageAnnotation(annotation.id);
+                                      return;
+                                    }
+                                    if (leadImageDeleteConfirmTimeoutRef.current) {
+                                      clearTimeout(leadImageDeleteConfirmTimeoutRef.current);
+                                      leadImageDeleteConfirmTimeoutRef.current = null;
+                                    }
+                                    setConfirmDeleteLeadImageAnnotationId("");
+                                    void handleDeleteLeadImageAnnotation(annotation.id);
+                                  }}
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] border"
+                                  style={{
+                                    borderColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#F1B7BC",
+                                    backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#991B1B" : "#FFF5F6",
+                                  }}
+                                  aria-label="Delete note"
+                                >
+                                  <span
+                                    aria-hidden="true"
+                                    className="block"
+                                    style={{
+                                      width: 13,
+                                      height: 13,
+                                      backgroundColor: confirmDeleteLeadImageAnnotationId === annotation.id ? "#ffffff" : "#991B1B",
+                                      WebkitMaskImage:
+                                        confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                      WebkitMaskRepeat: "no-repeat",
+                                      WebkitMaskPosition: "center",
+                                      WebkitMaskSize: "contain",
+                                      maskImage:
+                                        confirmDeleteLeadImageAnnotationId === annotation.id ? "url('/tick.png')" : "url('/trash.png')",
+                                      maskRepeat: "no-repeat",
+                                      maskPosition: "center",
+                                      maskSize: "contain",
+                                    }}
+                                  />
+                                </button>
+                              </div>
+                            </div>
+                            {leadImageEditingAnnotation?.id === annotation.id ? (
+                              <textarea
+                                value={leadImageEditingAnnotation.note}
+                                onWheel={(event) => event.stopPropagation()}
+                                onChange={(event) => {
+                                  const nextValue = event.currentTarget.value;
+                                  setLeadImageEditingAnnotation((current) =>
+                                    current ? { ...current, note: nextValue } : current,
+                                  );
+                                }}
+                                onBlur={(event) => {
+                                  const nextFocusTarget = event.relatedTarget;
+                                  if (
+                                    nextFocusTarget instanceof HTMLElement &&
+                                    nextFocusTarget.closest("[data-lead-image-annotation-editor='true']")
+                                  ) {
+                                    return;
+                                  }
+                                  void handleSaveEditedLeadImageAnnotation();
+                                }}
+                                className="mt-2 block w-full flex-1 resize-none rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
+                                style={{
+                                  minHeight: 0,
+                                  height: "auto",
+                                  borderColor: "#D7DEE8",
+                                  color: "#334155",
+                                  backgroundColor: "#ffffff",
+                                  boxSizing: "border-box",
+                                }}
+                              />
+                            ) : (
+                              <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "#334155" }}>
+                                {annotation.note}
+                              </p>
+                            )}
+                          </div>
+                        ) : null,
+                      )}
+                        {leadImageDraftAnnotation ? (
+                          <div
+                            className="pointer-events-auto absolute w-[min(420px,calc(100vw-48px))] rounded-[12px] border px-3 py-3 text-left"
+                            ref={(node) => {
+                              if (!node) return;
+                              const width = Math.round(node.getBoundingClientRect().width);
+                              const height = Math.max(112, Math.round(node.getBoundingClientRect().height));
+                              setLeadImageDraftAnnotationBoxSize((current) =>
+                                current && current.width === width && current.height === height
+                                  ? current
+                                  : { width, height },
+                              );
+                            }}
+                            style={{
+                              ...getLeadAnnotationPopupScreenStyle(leadImageDraftAnnotation, {
+                                width: leadImageDraftAnnotationBoxSize?.width || 420,
+                                height: leadImageDraftAnnotationBoxSize?.height || 150,
+                              }),
+                              borderColor: "#D7DEE8",
+                              backgroundColor: "#ffffff",
+                              boxShadow: "0 14px 28px rgba(15,23,42,0.12)",
+                              overflowY: "auto",
+                            }}
+                          onClick={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onWheel={(event) => event.stopPropagation()}
+                        >
+                          <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "#64748B" }}>
+                            Add Note
+                          </p>
+                          <textarea
+                            value={leadImageDraftAnnotation.note}
+                            onWheel={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              const nextValue = event.currentTarget.value;
+                              setLeadImageDraftAnnotation((current) =>
+                                current ? { ...current, note: nextValue } : current,
+                              );
+                            }}
+                            placeholder="Add note for this point..."
+                            className="mt-2 min-h-[80px] w-full rounded-[10px] border px-3 py-2 text-[12px] font-semibold outline-none"
+                            style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+                          />
+                          <div className="mt-3 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setLeadImageDraftAnnotation(null)}
+                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold"
+                              style={{ borderColor: "#D7DEE8", color: "#64748B", backgroundColor: "#ffffff" }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleSaveLeadImageAnnotation()}
+                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[11px] font-bold text-white"
+                              style={{ borderColor: companyThemeColor, backgroundColor: companyThemeColor }}
+                            >
+                              Save Note
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {leadImageUrls.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openLeadImagePreview(
+                          leadImagePreviewIndex >= leadImageUrls.length - 1 ? 0 : leadImagePreviewIndex + 1,
+                        )
+                      }
+                      className="absolute right-6 top-1/2 z-[3] inline-flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border"
                       style={{
-                        width: 34,
-                        height: 34,
-                        transform: "translateX(3px)",
-                        backgroundColor: "#334155",
-                        WebkitMaskImage: "url('/angle-right.png')",
-                        WebkitMaskRepeat: "no-repeat",
-                        WebkitMaskPosition: "center",
-                        WebkitMaskSize: "contain",
-                        maskImage: "url('/angle-right.png')",
-                        maskRepeat: "no-repeat",
-                        maskPosition: "center",
-                        maskSize: "contain",
+                        borderColor: "#D7DEE8",
+                        backgroundColor: "rgba(255,255,255,0.94)",
+                        color: "#334155",
+                        boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
                       }}
-                    />
-                  </button>
-                ) : null}
-              </div>
-              {leadImageUrls.length > 1 ? (
-                <>
-                  {!leadImageThumbnailsCollapsed ? (
-                    <div
-                      className="group/thumb relative border-t px-6 py-2"
-                      style={{ borderColor: "#D7DEE8", backgroundColor: "#ffffff" }}
-                      onClick={(event) => event.stopPropagation()}
+                      aria-label="Next image"
                     >
-                      <button
-                        type="button"
-                        onClick={() => setLeadImageThumbnailsCollapsed(true)}
-                        className="absolute left-1/2 top-0 z-[6] inline-flex h-9 w-9 -translate-x-1/2 -translate-y-[calc(100%+4px)] items-center justify-center rounded-full border opacity-0 transition-opacity group-hover/thumb:opacity-100"
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none block"
                         style={{
-                          borderColor: "#D7DEE8",
-                          backgroundColor: "rgba(255,255,255,0.94)",
-                          boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
-                        }}
-                        aria-label="Hide thumbnails"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="block"
-                        style={{
-                          width: 14,
-                          height: 14,
+                          width: 34,
+                          height: 34,
+                          transform: "translateX(3px)",
                           backgroundColor: "#334155",
-                          WebkitMaskImage: "url('/angle-down.png')",
-                            WebkitMaskRepeat: "no-repeat",
-                            WebkitMaskPosition: "center",
-                            WebkitMaskSize: "contain",
-                            maskImage: "url('/angle-down.png')",
+                          WebkitMaskImage: "url('/angle-right.png')",
+                          WebkitMaskRepeat: "no-repeat",
+                          WebkitMaskPosition: "center",
+                          WebkitMaskSize: "contain",
+                          maskImage: "url('/angle-right.png')",
                           maskRepeat: "no-repeat",
                           maskPosition: "center",
                           maskSize: "contain",
-                          transform: "translate(0px, 1px)",
                         }}
                       />
-                      </button>
-                      <div className="flex justify-center">
-                        <div className="flex gap-3 overflow-x-auto pb-1">
-                        {leadImageUrls.map((url, idx) => (
-                          <button
-                            key={`${leadImagesLead.id}:preview-thumb:${idx}`}
-                            type="button"
-                            onClick={() => openLeadImagePreview(idx)}
-                            className="shrink-0 overflow-hidden rounded-[10px] border"
-                            style={{
-                              width: 102,
-                              height: 78,
-                              borderColor: idx === leadImagePreviewIndex ? companyThemeColor : "#D7DEE8",
-                              boxShadow: idx === leadImagePreviewIndex ? `0 0 0 2px ${companyThemeColor}22` : "none",
-                            }}
-                          >
-                            <img src={resolveLeadImageSrc(url)} alt={`Lead thumbnail ${idx + 1}`} className="h-full w-full object-cover" loading="eager" decoding="async" />
-                          </button>
-                        ))}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      className="group/thumb-restore absolute bottom-0 left-0 right-0 z-[5] flex h-10 items-end justify-center"
-                      onClick={(event) => event.stopPropagation()}
+                    </button>
+                  ) : null}
+                </div>
+              </>
+            }
+            thumbnailsCollapsed={leadImageThumbnailsCollapsed}
+            onCollapseThumbnails={() => setLeadImageThumbnailsCollapsed(true)}
+            onExpandThumbnails={() => setLeadImageThumbnailsCollapsed(false)}
+            thumbnailStrip={
+              <div className="flex justify-center">
+                <div className="flex gap-3 overflow-x-auto pb-1">
+                  {leadImageUrls.map((url, idx) => (
+                    <button
+                      key={`${leadImagesLead.id}:preview-thumb:${idx}`}
+                      type="button"
+                      onClick={() => openLeadImagePreview(idx)}
+                      className="shrink-0 overflow-hidden rounded-[10px] border"
+                      style={{
+                        width: 102,
+                        height: 78,
+                        borderColor: idx === leadImagePreviewIndex ? companyThemeColor : "#D7DEE8",
+                        boxShadow: idx === leadImagePreviewIndex ? `0 0 0 2px ${companyThemeColor}22` : "none",
+                      }}
                     >
-                      <button
-                        type="button"
-                        onClick={() => setLeadImageThumbnailsCollapsed(false)}
-                        className="pointer-events-auto mb-1 inline-flex h-9 w-9 items-center justify-center rounded-full border opacity-0 transition-opacity group-hover/thumb-restore:opacity-100"
-                        style={{
-                          borderColor: "#D7DEE8",
-                          backgroundColor: "rgba(255,255,255,0.94)",
-                          boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
-                        }}
-                        aria-label="Show thumbnails"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="block"
-                          style={{
-                            width: 14,
-                            height: 14,
-                            backgroundColor: "#334155",
-                            transform: "translate(0px, -1px) rotate(180deg)",
-                            WebkitMaskImage: "url('/angle-down.png')",
-                            WebkitMaskRepeat: "no-repeat",
-                            WebkitMaskPosition: "center",
-                            WebkitMaskSize: "contain",
-                            maskImage: "url('/angle-down.png')",
-                            maskRepeat: "no-repeat",
-                            maskPosition: "center",
-                            maskSize: "contain",
-                          }}
-                        />
-                      </button>
-                    </div>
-                  )}
-                </>
-              ) : null}
-            </div>,
-            document.body,
-          )}
+                      <img src={resolveLeadImageSrc(url)} alt={`Lead thumbnail ${idx + 1}`} className="h-full w-full object-cover" loading="eager" decoding="async" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            }
+            showPrevNext={leadImageUrls.length > 1}
+          />
+        ) : null}
       </AppShell>
     </ProtectedRoute>
   );

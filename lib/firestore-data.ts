@@ -1821,6 +1821,21 @@ export async function fetchCompanyDoc(companyId: string): Promise<Record<string,
 }
 
 export async function fetchAppChangelogHistory(): Promise<UpdateChangelogEntry[]> {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/changelog?type=versions", { cache: "no-store" });
+      if (res.ok) {
+        const payload = (await res.json().catch(() => null)) as
+          | { ok?: boolean; entries?: UpdateChangelogEntry[] }
+          | null;
+        if (payload?.ok && Array.isArray(payload.entries)) {
+          return payload.entries;
+        }
+      }
+    } catch {
+      // fall back to direct client firestore below
+    }
+  }
   if (!db) {
     return [];
   }
@@ -1885,6 +1900,26 @@ export async function upsertAppChangelogVersion(entry: UpdateChangelogEntry): Pr
 }
 
 export async function syncAppChangelogHistory(entries: UpdateChangelogEntry[]): Promise<boolean> {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/changelog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "sync-versions",
+          entries,
+        }),
+      });
+      if (res.ok) {
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        if (payload?.ok) {
+          return true;
+        }
+      }
+    } catch {
+      // fall back to direct client firestore below
+    }
+  }
   if (!db || !Array.isArray(entries) || entries.length === 0) {
     return false;
   }
@@ -1932,6 +1967,50 @@ function toCompanyClientSummaryRow(row: CompanyClientRow): CompanyClientRow {
   return {
     ...row,
     history: [],
+  };
+}
+
+function mergeCompanyClientRows(
+  existing: CompanyClientRow | undefined,
+  next: CompanyClientRow,
+): CompanyClientRow {
+  if (!existing) return next;
+  const historyByProjectId = new Map<string, CompanyClientProjectHistoryRow>();
+  [...existing.history, ...next.history].forEach((row) => {
+    const key = String(row.projectId || "").trim();
+    if (!key) return;
+    const previous = historyByProjectId.get(key);
+    if (!previous) {
+      historyByProjectId.set(key, row);
+      return;
+    }
+    const prevStamp = Date.parse(previous.updatedAtIso || previous.createdAtIso || "");
+    const nextStamp = Date.parse(row.updatedAtIso || row.createdAtIso || "");
+    if (nextStamp >= prevStamp) {
+      historyByProjectId.set(key, row);
+    }
+  });
+  const mergedHistory = Array.from(historyByProjectId.values()).sort(
+    (a, b) => Date.parse(b.updatedAtIso || b.createdAtIso || "") - Date.parse(a.updatedAtIso || a.createdAtIso || ""),
+  );
+  return {
+    ...existing,
+    ...next,
+    id: existing.id || next.id,
+    companyId: existing.companyId || next.companyId,
+    name: existing.name || next.name,
+    email: existing.email || next.email,
+    emailNormalized: existing.emailNormalized || next.emailNormalized,
+    phone: existing.phone || next.phone,
+    address: existing.address || next.address,
+    notes: next.notes || existing.notes,
+    createdAtIso: existing.createdAtIso || next.createdAtIso,
+    updatedAtIso: pickLaterIso(existing.updatedAtIso, next.updatedAtIso),
+    firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, next.firstProjectAtIso),
+    lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, next.lastProjectAtIso),
+    lastProjectId: next.lastProjectId || existing.lastProjectId,
+    projectCount: Math.max(existing.projectCount, next.projectCount, mergedHistory.length),
+    history: mergedHistory,
   };
 }
 
@@ -2018,6 +2097,7 @@ function buildCompanyClientProjectHistory(project: Project): CompanyClientProjec
 
 function buildCompanyClientRowFromProject(project: Project): CompanyClientRow {
   const emailNormalized = normalizeClientEmail(project.clientEmail);
+  const historyRow = buildCompanyClientProjectHistory(project);
   return {
     id: String(project.clientId || buildCompanyClientMatchKeyFromProject(project)).trim(),
     companyId: String(project.companyId || "").trim(),
@@ -2032,10 +2112,8 @@ function buildCompanyClientRowFromProject(project: Project): CompanyClientRow {
     firstProjectAtIso: String(project.createdAt || project.updatedAt || "").trim(),
     lastProjectAtIso: String(project.updatedAt || project.createdAt || "").trim(),
     lastProjectId: String(project.id || "").trim(),
-    projectCount: isCompletedClientProjectStatus(project.statusLabel || project.status) ? 1 : 0,
-    history: isCompletedClientProjectStatus(project.statusLabel || project.status)
-      ? [buildCompanyClientProjectHistory(project)]
-      : [],
+    projectCount: 1,
+    history: [historyRow],
   };
 }
 
@@ -2326,8 +2404,7 @@ export async function fetchCompanyClients(companyId: string): Promise<CompanyCli
     const clientsSnap = await getDocs(collection(db, "companies", cid, "clients"));
     const persistedRows = clientsSnap.docs
       .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
-      .filter((row) => row.id && row.id !== "__meta")
-      .map((row) => toCompanyClientSummaryRow(row));
+      .filter((row) => row.id && row.id !== "__meta");
     for (const row of persistedRows) {
       merged.set(row.id, row);
     }
@@ -2338,32 +2415,9 @@ export async function fetchCompanyClients(companyId: string): Promise<CompanyCli
   try {
     const projects = await collectCompanyProjectsForClients(cid);
     for (const project of projects) {
-      const derived = toCompanyClientSummaryRow(buildCompanyClientRowFromProject(project));
+      const derived = buildCompanyClientRowFromProject(project);
       const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
-      const existing = merged.get(matchId);
-      if (!existing) {
-        merged.set(matchId, { ...derived, id: matchId });
-        continue;
-      }
-      const existingStamp = Date.parse(existing.lastProjectAtIso || existing.updatedAtIso || existing.createdAtIso || "");
-      const nextStamp = Date.parse(derived.lastProjectAtIso || derived.updatedAtIso || derived.createdAtIso || "");
-      merged.set(matchId, {
-        ...existing,
-        ...(nextStamp > existingStamp ? derived : {}),
-        id: matchId,
-        name: existing.name || derived.name,
-        email: existing.email || derived.email,
-        emailNormalized: existing.emailNormalized || derived.emailNormalized,
-        phone: existing.phone || derived.phone,
-        address: existing.address || derived.address,
-        projectCount: Math.max(existing.projectCount, derived.projectCount),
-        firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, derived.firstProjectAtIso),
-        lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, derived.lastProjectAtIso),
-        lastProjectId:
-          (nextStamp > existingStamp ? derived.lastProjectId : "") ||
-          existing.lastProjectId ||
-          derived.lastProjectId,
-      });
+      merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
     }
   } catch {
     // ignore
@@ -2388,8 +2442,17 @@ export async function fetchCompanyClientById(companyId: string, clientId: string
   if (!db || !cid || !id) return null;
   try {
     const snap = await getDoc(doc(db, "companies", cid, "clients", id));
-    if (!snap.exists()) return null;
-    return buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+    if (snap.exists()) {
+      return buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+    }
+    const projects = await collectCompanyProjectsForClients(cid);
+    const merged = new Map<string, CompanyClientRow>();
+    for (const project of projects) {
+      const derived = buildCompanyClientRowFromProject(project);
+      const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
+      merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
+    }
+    return merged.get(id) ?? null;
   } catch {
     return null;
   }
@@ -3277,6 +3340,26 @@ export async function submitAppReport(input: {
   reporterEmail: string;
   reporterName: string;
 }): Promise<boolean> {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/changelog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "submit-report",
+          ...input,
+        }),
+      });
+      if (res.ok) {
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        if (payload?.ok) {
+          return true;
+        }
+      }
+    } catch {
+      // fall back to direct client firestore below
+    }
+  }
   if (!db) return false;
   const kind = String(input.kind || "").trim().toLowerCase();
   if (kind !== "issue" && kind !== "feature") return false;
@@ -3319,6 +3402,21 @@ export async function submitAppReport(input: {
 }
 
 export async function fetchAppReports(): Promise<AppReportRow[]> {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/changelog?type=reports", { cache: "no-store" });
+      if (res.ok) {
+        const payload = (await res.json().catch(() => null)) as
+          | { ok?: boolean; reports?: AppReportRow[] }
+          | null;
+        if (payload?.ok && Array.isArray(payload.reports)) {
+          return payload.reports;
+        }
+      }
+    } catch {
+      // fall back to direct client firestore below
+    }
+  }
   if (!db) return [];
   try {
     const mapReportRow = (docSnap: QueryDocumentSnapshot) => {
@@ -3379,6 +3477,27 @@ export async function fetchAppReports(): Promise<AppReportRow[]> {
 }
 
 export async function setAppReportCompleted(reportId: string, completed: boolean): Promise<boolean> {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/changelog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "set-report-completed",
+          reportId,
+          completed,
+        }),
+      });
+      if (res.ok) {
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        if (payload?.ok) {
+          return true;
+        }
+      }
+    } catch {
+      // fall back to direct client firestore below
+    }
+  }
   if (!db) return false;
   const id = String(reportId || "").trim();
   if (!id) return false;
@@ -3431,6 +3550,26 @@ export async function setAppReportCompleted(reportId: string, completed: boolean
 }
 
 export async function cleanupCompletedReportsForNewVersion(currentVersion: string): Promise<boolean> {
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/changelog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "cleanup-version",
+          version: currentVersion,
+        }),
+      });
+      if (res.ok) {
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        if (payload?.ok) {
+          return true;
+        }
+      }
+    } catch {
+      // fall back to direct client firestore below
+    }
+  }
   if (!db) return false;
   const normalizedVersion = String(currentVersion || "").trim().replace(/^v+/i, "");
   if (!normalizedVersion) return false;
