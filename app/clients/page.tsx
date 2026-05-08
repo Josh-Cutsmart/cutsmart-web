@@ -21,6 +21,38 @@ function hasPermissionKey(permissionKeys: string[] | undefined, key: string): bo
   });
 }
 
+function normalizeRoleKey(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+function extractRolePermissionKeys(
+  companyDoc: Record<string, unknown> | null | undefined,
+  roleCandidates: Array<unknown>,
+): string[] {
+  const roles = Array.isArray(companyDoc?.roles) ? (companyDoc?.roles as Array<Record<string, unknown>>) : [];
+  if (!roles.length) return [];
+  const wanted = new Set(roleCandidates.map((value) => normalizeRoleKey(value)).filter(Boolean));
+  if (!wanted.size) return [];
+  const out = new Set<string>();
+  for (const role of roles) {
+    const roleKey = normalizeRoleKey(role.id ?? role.name);
+    if (!roleKey || !wanted.has(roleKey)) continue;
+    const permissions =
+      role.permissions && typeof role.permissions === "object" && !Array.isArray(role.permissions)
+        ? (role.permissions as Record<string, unknown>)
+        : {};
+    for (const [key, value] of Object.entries(permissions)) {
+      if (value === true) {
+        out.add(String(key || "").trim());
+      }
+    }
+  }
+  return Array.from(out).filter(Boolean);
+}
+
 function formatClientDate(value: string) {
   const d = new Date(String(value || ""));
   if (Number.isNaN(d.getTime())) return "-";
@@ -58,6 +90,7 @@ export default function ClientsPage() {
   const [detailLoadingClientId, setDetailLoadingClientId] = useState("");
   const [permissionKeys, setPermissionKeys] = useState<string[]>([]);
   const [accessResolved, setAccessResolved] = useState(false);
+  const [canViewAllClients, setCanViewAllClients] = useState(false);
 
   const isDarkMode = themeMode === "dark";
 
@@ -100,12 +133,28 @@ export default function ClientsPage() {
       ]);
       if (cancelled) return;
       setActiveCompanyId(activeCompanyId);
-      const nextPermissionKeys = access?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []);
+      const roleDerivedPermissions = extractRolePermissionKeys(companyDoc as Record<string, unknown> | null, [
+        access?.roleId,
+        access?.role,
+        user?.role,
+      ]);
+      const nextPermissionKeys = Array.from(
+        new Set([
+          ...(access?.permissionKeys ?? []),
+          ...roleDerivedPermissions,
+          ...(Array.isArray(user?.permissions) ? user.permissions : []),
+        ]),
+      );
       setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
       setPermissionKeys(nextPermissionKeys);
       setAccessResolved(true);
       const role = String(access?.role || user?.role || "").trim().toLowerCase();
-      const permitted = role === "owner" || role === "admin" || hasPermissionKey(nextPermissionKeys, "company.clients");
+      const nextCanViewAllClients =
+        role === "owner" ||
+        role === "admin" ||
+        hasPermissionKey(nextPermissionKeys, "clients.view.all");
+      const permitted = nextCanViewAllClients || hasPermissionKey(nextPermissionKeys, "clients.view");
+      setCanViewAllClients(nextCanViewAllClients);
       if (!permitted) {
         setClients([]);
         setClientDetailsById({});
@@ -114,18 +163,27 @@ export default function ClientsPage() {
       }
       let companyClients: CompanyClientRow[] = [];
       try {
-        const response = await fetch(`/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary`, {
+        const response = await fetch(
+          `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${nextCanViewAllClients ? "all" : "mine"}`,
+          {
           method: "GET",
           cache: "no-store",
-        });
+          },
+        );
         const json = (await response.json().catch(() => null)) as { ok?: boolean; clients?: CompanyClientRow[] } | null;
         if (response.ok && json?.ok && Array.isArray(json.clients)) {
           companyClients = json.clients;
         } else {
-          companyClients = await fetchCompanyClients(activeCompanyId);
+          companyClients = await fetchCompanyClients(activeCompanyId, {
+            viewerUid: String(user?.uid || "").trim(),
+            includeAll: nextCanViewAllClients,
+          });
         }
       } catch {
-        companyClients = await fetchCompanyClients(activeCompanyId);
+        companyClients = await fetchCompanyClients(activeCompanyId, {
+          viewerUid: String(user?.uid || "").trim(),
+          includeAll: nextCanViewAllClients,
+        });
       }
       if (cancelled) return;
       setClients(companyClients);
@@ -140,12 +198,12 @@ export default function ClientsPage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.companyId, user?.permissions, user?.uid]);
+  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   const canAccessClients = useMemo(() => {
     const role = String(user?.role || "").trim().toLowerCase();
     if (role === "owner" || role === "admin") return true;
-    return hasPermissionKey(permissionKeys, "company.clients");
+    return hasPermissionKey(permissionKeys, "clients.view") || hasPermissionKey(permissionKeys, "clients.view.all");
   }, [permissionKeys, user?.role]);
 
   const filteredClients = useMemo(() => {
@@ -202,7 +260,7 @@ export default function ClientsPage() {
       let detail: CompanyClientRow | null = null;
       try {
         const response = await fetch(
-          `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=detail&clientId=${encodeURIComponent(expandedClientId)}`,
+          `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=detail&clientId=${encodeURIComponent(expandedClientId)}&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${canViewAllClients ? "all" : "mine"}`,
           {
             method: "GET",
             cache: "no-store",
@@ -212,10 +270,16 @@ export default function ClientsPage() {
         if (response.ok && json?.ok && json.client) {
           detail = json.client;
         } else {
-          detail = await fetchCompanyClientById(activeCompanyId, expandedClientId);
+          detail = await fetchCompanyClientById(activeCompanyId, expandedClientId, {
+            viewerUid: String(user?.uid || "").trim(),
+            includeAll: canViewAllClients,
+          });
         }
       } catch {
-        detail = await fetchCompanyClientById(activeCompanyId, expandedClientId);
+        detail = await fetchCompanyClientById(activeCompanyId, expandedClientId, {
+          viewerUid: String(user?.uid || "").trim(),
+          includeAll: canViewAllClients,
+        });
       }
       if (cancelled) return;
       if (detail) {
@@ -227,7 +291,7 @@ export default function ClientsPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeCompanyId, clientDetailsById, expandedClientId]);
+  }, [activeCompanyId, canViewAllClients, clientDetailsById, expandedClientId, user?.uid]);
 
   return (
     <ProtectedRoute>

@@ -124,8 +124,39 @@ type ClientRow = {
   lastProjectAtIso: string;
   lastProjectId: string;
   projectCount: number;
+  createdByUids: string[];
+  assignedToUids: string[];
   history: ClientHistoryRow[];
 };
+
+function normalizeUidList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values
+        .map((value) => toStr(value))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function mergeUidLists(...lists: Array<string[] | undefined>): string[] {
+  return Array.from(
+    new Set(
+      lists
+        .flatMap((list) => list ?? [])
+        .map((value) => toStr(value))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function canViewerAccessClientRow(row: ClientRow, viewerUid: string, includeAll: boolean) {
+  if (includeAll) return true;
+  const cleanViewerUid = toStr(viewerUid);
+  if (!cleanViewerUid) return false;
+  return row.createdByUids.includes(cleanViewerUid) || row.assignedToUids.includes(cleanViewerUid);
+}
 
 function toSummaryClientRow(row: ClientRow): ClientRow {
   return {
@@ -176,6 +207,8 @@ function buildClientFromProject(companyId: string, project: Record<string, unkno
     lastProjectAtIso: updatedAtIso || createdAtIso,
     lastProjectId: toStr(project.id),
     projectCount: 1,
+    createdByUids: mergeUidLists([toStr(project.createdByUid)]),
+    assignedToUids: mergeUidLists([toStr(project.assignedToUid)]),
     history,
   };
 }
@@ -258,6 +291,8 @@ function mergeClientRows(existing: ClientRow | undefined, next: ClientRow): Clie
     lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, next.lastProjectAtIso),
     lastProjectId: next.lastProjectId || existing.lastProjectId,
     projectCount: Math.max(existing.projectCount, next.projectCount),
+    createdByUids: mergeUidLists(existing.createdByUids, next.createdByUids),
+    assignedToUids: mergeUidLists(existing.assignedToUids, next.assignedToUids),
     history,
   };
 }
@@ -291,6 +326,8 @@ function buildClientFromDoc(companyId: string, id: string, data: Record<string, 
     lastProjectAtIso: toIsoString(data.lastProjectAtIso ?? data.lastProjectAt, ""),
     lastProjectId: toStr(data.lastProjectId),
     projectCount: Number.isFinite(Number(data.projectCount)) ? Number(data.projectCount) : 0,
+    createdByUids: normalizeUidList(data.createdByUids),
+    assignedToUids: normalizeUidList(data.assignedToUids),
     history: history.sort(
       (a, b) => Date.parse(b.updatedAtIso || b.createdAtIso || "") - Date.parse(a.updatedAtIso || a.createdAtIso || ""),
     ),
@@ -321,6 +358,8 @@ export async function GET(request: NextRequest) {
   const companyId = toStr(url.searchParams.get("companyId"));
   const mode = toStr(url.searchParams.get("mode")).toLowerCase();
   const clientId = toStr(url.searchParams.get("clientId"));
+  const viewerUid = toStr(url.searchParams.get("viewerUid"));
+  const includeAll = toStr(url.searchParams.get("scope")).toLowerCase() === "all";
   if (!companyId) {
     return NextResponse.json({ ok: false, error: "missing-company-id" }, { status: 400 });
   }
@@ -333,6 +372,9 @@ export async function GET(request: NextRequest) {
       const clientSnap = await adminDb.collection("companies").doc(companyId).collection("clients").doc(clientId).get();
       if (clientSnap.exists) {
         const client = buildClientFromDoc(companyId, clientSnap.id, (clientSnap.data() ?? {}) as Record<string, unknown>);
+        if (!canViewerAccessClientRow(client, viewerUid, includeAll)) {
+          return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
+        }
         return NextResponse.json({ ok: true, client });
       }
       const merged = new Map<string, ClientRow>();
@@ -345,7 +387,7 @@ export async function GET(request: NextRequest) {
         merged.set(matchId, mergeClientRows(merged.get(matchId), { ...candidate, id: matchId }));
       });
       const client = merged.get(clientId);
-      if (!client) {
+      if (!client || !canViewerAccessClientRow(client, viewerUid, includeAll)) {
         return NextResponse.json({ ok: false, error: "client-not-found" }, { status: 404 });
       }
       return NextResponse.json({ ok: true, client });
@@ -388,10 +430,12 @@ export async function GET(request: NextRequest) {
   }
 
   const clients = Array.from(merged.values()).sort((a, b) => {
+    if (!canViewerAccessClientRow(a, viewerUid, includeAll)) return 1;
+    if (!canViewerAccessClientRow(b, viewerUid, includeAll)) return -1;
     const aName = toStr(a.name || a.email).toLowerCase();
     const bName = toStr(b.name || b.email).toLowerCase();
     return aName.localeCompare(bName);
-  });
+  }).filter((client) => canViewerAccessClientRow(client, viewerUid, includeAll));
 
   return NextResponse.json({
     ok: true,
@@ -462,6 +506,8 @@ export async function POST(request: NextRequest) {
         lastProjectAtIso: pickLaterIso(current?.lastProjectAtIso, toStr(body.updatedAtIso), toStr(body.createdAtIso), history[0]?.updatedAtIso),
         lastProjectId: projectId,
         projectCount: current?.projectCount ?? 0,
+        createdByUids: mergeUidLists(current?.createdByUids, normalizeUidList(existing?.createdByUids), [toStr(body.createdByUid)]),
+        assignedToUids: mergeUidLists(current?.assignedToUids, normalizeUidList(existing?.assignedToUids), [toStr(body.assignedToUid)]),
         completedProjectIds: Array.isArray(existing?.completedProjectIds) ? existing?.completedProjectIds : [],
         history,
       },

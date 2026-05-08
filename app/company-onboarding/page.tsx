@@ -36,7 +36,8 @@ const DEFAULT_COMPANY_ROLE_DEFS = [
     permissions: {
       "company.*": true,
       "company.dashboard.view": true,
-      "company.clients": true,
+      "clients.view": true,
+      "clients.view.all": true,
       "leads.view": true,
       "leads.view.others": true,
       "projects.create": true,
@@ -66,7 +67,8 @@ const DEFAULT_COMPANY_ROLE_DEFS = [
     permissions: {
       "company.*": true,
       "company.dashboard.view": true,
-      "company.clients": true,
+      "clients.view": true,
+      "clients.view.all": true,
       "leads.view": true,
       "leads.view.others": true,
       "projects.create": true,

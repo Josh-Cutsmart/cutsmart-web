@@ -8,6 +8,7 @@ import { Great_Vibes } from "next/font/google";
 import { ArrowLeft, ChevronDown, ClipboardList, Copy, Cpu, FileSpreadsheet, GitBranch, GripVertical, ListChecks, Lock, Minus, Pencil, Plus, Printer, Quote, Ruler, Scissors, Search, ShoppingCart, Tag, Trash2, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import { PDFDocument } from "pdf-lib";
 import * as XLSX from "xlsx-js-style";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { AppShell } from "@/components/app-shell";
@@ -955,7 +956,7 @@ type ProductionFormState = {
 type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: boolean };
 type OrderHingeRow = { id: string; name: string; qty: string };
 
-type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock";
+type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock" | "print";
 type SalesNav = "initial" | "items" | "quote" | "specifications";
 type CutlistRow = {
   id: string;
@@ -2098,6 +2099,249 @@ function nestingPieceTooltip(mainName: string, subName: string, room: string, wi
   const roomLine = line(roomTitle, roomText);
   const sizeLine = line(sizeTitle, sizeText);
   return `${partLine}\n${roomLine}\n${sizeLine}`;
+}
+
+type NestingFlatPiece = {
+  id: string;
+  rowId: string;
+  row: CutlistRow;
+  name: string;
+  partType: string;
+  room: string;
+  width: number;
+  height: number;
+  area: number;
+};
+
+type NestingSheetPlacement = {
+  piece: NestingFlatPiece;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+type NestingSheetLayout = {
+  index: number;
+  placements: NestingSheetPlacement[];
+};
+
+function computeNestingSheetLayouts(
+  rows: CutlistRow[],
+  innerW: number,
+  innerH: number,
+  kerf: number,
+): NestingSheetLayout[] {
+  const toPositiveNum = (v: unknown) => {
+    const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+
+  const pieces: NestingFlatPiece[] = [];
+  for (const row of rows) {
+    const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+    const dimH = toPositiveNum(row.height);
+    const dimW = toPositiveNum(row.width);
+    const dimD = toPositiveNum(row.depth);
+    const grainDim = toPositiveNum(row.grainValue);
+    let width = dimW || dimD || 120;
+    let height = dimH || dimD || 80;
+
+    if (grainDim > 0) {
+      const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
+      const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
+      if (hasGrainMatch) {
+        const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
+        const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
+        width = grainDim;
+        height = cross;
+      }
+    }
+
+    const partType = String(row.partType || "Unassigned");
+    const room = String(row.room || "Unassigned");
+    const name = String(row.name || "Part");
+    for (let i = 0; i < qty; i += 1) {
+      pieces.push({
+        id: `${row.id}_${i + 1}`,
+        rowId: row.id,
+        row,
+        name,
+        partType,
+        room,
+        width: Math.max(30, Math.min(width, innerW)),
+        height: Math.max(24, Math.min(height, innerH)),
+        area: Math.max(1, width * height),
+      });
+    }
+  }
+
+  const sorted = [...pieces].sort((a, b) => {
+    const aMax = Math.max(a.width, a.height);
+    const bMax = Math.max(b.width, b.height);
+    if (bMax !== aMax) return bMax - aMax;
+    if (b.area !== a.area) return b.area - a.area;
+    const aMin = Math.min(a.width, a.height);
+    const bMin = Math.min(b.width, b.height);
+    return bMin - aMin;
+  });
+
+  type FreeRect = { x: number; y: number; w: number; h: number };
+  type SheetState = { index: number; placements: NestingSheetPlacement[]; freeRects: FreeRect[] };
+  const sheets: SheetState[] = [];
+
+  const pruneFreeRects = (rects: FreeRect[]) => {
+    const normalized = rects
+      .filter((rect) => rect.w > 0.001 && rect.h > 0.001)
+      .map((rect) => ({
+        x: Math.max(0, rect.x),
+        y: Math.max(0, rect.y),
+        w: Math.max(0, rect.w),
+        h: Math.max(0, rect.h),
+      }));
+    return normalized.filter((rect, idx) => {
+      return !normalized.some((other, otherIdx) => {
+        if (idx === otherIdx) return false;
+        return (
+          rect.x >= other.x - 0.001 &&
+          rect.y >= other.y - 0.001 &&
+          rect.x + rect.w <= other.x + other.w + 0.001 &&
+          rect.y + rect.h <= other.y + other.h + 0.001
+        );
+      });
+    });
+  };
+
+  const createSheet = (): SheetState => ({
+    index: sheets.length + 1,
+    placements: [],
+    freeRects: [{ x: 0, y: 0, w: innerW, h: innerH }],
+  });
+
+  const placeOnSheet = (
+    sheet: SheetState,
+    piece: NestingFlatPiece,
+  ): { placement: NestingSheetPlacement; score: [number, number, number, number]; freeRectIndex: number } | null => {
+    let best:
+      | { placement: NestingSheetPlacement; score: [number, number, number, number]; freeRectIndex: number }
+      | null = null;
+    const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
+    for (let rectIdx = 0; rectIdx < sheet.freeRects.length; rectIdx += 1) {
+      const rect = sheet.freeRects[rectIdx];
+      const orientations = grainLocked
+        ? [{ w: piece.width, h: piece.height }]
+        : [
+            { w: piece.width, h: piece.height },
+            { w: piece.height, h: piece.width },
+          ];
+      for (const orientation of orientations) {
+        const w = Math.min(orientation.w, innerW);
+        const h = Math.min(orientation.h, innerH);
+        if (w > rect.w + 0.001 || h > rect.h + 0.001) continue;
+        const leftoverW = rect.w - w;
+        const leftoverH = rect.h - h;
+        const score: [number, number, number, number] = [
+          Math.min(leftoverW, leftoverH),
+          leftoverW * leftoverH,
+          rect.y,
+          rect.x,
+        ];
+        const placement: NestingSheetPlacement = {
+          piece,
+          x: rect.x,
+          y: rect.y,
+          w,
+          h,
+        };
+        if (
+          !best ||
+          score[0] < best.score[0] - 0.001 ||
+          (Math.abs(score[0] - best.score[0]) <= 0.001 && score[1] < best.score[1] - 0.001) ||
+          (Math.abs(score[0] - best.score[0]) <= 0.001 &&
+            Math.abs(score[1] - best.score[1]) <= 0.001 &&
+            (score[2] < best.score[2] - 0.001 ||
+              (Math.abs(score[2] - best.score[2]) <= 0.001 && score[3] < best.score[3] - 0.001)))
+        ) {
+          best = { placement, score, freeRectIndex: rectIdx };
+        }
+      }
+    }
+    return best;
+  };
+
+  const commitPlacement = (
+    sheet: SheetState,
+    choice: { placement: NestingSheetPlacement; freeRectIndex: number },
+  ) => {
+    const rect = sheet.freeRects[choice.freeRectIndex];
+    const { x, y, w, h } = choice.placement;
+    const nextRects = sheet.freeRects.filter((_, idx) => idx !== choice.freeRectIndex);
+    const rightStart = x + w + kerf;
+    const bottomStart = y + h + kerf;
+    const rightWidth = rect.x + rect.w - rightStart;
+    const bottomHeight = rect.y + rect.h - bottomStart;
+
+    if (rightWidth > 0.001) {
+      nextRects.push({
+        x: rightStart,
+        y: rect.y,
+        w: rightWidth,
+        h,
+      });
+    }
+    if (bottomHeight > 0.001) {
+      nextRects.push({
+        x: rect.x,
+        y: bottomStart,
+        w: rect.w,
+        h: bottomHeight,
+      });
+    }
+
+    sheet.freeRects = pruneFreeRects(nextRects);
+    sheet.placements.push(choice.placement);
+  };
+
+  for (const piece of sorted) {
+    let bestSheetChoice:
+      | {
+          sheetIndex: number;
+          placement: NestingSheetPlacement;
+          score: [number, number, number, number];
+          freeRectIndex: number;
+        }
+      | null = null;
+
+    for (let sheetIdx = 0; sheetIdx < sheets.length; sheetIdx += 1) {
+      const choice = placeOnSheet(sheets[sheetIdx], piece);
+      if (!choice) continue;
+      if (
+        !bestSheetChoice ||
+        choice.score[0] < bestSheetChoice.score[0] - 0.001 ||
+        (Math.abs(choice.score[0] - bestSheetChoice.score[0]) <= 0.001 &&
+          (choice.score[1] < bestSheetChoice.score[1] - 0.001 ||
+            (Math.abs(choice.score[1] - bestSheetChoice.score[1]) <= 0.001 && sheetIdx < bestSheetChoice.sheetIndex)))
+      ) {
+        bestSheetChoice = { sheetIndex: sheetIdx, ...choice };
+      }
+    }
+
+    if (!bestSheetChoice) {
+      const newSheet = createSheet();
+      const choice = placeOnSheet(newSheet, piece);
+      if (choice) {
+        commitPlacement(newSheet, choice);
+      }
+      sheets.push(newSheet);
+      continue;
+    }
+
+    commitPlacement(sheets[bestSheetChoice.sheetIndex], bestSheetChoice);
+  }
+
+  return sheets
+    .filter((sheet) => sheet.placements.length > 0)
+    .map((sheet) => ({ index: sheet.index, placements: sheet.placements }));
 }
 
 function parseDerivedNestingRowId(rowId: string): { parentRowId: string; kind: "cab" | "drw" | null; subKey: string } {
@@ -3590,6 +3834,8 @@ export default function ProjectDetailsPage() {
   const [projectImageUrls, setProjectImageUrls] = useState<string[]>([]);
   const [projectImageItemsResolved, setProjectImageItemsResolved] = useState<Array<ProjectImageItem & { resolvedUrl: string }>>([]);
   const [selectedProjectImageIndex, setSelectedProjectImageIndex] = useState(0);
+  const [isEditingProjectImageName, setIsEditingProjectImageName] = useState(false);
+  const [projectImageNameDraft, setProjectImageNameDraft] = useState("");
   const [projectImageViewerOpen, setProjectImageViewerOpen] = useState(false);
   const [projectImageViewerPinsVisible, setProjectImageViewerPinsVisible] = useState(true);
   const [projectImageViewerCommentsCollapsed, setProjectImageViewerCommentsCollapsed] = useState(true);
@@ -3636,6 +3882,7 @@ export default function ProjectDetailsPage() {
   const quoteContainerRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const quotePreviewPageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const quotePreviewScrollRef = useRef<HTMLDivElement | null>(null);
+  const projectImageNameInputRef = useRef<HTMLInputElement | null>(null);
   const projectPermissionScrollRefs = useRef<Record<"no_access" | "view" | "edit", HTMLDivElement | null>>({
     no_access: null,
     view: null,
@@ -3831,6 +4078,11 @@ export default function ProjectDetailsPage() {
   }, [projectPermissionSearch, draggingProjectPermissionUid, savingProjectPermissionUid, companyMembers.length, project?.projectSettings]);
   const [salesNav, setSalesNav] = useState<SalesNav>("specifications");
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
+  const [isProductionPrintModalOpen, setIsProductionPrintModalOpen] = useState(false);
+  const [productionPrintSelections, setProductionPrintSelections] = useState<Record<string, boolean>>({
+    nesting: true,
+    cnc: true,
+  });
   const [nestingFullscreen, setNestingFullscreen] = useState(false);
   const boardColourEditStartRef = useRef<Record<string, string>>({});
   const [productionCutlist, setProductionCutlist] = useState<Cutlist | null>(null);
@@ -4907,8 +5159,10 @@ export default function ProjectDetailsPage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const shouldComputeCnc = productionNav === "cnc";
-  const shouldComputeNesting = productionNav === "overview" || productionNav === "nesting";
+  const shouldComputeCnc =
+    productionNav === "overview" || productionNav === "cnc" || isProductionPrintModalOpen;
+  const shouldComputeNesting =
+    productionNav === "overview" || productionNav === "nesting" || isProductionPrintModalOpen;
 
   const formatUnlockTimer = (seconds: number) => {
     const s = Math.max(0, Math.floor(seconds));
@@ -5046,13 +5300,16 @@ export default function ProjectDetailsPage() {
       const item = row as Record<string, unknown>;
       const name = toStr(item.name);
       if (!name) continue;
-      const isCabinetry = Boolean(
-        item.cabinetry ??
-        item.isCabinetry ??
-        item.cabinetryEnabled ??
-        item.enableCabinetry ??
-        item.partTypeCabinetry,
-      );
+      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      const isCabinetry =
+        category === "cabinetry" ||
+        Boolean(
+          item.cabinetry ??
+          item.isCabinetry ??
+          item.cabinetryEnabled ??
+          item.enableCabinetry ??
+          item.partTypeCabinetry,
+        );
       out[name.trim().toLowerCase()] = isCabinetry;
     }
     return out;
@@ -5069,13 +5326,16 @@ export default function ProjectDetailsPage() {
       const item = row as Record<string, unknown>;
       const name = toStr(item.name);
       if (!name) continue;
-      const isDrawer = Boolean(
-        item.drawer ??
-        item.isDrawer ??
-        item.drawerEnabled ??
-        item.enableDrawer ??
-        item.partTypeDrawer,
-      );
+      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      const isDrawer =
+        category === "drawer" ||
+        Boolean(
+          item.drawer ??
+          item.isDrawer ??
+          item.drawerEnabled ??
+          item.enableDrawer ??
+          item.partTypeDrawer,
+        );
       out[name.trim().toLowerCase()] = isDrawer;
     }
     return out;
@@ -5092,7 +5352,8 @@ export default function ProjectDetailsPage() {
       const item = row as Record<string, unknown>;
       const name = toStr(item.name);
       if (!name) continue;
-      const isDoor = Boolean(item.door ?? item.isDoor ?? false);
+      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      const isDoor = category === "door" || Boolean(item.door ?? item.isDoor ?? false);
       out[name.trim().toLowerCase()] = isDoor;
     }
     return out;
@@ -7397,11 +7658,25 @@ export default function ProjectDetailsPage() {
     });
   }, [projectImageUrls]);
 
+  useEffect(() => {
+    if (!isEditingProjectImageName) return;
+    const input = projectImageNameInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [isEditingProjectImageName]);
+
   const currentProjectImageEntry =
     projectImageItemsResolved[selectedProjectImageIndex] ?? projectImageItemsResolved[0] ?? null;
   const currentProjectImageAnnotations = currentProjectImageEntry?.annotations ?? [];
   const currentProjectImageViewerUrl = String(currentProjectImageEntry?.resolvedUrl || "").trim();
   const currentProjectImageViewerName = String(currentProjectImageEntry?.name || "").trim();
+  const currentProjectImageHeaderName = currentProjectImageViewerName || (currentProjectImageEntry ? `Image ${selectedProjectImageIndex + 1}` : "");
+
+  useEffect(() => {
+    setIsEditingProjectImageName(false);
+    setProjectImageNameDraft(currentProjectImageViewerName);
+  }, [currentProjectImageViewerName, selectedProjectImageIndex]);
 
   const projectImageClientName = String(project?.customer || project?.name || "Untitled Project").trim();
 
@@ -7575,6 +7850,23 @@ export default function ProjectDetailsPage() {
     const nextUrls = nextItems.map((item) => String(item.url || "").trim()).filter(Boolean);
     const ok = await updateProjectPatch(project, { projectImages: nextUrls, projectImageItems: nextItems });
     return ok;
+  };
+
+  const commitProjectImageNameEdit = async () => {
+    if (!currentProjectImageEntry) {
+      setIsEditingProjectImageName(false);
+      return;
+    }
+    const nextName = String(projectImageNameDraft || "").trim();
+    const currentName = String(currentProjectImageEntry.name || "").trim();
+    setIsEditingProjectImageName(false);
+    if (nextName === currentName) return;
+    const currentItems = normalizeProjectImageItemsForViewer(project);
+    if (!currentItems.length) return;
+    const nextItems = currentItems.map((item, idx) =>
+      idx === selectedProjectImageIndex ? { ...item, name: nextName } : item,
+    );
+    await persistProjectImageItems(nextItems);
   };
 
   useEffect(() => {
@@ -10070,13 +10362,15 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  const onChangeExisting = async (key: keyof ProductionFormState["existing"], value: string) => {
-    const next = {
-      ...productionForm,
-      existing: { ...productionForm.existing, [key]: value },
-    };
-    setProductionForm(next);
-    await persistProductionForm(next);
+  const onExistingDraftChange = (key: keyof ProductionFormState["existing"], value: string) => {
+    setProductionForm((prev) => ({
+      ...prev,
+      existing: { ...prev.existing, [key]: value },
+    }));
+  };
+
+  const onExistingBlurSave = async () => {
+    await persistProductionForm(productionForm);
   };
 
   const onCabinetryDraftChange = (key: keyof ProductionFormState["cabinetry"], value: string) => {
@@ -11474,6 +11768,10 @@ export default function ProjectDetailsPage() {
     if (!shouldComputeCnc) return [];
     return effectiveCutlistRows.filter((row) => isPartTypeIncludedInCnc(row.partType));
   }, [effectiveCutlistRows, isPartTypeIncludedInCnc, shouldComputeCnc]);
+  const cncPrintSourceRows = useMemo(
+    () => effectiveCutlistRows.filter((row) => isPartTypeIncludedInCnc(row.partType)),
+    [effectiveCutlistRows, isPartTypeIncludedInCnc],
+  );
 
   const cncExpandedRows = useMemo(() => {
     const out: CncDisplayRow[] = [];
@@ -11570,6 +11868,100 @@ export default function ProjectDetailsPage() {
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
   ]);
+  const cncExpandedRowsForPrintIds = useMemo(() => {
+    const out: CncDisplayRow[] = [];
+    for (const row of cncPrintSourceRows) {
+      const visible = typeof cncVisibilityMap[row.id] === "boolean" ? cncVisibilityMap[row.id] : true;
+      if (!visible) continue;
+
+      if (isCabinetryPartType(row.partType)) {
+        const mainQty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+        if (mainQty <= 0) continue;
+        const fixedTotal = Math.max(0, Math.floor(toNum(row.fixedShelf)));
+        const adjustableTotal = Math.max(0, Math.floor(toNum(row.adjustableShelf)));
+
+        out.push({
+          ...row,
+          id: `${row.id}__cab__main`,
+          sourceRowId: row.id,
+          cncCabinetryRowKind: "main",
+        });
+
+        out.push({
+          ...row,
+          id: `${row.id}__cab__fixed`,
+          sourceRowId: row.id,
+          cncCabinetryRowKind: "fixedShelf",
+          name: "Fixed Shelf",
+          height: "",
+          width: "",
+          depth: "",
+          quantity: fixedTotal > 0 ? String(fixedTotal) : "",
+          clashing: "",
+          clashLeft: "",
+          clashRight: "",
+          information: "",
+        });
+        out.push({
+          ...row,
+          id: `${row.id}__cab__adjustable`,
+          sourceRowId: row.id,
+          cncCabinetryRowKind: "adjustableShelf",
+          name: "Adjustable Shelf",
+          height: "",
+          width: "",
+          depth: "",
+          quantity: adjustableTotal > 0 ? String(adjustableTotal) : "",
+          clashing: "",
+          clashLeft: "",
+          clashRight: "",
+          information: "",
+        });
+        continue;
+      }
+
+      if (isDrawerPartType(row.partType)) {
+        const pieces = buildDrawerDerivedPieces(row);
+        const mainName = String(row.name || "").trim();
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          const pieceName = String(piece.partName || "").trim();
+          const combinedName =
+            mainName && pieceName
+              ? `${mainName} - ${pieceName}`
+              : [mainName, pieceName].filter(Boolean).join("").trim();
+          out.push({
+            ...row,
+            id: `${row.id}__drw__${piece.key}`,
+            sourceRowId: row.id,
+            name: combinedName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+          });
+        }
+        continue;
+      }
+
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      out.push({ ...row, sourceRowId: row.id });
+    }
+    return out;
+  }, [
+    buildDrawerDerivedPieces,
+    cncPrintSourceRows,
+    cncVisibilityMap,
+    isCabinetryPartType,
+    isDrawerPartType,
+  ]);
 
   const filteredCncRows = useMemo(() => {
     const q = String(cncSearch || "").trim().toLowerCase();
@@ -11648,6 +12040,109 @@ export default function ProjectDetailsPage() {
         .filter((group) => group.rows.length > 0),
     [cncRowsByBoard, isCabinetryPartType],
   );
+  const cncRowsByBoardForPrintIds = useMemo(() => {
+    const rank = new Map(partTypeOptions.map((name, idx) => [name, idx]));
+    const pieceKindRank = (name: string) => {
+      const txt = String(name || "").toLowerCase();
+      if (/\bbottom\b/.test(txt)) return 0;
+      if (/\bback\b/.test(txt)) return 1;
+      return 2;
+    };
+    const visibleRows = cncExpandedRowsForPrintIds.filter((row) => {
+      const sourceId = String((row as CncDisplayRow).sourceRowId || row.id);
+      return typeof cncVisibilityMap[sourceId] === "boolean" ? cncVisibilityMap[sourceId] : true;
+    });
+    const map = new Map<string, { boardKey: string; boardLabel: string; rows: CncDisplayRow[] }>();
+    for (const row of visibleRows) {
+      const boardKey = String(row.board || "").trim() || "Unknown Board";
+      const boardLabel = boardDisplayLabel(boardKey) || boardKey || "Unknown Board";
+      const hit = map.get(boardKey);
+      if (hit) {
+        hit.rows.push(row);
+      } else {
+        map.set(boardKey, { boardKey, boardLabel, rows: [row] });
+      }
+    }
+    return Array.from(map.values())
+      .sort((a, b) => a.boardLabel.localeCompare(b.boardLabel))
+      .map((group) => ({
+        ...group,
+        rows: [...group.rows].sort((a, b) => {
+          const aCab = isCabinetryPartType(a.partType) ? 1 : 0;
+          const bCab = isCabinetryPartType(b.partType) ? 1 : 0;
+          const aDrw = isDrawerPartType(a.partType) ? 1 : 0;
+          const bDrw = isDrawerPartType(b.partType) ? 1 : 0;
+          const ar = rank.has(a.partType) ? Number(rank.get(a.partType)) : 999;
+          const br = rank.has(b.partType) ? Number(rank.get(b.partType)) : 999;
+          if (aCab !== bCab) return aCab - bCab;
+          if (aCab === 1 && bCab === 1) {
+            const bySource = String(a.sourceRowId || "").localeCompare(String(b.sourceRowId || ""));
+            if (bySource !== 0) return bySource;
+            const kindRank = (kind: CncDisplayRow["cncCabinetryRowKind"]) => {
+              if (kind === "fixedShelf") return 1;
+              if (kind === "adjustableShelf") return 2;
+              return 0;
+            };
+            const ak = kindRank(a.cncCabinetryRowKind);
+            const bk = kindRank(b.cncCabinetryRowKind);
+            if (ak !== bk) return ak - bk;
+          }
+          if (aDrw === 1 && bDrw === 1) {
+            const bySource = String(a.sourceRowId || "").localeCompare(String(b.sourceRowId || ""));
+            if (bySource !== 0) return bySource;
+          }
+          return (
+            ar - br ||
+            pieceKindRank(a.name) - pieceKindRank(b.name) ||
+            String(a.name || "").localeCompare(String(b.name || "")) ||
+            String(a.id).localeCompare(String(b.id))
+          );
+        }),
+      }));
+  }, [boardDisplayLabel, cncExpandedRowsForPrintIds, cncVisibilityMap, isCabinetryPartType, isDrawerPartType, partTypeOptions]);
+  const nestingPrintDisplayIdByRowId = useMemo(() => {
+    const out: Record<string, number> = {};
+    let runningId = 0;
+    let lastIdKey = "";
+
+    for (const group of cncRowsByBoardForPrintIds) {
+      for (const row of group.rows) {
+        if (isCabinetryPartType(row.partType)) continue;
+        const isDrawer = isDrawerPartType(row.partType);
+        const idKey = isDrawer
+          ? String((row as CncDisplayRow).sourceRowId || row.id)
+          : String(row.id);
+        if (idKey !== lastIdKey) {
+          runningId += 1;
+          lastIdKey = idKey;
+        }
+        out[row.id] = runningId;
+        if (isDrawer && (row as CncDisplayRow).sourceRowId) {
+          out[String((row as CncDisplayRow).sourceRowId)] = runningId;
+        }
+      }
+    }
+
+    let lastCabSourceId = "";
+    for (const group of cncRowsByBoardForPrintIds) {
+      for (const row of group.rows) {
+        if (!isCabinetryPartType(row.partType)) continue;
+        const sourceId = String((row as CncDisplayRow).sourceRowId || row.id);
+        if (sourceId !== lastCabSourceId) {
+          runningId += 1;
+          lastCabSourceId = sourceId;
+        }
+        out[row.id] = runningId;
+        out[sourceId] = runningId;
+      }
+    }
+
+    return out;
+  }, [
+    cncRowsByBoardForPrintIds,
+    isCabinetryPartType,
+    isDrawerPartType,
+  ]);
   const cncNonCabDisplayIdCount = useMemo(() => {
     let count = 0;
     let lastIdKey = "";
@@ -11796,7 +12291,7 @@ export default function ProjectDetailsPage() {
   }, [cncSourceRows, cncVisibilitySearch]);
 
   const cncSidebarGroups = useMemo(() => {
-    const rank = new Map(partTypeOptions.map((name, idx) => [String(name || "").trim(), idx]));
+    const rank = new Map(partTypeOptions.map((name, idx) => [String(name || "").trim().toLowerCase(), idx]));
     const grouped = new Map<string, CutlistRow[]>();
     for (const row of cncVisibilityRows) {
       const key = String(row.partType || "Unassigned").trim() || "Unassigned";
@@ -11814,8 +12309,10 @@ export default function ProjectDetailsPage() {
         }),
       }))
       .sort((a, b) => {
-        const ar = rank.has(a.partType) ? Number(rank.get(a.partType)) : 999;
-        const br = rank.has(b.partType) ? Number(rank.get(b.partType)) : 999;
+        const aKey = a.partType.trim().toLowerCase();
+        const bKey = b.partType.trim().toLowerCase();
+        const ar = rank.has(aKey) ? Number(rank.get(aKey)) : 999;
+        const br = rank.has(bKey) ? Number(rank.get(bKey)) : 999;
         return ar - br || a.partType.localeCompare(b.partType);
       });
   }, [boardDisplayLabel, cncVisibilityRows, partTypeOptions]);
@@ -12024,6 +12521,7 @@ export default function ProjectDetailsPage() {
 
   const nestingSidebarGroups = useMemo(() => {
     if (!shouldComputeNesting) return [];
+    const rank = new Map(partTypeOptions.map((name, idx) => [String(name || "").trim().toLowerCase(), idx]));
     const q = String(nestingSearch || "").trim().toLowerCase();
     const filtered = effectiveCutlistRows.filter((row) => {
       if (!isPartTypeIncludedInNesting(row.partType)) return false;
@@ -12049,35 +12547,16 @@ export default function ProjectDetailsPage() {
           return String(a.room || "").localeCompare(String(b.room || ""));
         }),
       }))
-      .sort((a, b) => a.partType.localeCompare(b.partType));
-  }, [boardDisplayLabel, effectiveCutlistRows, isPartTypeIncludedInNesting, nestingSearch, shouldComputeNesting]);
+      .sort((a, b) => {
+        const aKey = a.partType.trim().toLowerCase();
+        const bKey = b.partType.trim().toLowerCase();
+        const ar = rank.has(aKey) ? Number(rank.get(aKey)) : 999;
+        const br = rank.has(bKey) ? Number(rank.get(bKey)) : 999;
+        return ar - br || a.partType.localeCompare(b.partType);
+      });
+  }, [boardDisplayLabel, effectiveCutlistRows, isPartTypeIncludedInNesting, nestingSearch, partTypeOptions, shouldComputeNesting]);
 
   const nestingBoardLayouts = useMemo(() => {
-    type FlatPiece = {
-      id: string;
-      rowId: string;
-      row: CutlistRow;
-      name: string;
-      partType: string;
-      room: string;
-      width: number;
-      height: number;
-      area: number;
-    };
-    type SheetPlacement = {
-      piece: FlatPiece;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    };
-    type SheetLayout = { index: number; placements: SheetPlacement[] };
-
-    const toPositiveNum = (v: unknown) => {
-      const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
-      return Number.isFinite(n) && n > 0 ? n : 0;
-    };
-
     const parseBoardSize = (boardKey: string, fallbackW: number, fallbackH: number) => {
       const resolved = resolveBoardKey(boardKey);
       const raw =
@@ -12105,115 +12584,7 @@ export default function ProjectDetailsPage() {
       const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
       const innerH = Math.max(80, sheetHeight - nestingSettings.margin * 2);
       const kerf = Math.max(0, nestingSettings.kerf);
-
-      const pieces: FlatPiece[] = [];
-      for (const row of group.rows) {
-        const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
-        const dimH = toPositiveNum(row.height);
-        const dimW = toPositiveNum(row.width);
-        const dimD = toPositiveNum(row.depth);
-        const grainDim = toPositiveNum(row.grainValue);
-        let width = dimW || dimD || 120;
-        let height = dimH || dimD || 80;
-
-        if (grainDim > 0) {
-          const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
-          const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
-          if (hasGrainMatch) {
-            const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
-            const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
-            width = grainDim;
-            height = cross;
-          }
-        }
-        const partType = String(row.partType || "Unassigned");
-        const room = String(row.room || "Unassigned");
-        const name = String(row.name || "Part");
-        for (let i = 0; i < qty; i += 1) {
-          pieces.push({
-            id: `${row.id}_${i + 1}`,
-            rowId: row.id,
-            row,
-            name,
-            partType,
-            room,
-            width: Math.max(30, width),
-            height: Math.max(24, height),
-            area: Math.max(1, width * height),
-          });
-        }
-      }
-
-      const sorted = [...pieces].sort((a, b) => b.area - a.area);
-      const sheets: SheetLayout[] = [];
-      let current: SheetLayout = { index: 1, placements: [] };
-      let x = 0;
-      let y = 0;
-      let rowMax = 0;
-
-      const startNewSheet = () => {
-        if (current.placements.length > 0) sheets.push(current);
-        current = { index: sheets.length + 1, placements: [] };
-        x = 0;
-        y = 0;
-        rowMax = 0;
-      };
-
-      for (const piece of sorted) {
-        let w = piece.width;
-        let h = piece.height;
-        const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
-
-        if (!grainLocked) {
-          const canNormalFit = w <= innerW && h <= innerH;
-          const canRotatedFit = h <= innerW && w <= innerH;
-          const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
-
-          if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
-            const nextW = h;
-            const nextH = w;
-            w = nextW;
-            h = nextH;
-          } else if (!canNormalFit && !canRotatedFit) {
-            const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
-            const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
-            if (rotatedOverflow < normalOverflow) {
-              const nextW = h;
-              const nextH = w;
-              w = nextW;
-              h = nextH;
-            }
-          }
-        }
-
-        w = Math.min(w, innerW);
-        h = Math.min(h, innerH);
-
-        if (x > 0 && x + w > innerW) {
-          x = 0;
-          y += rowMax + kerf;
-          rowMax = 0;
-        }
-        if (y > 0 && y + h > innerH) {
-          startNewSheet();
-        }
-        if (x > 0 && x + w > innerW) {
-          x = 0;
-          y += rowMax + kerf;
-          rowMax = 0;
-        }
-        if (y > 0 && y + h > innerH) {
-          startNewSheet();
-        }
-
-        current.placements.push({ piece, x, y, w, h });
-        x += w + kerf;
-        rowMax = Math.max(rowMax, h);
-      }
-
-      if (current.placements.length > 0) {
-        sheets.push(current);
-      }
+      const sheets = computeNestingSheetLayouts(group.rows, innerW, innerH, kerf);
 
       return {
         boardKey: group.boardKey,
@@ -12228,31 +12599,6 @@ export default function ProjectDetailsPage() {
     });
   }, [nestingRowsByBoard, nestingSettings.kerf, nestingSettings.margin, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSheetByLabel, resolveBoardKey]);
   const nestingBoardLayoutsForSheetCount = useMemo(() => {
-    type FlatPiece = {
-      id: string;
-      rowId: string;
-      row: CutlistRow;
-      name: string;
-      partType: string;
-      room: string;
-      width: number;
-      height: number;
-      area: number;
-    };
-    type SheetPlacement = {
-      piece: FlatPiece;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    };
-    type SheetLayout = { index: number; placements: SheetPlacement[] };
-
-    const toPositiveNum = (v: unknown) => {
-      const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
-      return Number.isFinite(n) && n > 0 ? n : 0;
-    };
-
     const parseBoardSize = (boardKey: string, fallbackW: number, fallbackH: number) => {
       const resolved = resolveBoardKey(boardKey);
       const raw =
@@ -12280,112 +12626,7 @@ export default function ProjectDetailsPage() {
       const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
       const innerH = Math.max(80, sheetHeight - nestingSettings.margin * 2);
       const kerf = Math.max(0, nestingSettings.kerf);
-
-      const pieces: FlatPiece[] = [];
-      for (const row of group.rows) {
-        const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
-        const dimH = toPositiveNum(row.height);
-        const dimW = toPositiveNum(row.width);
-        const dimD = toPositiveNum(row.depth);
-        const grainDim = toPositiveNum(row.grainValue);
-        let width = dimW || dimD || 120;
-        let height = dimH || dimD || 80;
-
-        if (grainDim > 0) {
-          const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
-          const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
-          if (hasGrainMatch) {
-            const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
-            const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
-            width = grainDim;
-            height = cross;
-          }
-        }
-        const partType = String(row.partType || "Unassigned");
-        const room = String(row.room || "Unassigned");
-        const name = String(row.name || "Part");
-        for (let i = 0; i < qty; i += 1) {
-          pieces.push({
-            id: `${row.id}_${i + 1}`,
-            rowId: row.id,
-            row,
-            name,
-            partType,
-            room,
-            width: Math.max(30, width),
-            height: Math.max(24, height),
-            area: Math.max(1, width * height),
-          });
-        }
-      }
-
-      const sorted = [...pieces].sort((a, b) => b.area - a.area);
-      const sheets: SheetLayout[] = [];
-      let current: SheetLayout = { index: 1, placements: [] };
-      let x = 0;
-      let y = 0;
-      let rowMax = 0;
-
-      const startNewSheet = () => {
-        if (current.placements.length > 0) sheets.push(current);
-        current = { index: sheets.length + 1, placements: [] };
-        x = 0;
-        y = 0;
-        rowMax = 0;
-      };
-
-      for (const piece of sorted) {
-        let w = piece.width;
-        let h = piece.height;
-        const grainLocked = toPositiveNum(piece.row.grainValue) > 0;
-
-        if (!grainLocked) {
-          const canNormalFit = w <= innerW && h <= innerH;
-          const canRotatedFit = h <= innerW && w <= innerH;
-          const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
-          if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
-            const nextW = h;
-            const nextH = w;
-            w = nextW;
-            h = nextH;
-          } else if (!canNormalFit && !canRotatedFit) {
-            const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
-            const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
-            if (rotatedOverflow < normalOverflow) {
-              const nextW = h;
-              const nextH = w;
-              w = nextW;
-              h = nextH;
-            }
-          }
-        }
-
-        w = Math.min(w, innerW);
-        h = Math.min(h, innerH);
-
-        if (x > 0 && x + w > innerW) {
-          x = 0;
-          y += rowMax + kerf;
-          rowMax = 0;
-        }
-        if (y > 0 && y + h > innerH) {
-          startNewSheet();
-        }
-        if (x > 0 && x + w > innerW) {
-          x = 0;
-          y += rowMax + kerf;
-          rowMax = 0;
-        }
-        if (y > 0 && y + h > innerH) {
-          startNewSheet();
-        }
-
-        current.placements.push({ piece, x, y, w, h });
-        x += w + kerf;
-        rowMax = Math.max(rowMax, h);
-      }
-
-      if (current.placements.length > 0) sheets.push(current);
+      const sheets = computeNestingSheetLayouts(group.rows, innerW, innerH, kerf);
 
       return {
         boardKey: group.boardKey,
@@ -12406,6 +12647,88 @@ export default function ProjectDetailsPage() {
     const sheets = Math.max(0, nestingBoardLayouts.reduce((sum, group) => sum + group.sheets.length, 0));
     return { totalPieces, hiddenPieces, sheets };
   }, [cutlistRows.length, nestingBoardLayouts, nestingVisibleRows]);
+  const nestingPrintPageCount = useMemo(
+    () =>
+      nestingBoardLayouts.reduce(
+        (sum, group) => sum + Math.ceil(group.sheets.filter((sheet) => sheet.placements.length > 0).length / 4),
+        0,
+      ),
+    [nestingBoardLayouts],
+  );
+  const cncPrintPageCount = useMemo(() => {
+    if (typeof window === "undefined") return 0;
+    if (cncPrintSourceRows.length === 0) return 0;
+
+    const showCncGrainColumnForPrint =
+      showCutlistGrainColumn || cncPrintSourceRows.some((row) => String(row.grainValue ?? "").trim().length > 0);
+    const header = ["ID", "Room", "Part Type", "Part Name", "Height", "Width", "Depth", "Qty", "Clashing", ...(showCncGrainColumnForPrint ? ["Grain"] : []), "Information"];
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const sidePad = 18;
+    const topPad = 18;
+    const boardBarHeight = 22;
+    const usableTableWidthPt = pageWidth - sidePad * 2;
+
+    doc.addPage();
+    cncRowsByBoardNonCab.forEach((group, idx) => {
+      if (idx > 0) {
+        doc.addPage();
+      }
+      const rows = group.rows.map((row) => [
+        String(row.id ?? ""),
+        String(row.room ?? ""),
+        String(row.partType ?? ""),
+        String(row.name ?? ""),
+        String(row.height ?? ""),
+        String(row.width ?? ""),
+        String(row.depth ?? ""),
+        String(row.quantity ?? ""),
+        String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
+        ...(showCncGrainColumnForPrint ? [String(row.grainValue ?? "")] : []),
+        String(row.information ?? ""),
+      ]);
+      autoTable(doc, {
+        startY: topPad + boardBarHeight,
+        head: [header],
+        body: rows,
+        showHead: "everyPage",
+        theme: "grid",
+        tableWidth: usableTableWidthPt,
+        margin: { left: sidePad, right: sidePad, top: topPad + boardBarHeight, bottom: 24 },
+        styles: {
+          fontSize: 7,
+          cellPadding: 3,
+          overflow: "linebreak",
+        },
+      });
+    });
+
+    if (cncCabinetCards.length > 0) {
+      doc.addPage();
+      let y = topPad + boardBarHeight + 8;
+      const cardGap = 10;
+      const headerH = 22;
+      for (const card of cncCabinetCards) {
+        const infoLines = card.infoLines.length ? card.infoLines : [""];
+        const contentLineH = 12;
+        const detailRowH = 18;
+        const rowsH = 5 * detailRowH;
+        const infoRowBaseH = detailRowH;
+        const infoRowExtraH = Math.max(0, infoLines.length - 1) * contentLineH;
+        const infoRowH = infoRowBaseH + infoRowExtraH;
+        const bodyH = Math.max(130, rowsH + infoRowH);
+        const cardH = headerH + bodyH;
+        if (y + cardH > pageHeight - 20) {
+          doc.addPage();
+          y = topPad + boardBarHeight + 8;
+        }
+        y += cardH + cardGap;
+      }
+    }
+
+    return doc.getNumberOfPages();
+  }, [cncCabinetCards, cncPrintSourceRows, cncRowsByBoardNonCab, showCutlistGrainColumn]);
   const requiredSheetCountByBoardKey = useMemo(() => {
     const out: Record<string, number> = {};
     for (const group of nestingBoardLayoutsForSheetCount) {
@@ -15802,7 +16125,718 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   };
 
   const onPrintCnc = () => {
-    onExportCncPdf("print");
+    void onExportCncPdf("print");
+  };
+
+  const openPdfBlobInPrintWindow = (pdfBlob: Blob) => {
+    if (typeof window === "undefined") return;
+    const url = URL.createObjectURL(pdfBlob);
+    const printWindow = window.open(url, "_blank");
+    if (printWindow) {
+      const triggerPrint = () => {
+        try {
+          printWindow.focus();
+          printWindow.print();
+        } catch {
+          // no-op
+        }
+      };
+      printWindow.addEventListener("load", triggerPrint, { once: true });
+      window.setTimeout(triggerPrint, 500);
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+  };
+
+  const buildNestingPdfBlob = (): Blob | null => {
+    const printableGroups = nestingBoardLayouts.filter((group) => group.sheets.length > 0);
+    if (printableGroups.length === 0) return null;
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 8;
+    const titleBarH = 12;
+    const titleGap = 5;
+    const contentTop = margin + titleBarH + titleGap;
+    const contentBottom = margin;
+    const cols = 2;
+    const rows = 2;
+    const colGap = 6;
+    const rowGap = 5;
+    const cellW = (pageWidth - margin * 2 - colGap) / cols;
+    const cellH = (pageHeight - contentTop - contentBottom - rowGap * (rows - 1)) / rows;
+    const printLegendIdFontSize = 6.1;
+    const printLegendMarkerPaddingX = 0.12;
+    const printLegendMarkerHeight = 3.7;
+    const printLegendTextGap = 0.7;
+    const pxToMm = 0.2645833333;
+
+    const toRgb = (hex: string): [number, number, number] => {
+      const safe = normalizeHexColor(hex) ?? "#94A3B8";
+      return [
+        Number.parseInt(safe.slice(1, 3), 16),
+        Number.parseInt(safe.slice(3, 5), 16),
+        Number.parseInt(safe.slice(5, 7), 16),
+      ];
+    };
+    const fitTextToWidth = (text: string, maxWidth: number) => {
+      const raw = String(text || "");
+      if (!raw) return "";
+      if (doc.getTextWidth(raw) <= maxWidth) return raw;
+      const ellipsis = "...";
+      let next = raw;
+      while (next.length > 0 && doc.getTextWidth(`${next}${ellipsis}`) > maxWidth) {
+        next = next.slice(0, -1);
+      }
+      return next ? `${next}${ellipsis}` : raw.slice(0, 1);
+    };
+    const drawArrowLine = (fromX: number, fromY: number, toX: number, toY: number) => {
+      doc.setDrawColor(15, 23, 42);
+      doc.setLineWidth(0.22);
+      doc.line(fromX, fromY, toX, toY);
+      const angle = Math.atan2(toY - fromY, toX - fromX);
+      const arrowLen = 1.5;
+      const spread = Math.PI / 8;
+      doc.line(
+        toX,
+        toY,
+        toX - arrowLen * Math.cos(angle - spread),
+        toY - arrowLen * Math.sin(angle - spread),
+      );
+      doc.line(
+        toX,
+        toY,
+        toX - arrowLen * Math.cos(angle + spread),
+        toY - arrowLen * Math.sin(angle + spread),
+      );
+    };
+    const drawArrowPath = (points: Array<{ x: number; y: number }>) => {
+      if (points.length < 2) return;
+      doc.setDrawColor(15, 23, 42);
+      doc.setLineWidth(0.22);
+      for (let pointIdx = 0; pointIdx < points.length - 1; pointIdx += 1) {
+        doc.line(points[pointIdx].x, points[pointIdx].y, points[pointIdx + 1].x, points[pointIdx + 1].y);
+      }
+      const last = points[points.length - 1];
+      const prev = points[points.length - 2];
+      const angle = Math.atan2(last.y - prev.y, last.x - prev.x);
+      const arrowLen = 1.5;
+      const spread = Math.PI / 8;
+      doc.line(
+        last.x,
+        last.y,
+        last.x - arrowLen * Math.cos(angle - spread),
+        last.y - arrowLen * Math.sin(angle - spread),
+      );
+      doc.line(
+        last.x,
+        last.y,
+        last.x - arrowLen * Math.cos(angle + spread),
+        last.y - arrowLen * Math.sin(angle + spread),
+      );
+    };
+    const drawPrintGrainArrow = (centerX: number, centerY: number, rotationDeg: number, baseLen: number) => {
+      const angle = (rotationDeg * Math.PI) / 180;
+      const halfLen = baseLen / 2;
+      const dx = Math.cos(angle) * halfLen;
+      const dy = Math.sin(angle) * halfLen;
+      const fromX = centerX - dx;
+      const fromY = centerY - dy;
+      const toX = centerX + dx;
+      const toY = centerY + dy;
+      doc.setDrawColor(120, 131, 146);
+      doc.setLineWidth(0.18);
+      doc.line(fromX, fromY, toX, toY);
+      const arrowLen = Math.max(0.9, baseLen * 0.18);
+      const spread = Math.PI / 8;
+      doc.line(
+        toX,
+        toY,
+        toX - arrowLen * Math.cos(angle - spread),
+        toY - arrowLen * Math.sin(angle - spread),
+      );
+      doc.line(
+        toX,
+        toY,
+        toX - arrowLen * Math.cos(angle + spread),
+        toY - arrowLen * Math.sin(angle + spread),
+      );
+    };
+    const resolveDisplayId = (rowId: string) => {
+      const parsed = parseDerivedNestingRowId(String(rowId || ""));
+      return (
+        nestingPrintDisplayIdByRowId[rowId] ??
+        (parsed.parentRowId ? nestingPrintDisplayIdByRowId[parsed.parentRowId] : undefined) ??
+        null
+      );
+    };
+    const sizeLabelForPlacement = (placement: NestingSheetPlacement) => {
+      const row = placement.piece.row;
+      const h = String(row.height || "").trim();
+      const w = String(row.width || "").trim();
+      if (h && w) return `${h} x ${w}`;
+      return `${Math.round(placement.h)} x ${Math.round(placement.w)}`;
+    };
+    const renderLegendSizeSegments = (placement: NestingSheetPlacement) => {
+      const row = placement.piece.row;
+      const displayedDims = [
+        String(Math.round(placement.piece.height || placement.h)),
+        String(Math.round(placement.piece.width || placement.w)),
+      ].filter(Boolean);
+      return displayedDims.map((value, dimIdx) => ({
+        value,
+        bold:
+          matchesGrainDimension(String(row.grainValue ?? ""), value, dimIdx === 0 ? "height" : "width"),
+      }));
+    };
+    const drawInlineLegendSegments = (
+      x: number,
+      y: number,
+      maxWidth: number,
+      segments: Array<{ text: string; bold?: boolean; underline?: boolean }>,
+      fontSize: number,
+    ) => {
+      let usedWidth = 0;
+      for (let segmentIdx = 0; segmentIdx < segments.length; segmentIdx += 1) {
+        const segment = segments[segmentIdx];
+        doc.setFont("helvetica", segment.bold ? "bold" : "normal");
+        doc.setFontSize(fontSize);
+        let text = segment.text;
+        const segmentWidth = doc.getTextWidth(text);
+        if (usedWidth + segmentWidth > maxWidth) {
+          const ellipsis = "...";
+          let trimmed = text;
+          while (trimmed.length > 0 && usedWidth + doc.getTextWidth(`${trimmed}${ellipsis}`) > maxWidth) {
+            trimmed = trimmed.slice(0, -1);
+          }
+          text = trimmed ? `${trimmed}${ellipsis}` : ellipsis;
+          doc.text(text, x + usedWidth, y);
+          break;
+        }
+        doc.text(text, x + usedWidth, y);
+        if (segment.underline) {
+          const textWidth = doc.getTextWidth(text);
+          const underlineY = y + 0.45;
+          doc.setLineWidth(0.18);
+          doc.line(x + usedWidth, underlineY, x + usedWidth + textWidth, underlineY);
+        }
+        usedWidth += segmentWidth;
+      }
+    };
+    const toAlphaSuffix = (index: number) => {
+      let current = index;
+      let output = "";
+      while (current > 0) {
+        current -= 1;
+        output = String.fromCharCode(97 + (current % 26)) + output;
+        current = Math.floor(current / 26);
+      }
+      return output || "a";
+    };
+    const printGrainArrowPoints: Array<[number, number]> = [
+      [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
+      [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
+      [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
+      [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
+      [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
+    ];
+
+    let firstPage = true;
+    for (const group of printableGroups) {
+      for (let chunkStart = 0; chunkStart < group.sheets.length; chunkStart += 4) {
+        if (!firstPage) doc.addPage();
+        firstPage = false;
+
+        doc.setFillColor(17, 17, 17);
+        doc.roundedRect(margin, margin, pageWidth - margin * 2, titleBarH, 2.2, 2.2, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.setTextColor(255, 255, 255);
+        doc.text(
+          `${group.boardLabel}  |  ${group.sheets.length} sheet${group.sheets.length === 1 ? "" : "s"}`,
+          margin + 4,
+          margin + 8.2,
+        );
+        if (boardGrainFor(group.boardKey)) {
+          const helperTail = " Dimension has grain along it.";
+          const helperWord = "Underlined";
+          const helperFontSize = 9.5;
+          doc.setFontSize(helperFontSize);
+          doc.setFont("helvetica", "normal");
+          const tailWidth = doc.getTextWidth(helperTail);
+          doc.setFont("helvetica", "bold");
+          const wordWidth = doc.getTextWidth(helperWord);
+          const helperTotalWidth = wordWidth + tailWidth;
+          const helperX = pageWidth - margin - 4 - helperTotalWidth;
+          const helperY = margin + 7.75;
+          doc.text(helperWord, helperX, helperY);
+          doc.setLineWidth(0.2);
+          doc.setDrawColor(255, 255, 255);
+          doc.line(helperX, helperY + 0.55, helperX + wordWidth, helperY + 0.55);
+          doc.setFont("helvetica", "normal");
+          doc.text(helperTail, helperX + wordWidth, helperY);
+        }
+
+        doc.setDrawColor(210, 214, 222);
+        doc.setLineWidth(0.35);
+        const dividerX = margin + cellW + colGap / 2;
+        const dividerY = contentTop + cellH + rowGap / 2;
+        doc.line(dividerX, contentTop, dividerX, pageHeight - contentBottom);
+        doc.line(margin, dividerY, pageWidth - margin, dividerY);
+
+        const chunk = group.sheets.slice(chunkStart, chunkStart + 4);
+        chunk.forEach((sheet, idx) => {
+          const col = idx % cols;
+          const row = Math.floor(idx / cols);
+          const cellX = margin + col * (cellW + colGap);
+          const cellY = contentTop + row * (cellH + rowGap);
+          const innerPad = 2.2;
+          const labelY = cellY + 3.8;
+          const sheetLabelH = 5.5;
+          const legendGap = 2;
+          const baseDisplayIds = sheet.placements.map((placement) => resolveDisplayId(placement.piece.rowId));
+          const repeatedIdCounts = new Map<string, number>();
+          baseDisplayIds.forEach((displayId) => {
+            if (displayId == null) return;
+            const key = String(displayId);
+            repeatedIdCounts.set(key, (repeatedIdCounts.get(key) ?? 0) + 1);
+          });
+          const repeatedIdSeen = new Map<string, number>();
+          const placementDisplayLabels = baseDisplayIds.map((displayId) => {
+            if (displayId == null) return "-";
+            const key = String(displayId);
+            const total = repeatedIdCounts.get(key) ?? 1;
+            if (total <= 1) return key;
+            const nextSeen = (repeatedIdSeen.get(key) ?? 0) + 1;
+            repeatedIdSeen.set(key, nextSeen);
+            return `${key}${toAlphaSuffix(nextSeen)}`;
+          });
+
+          const legendItems = sheet.placements.map((placement, placementIdx) => {
+            const partTypeKey = String(placement.piece.partType || "").trim().toLowerCase();
+            const mainRowName = String(placement.piece.row.parentName || placement.piece.row.name || "Part").trim();
+            const subRowName = String(placement.piece.name || placement.piece.row.name || "Part").trim();
+            const showMainAndSub =
+              (partTypeKey === "cabinet" || partTypeKey === "cabinetry" || partTypeKey === "drawer") &&
+              mainRowName.length > 0 &&
+              subRowName.length > 0 &&
+              mainRowName !== subRowName;
+            return {
+              displayId: placementDisplayLabels[placementIdx] ?? "-",
+              name: String(placement.piece.name || placement.piece.row.name || "Part"),
+              labelSegments: showMainAndSub
+                ? [
+                    { text: `${mainRowName} | ` },
+                    { text: `${subRowName} | ` },
+                  ]
+                : [{ text: `${subRowName} | ` }],
+              size: sizeLabelForPlacement(placement),
+              sizeSegments: renderLegendSizeSegments(placement),
+            };
+          });
+          const legendRows = Math.max(1, Math.ceil(legendItems.length / 2));
+          const legendTargetH = Math.max(12, Math.min(cellH * 0.46, legendRows * 3.6 + 2));
+          const previewAvailH = Math.max(18, cellH - sheetLabelH - legendGap - legendTargetH - innerPad * 2);
+          const previewAvailW = cellW - innerPad * 2;
+          const previewScale = Math.min(previewAvailW / group.sheetWidth, previewAvailH / group.sheetHeight);
+          const boardW = group.sheetWidth * previewScale;
+          const boardH = group.sheetHeight * previewScale;
+          const boardX = cellX + (cellW - boardW) / 2;
+          const boardY = cellY + sheetLabelH + innerPad + (previewAvailH - boardH) / 2;
+          const marginX = (group.sheetWidth - group.innerW) / 2;
+          const marginY = (group.sheetHeight - group.innerH) / 2;
+          const legendY = boardY + boardH + legendGap;
+          const legendH = Math.max(8, cellY + cellH - legendY - 1);
+          const legendColW = (cellW - innerPad * 2 - 4) / 2;
+          const legendRowH = legendH / legendRows;
+          const legendFontSize = Math.max(4.3, Math.min(7.4, legendRowH * 1.95 + 2));
+          const sheetPartCount = sheet.placements.length;
+
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(51, 65, 85);
+          doc.text(
+            `Sheet ${sheet.index}  |  ${sheetPartCount} part${sheetPartCount === 1 ? "" : "s"}`,
+            cellX + innerPad,
+            labelY,
+          );
+
+          doc.setDrawColor(148, 163, 184);
+          doc.setFillColor(255, 255, 255);
+          doc.setLineWidth(0.35);
+          doc.rect(boardX, boardY, boardW, boardH, "FD");
+          const deferredGrainArrows: Array<{ x: number; y: number; rotationDeg: number; baseLen: number }> = [];
+          if (boardGrainFor(group.boardKey)) {
+            const grainArrowRotation = group.sheetWidth >= group.sheetHeight ? 0 : 90;
+            const arrowLen = Math.max(2.1, Math.min(boardW, boardH) * 0.055);
+            printGrainArrowPoints.forEach(([x, y]) => {
+              deferredGrainArrows.push({
+                x: boardX + (x / 100) * boardW,
+                y: boardY + (y / 100) * boardH,
+                rotationDeg: grainArrowRotation,
+                baseLen: arrowLen,
+              });
+            });
+          }
+          const placedExternalLabelRects: Array<{
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+            side: "top" | "bottom" | "left" | "right";
+            centerX: number;
+            centerY: number;
+          }> = [];
+          const deferredInsideLabels: Array<{ text: string; x: number; y: number }> = [];
+          const deferredArrowLines: Array<{ fromX: number; fromY: number; toX: number; toY: number }> = [];
+          const sideRouteCounts = { top: 0, bottom: 0, left: 0, right: 0 };
+
+          sheet.placements.forEach((placement, placementIdx) => {
+            const fill = toRgb(lightenHex(partTypeColors[placement.piece.partType] ?? "#CBD5E1", 0.18));
+            const stroke = toRgb(darkenHex(partTypeColors[placement.piece.partType] ?? "#CBD5E1", 0.22));
+            const pieceX = boardX + (marginX + placement.x) * previewScale;
+            const pieceY = boardY + (marginY + placement.y) * previewScale;
+            const pieceW = placement.w * previewScale;
+            const pieceH = placement.h * previewScale;
+            doc.setFillColor(fill[0], fill[1], fill[2]);
+            doc.setDrawColor(stroke[0], stroke[1], stroke[2]);
+            doc.setLineWidth(0.18);
+            doc.rect(pieceX, pieceY, pieceW, pieceH, "FD");
+
+            const idText = placementDisplayLabels[placementIdx] ?? "-";
+            const idFontSize = 8;
+            const idTextH = idFontSize * 0.3528;
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(idFontSize);
+            doc.setTextColor(15, 23, 42);
+            const idTextW = doc.getTextWidth(idText);
+            const insidePadding = 0;
+            const fitsInside = pieceW >= idTextW + insidePadding * 2 && pieceH >= idTextH + insidePadding * 2;
+            if (fitsInside) {
+              deferredInsideLabels.push({
+                text: idText,
+                x: pieceX + pieceW / 2,
+                y: pieceY + pieceH / 2 + idTextH * 0.34,
+              });
+              return;
+            }
+
+            const gap = 1.5;
+            const candidates: Array<{
+              score: number;
+              side: "top" | "bottom" | "left" | "right";
+              labelX: number;
+              labelY: number;
+              anchorX: number;
+              anchorY: number;
+              targetX: number;
+              targetY: number;
+            }> = [];
+            const topOuterSpace = boardY - (cellY + sheetLabelH);
+            const bottomOuterSpace = legendY - (boardY + boardH);
+            const leftOuterSpace = pieceX - cellX;
+            const rightOuterSpace = cellX + cellW - (pieceX + pieceW);
+
+            if (topOuterSpace >= idTextH + gap) {
+              const labelX = Math.max(cellX + idTextW / 2 + 1, Math.min(pieceX + pieceW / 2, cellX + cellW - idTextW / 2 - 1));
+              const labelY = boardY - gap;
+              candidates.push({
+                score: topOuterSpace,
+                side: "top",
+                labelX,
+                labelY,
+                anchorX: labelX,
+                anchorY: labelY + 0.5,
+                targetX: pieceX + pieceW / 2,
+                targetY: pieceY + Math.min(pieceH * 0.35, Math.max(pieceH - 1, 0)),
+              });
+            }
+            if (bottomOuterSpace >= idTextH + gap) {
+              const labelX = Math.max(cellX + idTextW / 2 + 1, Math.min(pieceX + pieceW / 2, cellX + cellW - idTextW / 2 - 1));
+              const labelY = boardY + boardH + idTextH + gap * 0.4;
+              candidates.push({
+                score: bottomOuterSpace,
+                side: "bottom",
+                labelX,
+                labelY,
+                anchorX: labelX,
+                anchorY: labelY - idTextH,
+                targetX: pieceX + pieceW / 2,
+                targetY: pieceY + Math.max(pieceH * 0.65, Math.min(1, pieceH)),
+              });
+            }
+            if (leftOuterSpace >= idTextW + gap) {
+              const labelX = boardX - gap;
+              const labelY = Math.max(cellY + sheetLabelH + idTextH + 1, Math.min(pieceY + pieceH / 2 + idTextH * 0.34, cellY + cellH - 1));
+              candidates.push({
+                score: leftOuterSpace,
+                side: "left",
+                labelX,
+                labelY,
+                anchorX: labelX + 0.4,
+                anchorY: labelY - idTextH * 0.3,
+                targetX: pieceX + Math.min(pieceW * 0.35, Math.max(pieceW - 1, 0)),
+                targetY: pieceY + pieceH / 2,
+              });
+            }
+            if (rightOuterSpace >= idTextW + gap) {
+              const labelX = boardX + boardW + gap;
+              const labelY = Math.max(cellY + sheetLabelH + idTextH + 1, Math.min(pieceY + pieceH / 2 + idTextH * 0.34, cellY + cellH - 1));
+              candidates.push({
+                score: rightOuterSpace,
+                side: "right",
+                labelX,
+                labelY,
+                anchorX: labelX - idTextW - 0.4,
+                anchorY: labelY - idTextH * 0.3,
+                targetX: pieceX + Math.max(pieceW * 0.65, Math.min(1, pieceW)),
+                targetY: pieceY + pieceH / 2,
+              });
+            }
+
+            if (candidates.length > 0) {
+              const intersectsRect = (
+                a: { x: number; y: number; w: number; h: number },
+                b: { x: number; y: number; w: number; h: number },
+              ) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+              const getRectForCandidate = (
+                candidate: {
+                  side: "top" | "bottom" | "left" | "right";
+                  labelX: number;
+                  labelY: number;
+                },
+              ) => {
+                if (candidate.side === "left") {
+                  return { x: candidate.labelX - idTextW, y: candidate.labelY - idTextH, w: idTextW, h: idTextH };
+                }
+                if (candidate.side === "right") {
+                  return { x: candidate.labelX, y: candidate.labelY - idTextH, w: idTextW, h: idTextH };
+                }
+                return { x: candidate.labelX - idTextW / 2, y: candidate.labelY - idTextH, w: idTextW, h: idTextH };
+              };
+              const isRectAllowed = (
+                candidate: {
+                  side: "top" | "bottom" | "left" | "right";
+                  labelX: number;
+                  labelY: number;
+                },
+                rect: { x: number; y: number; w: number; h: number },
+              ) => {
+                const minX = cellX + 0.6;
+                const maxX = cellX + cellW - 0.6;
+                const minY = cellY + sheetLabelH + 0.6;
+                const maxY = cellY + cellH - 0.6;
+                if (rect.x < minX || rect.x + rect.w > maxX || rect.y < minY || rect.y + rect.h > maxY) return false;
+                if (candidate.side === "top") return rect.y + rect.h <= boardY - gap * 0.2;
+                if (candidate.side === "bottom") return rect.y >= boardY + boardH + gap * 0.2 && rect.y + rect.h <= legendY - 0.4;
+                if (candidate.side === "left") return rect.x + rect.w <= boardX - gap * 0.2;
+                return rect.x >= boardX + boardW + gap * 0.2;
+              };
+              const hasRouteBandConflict = (
+                candidate: {
+                  side: "top" | "bottom" | "left" | "right";
+                  labelX: number;
+                  labelY: number;
+                },
+                rect: { x: number; y: number; w: number; h: number },
+              ) => {
+                if (candidate.side === "left" || candidate.side === "right") {
+                  const midY = rect.y + rect.h / 2;
+                  return placedExternalLabelRects.some(
+                    (existing) =>
+                      existing.side === candidate.side &&
+                      Math.abs(existing.centerY - midY) < idTextH + 1.2,
+                  );
+                }
+                const midX = rect.x + rect.w / 2;
+                return placedExternalLabelRects.some(
+                  (existing) =>
+                    existing.side === candidate.side &&
+                    Math.abs(existing.centerX - midX) < idTextW + 1.2,
+                );
+              };
+              candidates.sort((a, b) => a.score - b.score);
+              let choice = candidates[0];
+              const outwardStep = Math.max(idTextW + 1.2, 4.8);
+              const verticalStep = Math.max(idTextH + 0.9, 3.2);
+              const laneOffsets = [0, -1, 1, -2, 2, -3, 3, -4, 4];
+              for (const candidate of candidates) {
+                let adjusted = { ...candidate };
+                let rect = getRectForCandidate(adjusted);
+                let attempts = 0;
+                while (
+                  attempts < 18 &&
+                  (
+                    placedExternalLabelRects.some((existing) => intersectsRect(existing, rect)) ||
+                    hasRouteBandConflict(adjusted, rect) ||
+                    !isRectAllowed(adjusted, rect)
+                  )
+                ) {
+                  attempts += 1;
+                  const laneIndex = laneOffsets[(attempts - 1) % laneOffsets.length] ?? 0;
+                  const outwardCycle = Math.floor((attempts - 1) / laneOffsets.length) + 1;
+                  if (adjusted.side === "right") {
+                    adjusted.labelX = candidate.labelX + outwardStep * outwardCycle;
+                    adjusted.labelY = Math.max(
+                      cellY + sheetLabelH + idTextH + 1,
+                      Math.min(
+                        candidate.labelY + laneIndex * verticalStep,
+                        cellY + cellH - 1,
+                      ),
+                    );
+                    adjusted.anchorX = adjusted.labelX - idTextW - 0.4;
+                    adjusted.anchorY = adjusted.labelY - idTextH * 0.3;
+                  } else if (adjusted.side === "left") {
+                    adjusted.labelX = candidate.labelX - outwardStep * outwardCycle;
+                    adjusted.labelY = Math.max(
+                      cellY + sheetLabelH + idTextH + 1,
+                      Math.min(
+                        candidate.labelY + laneIndex * verticalStep,
+                        cellY + cellH - 1,
+                      ),
+                    );
+                    adjusted.anchorX = adjusted.labelX + 0.4;
+                    adjusted.anchorY = adjusted.labelY - idTextH * 0.3;
+                  } else if (adjusted.side === "top") {
+                    adjusted.labelY = candidate.labelY - verticalStep * outwardCycle;
+                    adjusted.labelX = Math.max(
+                      cellX + idTextW / 2 + 1,
+                      Math.min(
+                        candidate.labelX + laneIndex * outwardStep * 0.72,
+                        cellX + cellW - idTextW / 2 - 1,
+                      ),
+                    );
+                    adjusted.anchorX = adjusted.labelX;
+                    adjusted.anchorY = adjusted.labelY + 0.5;
+                  } else {
+                    adjusted.labelY = candidate.labelY + verticalStep * outwardCycle;
+                    adjusted.labelX = Math.max(
+                      cellX + idTextW / 2 + 1,
+                      Math.min(
+                        candidate.labelX + laneIndex * outwardStep * 0.72,
+                        cellX + cellW - idTextW / 2 - 1,
+                      ),
+                    );
+                    adjusted.anchorX = adjusted.labelX;
+                    adjusted.anchorY = adjusted.labelY - idTextH;
+                  }
+                  rect = getRectForCandidate(adjusted);
+                }
+                if (
+                  isRectAllowed(adjusted, rect) &&
+                  !placedExternalLabelRects.some((existing) => intersectsRect(existing, rect)) &&
+                  !hasRouteBandConflict(adjusted, rect)
+                ) {
+                  choice = adjusted;
+                  placedExternalLabelRects.push({
+                    ...rect,
+                    side: adjusted.side,
+                    centerX: rect.x + rect.w / 2,
+                    centerY: rect.y + rect.h / 2,
+                  });
+                  break;
+                }
+              }
+              const insetX = Math.min(Math.max(pieceW * 0.22, 0.6), Math.max(pieceW / 2 - 0.2, 0.6));
+              const insetY = Math.min(Math.max(pieceH * 0.22, 0.6), Math.max(pieceH / 2 - 0.2, 0.6));
+              let finalTargetX = choice.targetX;
+              let finalTargetY = choice.targetY;
+              if (choice.side === "right") {
+                finalTargetX = pieceX + pieceW - insetX;
+                finalTargetY = Math.max(pieceY + 0.6, Math.min(choice.anchorY, pieceY + pieceH - 0.6));
+              } else if (choice.side === "left") {
+                finalTargetX = pieceX + insetX;
+                finalTargetY = Math.max(pieceY + 0.6, Math.min(choice.anchorY, pieceY + pieceH - 0.6));
+              } else if (choice.side === "top") {
+                finalTargetX = Math.max(pieceX + 0.6, Math.min(choice.anchorX, pieceX + pieceW - 0.6));
+                finalTargetY = pieceY + insetY;
+              } else {
+                finalTargetX = Math.max(pieceX + 0.6, Math.min(choice.anchorX, pieceX + pieceW - 0.6));
+                finalTargetY = pieceY + pieceH - insetY;
+              }
+              sideRouteCounts[choice.side] += 1;
+              doc.text(idText, choice.labelX, choice.labelY, {
+                align: choice.labelX > pieceX + pieceW ? "left" : choice.labelX < pieceX ? "right" : "center",
+              });
+              deferredArrowLines.push({
+                fromX: choice.anchorX,
+                fromY: choice.anchorY,
+                toX: finalTargetX,
+                toY: finalTargetY,
+              });
+              return;
+            }
+
+            const fallbackFontSize = 4.8;
+            doc.setFontSize(fallbackFontSize);
+            doc.text(idText, pieceX + pieceW / 2, pieceY + pieceH / 2 + fallbackFontSize * 0.3528 * 0.34, { align: "center" });
+          });
+
+          deferredGrainArrows.forEach((arrow) => {
+            drawPrintGrainArrow(arrow.x, arrow.y, arrow.rotationDeg, arrow.baseLen);
+          });
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          deferredInsideLabels.forEach((label) => {
+            doc.text(label.text, label.x, label.y, { align: "center" });
+          });
+          deferredArrowLines.forEach((line) => {
+            drawArrowLine(line.fromX, line.fromY, line.toX, line.toY);
+          });
+
+          if (legendItems.length > 0) {
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(legendFontSize);
+            doc.setTextColor(15, 23, 42);
+            legendItems.forEach((item, legendIdx) => {
+              const legendCol = legendIdx % 2;
+              const legendRow = Math.floor(legendIdx / 2);
+              const textX = cellX + innerPad + legendCol * (legendColW + 4);
+              const textY = legendY + legendRow * legendRowH + legendFontSize * 0.3528 + 0.2;
+              const idCircleFontSize = printLegendIdFontSize;
+              doc.setFont("helvetica", "bold");
+              doc.setFontSize(idCircleFontSize);
+              const idTextWidth = doc.getTextWidth(item.displayId);
+              const markerPaddingX = printLegendMarkerPaddingX;
+              const markerHeight = printLegendMarkerHeight;
+              const markerRadius = markerHeight / 2;
+              const markerWidth = Math.max(markerHeight + 1.4, Math.min(14.5, idTextWidth + markerPaddingX * 2));
+              const markerX = textX;
+              const circleCenterX = markerX + markerWidth / 2;
+              const circleCenterY = textY - legendFontSize * 0.3528 * 0.48;
+              doc.setDrawColor(15, 23, 42);
+              doc.setLineWidth(0.2);
+              doc.roundedRect(markerX, circleCenterY - markerHeight / 2, markerWidth, markerHeight, markerRadius, markerRadius, "S");
+              doc.text(item.displayId, circleCenterX, circleCenterY + idCircleFontSize * 0.3528 * 0.28, { align: "center" });
+              const detailX = markerX + markerWidth + printLegendTextGap;
+              drawInlineLegendSegments(
+                detailX,
+                textY,
+                Math.max(8, legendColW - (detailX - textX)),
+                [
+                  ...item.labelSegments,
+                  ...item.sizeSegments.flatMap((segment, sizeIdx) =>
+                    sizeIdx > 0
+                      ? [{ text: " x " }, { text: segment.value, bold: segment.bold, underline: segment.bold }]
+                      : [{ text: segment.value, bold: segment.bold, underline: segment.bold }],
+                  ),
+                ],
+                legendFontSize,
+              );
+            });
+          }
+        });
+      }
+    }
+
+    return doc.output("blob");
+  };
+
+  const onPrintNesting = () => {
+    const pdfBlob = buildNestingPdfBlob();
+    if (!pdfBlob) return;
+    openPdfBlobInPrintWindow(pdfBlob);
   };
 
   const onExportCncXlsx = async () => {
@@ -16404,7 +17438,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
 
-  const onExportCncPdf = async (mode: "download" | "print" = "download") => {
+  const onExportCncPdf = async (mode: "download" | "print" | "blob" = "download") => {
     if (typeof window === "undefined") return;
     const safeProject = (project?.name || "project")
       .replace(/[\\/:*?"<>|]/g, "_")
@@ -17171,32 +18205,179 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
 
     const pdfBlob = doc.output("blob");
+    if (mode === "blob") {
+      return pdfBlob;
+    }
     const url = URL.createObjectURL(pdfBlob);
     if (mode === "print") {
-      const printWindow = window.open(url, "_blank");
-      if (printWindow) {
-        const triggerPrint = () => {
-          try {
-            printWindow.focus();
-            printWindow.print();
-          } catch {
-            // no-op
-          }
-        };
-        printWindow.addEventListener("load", triggerPrint, { once: true });
-        window.setTimeout(triggerPrint, 500);
-      }
+      openPdfBlobInPrintWindow(pdfBlob);
       window.setTimeout(() => URL.revokeObjectURL(url), 120000);
       return;
     }
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 2500);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
+
+  const canPrintNesting = nestingBoardLayouts.some((group) => group.sheets.length > 0);
+  const canPrintCnc = cncPrintSourceRows.length > 0;
+  const productionPrintOptions = [
+    {
+      id: "nesting",
+      label: "Nesting",
+      description: `${nestingPrintPageCount} page${nestingPrintPageCount === 1 ? "" : "s"}`,
+      enabled: canPrintNesting,
+      onPrint: onPrintNesting,
+    },
+    {
+      id: "cnc",
+      label: "CNC Cutlist",
+      description: `${cncPrintPageCount} page${cncPrintPageCount === 1 ? "" : "s"}`,
+      enabled: canPrintCnc,
+      onPrint: onPrintCnc,
+    },
+  ] as const;
+  const openProductionPrintModal = () => {
+    setProductionPrintSelections({
+      nesting: canPrintNesting,
+      cnc: canPrintCnc,
+    });
+    setIsProductionPrintModalOpen(true);
+  };
+  const closeProductionPrintModal = () => {
+    setIsProductionPrintModalOpen(false);
+  };
+  const onConfirmProductionPrint = async () => {
+    const selected = productionPrintOptions.filter(
+      (option) => option.enabled && productionPrintSelections[option.id],
+    );
+    if (selected.length === 0) return;
+    closeProductionPrintModal();
+    if (selected.length === 1) {
+      selected[0].onPrint();
+      return;
+    }
+
+    const blobs: Blob[] = [];
+    for (const option of selected) {
+      if (option.id === "nesting") {
+        const blob = buildNestingPdfBlob();
+        if (blob) blobs.push(blob);
+        continue;
+      }
+      if (option.id === "cnc") {
+        const blob = await onExportCncPdf("blob");
+        if (blob instanceof Blob) blobs.push(blob);
+      }
+    }
+    if (blobs.length === 0) return;
+    if (blobs.length === 1) {
+      openPdfBlobInPrintWindow(blobs[0]);
+      return;
+    }
+
+    const merged = await PDFDocument.create();
+    for (const blob of blobs) {
+      const bytes = await blob.arrayBuffer();
+      const source = await PDFDocument.load(bytes);
+      const pages = await merged.copyPages(source, source.getPageIndices());
+      pages.forEach((page) => merged.addPage(page));
+    }
+    const mergedBytes = await merged.save();
+    const mergedUint8 = Uint8Array.from(mergedBytes);
+    openPdfBlobInPrintWindow(new Blob([mergedUint8], { type: "application/pdf" }));
+  };
+  const productionPrintModalPortal =
+    isProductionPrintModalOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+            <button
+              type="button"
+              aria-label="Close production print dialog backdrop"
+              onClick={closeProductionPrintModal}
+              className="absolute inset-0 bg-[rgba(15,23,42,0.45)] backdrop-blur-[2px]"
+            />
+            <div
+              className="relative flex w-[min(840px,96vw)] max-h-[min(720px,92vh)] flex-col overflow-hidden rounded-[14px] border border-[#D6DEE9] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]"
+              style={{ zIndex: 2147483647 }}
+            >
+              <div className="flex h-[56px] items-center justify-between border-b border-[#D7DEE8] px-5">
+                <p className="text-[14px] font-bold uppercase tracking-[1px] text-[#12345B]">Print</p>
+                <button
+                  type="button"
+                  aria-label="Close production print dialog"
+                  onClick={closeProductionPrintModal}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#D7DEE8] bg-white text-[#334155] hover:bg-[#F8FAFC]"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+                <div className="space-y-2">
+                  {productionPrintOptions.map((option) => {
+                    const checked = Boolean(productionPrintSelections[option.id]);
+                    return (
+                      <label
+                        key={option.id}
+                        className={`flex items-start gap-3 rounded-[12px] border px-4 py-3 ${
+                          option.enabled ? "cursor-pointer" : "cursor-not-allowed opacity-55"
+                        }`}
+                        style={{
+                          borderColor: checked && option.enabled ? "#BFD4F6" : "#D8DEE8",
+                          backgroundColor: checked && option.enabled ? "#EEF4FF" : "#FFFFFF",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={!option.enabled}
+                          onChange={(event) => {
+                            const nextChecked = event.currentTarget.checked;
+                            setProductionPrintSelections((current) => ({
+                              ...current,
+                              [option.id]: nextChecked,
+                            }));
+                          }}
+                          className="mt-[2px] h-4 w-4 rounded border-[#C7D2E2]"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13px] font-bold text-[#12345B]">{option.label}</span>
+                          <span className="mt-[2px] block text-[12px] text-[#667085]">
+                            {option.enabled ? option.description : "Nothing available to print yet."}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-[#D7DEE8] px-5 py-4">
+                <button
+                  type="button"
+                  onClick={closeProductionPrintModal}
+                  className="h-9 rounded-[9px] border border-[#D8DEE8] bg-white px-4 text-[12px] font-bold text-[#334155]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!productionPrintOptions.some((option) => option.enabled && productionPrintSelections[option.id])}
+                  onClick={onConfirmProductionPrint}
+                  className="inline-flex h-9 items-center gap-2 rounded-[9px] border border-[#BFD4F6] bg-[#EAF1FF] px-4 text-[12px] font-bold text-[#24589A] disabled:opacity-55"
+                >
+                  <Printer size={13} />
+                  Print
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   if (isOrderFullscreen) {
     return (
@@ -20578,27 +21759,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span style={{ color: projectPalette.textMuted }}>|</span>
               <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => void onSaveAndBackFromNesting()}
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
-            >
-              <ArrowLeft size={14} />
-              Save & Back
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onPrintNesting}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
+              >
+                <Printer size={14} />
+                Print
+              </button>
+              <button
+                type="button"
+                onClick={() => void onSaveAndBackFromNesting()}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+              >
+                <ArrowLeft size={14} />
+                Save & Back
+              </button>
+            </div>
           </div>
-          <div
-            className="grid min-h-[calc(100dvh-56px)] items-start gap-3 p-3"
-            style={{ gridTemplateColumns: "minmax(0, 1fr) 360px" }}
-          >
-            <section className="min-h-0 overflow-auto">
-              <div className="space-y-3">
+          <div className="relative h-[calc(100dvh-56px)] overflow-hidden pl-3 pt-3">
+            <section className="mr-[360px] min-h-0 h-full overflow-hidden pr-3 pb-3">
+              <div className="flex h-full min-h-0 flex-col gap-3">
                   {nestingBoardLayouts.length === 0 && (
                     <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
                       No visible nesting pieces. Toggle visibility on the right panel.
                     </div>
                   )}
-                  <div className="grid grid-cols-4 gap-3">
+                  <div className="grid min-h-0 flex-1 grid-cols-4 items-stretch gap-3">
                     {nestingBoardLayouts.map((group) => {
                       const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
                       const boardHasGrain = boardGrainFor(group.boardKey);
@@ -20611,7 +21799,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
                       ];
                       return (
-                        <div key={group.boardKey} className="overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F5F7FA]">
+                        <div key={group.boardKey} className="flex h-full min-h-0 flex-col overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F5F7FA]">
                           <div className="border-b border-[#DCE3EC] bg-[#EEF2F6] px-[5px] py-1">
                             <div className="mb-1 flex items-center justify-between gap-2">
                               <span className="shrink-0 rounded-[999px] bg-[#DEE6F3] px-2 py-[1px] text-[11px] font-bold text-[#45658A]">
@@ -20628,7 +21816,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </span>
                             </div>
                           </div>
-                            <div className="max-h-[calc(100dvh-280px)] space-y-2 overflow-auto p-2">
+                            <div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
                               {group.sheets.map((sheet) => (
                                 <div key={`${group.boardKey}_sheet_${sheet.index}`} className="p-0">
                                   <p className="mb-1 text-[11px] font-bold text-[#6B7D94]">Sheet {sheet.index}</p>
@@ -20729,7 +21917,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </section>
 
-            <aside className="self-start min-h-0 overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white h-[calc(100dvh-80px)]">
+            <aside
+              className="self-start min-h-0 overflow-y-auto border-b border-l border-[#D7DEE8] bg-white"
+              style={{ position: "fixed", right: 0, top: 56, width: 360, height: "calc(100dvh - 56px)" }}
+            >
               <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
                 <p className="text-[13px] font-medium text-[#111827]">Part Rows</p>
                 <button
@@ -20749,7 +21940,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
                 />
               </div>
-              <div className="h-[calc(100%-94px)] overflow-auto px-3 pb-3">
+              <div className="px-3 pb-3">
                 <div className="space-y-1">
                   {nestingSidebarGroups.map((group) => {
                     const color = partTypeColors[group.partType] ?? "#CBD5E1";
@@ -21494,8 +22685,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                   <div className="space-y-4">
                     <section className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                  <div className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
+                  <div className="relative flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderBottomColor: projectPalette.border }}>
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Images</p>
+                    {currentProjectImageEntry ? (
+                      <div className="pointer-events-none absolute left-1/2 top-1/2 w-[min(420px,calc(100%-220px))] -translate-x-1/2 -translate-y-1/2 px-3 text-center">
+                        {isEditingProjectImageName ? (
+                          <input
+                            ref={projectImageNameInputRef}
+                            value={projectImageNameDraft}
+                            onChange={(e) => setProjectImageNameDraft(e.currentTarget.value)}
+                            onBlur={() => {
+                              void commitProjectImageNameEdit();
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void commitProjectImageNameEdit();
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                setProjectImageNameDraft(currentProjectImageViewerName);
+                                setIsEditingProjectImageName(false);
+                              }
+                            }}
+                            className="pointer-events-auto h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-center text-[14px] font-semibold text-[#0F172A] outline-none"
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={!generalAccess.edit}
+                            onDoubleClick={() => {
+                              if (!generalAccess.edit) return;
+                              setProjectImageNameDraft(currentProjectImageViewerName);
+                              setIsEditingProjectImageName(true);
+                            }}
+                            className="pointer-events-auto max-w-full truncate bg-transparent px-2 text-center text-[14px] font-semibold text-[#334155] disabled:cursor-default"
+                            title={generalAccess.edit ? "Double-click to rename image" : currentProjectImageHeaderName}
+                          >
+                            {currentProjectImageHeaderName}
+                          </button>
+                        )}
+                      </div>
+                    ) : null}
                     <div className="ml-auto flex items-center gap-2">
                       <input
                         ref={projectImagesInputRef}
@@ -22210,12 +23441,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
+                  { label: "Print", icon: Printer, key: "print" as const },
                   ...(canRequestProductionUnlock
                     ? [{ label: "Unlock Edit", icon: Lock, key: "unlock" as const }]
                     : []),
                 ].map((item, idx, arr) => {
                   const Icon = item.icon;
-                  const active = item.key === "unlock" ? false : productionNav === item.key;
+                  const active = item.key === "unlock" || item.key === "print" ? false : productionNav === item.key;
                   return (
                     <div key={item.label} className="w-full sm:w-auto xl:w-full">
                       <button
@@ -22223,6 +23455,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         onClick={() => {
                           if (item.key === "unlock") {
                             openUnlockEditModal();
+                            return;
+                          }
+                          if (item.key === "print") {
+                            openProductionPrintModal();
                             return;
                           }
                           if (item.key === "nesting") {
@@ -23204,6 +24440,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <span>Sheets: {nestingSummary.sheets}</span>
                           <span>Pieces: {nestingSummary.totalPieces}</span>
                           {nestingSummary.hiddenPieces > 0 && <span>Hidden: {nestingSummary.hiddenPieces}</span>}
+                          <button
+                            type="button"
+                            onClick={onPrintNesting}
+                            className="inline-flex h-8 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
+                          >
+                            <Printer size={13} />
+                            Print
+                          </button>
                         </div>
                       </div>
 
@@ -23441,7 +24685,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <select
                               disabled={productionReadOnly}
                               value={productionForm.existing[item.key]}
-                              onChange={(e) => void onChangeExisting(item.key, e.target.value)}
+                              onChange={(e) => onExistingDraftChange(item.key, e.target.value)}
+                              onBlur={() => void onExistingBlurSave()}
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             >
@@ -23480,17 +24725,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
                         </div>
                       ))}
-                      <div className="grid grid-cols-[1fr_58px_26px_58px] items-center gap-2">
-                          <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Hob Centre</p>
-                          <input
-                            disabled={productionReadOnly}
-                            value={productionForm.cabinetry.hobCentre}
-                            onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
-                            onBlur={() => void onCabinetryBlurSave()}
-                            className="h-7 rounded-[8px] border px-2 text-[12px]"
-                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
-                          />
-                          <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
+                      <div className="grid grid-cols-[1fr_58px_58px_26px] items-center gap-2">
+                          <p className="font-semibold text-[#334155]">Hob Centre</p>
                           <select
                             disabled={productionReadOnly}
                             value={productionForm.cabinetry.hobSide}
@@ -23503,6 +24739,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <option value="RH">RH</option>
                           <option value="LH">LH</option>
                         </select>
+                          <input
+                            disabled={productionReadOnly}
+                            value={productionForm.cabinetry.hobCentre}
+                            onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
+                            onBlur={() => void onCabinetryBlurSave()}
+                            className="h-7 rounded-[8px] border px-2 text-[12px]"
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                          />
+                          <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
                       </div>
                     </div>
                   </section>
@@ -25133,6 +26378,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               showPrevNext={projectImageItemsResolved.length > 1}
             />
           ) : null}
+          {productionPrintModalPortal}
           {unlockEditModalPortal}
         </div>
       </AppShell>

@@ -127,7 +127,25 @@ function collectPermissionKeys(data: Record<string, unknown>): string[] {
     }
   }
 
-  return Array.from(out);
+  return normalizePermissionKeys(Array.from(out));
+}
+
+function normalizePermissionKeys(values: string[]): string[] {
+  return Array.from(
+    new Set(
+      values.flatMap((value) => {
+        const clean = String(value || "").trim();
+        if (!clean) return [];
+        if (clean === "leads.*") {
+          return ["leads.view", "leads.view.others"];
+        }
+        if (clean === "projects.create.others") {
+          return [clean, "projects.create.other", "projects.assign.other"];
+        }
+        return [clean];
+      }),
+    ),
+  );
 }
 
 function deriveRoleFromPermissions(permissionKeys: string[]): UserRole | null {
@@ -205,13 +223,13 @@ function permissionKeysFromRoleDef(roleDef: unknown): string[] {
   const role = roleDef as Record<string, unknown>;
   const perms = role.permissions;
   if (Array.isArray(perms)) {
-    return perms.map((value) => String(value ?? "").trim()).filter(Boolean);
+    return normalizePermissionKeys(perms.map((value) => String(value ?? "").trim()).filter(Boolean));
   }
   if (!perms || typeof perms !== "object") {
     return [];
   }
   const keys = flattenPermissionObject(perms as Record<string, unknown>);
-  return Array.from(keys);
+  return normalizePermissionKeys(Array.from(keys));
 }
 
 async function fetchUserAccountAccess(uid: string): Promise<CompanyAccessInfo | null> {
@@ -300,8 +318,11 @@ async function resolveMembershipToAccess(
   const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
   const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
   let permissionKeys = collectPermissionKeys(effectiveData);
-  if (!permissionKeys.length && roleId) {
-    permissionKeys = await fetchRolePermissionsForCompany(companyId, roleId);
+  if (roleId) {
+    permissionKeys = normalizePermissionKeys([
+      ...permissionKeys,
+      ...(await fetchRolePermissionsForCompany(companyId, roleId)),
+    ]);
   }
   const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
   return {
@@ -377,13 +398,16 @@ export async function fetchPrimaryMembership(uid: string): Promise<MembershipInf
       const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
       const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
       let permissionKeys = collectPermissionKeys(effectiveData);
-      if (!permissionKeys.length && roleId) {
+      if (roleId) {
         const cacheKey = `${companyId}::${roleId}`;
         if (!companyRolePermissionsCache.has(cacheKey)) {
           const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
           companyRolePermissionsCache.set(cacheKey, rolePerms);
         }
-        permissionKeys = [...(companyRolePermissionsCache.get(cacheKey) ?? [])];
+        permissionKeys = normalizePermissionKeys([
+          ...permissionKeys,
+          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
+        ]);
       }
 
       const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
@@ -423,13 +447,16 @@ export async function fetchPrimaryMembership(uid: string): Promise<MembershipInf
       const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
       const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
       let permissionKeys = collectPermissionKeys(effectiveData);
-      if (!permissionKeys.length && roleId) {
+      if (roleId) {
         const cacheKey = `${companyId}::${roleId}`;
         if (!companyRolePermissionsCache.has(cacheKey)) {
           const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
           companyRolePermissionsCache.set(cacheKey, rolePerms);
         }
-        permissionKeys = [...(companyRolePermissionsCache.get(cacheKey) ?? [])];
+        permissionKeys = normalizePermissionKeys([
+          ...permissionKeys,
+          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
+        ]);
       }
 
       const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
@@ -468,13 +495,16 @@ export async function fetchPrimaryMembership(uid: string): Promise<MembershipInf
       const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
       const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
       let permissionKeys = collectPermissionKeys(effectiveData);
-      if (!permissionKeys.length && roleId) {
+      if (roleId) {
         const cacheKey = `${companyId}::${roleId}`;
         if (!companyRolePermissionsCache.has(cacheKey)) {
           const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
           companyRolePermissionsCache.set(cacheKey, rolePerms);
         }
-        permissionKeys = [...(companyRolePermissionsCache.get(cacheKey) ?? [])];
+        permissionKeys = normalizePermissionKeys([
+          ...permissionKeys,
+          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
+        ]);
       }
 
       const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
@@ -512,13 +542,16 @@ export async function fetchPrimaryMembership(uid: string): Promise<MembershipInf
       const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
       const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
       let permissionKeys = collectPermissionKeys(effectiveData);
-      if (!permissionKeys.length && roleId) {
+      if (roleId) {
         const cacheKey = `${companyId}::${roleId}`;
         if (!companyRolePermissionsCache.has(cacheKey)) {
           const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
           companyRolePermissionsCache.set(cacheKey, rolePerms);
         }
-        permissionKeys = [...(companyRolePermissionsCache.get(cacheKey) ?? [])];
+        permissionKeys = normalizePermissionKeys([
+          ...permissionKeys,
+          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
+        ]);
       }
 
       const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";

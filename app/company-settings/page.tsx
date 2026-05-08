@@ -42,12 +42,11 @@ type ItemCategoryRow = { name: string; color: string; subcategories: string; ite
 type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
 type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; grain: boolean };
 type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
+type PartTypeCategory = "" | "cabinetry" | "drawer" | "door";
 type PartTypeRow = {
   name: string;
   color: string;
-  cabinetry: boolean;
-  drawer: boolean;
-  door: boolean;
+  category: PartTypeCategory;
   autoClashLeft: string;
   autoClashRight: string;
   initialMeasure: boolean;
@@ -99,6 +98,13 @@ const LEAD_PROJECT_FIELD_TARGET_OPTIONS: Array<{ value: LeadProjectFieldTarget; 
   { value: "projectNotes", label: "Project Notes" },
 ];
 
+function defaultSheetSizeValue(sheetSizes: SheetSizeRow[]): string {
+  const defaultSize = sheetSizes.find((row) => row.isDefault) ?? sheetSizes[0] ?? null;
+  const h = toStr(defaultSize?.h);
+  const w = toStr(defaultSize?.w);
+  return h && w ? `${h} x ${w}` : "";
+}
+
 function normalizeLeadFieldLayoutOrder(rows: LeadFieldLayoutRow[]): LeadFieldLayoutRow[] {
   return rows.map((row, idx) => ({ ...row, order: idx }));
 }
@@ -111,7 +117,8 @@ type PendingOwnerTransferState = {
 const desktopPermissionKeys = [
   "company.*",
   "company.dashboard.view",
-  "company.clients",
+  "clients.view",
+  "clients.view.all",
   "leads.view",
   "leads.view.others",
   "projects.create",
@@ -139,7 +146,8 @@ const desktopPermissionKeys = [
 const permissionLabels: Record<string, string> = {
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
-  "company.clients": "company.clients - Access Client Profiles",
+  "clients.view": "clients.view - Access Clients Tab (Own Created / Assigned Clients)",
+  "clients.view.all": "clients.view.all - View All Company Clients",
   "leads.view": "leads.view - Access Leads Tab (Own Assigned Leads)",
   "leads.view.others": "leads.view.others - View All Leads For All Users",
   "projects.create": "projects.create - Create Projects",
@@ -469,6 +477,9 @@ function normalizeRoles(raw: unknown): RoleRow[] {
             if (clean === "leads.*") {
               return ["leads.view", "leads.view.others"];
             }
+            if (clean === "company.clients") {
+              return ["clients.view", "clients.view.all"];
+            }
             if (clean === "projects.create.others") {
               return [clean, "projects.create.other", "projects.assign.other"];
             }
@@ -620,12 +631,12 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
 
 function normalizePartTypes(raw: unknown): PartTypeRow[] {
   const defaults: PartTypeRow[] = [
-    { name: "Front", color: "#F2D57A", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
-    { name: "Panel", color: "#C6E8AE", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
-    { name: "Extra", color: "#B7A4EB", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
-    { name: "Drawer", color: "#B8D8F8", cabinetry: false, drawer: true, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
-    { name: "Cabinet", color: "#4B5563", cabinetry: true, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
-    { name: "Special Panel", color: "#BF1D1D", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: false },
+    { name: "Front", color: "#F2D57A", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
+    { name: "Panel", color: "#C6E8AE", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
+    { name: "Extra", color: "#B7A4EB", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Drawer", color: "#B8D8F8", category: "drawer", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Cabinet", color: "#4B5563", category: "cabinetry", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Special Panel", color: "#BF1D1D", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: false },
   ];
   if (!Array.isArray(raw)) return defaults;
   const out = raw
@@ -633,12 +644,21 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
     .map((item) => {
       const row = item as Record<string, unknown>;
       const name = toStr(row.name);
+      const categoryRaw = toStr(row.category ?? row.kind ?? row.type).trim().toLowerCase();
+      const category: PartTypeCategory =
+        categoryRaw === "cabinetry" || categoryRaw === "drawer" || categoryRaw === "door"
+          ? categoryRaw
+          : Boolean(row.cabinetry ?? row.isCabinetry ?? false)
+            ? "cabinetry"
+            : Boolean(row.drawer ?? row.isDrawer ?? false)
+              ? "drawer"
+              : Boolean(row.door ?? row.isDoor ?? false)
+                ? "door"
+                : "";
       return {
         name,
         color: toStr(row.color, "#7D99B3"),
-        cabinetry: Boolean(row.cabinetry ?? row.isCabinetry ?? false),
-        drawer: Boolean(row.drawer ?? row.isDrawer ?? false),
-        door: Boolean(row.door ?? row.isDoor ?? false),
+        category,
         autoClashLeft: toStr(row.autoClashLeft ?? row.clashLeft),
         autoClashRight: toStr(row.autoClashRight ?? row.clashRight),
         initialMeasure: Boolean(row.initialMeasure ?? row.inInitialMeasure ?? false),
@@ -2251,12 +2271,18 @@ export default function CompanySettingsPage() {
         .map((row) => {
           const name = toStr(row.name);
           if (!name) return null;
+          const category: PartTypeCategory =
+            row.category === "cabinetry" || row.category === "drawer" || row.category === "door"
+              ? row.category
+              : "";
             return {
               name,
               color: toStr(row.color, "#7D99B3"),
-              cabinetry: Boolean(row.cabinetry),
-              drawer: Boolean(row.drawer),
-              door: Boolean(row.door),
+              category,
+              kind: category,
+              cabinetry: category === "cabinetry",
+              drawer: category === "drawer",
+              door: category === "door",
               autoClashLeft: toStr(row.autoClashLeft),
               autoClashRight: toStr(row.autoClashRight),
               initialMeasure: Boolean(row.initialMeasure),
@@ -3334,20 +3360,18 @@ export default function CompanySettingsPage() {
                   <div className="xl:col-span-2">
                     <Panel title="Part Types">
                       <div className="space-y-2 text-[12px]">
-                        <div className="grid grid-cols-[26px_1.2fr_90px_80px_80px_80px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                        <div className="grid grid-cols-[26px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
                           <p></p>
                           <p>Name</p>
                           <p>Color</p>
-                          <p>Cabinetry</p>
-                          <p>Drawer</p>
-                          <p>Doors</p>
+                          <p>Type</p>
                           <p className="text-center">Autoclash</p>
                           <p>Initial Measure</p>
                           <p>Incl in Cutlists</p>
                           <p>Incl in Nesting</p>
                         </div>
                         {partTypes.map((row, idx) => (
-                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[26px_1.2fr_90px_80px_80px_80px_140px_110px_110px_110px] items-center gap-2">
+                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[26px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2">
                             <button onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
                             <input value={row.name} onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
                             <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#7D99B3"}>
@@ -3359,9 +3383,30 @@ export default function CompanySettingsPage() {
                                 className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                               />
                             </label>
-                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.cabinetry} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, cabinetry: !v.cabinetry } : v)))} /></label>
-                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.drawer} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, drawer: !v.drawer } : v)))} /></label>
-                            <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.door} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, door: !v.door } : v)))} /></label>
+                            <select
+                              value={row.category}
+                              onChange={(e) =>
+                                setPartTypes((prev) =>
+                                  prev.map((v, i) =>
+                                    i === idx
+                                      ? {
+                                          ...v,
+                                          category:
+                                            e.target.value === "cabinetry" || e.target.value === "drawer" || e.target.value === "door"
+                                              ? e.target.value
+                                              : "",
+                                        }
+                                      : v,
+                                  ),
+                                )
+                              }
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            >
+                              <option value=""></option>
+                              <option value="cabinetry">Cabinetry</option>
+                              <option value="drawer">Drawer</option>
+                              <option value="door">Doors</option>
+                            </select>
                             <div className="grid grid-cols-2 gap-1">
                               <select
                                 value={row.autoClashLeft}
@@ -3389,7 +3434,7 @@ export default function CompanySettingsPage() {
                             <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.inNesting} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inNesting: !v.inNesting } : v)))} /></label>
                           </div>
                         ))}
-                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", cabinetry: false, drawer: false, door: false, autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Part Type</button>
+                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Part Type</button>
                       </div>
                     </Panel>
                   </div>
@@ -4564,7 +4609,27 @@ export default function CompanySettingsPage() {
                           )}
                         </div>
                       ))}
-                      <button onClick={() => setJobTypes((prev) => [...prev, { name: "", sheetPrices: [], showInSales: true, grain: false }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Product</button>
+                      <button
+                        onClick={() =>
+                          setJobTypes((prev) => [
+                            ...prev,
+                            {
+                              name: "",
+                              sheetPrices: [
+                                {
+                                  sheetSize: defaultSheetSizeValue(sheetSizes),
+                                  pricePerSheet: "$0.00",
+                                },
+                              ],
+                              showInSales: true,
+                              grain: false,
+                            },
+                          ])
+                        }
+                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                      >
+                        + Add Product
+                      </button>
                     </div>
                   </Panel>
                   <div className="grid gap-3 xl:grid-cols-[3fr_1fr]">

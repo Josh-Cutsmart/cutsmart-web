@@ -1,18 +1,19 @@
-Version: v0.2.7
+Version: v0.2.8
 
 whatsNew: [
-<u><b>General:</u></b>
-- Users can now see the leads tab with leads that they have been assigned to.
+<u><b>Clients Tab:</u></b>
+- With correct permissions, users who are "creators" or "Assigned" to a project will now be able to see their clients information.
 
-<u><b>Image Window (Leads/Project Details):</u></b>
-- Image pins now fade when another pin is selected.
-- Image comments no longer go off screen.
-- Image Pins now dont enlarge while zooming.
-- Removed scroll bar.
-- Fixed "Project Details" Image layout.
+<u><b>Project Details "Production":</u></b>
+- "Print" button added to main tab for prinitnig entire project.
+- "Nesting" now tightened panel layout on sheets for less wastage.
+- "Nesting" Now has its own print button.
+- "Nesting" sheet columns now fill entire viewpoint.
+- "Nesting" Sidebar now matches "CNC Cutlist" sidebar.
 
-<u><b>Changelog:</u></b>
-- Fixed save path for entire tab.
-- Reports now have pages and a filter for viewing per page.
+<u><b>New Project Window:</u></b>
+- Can now name an image.
+- Window now auto scrolls when "Assign Project To" drop down is opened.
+- Icon now shows next to staff members name in "Assign Project To".
 ]
 

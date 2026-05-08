@@ -1960,7 +1960,14 @@ export type CompanyClientRow = {
   lastProjectAtIso: string;
   lastProjectId: string;
   projectCount: number;
+  createdByUids: string[];
+  assignedToUids: string[];
   history: CompanyClientProjectHistoryRow[];
+};
+
+type CompanyClientViewerFilter = {
+  viewerUid?: string;
+  includeAll?: boolean;
 };
 
 function toCompanyClientSummaryRow(row: CompanyClientRow): CompanyClientRow {
@@ -1968,6 +1975,35 @@ function toCompanyClientSummaryRow(row: CompanyClientRow): CompanyClientRow {
     ...row,
     history: [],
   };
+}
+
+function normalizeUidList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function mergeUidLists(...lists: Array<string[] | undefined>): string[] {
+  return Array.from(
+    new Set(
+      lists
+        .flatMap((list) => list ?? [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function canViewerAccessCompanyClientRow(row: CompanyClientRow, filter?: CompanyClientViewerFilter): boolean {
+  if (filter?.includeAll) return true;
+  const viewerUid = String(filter?.viewerUid || "").trim();
+  if (!viewerUid) return false;
+  return row.createdByUids.includes(viewerUid) || row.assignedToUids.includes(viewerUid);
 }
 
 function mergeCompanyClientRows(
@@ -2010,6 +2046,8 @@ function mergeCompanyClientRows(
     lastProjectAtIso: pickLaterIso(existing.lastProjectAtIso, next.lastProjectAtIso),
     lastProjectId: next.lastProjectId || existing.lastProjectId,
     projectCount: Math.max(existing.projectCount, next.projectCount, mergedHistory.length),
+    createdByUids: mergeUidLists(existing.createdByUids, next.createdByUids),
+    assignedToUids: mergeUidLists(existing.assignedToUids, next.assignedToUids),
     history: mergedHistory,
   };
 }
@@ -2113,6 +2151,8 @@ function buildCompanyClientRowFromProject(project: Project): CompanyClientRow {
     lastProjectAtIso: String(project.updatedAt || project.createdAt || "").trim(),
     lastProjectId: String(project.id || "").trim(),
     projectCount: 1,
+    createdByUids: mergeUidLists([String(project.createdByUid || "").trim()]),
+    assignedToUids: mergeUidLists([String(project.assignedToUid || "").trim()]),
     history: [historyRow],
   };
 }
@@ -2210,6 +2250,8 @@ function buildCompanyClientRowFromDoc(
     lastProjectAtIso: toIsoString(data.lastProjectAtIso ?? data.lastProjectAt, ""),
     lastProjectId: String(data.lastProjectId ?? "").trim(),
     projectCount: Number(data.projectCount ?? 0) || 0,
+    createdByUids: normalizeUidList(data.createdByUids),
+    assignedToUids: normalizeUidList(data.assignedToUids),
     history: rawHistory.map((row) => ({
       projectId: String(row.projectId ?? "").trim(),
       projectName: String(row.projectName ?? "").trim(),
@@ -2314,6 +2356,16 @@ async function syncCompanyClientProfileFromProjectInternal(
         ? buildCompanyClientRowFromDoc(cid, clientId, existing)
         : matchedRow;
     const currentHistory = currentRow?.history.slice() ?? [];
+    const currentCreatedByUids = mergeUidLists(
+      currentRow?.createdByUids,
+      normalizeUidList(existing?.createdByUids),
+      [String(project.createdByUid || "").trim()],
+    );
+    const currentAssignedToUids = mergeUidLists(
+      currentRow?.assignedToUids,
+      normalizeUidList(existing?.assignedToUids),
+      [String(project.assignedToUid || "").trim()],
+    );
     const currentCompletedIds = Array.isArray(existing?.completedProjectIds)
       ? (existing?.completedProjectIds as unknown[]).map((value) => String(value ?? "").trim()).filter(Boolean)
       : [];
@@ -2364,6 +2416,8 @@ async function syncCompanyClientProfileFromProjectInternal(
       ),
       lastProjectId: String(project.id || "").trim() || latestHistory?.projectId || currentRow?.lastProjectId || "",
       projectCount: currentCompletedIds.length,
+      createdByUids: currentCreatedByUids,
+      assignedToUids: currentAssignedToUids,
       completedProjectIds: currentCompletedIds,
       history: sortedHistory,
     };
@@ -2394,7 +2448,7 @@ async function backfillCompanyClientsFromProjects(companyId: string): Promise<vo
   }
 }
 
-export async function fetchCompanyClients(companyId: string): Promise<CompanyClientRow[]> {
+export async function fetchCompanyClients(companyId: string, filter?: CompanyClientViewerFilter): Promise<CompanyClientRow[]> {
   const cid = String(companyId || "").trim();
   if (!db || !cid) return [];
 
@@ -2429,21 +2483,28 @@ export async function fetchCompanyClients(companyId: string): Promise<CompanyCli
     // background backfill only
   }
 
-  return Array.from(merged.values()).sort((a, b) => {
+  return Array.from(merged.values())
+    .filter((row) => canViewerAccessCompanyClientRow(row, filter))
+    .sort((a, b) => {
     const aName = String(a.name || a.email).trim().toLowerCase();
     const bName = String(b.name || b.email).trim().toLowerCase();
     return aName.localeCompare(bName);
   });
 }
 
-export async function fetchCompanyClientById(companyId: string, clientId: string): Promise<CompanyClientRow | null> {
+export async function fetchCompanyClientById(
+  companyId: string,
+  clientId: string,
+  filter?: CompanyClientViewerFilter,
+): Promise<CompanyClientRow | null> {
   const cid = String(companyId || "").trim();
   const id = String(clientId || "").trim();
   if (!db || !cid || !id) return null;
   try {
     const snap = await getDoc(doc(db, "companies", cid, "clients", id));
     if (snap.exists()) {
-      return buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+      const row = buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+      return canViewerAccessCompanyClientRow(row, filter) ? row : null;
     }
     const projects = await collectCompanyProjectsForClients(cid);
     const merged = new Map<string, CompanyClientRow>();
@@ -2452,7 +2513,8 @@ export async function fetchCompanyClientById(companyId: string, clientId: string
       const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
       merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
     }
-    return merged.get(id) ?? null;
+    const row = merged.get(id) ?? null;
+    return row && canViewerAccessCompanyClientRow(row, filter) ? row : null;
   } catch {
     return null;
   }

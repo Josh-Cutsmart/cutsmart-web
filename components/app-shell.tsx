@@ -99,6 +99,38 @@ function hasPermissionKey(permissionKeys: string[] | undefined, key: string): bo
   });
 }
 
+function normalizeRoleKey(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+function extractRolePermissionKeys(
+  companyDoc: Record<string, unknown> | null | undefined,
+  roleCandidates: Array<unknown>,
+): string[] {
+  const roles = Array.isArray(companyDoc?.roles) ? (companyDoc?.roles as Array<Record<string, unknown>>) : [];
+  if (!roles.length) return [];
+  const wanted = new Set(roleCandidates.map((value) => normalizeRoleKey(value)).filter(Boolean));
+  if (!wanted.size) return [];
+  const out = new Set<string>();
+  for (const role of roles) {
+    const roleKey = normalizeRoleKey(role.id ?? role.name);
+    if (!roleKey || !wanted.has(roleKey)) continue;
+    const permissions =
+      role.permissions && typeof role.permissions === "object" && !Array.isArray(role.permissions)
+        ? (role.permissions as Record<string, unknown>)
+        : {};
+    for (const [key, value] of Object.entries(permissions)) {
+      if (value === true) {
+        out.add(String(key || "").trim());
+      }
+    }
+  }
+  return Array.from(out).filter(Boolean);
+}
+
 function rolePriority(role: string): number {
   const normalized = String(role || "").trim().toLowerCase();
   if (normalized === "owner") return 3;
@@ -234,9 +266,9 @@ function notesHtmlIsEmpty(value: string): boolean {
   return !plain;
 }
 
-type LocalPhoto = { id: string; file: File; previewUrl: string; aspectRatio: number };
+type LocalPhoto = { id: string; file: File; previewUrl: string; aspectRatio: number; name: string };
 type PrefilledProjectImage = ProjectImageItem & { id: string };
-type StaffOption = { uid: string; name: string; email: string };
+type StaffOption = { uid: string; name: string; email: string; color?: string };
 type PreviewRect = { left: number; top: number; width: number; height: number };
 type PreviewAnimState = {
   id: string;
@@ -265,6 +297,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [prefilledProjectImages, setPrefilledProjectImages] = useState<PrefilledProjectImage[]>([]);
+  const [editingProjectPhotoNameKey, setEditingProjectPhotoNameKey] = useState("");
+  const [projectPhotoNameDraft, setProjectPhotoNameDraft] = useState("");
   const [sourceLeadId, setSourceLeadId] = useState("");
   const [sourceLeadCompanyId, setSourceLeadCompanyId] = useState("");
   const [hoveredPhotoId, setHoveredPhotoId] = useState("");
@@ -297,6 +331,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const previewTimerRef = useRef<number | null>(null);
   const previewCloseRafRef = useRef<number | null>(null);
   const newProjectTagInputRef = useRef<HTMLInputElement | null>(null);
+  const newProjectScrollRef = useRef<HTMLDivElement | null>(null);
+  const assigneeFieldRef = useRef<HTMLDivElement | null>(null);
 
   const userInitials = useMemo(() => initials(user?.displayName || "User"), [user?.displayName]);
   const userEmblemColor = String(user?.userColor || "").trim() || companyThemeColor;
@@ -345,10 +381,23 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const canAccessClients = useMemo(() => {
     const role = roleForUi;
     if (role === "owner" || role === "admin") return true;
-    return hasPermissionKey(normalizedEffectivePermissions, "company.clients");
+    return (
+      hasPermissionKey(normalizedEffectivePermissions, "clients.view") ||
+      hasPermissionKey(normalizedEffectivePermissions, "clients.view.all")
+    );
   }, [normalizedEffectivePermissions, roleForUi]);
 
-  const visibleTopNav = useMemo(() => topNav, []);
+  const visibleTopNav = useMemo(
+    () =>
+      topNav.filter((item) => {
+        if (item.href === "/dashboard") return canAccessDashboard;
+        if (item.href === "/clients") return canAccessClients;
+        if (item.href === "/leads") return canAccessLeads;
+        if (item.href === "/company-settings") return canAccessCompanySettings;
+        return true;
+      }),
+    [canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads],
+  );
 
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
@@ -433,6 +482,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setIsTagInputOpen(false);
       setShowTagSuggestions(false);
       setPhotos([]);
+      setEditingProjectPhotoNameKey("");
+      setProjectPhotoNameDraft("");
       setHoveredPhotoId("");
       setPreviewPhotoId("");
       setAssigneeSearch("");
@@ -713,28 +764,83 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       const storedCompanyId =
         typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
       const directCompanyId = String(user?.companyId || "").trim();
-      const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
+      const primaryMembership = user?.uid ? await fetchPrimaryMembership(user.uid) : null;
+      const fallbackMembership = !directCompanyId ? primaryMembership : null;
       const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
       if (!user?.uid || !companyId) {
         if (!cancelled) {
-          setEffectiveCompanyRole(String(user?.role || "").trim().toLowerCase());
-          setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
+          setEffectiveCompanyRole(
+            mergeRoleValue(
+              String(primaryMembership?.role || "").trim().toLowerCase(),
+              String(user?.role || "").trim().toLowerCase(),
+            ),
+          );
+          setEffectiveCompanyPermissions(
+            mergePermissionValues(
+              primaryMembership?.permissionKeys,
+              Array.isArray(user?.permissions) ? user.permissions : [],
+            ),
+          );
         }
         return;
       }
+      const companyDoc = await fetchCompanyDoc(companyId);
+      const roleDerivedPermissions = extractRolePermissionKeys(companyDoc as Record<string, unknown> | null, [
+        primaryMembership?.roleId,
+        primaryMembership?.role,
+        user?.role,
+      ]);
       const cacheKey = buildCompanyAccessCacheKey(companyId, user.uid);
       const cached = readCompanyAccessCache(cacheKey);
       if (cached && !cancelled) {
-        setEffectiveCompanyRole(mergeRoleValue(cached.role, String(user?.role || "").trim().toLowerCase()));
-        setEffectiveCompanyPermissions(mergePermissionValues(cached.permissionKeys, Array.isArray(user?.permissions) ? user.permissions : []));
+        setEffectiveCompanyRole(
+          mergeRoleValue(
+            cached.role,
+            mergeRoleValue(
+              String(primaryMembership?.role || "").trim().toLowerCase(),
+              String(user?.role || "").trim().toLowerCase(),
+            ),
+          ),
+        );
+        setEffectiveCompanyPermissions(
+          mergePermissionValues(
+            cached.permissionKeys,
+            mergePermissionValues(
+              roleDerivedPermissions,
+              mergePermissionValues(
+                primaryMembership?.permissionKeys,
+                Array.isArray(user?.permissions) ? user.permissions : [],
+              ),
+            ),
+          ),
+        );
         setIsZapierLeadsEnabled(cached.isZapierLeadsEnabled);
       }
       const companyAccess = await fetchCompanyAccess(companyId, user.uid);
       if (cancelled) return;
-      const nextRole = mergeRoleValue(String(companyAccess?.role || "").trim().toLowerCase(), String(user?.role || "").trim().toLowerCase());
+      const accessRoleDerivedPermissions = extractRolePermissionKeys(companyDoc as Record<string, unknown> | null, [
+        companyAccess?.roleId,
+        companyAccess?.role,
+        primaryMembership?.roleId,
+        primaryMembership?.role,
+        user?.role,
+      ]);
+      const nextRole = mergeRoleValue(
+        String(companyAccess?.role || "").trim().toLowerCase(),
+        mergeRoleValue(
+          String(primaryMembership?.role || "").trim().toLowerCase(),
+          String(user?.role || "").trim().toLowerCase(),
+        ),
+      );
       const nextPermissions = mergePermissionValues(
         companyAccess?.permissionKeys,
-        Array.isArray(user?.permissions) ? user.permissions : [],
+        mergePermissionValues(
+          accessRoleDerivedPermissions,
+          mergePermissionValues(
+            primaryMembership?.permissionKeys,
+            Array.isArray(user?.permissions) ? user.permissions : [],
+          ),
+        ),
       );
       setEffectiveCompanyRole(nextRole);
       setEffectiveCompanyPermissions(nextPermissions);
@@ -826,11 +932,15 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setDefaultQuoteExtras(Array.from(new Set(defaultExtras)));
 
       if (canCreateForOthers) {
-        const options = members.map((m) => ({
-          uid: String(m.uid || "").trim(),
-          name: String(m.displayName || m.email || m.uid || "Unknown").trim(),
-          email: String(m.email || "").trim(),
-        }));
+        const options = members.map((m) => {
+          const memberLike = m as typeof m & { badgeColor?: string; userColor?: string };
+          return {
+            uid: String(m.uid || "").trim(),
+            name: String(m.displayName || m.email || m.uid || "Unknown").trim(),
+            email: String(m.email || "").trim(),
+            color: String(memberLike.badgeColor || memberLike.userColor || "").trim(),
+          };
+        });
         setStaffOptions(options);
       } else {
         setStaffOptions([]);
@@ -851,6 +961,32 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       document.body.classList.remove("new-project-open");
     };
   }, [showNewProject]);
+
+  useEffect(() => {
+    if (!assigneeMenuOpen || typeof window === "undefined") return;
+    const scrollHost = newProjectScrollRef.current;
+    const field = assigneeFieldRef.current;
+    if (!scrollHost || !field) return;
+    const raf = window.requestAnimationFrame(() => {
+      const hostRect = scrollHost.getBoundingClientRect();
+      const fieldRect = field.getBoundingClientRect();
+      const overflowBottom = fieldRect.bottom - hostRect.bottom + 220;
+      if (overflowBottom > 0) {
+        scrollHost.scrollTo({
+          top: scrollHost.scrollTop + overflowBottom + 12,
+          behavior: "smooth",
+        });
+        return;
+      }
+      if (fieldRect.top < hostRect.top) {
+        scrollHost.scrollTo({
+          top: Math.max(0, scrollHost.scrollTop - (hostRect.top - fieldRect.top) - 12),
+          behavior: "smooth",
+        });
+      }
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [assigneeMenuOpen]);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -1028,6 +1164,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
           file,
           previewUrl,
           aspectRatio,
+          name: "",
         } as LocalPhoto;
       }),
     );
@@ -1055,6 +1192,28 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     });
     setPreviewPhotoId((prev) => (prev === id ? "" : prev));
     setPreviewAnim((prev) => (prev?.id === id ? null : prev));
+  };
+
+  const beginEditProjectPhotoName = (key: string, currentName: string) => {
+    setEditingProjectPhotoNameKey(key);
+    setProjectPhotoNameDraft(String(currentName || "").trim());
+  };
+
+  const commitProjectPhotoNameEdit = () => {
+    const editKey = String(editingProjectPhotoNameKey || "").trim();
+    if (!editKey) return;
+    const nextName = String(projectPhotoNameDraft || "").trim();
+    if (editKey.startsWith("prefilled:")) {
+      const targetId = editKey.slice("prefilled:".length);
+      setPrefilledProjectImages((prev) =>
+        prev.map((image) => (image.id === targetId ? { ...image, name: nextName } : image)),
+      );
+    } else if (editKey.startsWith("local:")) {
+      const targetId = editKey.slice("local:".length);
+      setPhotos((prev) => prev.map((photo) => (photo.id === targetId ? { ...photo, name: nextName } : photo)));
+    }
+    setEditingProjectPhotoNameKey("");
+    setProjectPhotoNameDraft("");
   };
 
   const previewPhoto = useMemo(
@@ -1168,6 +1327,25 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     return staffOptions.filter((s) => `${s.name} ${s.email}`.toLowerCase().includes(q));
   }, [staffOptions, assigneeSearch]);
 
+  const renderStaffOptionBadge = (staff: StaffOption, size = 22) => {
+    const color = String(staff.color || "").trim() || companyThemeColor || "#7C8EA5";
+    return (
+      <span
+        className="inline-flex shrink-0 items-center justify-center rounded-full text-white"
+        style={{
+          width: size,
+          height: size,
+          backgroundColor: color,
+          fontSize: size <= 22 ? 10 : 11,
+          fontWeight: 800,
+          lineHeight: 1,
+        }}
+      >
+        {initials(staff.name || staff.email || "U")}
+      </span>
+    );
+  };
+
   const availableTagSuggestions = useMemo(
     () =>
       companyTagSuggestions.filter(
@@ -1272,7 +1450,11 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               }))
             : [],
         })),
-        ...uploadedImageUrls.map((url) => ({ url, name: "", annotations: [] })),
+        ...uploadedImageUrls.map((url, idx) => ({
+          url,
+          name: String(photos[idx]?.name || "").trim(),
+          annotations: [],
+        })),
       ]
         .filter((item) => item.url)
         .slice(0, 10);
@@ -1808,7 +1990,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             style={{ width: "min(1000px, calc(100vw - 16px))", height: "min(600px, calc(100vh - 16px))" }}
           >
             <p className="text-[15px] font-extrabold uppercase tracking-[1px] text-[#12345B]">New Project</p>
-            <div className="relative mt-3 flex-1 space-y-3 overflow-y-auto pr-0 sm:pr-1">
+            <div ref={newProjectScrollRef} className="relative mt-3 flex-1 space-y-3 overflow-y-auto pr-0 sm:pr-1">
               <div className={modalRowClass}>
                 <p className={modalLabelClass}>Project Name</p>
                 <input
@@ -2028,13 +2210,13 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                     return (
                       <div
                         key={`photo_slot_${idx}`}
-                        className="relative flex items-center justify-center"
-                        style={{ height: 88, minHeight: 88 }}
+                        className="relative flex items-start justify-center"
+                        style={{ minHeight: 110 }}
                         onMouseLeave={() => setHoveredPhotoId("")}
                       >
                         {prefilledImage ? (
-                          <>
-                            <div className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent">
+                          <div className="flex h-full w-full flex-col gap-1">
+                            <div className="relative flex h-[88px] w-full items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent">
                               <button
                                 type="button"
                                 onClick={() => {
@@ -2052,37 +2234,80 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                   style={{ objectFit: "cover", objectPosition: "center" }}
                                 />
                               </button>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removePrefilledProjectImage(prefilledImage.id)}
-                              className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
-                              style={{
-                                bottom: 6,
-                                width: 24,
-                                height: 24,
-                                border: "1px solid #7F1D1D",
-                                background: "#EF4444",
-                                boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
-                                opacity: 1,
-                              }}
-                              aria-label="Remove photo"
-                            >
-                              <img
-                                src="/trash.png"
-                                alt="Delete"
-                                className="object-contain"
-                                style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
-                                onError={(e) => {
-                                  e.currentTarget.style.display = "none";
+                              <button
+                                type="button"
+                                onClick={() => removePrefilledProjectImage(prefilledImage.id)}
+                                className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
+                                style={{
+                                  bottom: 6,
+                                  width: 24,
+                                  height: 24,
+                                  border: "1px solid #7F1D1D",
+                                  background: "#EF4444",
+                                  boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
+                                  opacity: 1,
                                 }}
-                              />
-                            </button>
-                          </>
+                                aria-label="Remove photo"
+                              >
+                                <img
+                                  src="/trash.png"
+                                  alt="Delete"
+                                  className="object-contain"
+                                  style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              </button>
+                            </div>
+                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[#D8DEE8] bg-white px-2">
+                              {editingProjectPhotoNameKey === `prefilled:${prefilledImage.id}` ? (
+                                <input
+                                  autoFocus
+                                  value={projectPhotoNameDraft}
+                                  onChange={(e) => setProjectPhotoNameDraft(e.currentTarget.value)}
+                                  onBlur={commitProjectPhotoNameEdit}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      commitProjectPhotoNameEdit();
+                                    }
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      setEditingProjectPhotoNameKey("");
+                                      setProjectPhotoNameDraft("");
+                                    }
+                                  }}
+                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[#334155] outline-none"
+                                />
+                              ) : String(prefilledImage.name || "").trim() ? (
+                                <span className="truncate text-center text-[11px] font-medium text-[#334155]">
+                                  {String(prefilledImage.name || "").trim()}
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => beginEditProjectPhotoName(`prefilled:${prefilledImage.id}`, String(prefilledImage.name || ""))}
+                                  className="inline-flex h-full w-full items-center justify-center"
+                                  title="Name image"
+                                >
+                                  <img
+                                    src="/edit.png"
+                                    alt="Name image"
+                                    className="object-contain"
+                                    style={{ width: 12, height: 12, opacity: 0.8 }}
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = "none";
+                                    }}
+                                  />
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         ) : photo ? (
-                          <>
+                          <div className="flex h-full w-full flex-col gap-1">
                             <div
-                              className="relative flex h-full items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent"
+                              className="relative flex h-[88px] items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent"
                               onMouseEnter={() => setHoveredPhotoId(photo.id)}
                               style={{
                                 width:
@@ -2108,35 +2333,78 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                   style={{ objectFit: "cover", objectPosition: "center" }}
                                 />
                               </button>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removePhoto(photo.id)}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
-                              style={{
-                                bottom: 6,
-                                width: 24,
-                                height: 24,
-                                border: "1px solid #7F1D1D",
-                                background: "#EF4444",
-                                boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
-                                opacity: hoveredPhotoId === photo.id ? 1 : 0,
-                                pointerEvents: hoveredPhotoId === photo.id ? "auto" : "none",
-                              }}
-                              aria-label="Remove photo"
-                            >
-                              <img
-                                src="/trash.png"
-                                alt="Delete"
-                                className="object-contain"
-                                style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
-                                onError={(e) => {
-                                  e.currentTarget.style.display = "none";
+                              <button
+                                type="button"
+                                onClick={() => removePhoto(photo.id)}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                className="absolute left-1/2 inline-flex -translate-x-1/2 items-center justify-center rounded-full text-white transition-opacity duration-150"
+                                style={{
+                                  bottom: 6,
+                                  width: 24,
+                                  height: 24,
+                                  border: "1px solid #7F1D1D",
+                                  background: "#EF4444",
+                                  boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
+                                  opacity: hoveredPhotoId === photo.id ? 1 : 0,
+                                  pointerEvents: hoveredPhotoId === photo.id ? "auto" : "none",
                                 }}
-                              />
-                            </button>
-                          </>
+                                aria-label="Remove photo"
+                              >
+                                <img
+                                  src="/trash.png"
+                                  alt="Delete"
+                                  className="object-contain"
+                                  style={{ width: 12, height: 12, filter: "brightness(0) invert(1)" }}
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              </button>
+                            </div>
+                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[#D8DEE8] bg-white px-2">
+                              {editingProjectPhotoNameKey === `local:${photo.id}` ? (
+                                <input
+                                  autoFocus
+                                  value={projectPhotoNameDraft}
+                                  onChange={(e) => setProjectPhotoNameDraft(e.currentTarget.value)}
+                                  onBlur={commitProjectPhotoNameEdit}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      commitProjectPhotoNameEdit();
+                                    }
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      setEditingProjectPhotoNameKey("");
+                                      setProjectPhotoNameDraft("");
+                                    }
+                                  }}
+                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[#334155] outline-none"
+                                />
+                              ) : String(photo.name || "").trim() ? (
+                                <span className="truncate text-center text-[11px] font-medium text-[#334155]">
+                                  {String(photo.name || "").trim()}
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => beginEditProjectPhotoName(`local:${photo.id}`, String(photo.name || ""))}
+                                  className="inline-flex h-full w-full items-center justify-center"
+                                  title="Name image"
+                                >
+                                  <img
+                                    src="/edit.png"
+                                    alt="Name image"
+                                    className="object-contain"
+                                    style={{ width: 12, height: 12, opacity: 0.8 }}
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = "none";
+                                    }}
+                                  />
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         ) : (
                           <label className="relative flex h-full w-full cursor-pointer items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFC] text-[11px] font-bold text-[#64748B]">
                             <span
@@ -2176,13 +2444,16 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               {canCreateForOthers && (
                 <div className={modalRowClass}>
                   <p className={modalSectionLabelClass}>Assign Project To</p>
-                  <div className="relative">
+                  <div ref={assigneeFieldRef} className="relative">
                     <button
                       type="button"
                       onClick={() => setAssigneeMenuOpen((v) => !v)}
                       className="flex h-9 w-full items-center justify-between rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-left text-[12px]"
                     >
-                      <span className="truncate">{selectedAssignee?.name || "Select staff member"}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        {selectedAssignee ? renderStaffOptionBadge(selectedAssignee, 20) : null}
+                        <span className="truncate">{selectedAssignee?.name || "Select staff member"}</span>
+                      </span>
                       <span className="text-[#64748B]">&#9662;</span>
                     </button>
                     {assigneeMenuOpen && (
@@ -2207,8 +2478,13 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                               }}
                               className="block w-full px-2 py-2 text-left text-[12px] hover:bg-[#F1F5F9]"
                             >
-                              <p className="font-semibold text-[#0F172A]">{s.name}</p>
-                              <p className="text-[11px] text-[#64748B]">{s.email}</p>
+                              <div className="flex items-start gap-2">
+                                {renderStaffOptionBadge(s, 20)}
+                                <div className="min-w-0">
+                                  <p className="truncate font-semibold text-[#0F172A]">{s.name}</p>
+                                  <p className="truncate text-[11px] text-[#64748B]">{s.email}</p>
+                                </div>
+                              </div>
                             </button>
                           ))}
                           {!filteredStaffOptions.length && (
