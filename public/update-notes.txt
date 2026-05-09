@@ -1,19 +1,13 @@
-Version: v0.2.8
+Version: v0.2.9
 
 whatsNew: [
-<u><b>Clients Tab:</u></b>
-- With correct permissions, users who are "creators" or "Assigned" to a project will now be able to see their clients information.
+<u><b>General:</u></b>
+- Mobile Friendly Views now work in "Production" tab:
+- - Cutlist
+- - Nesting
+- - CNC Cutlist
+- - Print
 
 <u><b>Project Details "Production":</u></b>
-- "Print" button added to main tab for prinitnig entire project.
-- "Nesting" now tightened panel layout on sheets for less wastage.
-- "Nesting" Now has its own print button.
-- "Nesting" sheet columns now fill entire viewpoint.
-- "Nesting" Sidebar now matches "CNC Cutlist" sidebar.
-
-<u><b>New Project Window:</u></b>
-- Can now name an image.
-- Window now auto scrolls when "Assign Project To" drop down is opened.
-- Icon now shows next to staff members name in "Assign Project To".
+- "Assigned" User now stays unnassigned until manually changed - does not default to the creator.
 ]
-

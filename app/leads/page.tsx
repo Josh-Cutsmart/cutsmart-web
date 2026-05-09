@@ -17,6 +17,7 @@ import {
   OPEN_NEW_PROJECT_EVENT,
   type NewProjectPrefillPayload,
 } from "@/lib/new-project-bridge";
+import { retryAsync } from "@/lib/load-retry";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
@@ -734,10 +735,14 @@ export default function LeadsPage() {
       (sampleLeadsRef.current[cid] = readPersistedSampleLeads(cid) ?? buildTemporarySampleLeads(cid));
     persistSampleLeads(cid, currentSampleLeads);
     try {
-      const response = await fetch(`/api/leads?companyId=${encodeURIComponent(cid)}&mode=summary`, {
-        method: "GET",
-        cache: "no-store",
-      });
+      const response = await retryAsync(
+        () =>
+          fetch(`/api/leads?companyId=${encodeURIComponent(cid)}&mode=summary`, {
+            method: "GET",
+            cache: "no-store",
+          }),
+        { attempts: 2, delayMs: 300 },
+      );
         const detail = (await response.json().catch(() => null)) as
           | { ok?: boolean; leads?: CompanyLeadRow[] }
           | null;
@@ -770,64 +775,75 @@ export default function LeadsPage() {
 
   useEffect(() => {
     const run = async () => {
-      if (!user?.uid) {
+      try {
+        if (!user?.uid) {
+          setCompanyAccessResolved(true);
+          setCanAccessLeads(false);
+          setCanViewOtherLeads(false);
+          return;
+        }
+        const storedCompanyId =
+          typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
+        const directCompanyId = String(user.companyId || "").trim();
+        const fallbackMembership = !directCompanyId
+          ? await retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 })
+          : null;
+        const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
+        setActiveCompanyId(companyId);
+        if (companyId && !sampleLeadsRef.current[companyId]) {
+          sampleLeadsRef.current[companyId] = readPersistedSampleLeads(companyId) ?? buildTemporarySampleLeads(companyId);
+          persistSampleLeads(companyId, sampleLeadsRef.current[companyId]);
+        }
+        if (!companyId) {
+          setCompanyAccessResolved(true);
+          setCanAccessLeads(false);
+          setCanViewOtherLeads(false);
+          return;
+        }
+        const [access, companyDoc, userColorMap] = await retryAsync(
+          () =>
+            Promise.all([
+              fetchCompanyAccess(companyId, user.uid!),
+              fetchCompanyDoc(companyId),
+              fetchUserColorMapByUids([user.uid!], companyId),
+            ]),
+          { attempts: 2, delayMs: 250 },
+        );
+        const role = String(access?.role || "").trim().toLowerCase();
+        const permitted =
+          role === "owner" ||
+          role === "admin" ||
+          hasPermissionKey(access?.permissionKeys, "leads.view");
+        const canViewAll =
+          role === "owner" ||
+          role === "admin" ||
+          hasPermissionKey(access?.permissionKeys, "leads.view.others");
+        setCompanyName(String(companyDoc?.name || "").trim());
+        setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
+        setCurrentUserPinColor(String(userColorMap[String(user.uid || "").trim()] || "").trim());
+        setLeadFormUrl(String(companyDoc?.salesLeadFormUrl || "").trim());
+        setLeadStatusRows(normalizeLeadStatuses((companyDoc as Record<string, unknown> | null)?.leadStatuses));
+        setFieldLayout(
+          normalizeLeadFieldLayout(
+            ((companyDoc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout,
+          ),
+        );
+        setCompanyAccessResolved(true);
+        setCanAccessLeads(permitted);
+        setCanViewOtherLeads(canViewAll);
+        if (!permitted) {
+          setLeads([]);
+          return;
+        }
+        await loadLeads(companyId);
+      } catch {
         setCompanyAccessResolved(true);
         setCanAccessLeads(false);
         setCanViewOtherLeads(false);
-        setIsLoading(false);
-        return;
-      }
-      const storedCompanyId =
-        typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
-      const directCompanyId = String(user.companyId || "").trim();
-      const fallbackMembership = !directCompanyId ? await fetchPrimaryMembership(user.uid) : null;
-      const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-      setActiveCompanyId(companyId);
-      if (companyId && !sampleLeadsRef.current[companyId]) {
-        sampleLeadsRef.current[companyId] = readPersistedSampleLeads(companyId) ?? buildTemporarySampleLeads(companyId);
-        persistSampleLeads(companyId, sampleLeadsRef.current[companyId]);
-      }
-      if (!companyId) {
-        setCompanyAccessResolved(true);
-        setCanAccessLeads(false);
-        setCanViewOtherLeads(false);
-        setIsLoading(false);
-        return;
-      }
-      const [access, companyDoc, userColorMap] = await Promise.all([
-        fetchCompanyAccess(companyId, user.uid),
-        fetchCompanyDoc(companyId),
-        fetchUserColorMapByUids([user.uid], companyId),
-      ]);
-      const role = String(access?.role || "").trim().toLowerCase();
-      const permitted =
-        role === "owner" ||
-        role === "admin" ||
-        hasPermissionKey(access?.permissionKeys, "leads.view");
-      const canViewAll =
-        role === "owner" ||
-        role === "admin" ||
-        hasPermissionKey(access?.permissionKeys, "leads.view.others");
-      setCompanyName(String(companyDoc?.name || "").trim());
-      setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
-      setCurrentUserPinColor(String(userColorMap[String(user.uid || "").trim()] || "").trim());
-      setLeadFormUrl(String(companyDoc?.salesLeadFormUrl || "").trim());
-      setLeadStatusRows(normalizeLeadStatuses((companyDoc as Record<string, unknown> | null)?.leadStatuses));
-      setFieldLayout(
-        normalizeLeadFieldLayout(
-          ((companyDoc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout,
-        ),
-      );
-      setCompanyAccessResolved(true);
-      setCanAccessLeads(permitted);
-      setCanViewOtherLeads(canViewAll);
-      if (!permitted) {
         setLeads([]);
+      } finally {
         setIsLoading(false);
-        return;
       }
-      await loadLeads(companyId);
-      setIsLoading(false);
     };
     void run();
   }, [loadLeads, user?.uid, user?.companyId]);

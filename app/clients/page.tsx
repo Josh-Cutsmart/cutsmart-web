@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyClientById, fetchCompanyClients, fetchCompanyDoc, type CompanyClientRow } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import { retryAsync } from "@/lib/load-retry";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 
@@ -107,92 +108,113 @@ export default function ClientsPage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      setLoading(true);
-      setAccessResolved(false);
-      const storedCompanyId =
-        typeof window !== "undefined"
-          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-          : "";
-      const membership = user?.uid ? await fetchPrimaryMembership(user.uid) : null;
-      const activeCompanyId = storedCompanyId || String(user?.companyId || membership?.companyId || "").trim();
-      if (!activeCompanyId) {
-        if (!cancelled) {
-          setActiveCompanyId("");
+      try {
+        setLoading(true);
+        setAccessResolved(false);
+        const storedCompanyId =
+          typeof window !== "undefined"
+            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+            : "";
+        const membership = user?.uid ? await retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 }) : null;
+        const activeCompanyId = storedCompanyId || String(user?.companyId || membership?.companyId || "").trim();
+        if (!activeCompanyId) {
+          if (!cancelled) {
+            setActiveCompanyId("");
+            setClients([]);
+            setClientDetailsById({});
+            setCompanyName("Company");
+            setPermissionKeys(Array.isArray(user?.permissions) ? user.permissions : []);
+            setAccessResolved(true);
+          }
+          return;
+        }
+        const [companyDoc, access] = await retryAsync(
+          () =>
+            Promise.all([
+              fetchCompanyDoc(activeCompanyId),
+              user?.uid ? fetchCompanyAccess(activeCompanyId, user.uid) : Promise.resolve(null),
+            ]),
+          { attempts: 2, delayMs: 250 },
+        );
+        if (cancelled) return;
+        setActiveCompanyId(activeCompanyId);
+        const roleDerivedPermissions = extractRolePermissionKeys(companyDoc as Record<string, unknown> | null, [
+          access?.roleId,
+          access?.role,
+          user?.role,
+        ]);
+        const nextPermissionKeys = Array.from(
+          new Set([
+            ...(access?.permissionKeys ?? []),
+            ...roleDerivedPermissions,
+            ...(Array.isArray(user?.permissions) ? user.permissions : []),
+          ]),
+        );
+        setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
+        setPermissionKeys(nextPermissionKeys);
+        setAccessResolved(true);
+        const role = String(access?.role || user?.role || "").trim().toLowerCase();
+        const nextCanViewAllClients =
+          role === "owner" ||
+          role === "admin" ||
+          hasPermissionKey(nextPermissionKeys, "clients.view.all");
+        const permitted = nextCanViewAllClients || hasPermissionKey(nextPermissionKeys, "clients.view");
+        setCanViewAllClients(nextCanViewAllClients);
+        if (!permitted) {
           setClients([]);
           setClientDetailsById({});
-          setCompanyName("Company");
-          setPermissionKeys(Array.isArray(user?.permissions) ? user.permissions : []);
+          return;
+        }
+        let companyClients: CompanyClientRow[] = [];
+        try {
+          companyClients = await retryAsync(
+            async () => {
+              const response = await fetch(
+                `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${nextCanViewAllClients ? "all" : "mine"}`,
+                {
+                  method: "GET",
+                  cache: "no-store",
+                },
+              );
+              const json = (await response.json().catch(() => null)) as { ok?: boolean; clients?: CompanyClientRow[] } | null;
+              if (response.ok && json?.ok && Array.isArray(json.clients)) {
+                return json.clients;
+              }
+              return await fetchCompanyClients(activeCompanyId, {
+                viewerUid: String(user?.uid || "").trim(),
+                includeAll: nextCanViewAllClients,
+              });
+            },
+            { attempts: 2, delayMs: 300 },
+          );
+        } catch {
+          companyClients = await retryAsync(
+            () =>
+              fetchCompanyClients(activeCompanyId, {
+                viewerUid: String(user?.uid || "").trim(),
+                includeAll: nextCanViewAllClients,
+              }),
+            { attempts: 2, delayMs: 300 },
+          );
+        }
+        if (cancelled) return;
+        setClients(companyClients);
+        setClientDetailsById(
+          Object.fromEntries(
+            companyClients.map((client) => [client.id, client]),
+          ),
+        );
+      } catch {
+        if (!cancelled) {
+          setClients([]);
+          setClientDetailsById({});
           setAccessResolved(true);
+        }
+      } finally {
+        if (!cancelled) {
           setLoading(false);
         }
-        return;
       }
-      const [companyDoc, access] = await Promise.all([
-        fetchCompanyDoc(activeCompanyId),
-        user?.uid ? fetchCompanyAccess(activeCompanyId, user.uid) : Promise.resolve(null),
-      ]);
-      if (cancelled) return;
-      setActiveCompanyId(activeCompanyId);
-      const roleDerivedPermissions = extractRolePermissionKeys(companyDoc as Record<string, unknown> | null, [
-        access?.roleId,
-        access?.role,
-        user?.role,
-      ]);
-      const nextPermissionKeys = Array.from(
-        new Set([
-          ...(access?.permissionKeys ?? []),
-          ...roleDerivedPermissions,
-          ...(Array.isArray(user?.permissions) ? user.permissions : []),
-        ]),
-      );
-      setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
-      setPermissionKeys(nextPermissionKeys);
-      setAccessResolved(true);
-      const role = String(access?.role || user?.role || "").trim().toLowerCase();
-      const nextCanViewAllClients =
-        role === "owner" ||
-        role === "admin" ||
-        hasPermissionKey(nextPermissionKeys, "clients.view.all");
-      const permitted = nextCanViewAllClients || hasPermissionKey(nextPermissionKeys, "clients.view");
-      setCanViewAllClients(nextCanViewAllClients);
-      if (!permitted) {
-        setClients([]);
-        setClientDetailsById({});
-        setLoading(false);
-        return;
-      }
-      let companyClients: CompanyClientRow[] = [];
-      try {
-        const response = await fetch(
-          `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${nextCanViewAllClients ? "all" : "mine"}`,
-          {
-          method: "GET",
-          cache: "no-store",
-          },
-        );
-        const json = (await response.json().catch(() => null)) as { ok?: boolean; clients?: CompanyClientRow[] } | null;
-        if (response.ok && json?.ok && Array.isArray(json.clients)) {
-          companyClients = json.clients;
-        } else {
-          companyClients = await fetchCompanyClients(activeCompanyId, {
-            viewerUid: String(user?.uid || "").trim(),
-            includeAll: nextCanViewAllClients,
-          });
-        }
-      } catch {
-        companyClients = await fetchCompanyClients(activeCompanyId, {
-          viewerUid: String(user?.uid || "").trim(),
-          includeAll: nextCanViewAllClients,
-        });
-      }
-      if (cancelled) return;
-      setClients(companyClients);
-      setClientDetailsById(
-        Object.fromEntries(
-          companyClients.map((client) => [client.id, client]),
-        ),
-      );
-      setLoading(false);
     };
     void load();
     return () => {

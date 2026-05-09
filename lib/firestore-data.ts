@@ -300,6 +300,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     projectFiles: Array.isArray(data.projectFiles) ? (data.projectFiles as Array<Record<string, unknown>>) : [],
     projectImages: projectImages.length ? projectImages : projectImageItems.map((item) => item.url),
     projectImageItems,
+    dashboardCompleteStatusId: String(data.dashboardCompleteStatusId ?? "").trim() || undefined,
     projectSettings: settings,
     cutlist: parseCutlistContainer(data) ?? undefined,
   };
@@ -1248,12 +1249,17 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
 
   const nowIso = new Date().toISOString();
   const completedStatus = isCompletedClientProjectStatus(newStatus);
+  const completedAtIso =
+    completedStatus
+      ? String((project as unknown as Record<string, unknown>).completedAtIso || "").trim() || nowIso
+      : "";
   const nextProjectSnapshot: Project = {
     ...project,
     statusLabel: newStatus,
     status: toProjectStatus(newStatus),
     updatedAt: nowIso,
   };
+  (nextProjectSnapshot as unknown as Record<string, unknown>).completedAtIso = completedAtIso;
 
   try {
     const topLevelRef = doc(db, "projects", project.id);
@@ -1262,6 +1268,8 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
       await updateDoc(topLevelRef, {
         status: newStatus,
         updatedAtIso: nowIso,
+        completedAtIso,
+        completedAt: completedStatus ? serverTimestamp() : null,
       });
       if (normalizeClientEmail(project.clientEmail)) {
         await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
@@ -1293,6 +1301,8 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
     await updateDoc(jobsSnap.docs[0].ref, {
       status: newStatus,
       updatedAtIso: nowIso,
+      completedAtIso,
+      completedAt: completedStatus ? serverTimestamp() : null,
     });
     if (normalizeClientEmail(project.clientEmail)) {
       await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {

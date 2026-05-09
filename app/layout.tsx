@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import { AuthProvider } from "@/lib/auth-context";
 import "./globals.css";
@@ -8,6 +8,12 @@ export const metadata: Metadata = {
   description: "CutSmart web workspace for sales and production cutlists.",
 };
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -15,7 +21,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
+      <body className="cs-app" suppressHydrationWarning>
         <Script id="cutsmart-theme-boot" strategy="beforeInteractive">{`
           (function () {
             try {
@@ -35,8 +41,6 @@ export default function RootLayout({
             } catch (e) {}
           })();
         `}</Script>
-      </head>
-      <body className="cs-app" suppressHydrationWarning>
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

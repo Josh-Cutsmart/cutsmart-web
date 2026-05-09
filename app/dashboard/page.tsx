@@ -13,6 +13,7 @@ import {
   fetchCompanyMembers,
   fetchProjects,
   fetchUserColorMapByUids,
+  updateProjectPatch,
   updateProjectStatus,
 } from "@/lib/firestore-data";
 import type { CompanyMemberOption } from "@/lib/firestore-data";
@@ -20,6 +21,7 @@ import { projectTabAccess } from "@/lib/permissions";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
+import { retryAsync } from "@/lib/load-retry";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type StatusRow = { name: string; color: string };
 type RoleRow = { id: string; name: string; color: string };
@@ -30,7 +32,6 @@ const statCards = [
   { label: "Completed", key: "completed", icon: CheckCircle2, iconBg: "#50A279" },
   { label: "Staff Members", key: "staff", icon: Users2, iconBg: "#8A72CC" },
 ] as const;
-
 type QuickFilter = "all" | "active" | "completed";
 type DashboardLegendRow = { id: string; name: string; color: string };
 
@@ -111,7 +112,23 @@ function normalizeDashboardLegend(raw: unknown): DashboardLegendRow[] {
 
 function completedProjectIso(project: Project): string {
   const raw = project as unknown as Record<string, unknown>;
-  return String(raw.completedAtIso ?? project.updatedAt ?? project.createdAt ?? "").trim();
+  const completedAtIso = String(raw.completedAtIso ?? "").trim();
+  if (completedAtIso) return completedAtIso;
+  const completedAtRaw = raw.completedAt;
+  if (completedAtRaw instanceof Date && !Number.isNaN(completedAtRaw.getTime())) {
+    return completedAtRaw.toISOString();
+  }
+  if (
+    completedAtRaw &&
+    typeof completedAtRaw === "object" &&
+    typeof (completedAtRaw as { toDate?: () => Date }).toDate === "function"
+  ) {
+    const asDate = (completedAtRaw as { toDate: () => Date }).toDate();
+    if (asDate instanceof Date && !Number.isNaN(asDate.getTime())) {
+      return asDate.toISOString();
+    }
+  }
+  return String(project.createdAt ?? "").trim();
 }
 
 function monthKeyFromIso(iso: string): string {
@@ -195,6 +212,35 @@ function dashboardDate(value: string) {
   return `${date} | ${time}`;
 }
 
+function dashboardDateOnly(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return "-";
+  }
+  return new Intl.DateTimeFormat("en-NZ", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
+function isoToDateInputValue(value: string) {
+  const d = new Date(String(value || ""));
+  if (Number.isNaN(d.getTime())) return "";
+  const year = d.getFullYear();
+  const month = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dateInputValueToCompletedIso(value: string) {
+  const clean = String(value || "").trim();
+  if (!clean) return "";
+  const next = new Date(`${clean}T12:00:00`);
+  if (Number.isNaN(next.getTime())) return "";
+  return next.toISOString();
+}
+
 function initials(text: string) {
   const cleaned = String(text || "").trim();
   if (!cleaned) return "CU";
@@ -233,8 +279,12 @@ export default function DashboardPage() {
   const [completedMonthFrom, setCompletedMonthFrom] = useState("");
   const [completedMonthTo, setCompletedMonthTo] = useState("");
   const [completedCardRect, setCompletedCardRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [completedDateUpdatingProjectId, setCompletedDateUpdatingProjectId] = useState("");
+  const [completedLegendUpdatingProjectId, setCompletedLegendUpdatingProjectId] = useState("");
+  const [activeCompletedLegendId, setActiveCompletedLegendId] = useState("");
   const completedCardRef = useRef<HTMLDivElement | null>(null);
   const completedModalTimerRef = useRef<number | null>(null);
+  const completedDateInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffModalExpanded, setStaffModalExpanded] = useState(false);
   const [staffCardRect, setStaffCardRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
@@ -305,14 +355,32 @@ export default function DashboardPage() {
       if (!cancelled) {
         setCompanyAccessResolved(false);
       }
-      const storedCompanyId =
-        typeof window !== "undefined"
-          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-          : "";
-      const directCompanyId = String(user?.companyId || "").trim();
-      const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
-      const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-      if (!user?.uid || !companyId) {
+      try {
+        const storedCompanyId =
+          typeof window !== "undefined"
+            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+            : "";
+        const directCompanyId = String(user?.companyId || "").trim();
+        const fallbackMembership = !directCompanyId && user?.uid
+          ? await retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 })
+          : null;
+        const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
+        if (!user?.uid || !companyId) {
+          if (!cancelled) {
+            setEffectiveCompanyRole(String(user?.role || "").trim().toLowerCase());
+            setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
+            setCompanyAccessResolved(true);
+          }
+          return;
+        }
+        const companyAccess = await retryAsync(() => fetchCompanyAccess(companyId, user.uid!), {
+          attempts: 2,
+          delayMs: 250,
+        });
+        if (cancelled) return;
+        setEffectiveCompanyRole(String(companyAccess?.role || user?.role || "").trim().toLowerCase());
+        setEffectiveCompanyPermissions(companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []));
+      } catch {
         if (!cancelled) {
           setEffectiveCompanyRole(String(user?.role || "").trim().toLowerCase());
           setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
@@ -320,11 +388,9 @@ export default function DashboardPage() {
         }
         return;
       }
-      const companyAccess = await fetchCompanyAccess(companyId, user.uid);
-      if (cancelled) return;
-      setEffectiveCompanyRole(String(companyAccess?.role || user?.role || "").trim().toLowerCase());
-      setEffectiveCompanyPermissions(companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []));
-      setCompanyAccessResolved(true);
+      if (!cancelled) {
+        setCompanyAccessResolved(true);
+      }
     };
     void loadCompanyAccess();
     return () => {
@@ -333,41 +399,79 @@ export default function DashboardPage() {
   }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
-      const storedCompanyId =
-        typeof window !== "undefined"
-          ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-          : "";
-      const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
-      const items = await fetchProjects(user?.uid, preferredCompanyIds);
-      setAllProjects(items);
-      const fallbackCompanyId = String(items[0]?.companyId || "").trim();
-      const companyId = storedCompanyId || fallbackCompanyId;
-      const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
-      const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
-      const userColorMap = await fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId);
-      setCreatorColorByUid(userColorMap);
-      if (companyId) {
-        const [companyDoc, members] = await Promise.all([
-          fetchCompanyDoc(companyId),
-          fetchCompanyMembers(companyId),
-        ]);
-        setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
-        setDashboardLegendRows(normalizeDashboardLegend((companyDoc as Record<string, unknown> | null)?.dashboardCompleteLegend));
-        setCompanyMembers(members);
-        setRoleRows(normalizeRoleRows((companyDoc as Record<string, unknown> | null)?.roles));
-        const themeColor = String((companyDoc as Record<string, unknown> | null)?.themeColor ?? "").trim();
-        if (themeColor) setCompanyThemeColor(themeColor);
-      } else {
+      if (!cancelled) {
+        setIsLoading(true);
+      }
+      try {
+        const storedCompanyId =
+          typeof window !== "undefined"
+            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+            : "";
+        const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
+        const items = await retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds), {
+          attempts: 2,
+          delayMs: 350,
+          shouldRetryResult: (value, attempt) =>
+            attempt === 1 &&
+            preferredCompanyIds.length > 0 &&
+            Array.isArray(value) &&
+            value.length === 0,
+        });
+        if (cancelled) return;
+        setAllProjects(items);
+        const fallbackCompanyId = String(items[0]?.companyId || "").trim();
+        const companyId = storedCompanyId || fallbackCompanyId;
+        const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
+        const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
+        const userColorMap = await retryAsync(
+          () => fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId),
+          { attempts: 2, delayMs: 250 },
+        );
+        if (cancelled) return;
+        setCreatorColorByUid(userColorMap);
+        if (companyId) {
+          const [companyDoc, members] = await retryAsync(
+            () =>
+              Promise.all([
+                fetchCompanyDoc(companyId),
+                fetchCompanyMembers(companyId),
+              ]),
+            { attempts: 2, delayMs: 250 },
+          );
+          if (cancelled) return;
+          setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
+          setDashboardLegendRows(normalizeDashboardLegend((companyDoc as Record<string, unknown> | null)?.dashboardCompleteLegend));
+          setCompanyMembers(members);
+          setRoleRows(normalizeRoleRows((companyDoc as Record<string, unknown> | null)?.roles));
+          const themeColor = String((companyDoc as Record<string, unknown> | null)?.themeColor ?? "").trim();
+          if (themeColor) setCompanyThemeColor(themeColor);
+        } else {
+          setStatusRows(normalizeStatuses(undefined));
+          setDashboardLegendRows([]);
+          setCompanyMembers([]);
+          setRoleRows([]);
+        }
+      } catch {
+        if (cancelled) return;
+        setAllProjects([]);
+        setCreatorColorByUid({});
         setStatusRows(normalizeStatuses(undefined));
         setDashboardLegendRows([]);
         setCompanyMembers([]);
         setRoleRows([]);
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
-      setIsLoading(false);
     };
     void load();
-  }, [user?.uid]);
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.companyId, user?.uid]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -532,7 +636,6 @@ export default function DashboardPage() {
     };
   }, []);
 
-
   const filtered = useMemo(() => {
     let rows = allProjects.filter((project) => {
       const statusLabel = String(project.statusLabel || "New");
@@ -638,6 +741,17 @@ export default function DashboardPage() {
     setCompletedMonthTo((prev) => (prev && completedMonthOptions.includes(prev) ? prev : completedMonthOptions[0]));
   }, [completedMonthOptions]);
 
+  useEffect(() => {
+    if (!dashboardLegendRows.length) {
+      if (activeCompletedLegendId) {
+        setActiveCompletedLegendId("");
+      }
+      return;
+    }
+    if (dashboardLegendRows.some((row) => row.id === activeCompletedLegendId)) return;
+    setActiveCompletedLegendId(dashboardLegendRows[0]?.id || "");
+  }, [activeCompletedLegendId, dashboardLegendRows]);
+
   const filteredCompletedProjects = useMemo(() => {
     const fromValue = monthSortValue(completedMonthFrom);
     const toValue = monthSortValue(completedMonthTo);
@@ -737,6 +851,71 @@ export default function DashboardPage() {
     }, 420);
   };
 
+  const onSelectCompletedProjectDate = async (project: Project, nextDateValue: string) => {
+    const nextIso = dateInputValueToCompletedIso(nextDateValue);
+    if (!nextIso) return;
+    setCompletedDateUpdatingProjectId(project.id);
+    const ok = await updateProjectPatch(project, { completedAtIso: nextIso });
+    if (ok) {
+      setAllProjects((prev) =>
+        prev.map((row) =>
+          row.id === project.id
+            ? (Object.assign({}, row, { completedAtIso: nextIso, updatedAt: new Date().toISOString() }) as Project)
+            : row,
+        ),
+      );
+    }
+    setCompletedDateUpdatingProjectId("");
+  };
+
+  const onApplyCompletedProjectLegend = async (project: Project) => {
+    const nextLegendId = String(activeCompletedLegendId || "").trim();
+    if (!nextLegendId) return;
+    const rawProject = project as unknown as Record<string, unknown>;
+    const currentLegendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
+    if (currentLegendId === nextLegendId) return;
+    const stableCompletedIso = completedProjectIso(project);
+    setCompletedLegendUpdatingProjectId(project.id);
+    const patch: Record<string, unknown> = { dashboardCompleteStatusId: nextLegendId };
+    if (!String(rawProject.completedAtIso ?? "").trim() && stableCompletedIso) {
+      patch.completedAtIso = stableCompletedIso;
+    }
+    const ok = await updateProjectPatch(project, patch);
+    if (ok) {
+      setAllProjects((prev) =>
+        prev.map((row) =>
+          row.id === project.id
+            ? (Object.assign(
+                {},
+                row,
+                {
+                  dashboardCompleteStatusId: nextLegendId,
+                  completedAtIso: String((row as unknown as Record<string, unknown>).completedAtIso ?? "").trim() || stableCompletedIso,
+                },
+              ) as Project)
+            : row,
+        ),
+      );
+    }
+    setCompletedLegendUpdatingProjectId("");
+  };
+
+  const openCompletedDatePicker = (projectId: string) => {
+    const input = completedDateInputRefs.current[projectId];
+    if (!input) return;
+    const picker = input as HTMLInputElement & { showPicker?: () => void };
+    try {
+      if (typeof picker.showPicker === "function") {
+        picker.showPicker();
+        return;
+      }
+    } catch {
+      // Fall back to focus/click for browsers that gate showPicker.
+    }
+    input.focus();
+    input.click();
+  };
+
   const completedProjectsModal =
     showCompletedProjectsModal && typeof document !== "undefined"
       ? createPortal(
@@ -819,16 +998,27 @@ export default function DashboardPage() {
                       <div className="flex min-h-[46px] flex-wrap items-center gap-3 rounded-[14px] border px-3 py-2" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
                         <p className="text-[13px] font-extrabold uppercase tracking-[1px]" style={{ color: dashboardPalette.text }}>Completed Projects</p>
                         {dashboardLegendRows.length > 0 ? (
-                          <div className="flex flex-wrap items-center gap-3">
-                            {dashboardLegendRows.map((item) => (
-                              <div key={item.id} className="flex items-center gap-1">
-                                <span
-                                  className="inline-block h-[10px] w-[10px] rounded-[2px] border"
-                                  style={{ borderColor: dashboardPalette.textMuted, backgroundColor: item.color }}
-                                />
-                                <span className="text-[11px] font-bold" style={{ color: dashboardPalette.textSoft }}>= {item.name}</span>
-                              </div>
-                            ))}
+                          <div className="flex flex-wrap items-center gap-2">
+                            {dashboardLegendRows.map((item) => {
+                              const isActive = activeCompletedLegendId === item.id;
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  onClick={() => setActiveCompletedLegendId(item.id)}
+                                  className="inline-flex h-7 min-w-[28px] items-center justify-center rounded-[999px] border px-2 transition hover:opacity-90"
+                                  style={{
+                                    borderColor: isActive ? dashboardPalette.text : dashboardPalette.border,
+                                    backgroundColor: item.color,
+                                    boxShadow: isActive ? `0 0 0 1px ${dashboardPalette.text}` : "none",
+                                  }}
+                                  title={item.name || "Completed color"}
+                                  aria-label={item.name || "Completed color"}
+                                >
+                                  <span className="sr-only">{item.name || "Completed color"}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                         ) : null}
                         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -875,7 +1065,7 @@ export default function DashboardPage() {
                           No completed projects yet.
                         </div>
                       ) : (
-                        <div className="space-y-3">
+                        <div className="grid gap-3 lg:grid-cols-3">
                           {completedProjectsByMonth.map(([monthKey, rows]) => (
                             <section key={`completed_month_${monthKey}`} className="overflow-hidden rounded-[14px] border" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelAlt }}>
                               <div className="flex h-[42px] items-center justify-between border-b px-3" style={{ borderBottomColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}>
@@ -884,35 +1074,73 @@ export default function DashboardPage() {
                                   {rows.length} Projects
                                 </span>
                               </div>
-                              <div className="space-y-2 p-3">
-                                {rows.map(({ project, completedIso }) => {
+                              <div className="p-3">
+                                {rows.map(({ project, completedIso }, index) => {
                                   const rawProject = project as unknown as Record<string, unknown>;
                                   const legendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
                                   const legendMatch = dashboardLegendRows.find((row) => row.id === legendId);
-                                  const fill = legendMatch?.color || "#F5F6F8";
-                                  const textColor = legendMatch ? rowTextColorForFill(fill) : "#111827";
-                                  const dateColor = legendMatch ? (textColor === "#FFFFFF" ? "#EAF2FF" : "#475569") : "#6B7280";
+                                  const rowFillColor = legendMatch?.color || "";
+                                  const rowHasFill = Boolean(rowFillColor);
+                                  const rowTextColor = rowHasFill ? rowTextColorForFill(rowFillColor) : dashboardPalette.text;
+                                  const rowDateColor = rowHasFill ? rowTextColor : dashboardPalette.textMuted;
+                                  const isDateUpdating = completedDateUpdatingProjectId === project.id;
+                                  const isLegendUpdating = completedLegendUpdatingProjectId === project.id;
+                                  const canApplyLegend = Boolean(activeCompletedLegendId) && !isDateUpdating && !isLegendUpdating;
                                   return (
-                                    <button
+                                    <div
                                       key={`completed_project_${project.id}`}
-                                      type="button"
+                                      className="relative flex items-center justify-between gap-3 px-1 py-2.5"
                                       onClick={() => {
-                                        onCloseCompletedProjectsModal();
-                                        void openProjectInDashboard(project.id);
+                                        if (!canApplyLegend) return;
+                                        void onApplyCompletedProjectLegend(project);
                                       }}
-                                      className="flex w-full items-center justify-between rounded-[10px] border px-3 py-2 text-left transition hover:brightness-[0.98]"
                                       style={{
-                                        backgroundColor: fill,
-                                        borderColor: legendMatch ? fill : "#DEE4EC",
+                                        borderTop: index > 0 ? `1px solid ${dashboardPalette.border}` : "none",
+                                        backgroundColor: rowFillColor || "transparent",
+                                        cursor: canApplyLegend ? "pointer" : "default",
                                       }}
                                     >
-                                      <span className="text-[13px] font-bold" style={{ color: textColor }}>
-                                        {project.name || "Untitled"}
-                                      </span>
-                                      <span className="text-[12px] font-bold" style={{ color: dateColor }}>
-                                        {dashboardDate(completedIso)}
-                                      </span>
-                                    </button>
+                                      <div className="min-w-0 flex-1">
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            onCloseCompletedProjectsModal();
+                                            void openProjectInDashboard(project.id);
+                                          }}
+                                          className="inline-flex max-w-full text-left transition hover:opacity-80"
+                                        >
+                                          <span className="block truncate pr-3 text-[13px] font-bold" style={{ color: rowTextColor }}>
+                                            {project.name || "Untitled"}
+                                          </span>
+                                        </button>
+                                      </div>
+                                      <div className="relative shrink-0">
+                                        <input
+                                          type="date"
+                                          ref={(node) => {
+                                            completedDateInputRefs.current[project.id] = node;
+                                          }}
+                                          value={isoToDateInputValue(completedIso)}
+                                          onChange={(event) => void onSelectCompletedProjectDate(project, event.currentTarget.value)}
+                                          tabIndex={-1}
+                                          aria-hidden="true"
+                                          className="pointer-events-none absolute h-0 w-0 opacity-0"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            openCompletedDatePicker(project.id);
+                                          }}
+                                          disabled={isDateUpdating}
+                                          className="text-[12px] font-bold transition hover:opacity-80 disabled:cursor-wait"
+                                          style={{ color: rowDateColor }}
+                                        >
+                                          {dashboardDateOnly(completedIso)}
+                                        </button>
+                                      </div>
+                                    </div>
                                   );
                                 })}
                               </div>

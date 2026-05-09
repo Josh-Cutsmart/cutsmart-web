@@ -7,6 +7,7 @@ import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import {
   Building2,
+  CalendarDays,
   ImagePlus,
   Inbox,
   LayoutDashboard,
@@ -75,6 +76,7 @@ const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/leads", label: "Leads", icon: Inbox },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
   { href: "/changelog", label: "Changelog", icon: Search },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
@@ -1634,7 +1636,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       };
 
   return (
-    <div className="min-h-screen bg-[var(--bg-app)]" data-theme-mode={themeMode} style={{ backgroundColor: shellPalette.appBg, color: shellPalette.text }}>
+    <div
+      className={cn(
+        "min-h-screen bg-[var(--bg-app)]",
+        isProjectDetailsRoute ? "lg:h-[100dvh] lg:overflow-hidden" : "",
+      )}
+      data-theme-mode={themeMode}
+      style={{ backgroundColor: shellPalette.appBg, color: shellPalette.text }}
+    >
       <header
         className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden"
         style={{ backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}
@@ -1651,41 +1660,60 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               <Menu size={18} />
             </button>
           )}
-          {isProjectDetailsRoute && (
-            <button
-              type="button"
-              onClick={() => router.push("/dashboard")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border bg-white text-[#334155]"
-              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
-              aria-label="Back to projects"
-              title="Back to projects"
-            >
-              <img
-                src="/angle-left.png"
-                alt="Back"
-                className="h-4 w-4 object-contain"
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
-            </button>
-          )}
         </div>
-        <div className="flex items-center gap-2">
-          <div className="rounded-[8px] border border-[var(--panel-border)] bg-[var(--brand)] p-1.5 text-white">
-            <Building2 size={14} />
-          </div>
-          <p className="text-[12px] font-bold text-[var(--text-main)]" style={{ color: shellPalette.text }}>CutSmart</p>
-        </div>
-        {canCreateProject && (
-          <button
-            type="button"
-            onClick={() => setShowNewProject(true)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#159947] bg-[#22C55E] text-white hover:bg-[#16A34A]"
-            aria-label="New project"
-          >
-            <Plus size={20} strokeWidth={2.8} />
-          </button>
+        {isProjectDetailsRoute ? (
+          <>
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              {canCreateProject && (
+                <button
+                  type="button"
+                  onClick={() => setShowNewProject(true)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#159947] bg-[#22C55E] text-white hover:bg-[#16A34A]"
+                  aria-label="New project"
+                >
+                  <Plus size={20} strokeWidth={2.8} />
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => router.push("/dashboard")}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border bg-white text-[#334155]"
+                style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
+                aria-label="Back to projects"
+                title="Back to projects"
+              >
+                <img
+                  src="/angle-left.png"
+                  alt="Back"
+                  className="h-4 w-4 object-contain"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <div className="rounded-[8px] border border-[var(--panel-border)] bg-[var(--brand)] p-1.5 text-white">
+                <Building2 size={14} />
+              </div>
+              <p className="text-[12px] font-bold text-[var(--text-main)]" style={{ color: shellPalette.text }}>CutSmart</p>
+            </div>
+            {canCreateProject && (
+              <button
+                type="button"
+                onClick={() => setShowNewProject(true)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#159947] bg-[#22C55E] text-white hover:bg-[#16A34A]"
+                aria-label="New project"
+              >
+                <Plus size={20} strokeWidth={2.8} />
+              </button>
+            )}
+          </>
         )}
       </header>
 
@@ -1934,10 +1962,25 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       )}
 
       <div
-        className="min-w-0 overflow-x-hidden pt-14 lg:pt-0"
+        className={cn(
+          "min-w-0 overflow-x-hidden pt-14 lg:pt-0",
+          isProjectDetailsRoute ? "lg:h-[100dvh] lg:overflow-hidden" : "",
+        )}
         style={{ width: "100%", paddingLeft: 0 }}
       >
-        <main className="min-w-0 overflow-x-clip px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4" style={{ paddingLeft: "max(12px, env(safe-area-inset-left))", paddingRight: "max(12px, env(safe-area-inset-right))", marginLeft: "0" }}>
+        <main
+          className={cn(
+            "min-h-0 h-[calc(100dvh-56px)] min-w-0 overflow-x-clip overflow-y-auto overscroll-y-contain px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4",
+            isProjectDetailsRoute ? "lg:h-[100dvh] lg:box-border lg:overflow-y-auto" : "lg:h-auto lg:overflow-y-visible",
+          )}
+          style={{
+            paddingLeft: "max(12px, env(safe-area-inset-left))",
+            paddingRight: "max(12px, env(safe-area-inset-right))",
+            paddingBottom: "max(12px, env(safe-area-inset-bottom))",
+            marginLeft: "0",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
           <div className={hideSidebar ? "" : "lg:ml-[230px]"}>{children}</div>
         </main>
       </div>

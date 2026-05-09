@@ -61,6 +61,7 @@ export interface Project {
   projectFiles?: Array<Record<string, unknown>>;
   projectImages?: string[];
   projectImageItems?: ProjectImageItem[];
+  dashboardCompleteStatusId?: string;
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
 }
