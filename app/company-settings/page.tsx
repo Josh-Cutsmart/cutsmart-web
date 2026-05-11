@@ -37,11 +37,20 @@ type BoardColourMemoryRow = { value: string; count: string };
 type RoleRow = { id: string; name: string; color: string; permissions: string[] };
 type DashboardLegendRow = { id: string; name: string; color: string };
 type TagUsageRow = { value: string; count: string };
-type ItemCategoryItemRow = { name: string; subcategory: string; price: string; markupPercent: string };
+type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
 type ItemCategoryRow = { name: string; color: string; subcategories: string; items: ItemCategoryItemRow[] };
 type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
 type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; grain: boolean };
 type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
+type GapAllowancesSettings = {
+  baseBelowBenchToTopOfDoorDrawer: string;
+  baseHorizontalGapNormalHandles: string;
+  baseHorizontalGapWrapOverHandles: string;
+  baseVerticalGapDoorsPanels: string;
+  tallTopOfDoorToTopWithScribers: string;
+  tallTopOfDoorToTopNoScribers: string;
+  tallVerticalGapDoorsPanels: string;
+};
 type PartTypeCategory = "" | "cabinetry" | "drawer" | "door";
 type PartTypeRow = {
   name: string;
@@ -585,6 +594,7 @@ function normalizeItemCategories(raw: unknown): ItemCategoryRow[] {
       const items = Array.isArray(row.items)
         ? (row.items as Array<Record<string, unknown>>).map((it) => ({
             name: toStr(it?.name),
+            description: toStr(it?.description),
             subcategory: toStr(it?.subcategory),
             price: toStr(it?.price),
             markupPercent: toStr(it?.markupPercent),
@@ -695,6 +705,19 @@ function normalizeEdgebandingSettings(raw: unknown): {
     roundEnabled: Boolean(obj.roundEnabled ?? false),
     roundDirection: toStr(obj.roundDirection).toLowerCase() === "down" ? "down" : "up",
     roundNearestMeters: toStr(obj.roundNearestMeters),
+  };
+}
+
+function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
+  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    baseBelowBenchToTopOfDoorDrawer: toStr(row.baseBelowBenchToTopOfDoorDrawer),
+    baseHorizontalGapNormalHandles: toStr(row.baseHorizontalGapNormalHandles),
+    baseHorizontalGapWrapOverHandles: toStr(row.baseHorizontalGapWrapOverHandles),
+    baseVerticalGapDoorsPanels: toStr(row.baseVerticalGapDoorsPanels),
+    tallTopOfDoorToTopWithScribers: toStr(row.tallTopOfDoorToTopWithScribers),
+    tallTopOfDoorToTopNoScribers: toStr(row.tallTopOfDoorToTopNoScribers),
+    tallVerticalGapDoorsPanels: toStr(row.tallVerticalGapDoorsPanels),
   };
 }
 
@@ -1178,6 +1201,15 @@ export default function CompanySettingsPage() {
   const [edgebandingRoundEnabled, setEdgebandingRoundEnabled] = useState(false);
   const [edgebandingRoundDirection, setEdgebandingRoundDirection] = useState<"up" | "down">("up");
   const [edgebandingRoundNearestMeters, setEdgebandingRoundNearestMeters] = useState("");
+  const [gapAllowances, setGapAllowances] = useState<GapAllowancesSettings>({
+    baseBelowBenchToTopOfDoorDrawer: "",
+    baseHorizontalGapNormalHandles: "",
+    baseHorizontalGapWrapOverHandles: "",
+    baseVerticalGapDoorsPanels: "",
+    tallTopOfDoorToTopWithScribers: "",
+    tallTopOfDoorToTopNoScribers: "",
+    tallVerticalGapDoorsPanels: "",
+  });
   const [unlockSuffix, setUnlockSuffix] = useState("");
   const [unlockHours, setUnlockHours] = useState("6");
   const [zapierLeads, setZapierLeads] = useState<ZapierLeadsSettings>({ enabled: false, webhookSecret: "", fieldLayout: [] });
@@ -1370,6 +1402,7 @@ export default function CompanySettingsPage() {
         setEdgebandingRoundEnabled(edgeSettings.roundEnabled);
         setEdgebandingRoundDirection(edgeSettings.roundDirection);
         setEdgebandingRoundNearestMeters(edgeSettings.roundNearestMeters);
+        setGapAllowances(normalizeGapAllowancesSettings(doc.gapAllowancesSettings));
         setUnlockSuffix(toStr(doc.productionUnlockPasswordSuffix));
         setUnlockHours(toStr(doc.productionUnlockDurationHours, "6"));
         const integrationsDoc =
@@ -1885,7 +1918,7 @@ export default function CompanySettingsPage() {
       prev.map((row, i) => {
         if (i !== index) return row;
         const firstSub = parseSubcategoryNames(row.subcategories)[0] ?? "";
-        const nextItems = [...(row.items ?? []), { name: "", subcategory: firstSub, price: "$0.00", markupPercent: "0" }];
+        const nextItems = [...(row.items ?? []), { name: "", description: "", subcategory: firstSub, price: "$0.00", markupPercent: "0" }];
         return { ...row, items: nextItems };
       }),
     );
@@ -2322,6 +2355,15 @@ export default function CompanySettingsPage() {
           return Number.isFinite(n) && n > 0 ? n : 0;
         })(),
       },
+      gapAllowancesSettings: {
+        baseBelowBenchToTopOfDoorDrawer: toStr(gapAllowances.baseBelowBenchToTopOfDoorDrawer),
+        baseHorizontalGapNormalHandles: toStr(gapAllowances.baseHorizontalGapNormalHandles),
+        baseHorizontalGapWrapOverHandles: toStr(gapAllowances.baseHorizontalGapWrapOverHandles),
+        baseVerticalGapDoorsPanels: toStr(gapAllowances.baseVerticalGapDoorsPanels),
+        tallTopOfDoorToTopWithScribers: toStr(gapAllowances.tallTopOfDoorToTopWithScribers),
+        tallTopOfDoorToTopNoScribers: toStr(gapAllowances.tallTopOfDoorToTopNoScribers),
+        tallVerticalGapDoorsPanels: toStr(gapAllowances.tallVerticalGapDoorsPanels),
+      },
       productionUnlockPasswordSuffix: unlockSuffix.replace(/\D/g, ""),
       productionUnlockDurationHours: Number(unlockHours || 6),
       roles: roles
@@ -2349,6 +2391,7 @@ export default function CompanySettingsPage() {
               if (!itemName) return null;
               return {
                 name: itemName,
+                description: toStr(item.description),
                 subcategory: toStr(item.subcategory),
                 price: ensureDollarFormat(toStr(item.price, "$0.00")),
                 markupPercent: toStr(item.markupPercent, "0"),
@@ -2473,6 +2516,7 @@ export default function CompanySettingsPage() {
           roundDirection: edgebandingRoundDirection,
           roundNearestMeters: edgebandingRoundNearestMeters,
         },
+        gapAllowancesSettings: gapAllowances,
         productionUnlockPasswordSuffix: unlockSuffix,
         productionUnlockDurationHours: unlockHours,
         roles,
@@ -3287,7 +3331,7 @@ export default function CompanySettingsPage() {
                       <input value={unlockHours} onChange={(e) => setUnlockHours(e.target.value)} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
                     </div>
                   </Panel>
-                  <div className="xl:col-span-2">
+                  <div className="xl:col-span-2 grid gap-3 xl:grid-cols-2">
                     <Panel title="Edgebanding">
                       <div className="space-y-2 text-[12px]">
                         {edgebandingRules.map((rule, idx) => (
@@ -3353,6 +3397,62 @@ export default function CompanySettingsPage() {
                             className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:opacity-50"
                           />
                           <p className="font-bold text-[#64748B]">m.</p>
+                        </div>
+                      </div>
+                    </Panel>
+                    <Panel title="Gap Allowances">
+                      <div className="grid gap-4 xl:grid-cols-2">
+                        <div className="space-y-2">
+                          <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#667085]">Base Cabinets</p>
+                          <div className="grid grid-cols-[45px_1fr] items-center gap-2 text-[12px]">
+                            <input
+                              value={gapAllowances.baseBelowBenchToTopOfDoorDrawer}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseBelowBenchToTopOfDoorDrawer: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Below bench to top of door/drawer</p>
+                            <input
+                              value={gapAllowances.baseHorizontalGapNormalHandles}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseHorizontalGapNormalHandles: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Horizontal gap between drawers (Normal handles)</p>
+                            <input
+                              value={gapAllowances.baseHorizontalGapWrapOverHandles}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseHorizontalGapWrapOverHandles: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Horizontal gap between drawers (Wrap over handles)</p>
+                            <input
+                              value={gapAllowances.baseVerticalGapDoorsPanels}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseVerticalGapDoorsPanels: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Vertical gap between doors / panels</p>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#667085]">Tall Cabinets</p>
+                          <div className="grid grid-cols-[45px_1fr] items-center gap-2 text-[12px]">
+                            <input
+                              value={gapAllowances.tallTopOfDoorToTopWithScribers}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, tallTopOfDoorToTopWithScribers: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Top of door to top of cabinet (top scribers)</p>
+                            <input
+                              value={gapAllowances.tallTopOfDoorToTopNoScribers}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, tallTopOfDoorToTopNoScribers: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Top of door to top of cabinet (no top scribers)</p>
+                            <input
+                              value={gapAllowances.tallVerticalGapDoorsPanels}
+                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, tallVerticalGapDoorsPanels: e.target.value }))}
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            />
+                            <p className="text-[#334155]">Vertical gap between doors / panels</p>
+                          </div>
                         </div>
                       </div>
                     </Panel>
@@ -4403,9 +4503,10 @@ export default function CompanySettingsPage() {
                               className="rounded-[10px] border p-2"
                               style={{ backgroundColor: tintHex(row.color, 0.82), borderColor: row.color || "#7D99B3" }}
                             >
-                              <div className="mb-2 grid grid-cols-[30px_1fr_220px_140px_140px_150px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                              <div className="mb-2 grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
                                 <p></p>
                                 <p>Name</p>
+                                <p>Description</p>
                                 <p>Sub Category</p>
                                 <p>Price</p>
                                 <p>Markup %</p>
@@ -4415,7 +4516,7 @@ export default function CompanySettingsPage() {
                                 {(row.items ?? []).map((itemRow, itemIdx) => {
                                   const subcategoryOptions = parseSubcategoryNames(row.subcategories);
                                   return (
-                                    <div key={`${idx}_item_${itemIdx}`} className="grid grid-cols-[30px_1fr_220px_140px_140px_150px] items-center gap-2">
+                                    <div key={`${idx}_item_${itemIdx}`} className="grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2">
                                       <button
                                         type="button"
                                         onClick={() => removeItemCategoryItem(idx, itemIdx)}
@@ -4427,6 +4528,11 @@ export default function CompanySettingsPage() {
                                       <input
                                         value={itemRow.name}
                                         onChange={(e) => updateItemCategoryItem(idx, itemIdx, { name: e.target.value })}
+                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                      />
+                                      <input
+                                        value={itemRow.description}
+                                        onChange={(e) => updateItemCategoryItem(idx, itemIdx, { description: e.target.value })}
                                         className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
                                       />
                                       <select

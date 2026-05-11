@@ -69,8 +69,31 @@ type CompanyAccessCache = {
   cachedAt: number;
 };
 
+type GapAllowancesSettings = {
+  baseBelowBenchToTopOfDoorDrawer: string;
+  baseHorizontalGapNormalHandles: string;
+  baseHorizontalGapWrapOverHandles: string;
+  baseVerticalGapDoorsPanels: string;
+  tallTopOfDoorToTopWithScribers: string;
+  tallTopOfDoorToTopNoScribers: string;
+  tallVerticalGapDoorsPanels: string;
+};
+
 const brandingMemoryCacheByCompany: Record<string, CompanyBrandingCache> = {};
 const companyAccessMemoryCacheByKey: Record<string, CompanyAccessCache> = {};
+
+function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
+  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    baseBelowBenchToTopOfDoorDrawer: String(row.baseBelowBenchToTopOfDoorDrawer ?? "").trim(),
+    baseHorizontalGapNormalHandles: String(row.baseHorizontalGapNormalHandles ?? "").trim(),
+    baseHorizontalGapWrapOverHandles: String(row.baseHorizontalGapWrapOverHandles ?? "").trim(),
+    baseVerticalGapDoorsPanels: String(row.baseVerticalGapDoorsPanels ?? "").trim(),
+    tallTopOfDoorToTopWithScribers: String(row.tallTopOfDoorToTopWithScribers ?? "").trim(),
+    tallTopOfDoorToTopNoScribers: String(row.tallTopOfDoorToTopNoScribers ?? "").trim(),
+    tallVerticalGapDoorsPanels: String(row.tallVerticalGapDoorsPanels ?? "").trim(),
+  };
+}
 
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -325,6 +348,15 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [companyTagSuggestions, setCompanyTagSuggestions] = useState<string[]>([]);
   const [defaultProjectStatus, setDefaultProjectStatus] = useState("New");
   const [defaultQuoteExtras, setDefaultQuoteExtras] = useState<string[]>([]);
+  const [defaultGapAllowancesSettings, setDefaultGapAllowancesSettings] = useState<GapAllowancesSettings>({
+    baseBelowBenchToTopOfDoorDrawer: "",
+    baseHorizontalGapNormalHandles: "",
+    baseHorizontalGapWrapOverHandles: "",
+    baseVerticalGapDoorsPanels: "",
+    tallTopOfDoorToTopWithScribers: "",
+    tallTopOfDoorToTopNoScribers: "",
+    tallVerticalGapDoorsPanels: "",
+  });
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
@@ -872,26 +904,28 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   }, [canCreateProject]);
 
   useEffect(() => {
-    if (!showNewProject) {
-      setAssigneeMenuOpen(false);
-      setAssigneeSearch("");
-      setCompanyTagSuggestions([]);
-      setDefaultProjectStatus("New");
-      setDefaultQuoteExtras([]);
-      return;
-    }
+      if (!showNewProject) {
+        setAssigneeMenuOpen(false);
+        setAssigneeSearch("");
+        setCompanyTagSuggestions([]);
+        setDefaultProjectStatus("New");
+        setDefaultQuoteExtras([]);
+        setDefaultGapAllowancesSettings(normalizeGapAllowancesSettings(null));
+        return;
+      }
     const load = async () => {
       const storedCompanyId =
         typeof window !== "undefined"
           ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
           : "";
       const directCompanyId = String(user?.companyId || "").trim();
-      const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
-      const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-      if (!companyId) {
-        setStaffOptions([]);
-        return;
-      }
+        const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
+        const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
+        if (!companyId) {
+          setStaffOptions([]);
+          setDefaultGapAllowancesSettings(normalizeGapAllowancesSettings(null));
+          return;
+        }
       const [companyDocData, members] = await Promise.all([
         fetchCompanyDoc(companyId),
         canCreateForOthers ? fetchCompanyMembers(companyId) : Promise.resolve([]),
@@ -925,13 +959,16 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       const rawQuoteExtras = Array.isArray((companyDocData as Record<string, unknown> | null)?.quoteExtras)
         ? (((companyDocData as Record<string, unknown>).quoteExtras as unknown[]) ?? [])
         : [];
-      const defaultExtras = rawQuoteExtras
-        .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>) : null))
-        .filter((item) => !!item)
-        .filter((item) => Boolean(item?.defaultIncluded ?? item?.default))
-        .map((item) => String(item?.id ?? item?.name ?? "").trim())
-        .filter(Boolean);
-      setDefaultQuoteExtras(Array.from(new Set(defaultExtras)));
+        const defaultExtras = rawQuoteExtras
+          .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>) : null))
+          .filter((item) => !!item)
+          .filter((item) => Boolean(item?.defaultIncluded ?? item?.default))
+          .map((item) => String(item?.id ?? item?.name ?? "").trim())
+          .filter(Boolean);
+        setDefaultQuoteExtras(Array.from(new Set(defaultExtras)));
+        setDefaultGapAllowancesSettings(
+          normalizeGapAllowancesSettings((companyDocData as Record<string, unknown> | null)?.gapAllowancesSettings),
+        );
 
       if (canCreateForOthers) {
         const options = members.map((m) => {
@@ -1101,11 +1138,12 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     setPreviewClosePopped(false);
     setAssigneeSearch("");
     setAssigneeMenuOpen(false);
-    setProjectFormError("");
-    setCompanyTagSuggestions([]);
-    setDefaultProjectStatus("New");
-    setDefaultQuoteExtras([]);
-  };
+      setProjectFormError("");
+      setCompanyTagSuggestions([]);
+      setDefaultProjectStatus("New");
+      setDefaultQuoteExtras([]);
+      setDefaultGapAllowancesSettings(normalizeGapAllowancesSettings(null));
+    };
 
   const addTag = (raw: string) => {
     const next = normalizeTagValue(raw);
@@ -1460,10 +1498,11 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       ]
         .filter((item) => item.url)
         .slice(0, 10);
-      const projectSettings = {
-        boardTypes: [],
-        projectPermissions: {},
-      };
+        const projectSettings = {
+          boardTypes: [],
+          projectPermissions: {},
+          gapAllowancesSettings: defaultGapAllowancesSettings,
+        };
       const sales = {
         rooms: [],
         quoteExtrasIncluded: defaultQuoteExtras,

@@ -945,11 +945,14 @@ type ProductionFormState = {
     footHeight: string;
     hobCentre: string;
     hobSide: string;
+    topScribers: boolean;
   };
   hardware: {
     hardwareCategory: string;
     newDrawerType: string;
     hingeType: string;
+    standardHandles: boolean;
+    wrapOverHandles: boolean;
   };
   boardTypes: ProductionBoardRow[];
 };
@@ -958,12 +961,23 @@ type OrderHingeRow = { id: string; name: string; qty: string };
 
 type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock" | "print";
 type SalesNav = "initial" | "items" | "quote" | "specifications";
+type DoorModeValue = "" | "manual" | "door" | "drawer";
 type CutlistRow = {
   id: string;
   room: string;
   partType: string;
   board: string;
   name: string;
+  doorMode?: DoorModeValue;
+  doorFrontCount?: string;
+  doorTopGap?: string;
+  doorBetweenGap?: string;
+  doorSideLeft?: "front" | "panel";
+  doorSideRight?: "front" | "panel";
+  doorSideLeftGap?: string;
+  doorSideRightGap?: string;
+  doorFrontHeights?: string[];
+  doorFrontHeightManual?: boolean[];
   height: string;
   width: string;
   depth: string;
@@ -1004,6 +1018,7 @@ type DrawerDerivedPiece = {
   quantity: string;
   clashLeft: string;
   clashRight: string;
+  grainValue?: string;
 };
 type CncDisplayRow = CutlistRow & {
   sourceRowId: string;
@@ -1011,7 +1026,7 @@ type CncDisplayRow = CutlistRow & {
 };
 type SalesRoomRow = { name: string; included: boolean; totalPrice: string };
 type SalesProductRow = { name: string; selected: boolean };
-type ItemCategoryItemRow = { name: string; subcategory: string; price: string; markupPercent: string };
+type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
 type SalesItemCategoryRow = { id: string; name: string; color: string; items: ItemCategoryItemRow[] };
 type SalesRoomItemSelection = {
   itemId: string;
@@ -1029,6 +1044,39 @@ type SalesItemsRoomBoardRow = {
   totalPrice: string;
   items: SalesRoomItemSelection[];
 };
+type GapAllowancesSettings = {
+  baseBelowBenchToTopOfDoorDrawer: string;
+  baseHorizontalGapNormalHandles: string;
+  baseHorizontalGapWrapOverHandles: string;
+  baseVerticalGapDoorsPanels: string;
+  tallTopOfDoorToTopWithScribers: string;
+  tallTopOfDoorToTopNoScribers: string;
+  tallVerticalGapDoorsPanels: string;
+};
+
+const PROJECT_GAP_ALLOWANCE_SECTIONS: Array<{
+  title: string;
+  rows: Array<{ key: keyof GapAllowancesSettings; label: string }>;
+}> = [
+  {
+    title: "Base Cabinets",
+    rows: [
+      { key: "baseBelowBenchToTopOfDoorDrawer", label: "Below bench to top of door/drawer" },
+      { key: "baseHorizontalGapNormalHandles", label: "Horizontal gap between drawers (Normal handles)" },
+      { key: "baseHorizontalGapWrapOverHandles", label: "Horizontal gap between drawers (Wrap over handles)" },
+      { key: "baseVerticalGapDoorsPanels", label: "Vertical gap between doors / panels" },
+    ],
+  },
+  {
+    title: "Tall Cabinets",
+    rows: [
+      { key: "tallTopOfDoorToTopWithScribers", label: "Top of door to top of cabinet (top scribers)" },
+      { key: "tallTopOfDoorToTopNoScribers", label: "Top of door to top of cabinet (no top scribers)" },
+      { key: "tallVerticalGapDoorsPanels", label: "Vertical gap between doors / panels" },
+    ],
+  },
+];
+
 type SalesQuoteExtraRow = {
   id: string;
   name: string;
@@ -1478,6 +1526,16 @@ function createEmptyCutlistEntry(): Omit<CutlistRow, "id" | "room"> {
     partType: "",
     board: "",
     name: "",
+    doorMode: "",
+    doorFrontCount: "",
+    doorTopGap: "",
+    doorBetweenGap: "",
+    doorSideLeft: "panel",
+    doorSideRight: "panel",
+    doorSideLeftGap: "",
+    doorSideRightGap: "",
+    doorFrontHeights: [],
+    doorFrontHeightManual: [],
     height: "",
     width: "",
     depth: "",
@@ -1495,6 +1553,121 @@ function createEmptyCutlistEntry(): Omit<CutlistRow, "id" | "room"> {
     grain: false,
     grainValue: "",
   };
+}
+
+function normalizeDoorModeValue(raw: unknown): "manual" | "door" | "drawer" {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "door" || value === "drawer") return value;
+  return "manual";
+}
+
+function selectedDoorModeValue(raw: unknown): DoorModeValue {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "manual" || value === "door" || value === "drawer") return value;
+  return "";
+}
+
+function normalizeDoorFrontCountValue(raw: unknown): string {
+  const value = String(raw ?? "").trim();
+  return /^(?:[1-6])$/.test(value) ? value : "";
+}
+
+function normalizeDoorSideValue(raw: unknown): "front" | "panel" {
+  return String(raw ?? "").trim().toLowerCase() === "front" ? "front" : "panel";
+}
+
+function normalizeDoorFrontHeights(raw: unknown, count = 0): string[] {
+  const input = Array.isArray(raw) ? raw : [];
+  const normalized = input.map((value) => numericDecimalText(String(value ?? "")));
+  if (count <= 0) return normalized;
+  const out = Array.from({ length: count }, (_, index) => normalized[index] ?? "");
+  return out;
+}
+
+function normalizeDoorFrontHeightManual(raw: unknown, count = 0): boolean[] {
+  const input = Array.isArray(raw) ? raw : [];
+  const normalized = input.map((value) => Boolean(value));
+  if (count <= 0) return normalized;
+  return Array.from({ length: count }, (_, index) => normalized[index] ?? false);
+}
+
+function formatDoorFrontHeightValue(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function computeDoorDrawerTotalLeft(
+  heights: string[],
+  totalHeight: string,
+  topGap: string,
+  betweenGap: string,
+): number {
+  const count = heights.length;
+  const total = Number.parseFloat(String(totalHeight || "").replace(/[^\d.-]/g, "")) || 0;
+  const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const between = Number.parseFloat(String(betweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const usedHeights = heights.reduce((sum, value) => {
+    const next = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    return sum + (Number.isFinite(next) ? next : 0);
+  }, 0);
+  const left = total - top - between * Math.max(0, count - 1) - usedHeights;
+  return Math.round(left * 100) / 100;
+}
+
+function rebalanceDoorFrontHeights(
+  heights: string[],
+  totalHeight: string,
+  topGap: string,
+  betweenGap: string,
+  manualRaw?: boolean[],
+): { heights: string[]; manual: boolean[] } {
+  const count = heights.length;
+  const manual = normalizeDoorFrontHeightManual(manualRaw, count);
+  if (count <= 0) return { heights, manual };
+  const total = Number.parseFloat(String(totalHeight || "").replace(/[^\d.-]/g, "")) || 0;
+  const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const between = Number.parseFloat(String(betweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const next = [...heights];
+  if (total <= 0) {
+    return { heights: next, manual };
+  }
+
+  const usableTotal = Math.max(0, total - top - between * Math.max(0, count - 1));
+  const numericHeights = next.map((value) => {
+    const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(parsed) ? parsed : NaN;
+  });
+  const autoIndexes = manual.map((isManual, index) => (!isManual ? index : -1)).filter((index) => index >= 0);
+
+  if (!manual.some(Boolean)) {
+    const even = count > 0 ? usableTotal / count : 0;
+    let assigned = 0;
+    for (let index = 0; index < count; index += 1) {
+      const nextValue = index === count - 1 ? Math.max(0, usableTotal - assigned) : even;
+      next[index] = formatDoorFrontHeightValue(nextValue);
+      assigned += nextValue;
+    }
+    return { heights: next, manual };
+  }
+
+  if (!autoIndexes.length) {
+    return { heights: next, manual };
+  }
+
+  const manualSum = numericHeights.reduce((sum, value, index) => {
+    if (!manual[index] || !Number.isFinite(value)) return sum;
+    return sum + Math.max(0, value);
+  }, 0);
+  const remaining = Math.max(0, usableTotal - manualSum);
+  const even = remaining / autoIndexes.length;
+  let assigned = 0;
+  autoIndexes.forEach((index, autoIndex) => {
+    const nextValue = autoIndex === autoIndexes.length - 1 ? Math.max(0, remaining - assigned) : even;
+    next[index] = formatDoorFrontHeightValue(nextValue);
+    assigned += nextValue;
+  });
+  return { heights: next, manual };
 }
 
 function normalizeDoorHingeValues(raw: unknown): string[] {
@@ -2076,6 +2249,19 @@ function normalizeEdgebandingSettings(raw: unknown): {
   };
 }
 
+function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
+  const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    baseBelowBenchToTopOfDoorDrawer: String(row.baseBelowBenchToTopOfDoorDrawer ?? "").trim(),
+    baseHorizontalGapNormalHandles: String(row.baseHorizontalGapNormalHandles ?? "").trim(),
+    baseHorizontalGapWrapOverHandles: String(row.baseHorizontalGapWrapOverHandles ?? "").trim(),
+    baseVerticalGapDoorsPanels: String(row.baseVerticalGapDoorsPanels ?? "").trim(),
+    tallTopOfDoorToTopWithScribers: String(row.tallTopOfDoorToTopWithScribers ?? "").trim(),
+    tallTopOfDoorToTopNoScribers: String(row.tallTopOfDoorToTopNoScribers ?? "").trim(),
+    tallVerticalGapDoorsPanels: String(row.tallVerticalGapDoorsPanels ?? "").trim(),
+  };
+}
+
 function approximateTextWidthPx(value: string): number {
   const txt = String(value ?? "");
   return txt.length * 8;
@@ -2169,9 +2355,9 @@ function computeNestingSheetLayouts(
         name,
         partType,
         room,
-        width: Math.max(30, Math.min(width, innerW)),
-        height: Math.max(24, Math.min(height, innerH)),
-        area: Math.max(1, width * height),
+        width: Math.max(30, width),
+        height: Math.max(24, height),
+        area: Math.max(1, Math.max(30, width) * Math.max(24, height)),
       });
     }
   }
@@ -2235,8 +2421,8 @@ function computeNestingSheetLayouts(
             { w: piece.height, h: piece.width },
           ];
       for (const orientation of orientations) {
-        const w = Math.min(orientation.w, innerW);
-        const h = Math.min(orientation.h, innerH);
+        const w = orientation.w;
+        const h = orientation.h;
         if (w > rect.w + 0.001 || h > rect.h + 0.001) continue;
         const leftoverW = rect.w - w;
         const leftoverH = rect.h - h;
@@ -3194,8 +3380,20 @@ function numericOnlyText(value: unknown): string {
   return String(value ?? "").replace(/[^\d]/g, "");
 }
 
+function numericDecimalText(value: unknown): string {
+  const raw = String(value ?? "").replace(/[^\d.]/g, "");
+  const firstDot = raw.indexOf(".");
+  if (firstDot === -1) return raw;
+  return `${raw.slice(0, firstDot + 1)}${raw.slice(firstDot + 1).replace(/[.]/g, "")}`;
+}
+
 function isNumericCutlistInputKey(key: string): boolean {
   return key === "height" || key === "width" || key === "depth" || key === "quantity";
+}
+
+function sanitizeCutlistNumericInput(key: string, value: unknown): string {
+  if (key === "height" || key === "width" || key === "depth") return numericDecimalText(value);
+  return numericOnlyText(value);
 }
 
 function BoardPillDropdown({
@@ -3663,6 +3861,7 @@ function normalizeSalesItemCategories(raw: unknown): SalesItemCategoryRow[] {
         ? (row.items as Array<Record<string, unknown>>)
             .map((entry) => ({
               name: String(entry?.name ?? "").trim(),
+              description: String(entry?.description ?? "").trim(),
               subcategory: String(entry?.subcategory ?? "").trim(),
               price:
                 String(entry?.outputPrice ?? "").trim() ||
@@ -3783,10 +3982,20 @@ function serializeCutlistRowsForStorage(
       __id: idx + 1,
       __cutlist_key: row.id,
       Room: row.room,
-      partType: row.partType,
-      Board: row.board,
-      Name: row.name,
-      Height: row.height,
+        partType: row.partType,
+        Board: row.board,
+        Name: row.name,
+        doorMode: normalizeDoorModeValue(row.doorMode),
+        doorFrontCount: normalizeDoorFrontCountValue(row.doorFrontCount),
+        doorTopGap: String(row.doorTopGap ?? ""),
+        doorBetweenGap: String(row.doorBetweenGap ?? ""),
+        doorSideLeft: normalizeDoorSideValue(row.doorSideLeft),
+        doorSideRight: normalizeDoorSideValue(row.doorSideRight),
+        doorSideLeftGap: String(row.doorSideLeftGap ?? ""),
+        doorSideRightGap: String(row.doorSideRightGap ?? ""),
+        doorFrontHeights: normalizeDoorFrontHeights(row.doorFrontHeights),
+        doorFrontHeightManual: normalizeDoorFrontHeightManual(row.doorFrontHeightManual),
+        Height: row.height,
       Width: row.width,
       Depth: row.depth,
       Quantity: row.quantity,
@@ -3811,10 +4020,20 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
     rows.map((row) => ({
       id: String(row.id ?? ""),
       room: String(row.room ?? ""),
-      partType: String(row.partType ?? ""),
-      board: String(row.board ?? ""),
-      name: String(row.name ?? ""),
-      height: String(row.height ?? ""),
+        partType: String(row.partType ?? ""),
+        board: String(row.board ?? ""),
+        name: String(row.name ?? ""),
+        doorMode: normalizeDoorModeValue(row.doorMode),
+        doorFrontCount: normalizeDoorFrontCountValue(row.doorFrontCount),
+        doorTopGap: String(row.doorTopGap ?? ""),
+        doorBetweenGap: String(row.doorBetweenGap ?? ""),
+        doorSideLeft: normalizeDoorSideValue(row.doorSideLeft),
+        doorSideRight: normalizeDoorSideValue(row.doorSideRight),
+        doorSideLeftGap: String(row.doorSideLeftGap ?? ""),
+        doorSideRightGap: String(row.doorSideRightGap ?? ""),
+        doorFrontHeights: normalizeDoorFrontHeights(row.doorFrontHeights),
+        doorFrontHeightManual: normalizeDoorFrontHeightManual(row.doorFrontHeightManual),
+        height: String(row.height ?? ""),
       width: String(row.width ?? ""),
       depth: String(row.depth ?? ""),
       quantity: String(row.quantity ?? ""),
@@ -3987,6 +4206,15 @@ export default function ProjectDetailsPage() {
     clientAddress: "",
     notes: "",
   });
+  const [projectGapAllowancesDraft, setProjectGapAllowancesDraft] = useState<GapAllowancesSettings>({
+    baseBelowBenchToTopOfDoorDrawer: "",
+    baseHorizontalGapNormalHandles: "",
+    baseHorizontalGapWrapOverHandles: "",
+    baseVerticalGapDoorsPanels: "",
+    tallTopOfDoorToTopWithScribers: "",
+    tallTopOfDoorToTopNoScribers: "",
+    tallVerticalGapDoorsPanels: "",
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingStatus, setIsSavingStatus] = useState(false);
   const [projectStatusMenuPos, setProjectStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
@@ -4006,6 +4234,7 @@ export default function ProjectDetailsPage() {
   const [activeSalesItemsRoomId, setActiveSalesItemsRoomId] = useState("");
   const [salesItemsSearch, setSalesItemsSearch] = useState("");
   const [collapsedSalesItemCategories, setCollapsedSalesItemCategories] = useState<Record<string, boolean>>({});
+  const [expandedSalesItemDescriptions, setExpandedSalesItemDescriptions] = useState<Record<string, boolean>>({});
   const [isItemsAddRoomModalOpen, setIsItemsAddRoomModalOpen] = useState(false);
   const [itemsAddRoomName, setItemsAddRoomName] = useState("");
   const [editingItemsRoomId, setEditingItemsRoomId] = useState("");
@@ -4263,8 +4492,22 @@ export default function ProjectDetailsPage() {
   const [cutlistUiStateReady, setCutlistUiStateReady] = useState(false);
   const [productionForm, setProductionForm] = useState<ProductionFormState>({
     existing: { carcassThickness: "", panelThickness: "", frontsThickness: "" },
-    cabinetry: { baseCabHeight: "", footDistanceBack: "", tallCabHeight: "", footHeight: "", hobCentre: "", hobSide: "" },
-    hardware: { hardwareCategory: "", newDrawerType: "", hingeType: "" },
+    cabinetry: {
+      baseCabHeight: "",
+      footDistanceBack: "",
+      tallCabHeight: "",
+      footHeight: "",
+      hobCentre: "",
+      hobSide: "",
+      topScribers: false,
+    },
+    hardware: {
+      hardwareCategory: "",
+      newDrawerType: "",
+      hingeType: "",
+      standardHandles: false,
+      wrapOverHandles: false,
+    },
     boardTypes: [],
   });
   const [orderMiscDraftByCategory, setOrderMiscDraftByCategory] = useState<Record<string, Record<string, OrderMiscDraftRow>>>({});
@@ -5030,13 +5273,29 @@ export default function ProjectDetailsPage() {
         const grainParsed = parseCutlistGrainFields(item.Grain ?? item.grain, item.grain);
         const clashing = String(item.Clashing ?? item.clashing ?? "").trim();
         const split = splitClashing(clashing);
-        return {
-          id: String(item.__cutlist_key ?? item.__id ?? `im_row_${idx + 1}`),
-          room: String(item.Room ?? item.room ?? "Project Cutlist"),
-          partType: String(item.partType ?? item.PartType ?? ""),
-          board: String(item.Board ?? item.board ?? ""),
-          name: String(item.Name ?? item.name ?? ""),
-          height: normalizeCutlistDimensionValue(item.Height ?? item.height),
+          return {
+            id: String(item.__cutlist_key ?? item.__id ?? `im_row_${idx + 1}`),
+            room: String(item.Room ?? item.room ?? "Project Cutlist"),
+            partType: String(item.partType ?? item.PartType ?? ""),
+            board: String(item.Board ?? item.board ?? ""),
+            name: String(item.Name ?? item.name ?? ""),
+            doorMode: normalizeDoorModeValue(item.doorMode),
+            doorFrontCount: normalizeDoorFrontCountValue(item.doorFrontCount),
+            doorTopGap: numericOnlyText(String(item.doorTopGap ?? "")),
+            doorBetweenGap: numericOnlyText(String(item.doorBetweenGap ?? "")),
+            doorSideLeft: normalizeDoorSideValue(item.doorSideLeft),
+            doorSideRight: normalizeDoorSideValue(item.doorSideRight),
+            doorSideLeftGap: numericDecimalText(String(item.doorSideLeftGap ?? "")),
+            doorSideRightGap: numericDecimalText(String(item.doorSideRightGap ?? "")),
+            doorFrontHeights: normalizeDoorFrontHeights(
+              item.doorFrontHeights,
+              Number.parseInt(String(item.doorFrontCount ?? ""), 10) || 0,
+            ),
+            doorFrontHeightManual: normalizeDoorFrontHeightManual(
+              item.doorFrontHeightManual,
+              Number.parseInt(String(item.doorFrontCount ?? ""), 10) || 0,
+            ),
+            height: normalizeCutlistDimensionValue(item.Height ?? item.height),
           width: normalizeCutlistDimensionValue(item.Width ?? item.width),
           depth: normalizeCutlistDimensionValue(item.Depth ?? item.depth),
           quantity: String(item.Quantity ?? item.quantity ?? "1"),
@@ -5196,8 +5455,13 @@ export default function ProjectDetailsPage() {
     return meta.label;
   };
   const showCutlistGrainColumn = useMemo(
-    () => productionForm.boardTypes.some((row) => Boolean(row.grain)),
-    [productionForm.boardTypes],
+    () =>
+      productionForm.boardTypes.some((row) => Boolean(row.grain)) ||
+      cutlistRows.some((row) => productionBoardAllowsGrainForValue(String(row.board || "").trim()) || String(row.grainValue ?? "").trim().length > 0) ||
+      cutlistDraftRows.some((row) => productionBoardAllowsGrainForValue(String(row.board || "").trim()) || String(row.grainValue ?? "").trim().length > 0) ||
+      productionBoardAllowsGrainForValue(String(cutlistEntry.board || "").trim()) ||
+      String(cutlistEntry.grainValue ?? "").trim().length > 0,
+    [productionForm.boardTypes, cutlistRows, cutlistDraftRows, cutlistEntry, productionBoardAllowsGrainForValue],
   );
   const showInitialCutlistGrainColumn = useMemo(
     () =>
@@ -6696,6 +6960,159 @@ export default function ProjectDetailsPage() {
     return pieces;
   };
 
+  const buildConfiguredDoorDerivedPieces = (row: CutlistRow): DrawerDerivedPiece[] => {
+    const mode = normalizeDoorModeValue(row.doorMode);
+    if (mode === "manual") return [];
+    const count = Number.parseInt(normalizeDoorFrontCountValue(row.doorFrontCount), 10) || 0;
+    if (count <= 0) return [];
+    const mainName = String(row.name || "").trim();
+    const numberedFrontName = (index: number) =>
+      `${mainName || (mode === "drawer" ? "Drawer Front" : "Door")} (${index + 1})`;
+
+    const totalWidth = Math.max(0, toNum(row.width));
+    const totalHeight = Math.max(0, toNum(row.height));
+    if (totalWidth <= 0 || totalHeight <= 0) return [];
+
+    const resolvedTopGap =
+      mode === "door"
+        ? productionForm.cabinetry.topScribers
+          ? projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers
+          : projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers
+        : projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer;
+    const resolvedBetweenGap =
+      mode === "door"
+        ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
+        : productionForm.hardware.wrapOverHandles
+          ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
+          : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
+
+    const topGap = Math.max(0, toNum(String(row.doorTopGap ?? resolvedTopGap)));
+    const betweenGap = Math.max(0, toNum(String(row.doorBetweenGap ?? resolvedBetweenGap)));
+    const panelGap = Math.max(0, toNum(String(projectGapAllowancesDraft.baseVerticalGapDoorsPanels ?? "")));
+    const grainSource = String(row.grainValue ?? "").trim();
+    const parentClashLeft = String(row.clashLeft ?? splitClashing(String(row.clashing ?? "")).left ?? "").trim();
+    const parentClashRight = String(row.clashRight ?? splitClashing(String(row.clashing ?? "")).right ?? "").trim();
+
+    const grainValueForPiece = (pieceHeight: number, pieceWidth: number, pieceDepth = 0) => {
+      if (!grainSource) return "";
+      if (matchesGrainDimension(grainSource, row.height, "height")) return formatMm(pieceHeight);
+      if (matchesGrainDimension(grainSource, row.width, "width")) return formatMm(pieceWidth);
+      if (matchesGrainDimension(grainSource, row.depth, "depth")) return formatMm(pieceDepth);
+      return grainSource;
+    };
+
+    if (mode === "door") {
+      const usableWidth = Math.max(0, totalWidth - panelGap * 2 - betweenGap * Math.max(0, count - 1));
+      const doorWidth = usableWidth / count;
+      const doorHeight = Math.max(0, totalHeight - topGap);
+      if (doorWidth <= 0 || doorHeight <= 0) return [];
+
+      return Array.from({ length: count }, (_, index) => {
+        return {
+          key: `door_front_${index + 1}`,
+          partName: numberedFrontName(index),
+          height: formatMm(doorHeight),
+          width: formatMm(doorWidth),
+          depth: "",
+          quantity: "1",
+          clashLeft: parentClashLeft,
+          clashRight: parentClashRight,
+          grainValue: grainValueForPiece(doorHeight, doorWidth),
+        };
+      });
+    }
+
+    const sideLeft = normalizeDoorSideValue(row.doorSideLeft);
+    const sideRight = normalizeDoorSideValue(row.doorSideRight);
+    const defaultLeftDeduction = sideLeft === "front" ? panelGap / 2 : panelGap;
+    const defaultRightDeduction = sideRight === "front" ? panelGap / 2 : panelGap;
+    const leftDeduction = Number.parseFloat(String(row.doorSideLeftGap ?? "").replace(/[^\d.-]/g, "")) || defaultLeftDeduction;
+    const rightDeduction = Number.parseFloat(String(row.doorSideRightGap ?? "").replace(/[^\d.-]/g, "")) || defaultRightDeduction;
+    const drawerWidth = Math.max(0, totalWidth - leftDeduction - rightDeduction);
+    if (drawerWidth <= 0) return [];
+
+    const drawerHeights = rebalanceDoorFrontHeights(
+      normalizeDoorFrontHeights(row.doorFrontHeights, count),
+      String(totalHeight),
+      String(topGap),
+      String(betweenGap),
+      row.doorFrontHeightManual,
+    ).heights;
+
+    const pieces: DrawerDerivedPiece[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const frontHeight = Math.max(0, toNum(drawerHeights[index]));
+      if (frontHeight <= 0) continue;
+      pieces.push({
+        key: `drawer_front_${index + 1}`,
+        partName: numberedFrontName(index),
+        height: formatMm(frontHeight),
+        width: formatMm(drawerWidth),
+        depth: "",
+        quantity: "1",
+        clashLeft: parentClashLeft,
+        clashRight: parentClashRight,
+        grainValue: grainValueForPiece(frontHeight, drawerWidth),
+      });
+    }
+    return pieces;
+  };
+
+  const buildConfiguredDoorListSubrows = (row: CutlistRow): DrawerDerivedPiece[] => {
+    const mode = normalizeDoorModeValue(row.doorMode);
+    const pieces = buildConfiguredDoorDerivedPieces(row);
+    if (mode === "manual" || pieces.length <= 1) return pieces;
+
+    const mainName = String(row.name || "").trim();
+    const baseName = mainName || (mode === "drawer" ? "Drawer Front" : "Door");
+    const grouped = new Map<
+      string,
+      DrawerDerivedPiece & { indexes: number[]; quantityTotal: number }
+    >();
+
+    for (const piece of pieces) {
+      const indexMatch = String(piece.key || "").match(/_(\d+)$/);
+      const pieceIndex = Number.parseInt(indexMatch?.[1] || "", 10);
+      const signature = [
+        String(piece.height || ""),
+        String(piece.width || ""),
+        String(piece.depth || ""),
+        String(piece.clashLeft || ""),
+        String(piece.clashRight || ""),
+        String(piece.grainValue || ""),
+      ].join("|");
+      const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+      const existing = grouped.get(signature);
+      if (existing) {
+        if (Number.isFinite(pieceIndex) && pieceIndex > 0) existing.indexes.push(pieceIndex);
+        existing.quantityTotal += qty;
+        continue;
+      }
+      grouped.set(signature, {
+        ...piece,
+        indexes: Number.isFinite(pieceIndex) && pieceIndex > 0 ? [pieceIndex] : [],
+        quantityTotal: qty,
+      });
+    }
+
+    return Array.from(grouped.values()).map((piece) => {
+      const sortedIndexes = [...piece.indexes].sort((a, b) => a - b);
+      return {
+        key: `${piece.key}__group_${sortedIndexes.join("_") || "single"}`,
+        partName: sortedIndexes.length
+          ? `${baseName} (${sortedIndexes.join(", ")})`
+          : baseName,
+        height: piece.height,
+        width: piece.width,
+        depth: piece.depth,
+        quantity: String(Math.max(1, piece.quantityTotal)),
+        clashLeft: piece.clashLeft,
+        clashRight: piece.clashRight,
+        grainValue: piece.grainValue,
+      };
+    });
+  };
+
   const salesRoomSheetAnalysis = useMemo(() => {
     type FlatPiece = {
       id: string;
@@ -7644,16 +8061,35 @@ export default function ProjectDetailsPage() {
     const defaults = defaultClashingForPartType(partType, board);
     const seededLeft = String(seed?.clashLeft ?? split.left ?? "").trim().toUpperCase();
     const seededRight = String(seed?.clashRight ?? split.right ?? "").trim().toUpperCase();
-    const left = seededLeft || defaults.left;
-    const right = seededRight || defaults.right;
-      return {
-        id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        room: room || "Project Cutlist",
-      partType,
-      board,
-      name: String(seed?.name ?? ""),
-      height: String(seed?.height ?? ""),
-      width: String(seed?.width ?? ""),
+      const left = seededLeft || defaults.left;
+      const right = seededRight || defaults.right;
+      const doorMode = selectedDoorModeValue(seed?.doorMode);
+      const doorFrontCount = normalizeDoorFrontCountValue(seed?.doorFrontCount);
+      const doorTopGap = numericOnlyText(String(seed?.doorTopGap ?? ""));
+      const doorBetweenGap = numericOnlyText(String(seed?.doorBetweenGap ?? ""));
+      const doorSideLeftGap = numericDecimalText(String(seed?.doorSideLeftGap ?? ""));
+      const doorSideRightGap = numericDecimalText(String(seed?.doorSideRightGap ?? ""));
+      const frontCountNumber = Number.parseInt(doorFrontCount, 10) || 0;
+      const doorFrontHeights = normalizeDoorFrontHeights(seed?.doorFrontHeights, frontCountNumber);
+      const doorFrontHeightManual = normalizeDoorFrontHeightManual(seed?.doorFrontHeightManual, frontCountNumber);
+        return {
+          id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          room: room || "Project Cutlist",
+        partType,
+        board,
+        name: String(seed?.name ?? ""),
+        doorMode,
+        doorFrontCount,
+        doorTopGap,
+        doorBetweenGap,
+        doorSideLeft: normalizeDoorSideValue(seed?.doorSideLeft),
+        doorSideRight: normalizeDoorSideValue(seed?.doorSideRight),
+        doorSideLeftGap,
+        doorSideRightGap,
+        doorFrontHeights,
+        doorFrontHeightManual,
+        height: String(seed?.height ?? ""),
+        width: String(seed?.width ?? ""),
       depth: String(seed?.depth ?? ""),
       quantity: String(seed?.quantity ?? ""),
       clashing: joinClashing(left, right),
@@ -7730,6 +8166,11 @@ export default function ProjectDetailsPage() {
         clientAddress: String(projectItem?.clientAddress ?? ""),
         notes: String(projectItem?.notes ?? ""),
       });
+      setProjectGapAllowancesDraft(
+        normalizeGapAllowancesSettings(
+          ((projectItem?.projectSettings ?? {}) as Record<string, unknown>).gapAllowancesSettings,
+        ),
+      );
       setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
       setChanges(changeItems);
       setQuotes(quoteItems.filter((item) => item.projectId === projectId));
@@ -7776,7 +8217,6 @@ export default function ProjectDetailsPage() {
     isEditingClientDetails,
     isEditingNotes,
   ]);
-
 
   useEffect(() => {
     const loadCompanyDoc = async () => {
@@ -9193,9 +9633,11 @@ export default function ProjectDetailsPage() {
         };
       });
 
-    const resolvedCategory = hardwareCategory || defaultHardwareCategory();
-    const resolvedDrawer = toStr(raw.newDrawerType) || defaultDrawerForCategory(resolvedCategory);
-    const resolvedHinge = toStr(raw.hingeType) || resolvedCategory;
+      const resolvedCategory = hardwareCategory || defaultHardwareCategory();
+      const resolvedDrawer = toStr(raw.newDrawerType) || defaultDrawerForCategory(resolvedCategory);
+      const resolvedHinge = toStr(raw.hingeType) || resolvedCategory;
+      const standardHandles = Boolean(raw.standardHandles ?? raw.standardHandle ?? false);
+      const wrapOverHandles = Boolean(raw.wrapOverHandles ?? raw.wrapOverHandle ?? false);
 
     setProductionForm({
       existing: {
@@ -9203,19 +9645,22 @@ export default function ProjectDetailsPage() {
         panelThickness: toStr(raw.panelThickness),
         frontsThickness: toStr(raw.frontsThickness),
       },
-      cabinetry: {
-        baseCabHeight: toStr(raw.baseCabHeight),
-        footDistanceBack: toStr(raw.footDistanceBack),
-        tallCabHeight: toStr(raw.tallCabHeight),
-        footHeight: toStr(raw.footHeight),
-        hobCentre: toStr(raw.hobCentre),
-        hobSide: toStr(raw.hobSide),
-      },
-      hardware: {
-        hardwareCategory: resolvedCategory,
-        newDrawerType: resolvedDrawer,
-        hingeType: resolvedHinge,
-      },
+        cabinetry: {
+          baseCabHeight: toStr(raw.baseCabHeight),
+          footDistanceBack: toStr(raw.footDistanceBack),
+          tallCabHeight: toStr(raw.tallCabHeight),
+          footHeight: toStr(raw.footHeight),
+          hobCentre: toStr(raw.hobCentre),
+          hobSide: toStr(raw.hobSide),
+          topScribers: Boolean(raw.topScribers ?? false),
+        },
+        hardware: {
+          hardwareCategory: resolvedCategory,
+          newDrawerType: resolvedDrawer,
+          hingeType: resolvedHinge,
+          standardHandles,
+          wrapOverHandles,
+        },
       boardTypes: boardRows,
     });
 
@@ -9300,13 +9745,27 @@ export default function ProjectDetailsPage() {
             String(includeInNestingRaw ?? "").trim().toLowerCase() === "false"
               ? false
               : true;
-          return {
-            id: String(item.__cutlist_key ?? item.__id ?? `row_${idx + 1}`),
-            room: String(item.Room ?? item.room ?? "Project Cutlist"),
-            partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
-            board: String(item.Board ?? item.board ?? ""),
-            name: String(item.Name ?? item.name ?? item.partName ?? ""),
-            height: normalizeCutlistDimensionValue(item.Height ?? item.height),
+            return {
+              id: String(item.__cutlist_key ?? item.__id ?? `row_${idx + 1}`),
+              room: String(item.Room ?? item.room ?? "Project Cutlist"),
+              partType: String(item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? ""),
+              board: String(item.Board ?? item.board ?? ""),
+              name: String(item.Name ?? item.name ?? item.partName ?? ""),
+              doorMode: normalizeDoorModeValue(item.doorMode),
+              doorFrontCount: normalizeDoorFrontCountValue(item.doorFrontCount),
+              doorTopGap: numericOnlyText(String(item.doorTopGap ?? "")),
+              doorBetweenGap: numericOnlyText(String(item.doorBetweenGap ?? "")),
+              doorSideLeft: normalizeDoorSideValue(item.doorSideLeft),
+              doorSideRight: normalizeDoorSideValue(item.doorSideRight),
+              doorFrontHeights: normalizeDoorFrontHeights(
+                item.doorFrontHeights,
+                Number.parseInt(String(item.doorFrontCount ?? ""), 10) || 0,
+              ),
+              doorFrontHeightManual: normalizeDoorFrontHeightManual(
+                item.doorFrontHeightManual,
+                Number.parseInt(String(item.doorFrontCount ?? ""), 10) || 0,
+              ),
+              height: normalizeCutlistDimensionValue(item.Height ?? item.height),
             width: normalizeCutlistDimensionValue(item.Width ?? item.width),
             depth: normalizeCutlistDimensionValue(item.Depth ?? item.depth),
             quantity: String(item.Quantity ?? item.quantity ?? item.qty ?? 1),
@@ -9457,12 +9916,28 @@ export default function ProjectDetailsPage() {
         }
         if (parsed.cutlistEntry && typeof parsed.cutlistEntry === "object") {
           const savedEntry = parsed.cutlistEntry;
-          setCutlistEntry({
-            ...createEmptyCutlistEntry(),
-            partType: String(savedEntry.partType ?? ""),
-            board: String(savedEntry.board ?? ""),
-            name: String(savedEntry.name ?? ""),
-            height: String(savedEntry.height ?? ""),
+            setCutlistEntry({
+              ...createEmptyCutlistEntry(),
+              partType: String(savedEntry.partType ?? ""),
+              board: String(savedEntry.board ?? ""),
+              name: String(savedEntry.name ?? ""),
+              doorMode: normalizeDoorModeValue(savedEntry.doorMode),
+              doorFrontCount: normalizeDoorFrontCountValue(savedEntry.doorFrontCount),
+              doorTopGap: numericOnlyText(String(savedEntry.doorTopGap ?? "")),
+              doorBetweenGap: numericOnlyText(String(savedEntry.doorBetweenGap ?? "")),
+              doorSideLeft: normalizeDoorSideValue(savedEntry.doorSideLeft),
+              doorSideRight: normalizeDoorSideValue(savedEntry.doorSideRight),
+              doorSideLeftGap: numericDecimalText(String(savedEntry.doorSideLeftGap ?? "")),
+              doorSideRightGap: numericDecimalText(String(savedEntry.doorSideRightGap ?? "")),
+              doorFrontHeights: normalizeDoorFrontHeights(
+                savedEntry.doorFrontHeights,
+                Number.parseInt(String(savedEntry.doorFrontCount ?? ""), 10) || 0,
+              ),
+              doorFrontHeightManual: normalizeDoorFrontHeightManual(
+                savedEntry.doorFrontHeightManual,
+                Number.parseInt(String(savedEntry.doorFrontCount ?? ""), 10) || 0,
+              ),
+              height: String(savedEntry.height ?? ""),
             width: String(savedEntry.width ?? ""),
             depth: String(savedEntry.depth ?? ""),
             quantity: String(savedEntry.quantity ?? "1"),
@@ -9515,12 +9990,28 @@ export default function ProjectDetailsPage() {
         }
         if (parsed.initialCutlistEntry && typeof parsed.initialCutlistEntry === "object") {
           const savedEntry = parsed.initialCutlistEntry;
-          setInitialCutlistEntry({
-            ...createEmptyCutlistEntry(),
-            partType: String(savedEntry.partType ?? ""),
-            board: String(savedEntry.board ?? ""),
-            name: String(savedEntry.name ?? ""),
-            height: String(savedEntry.height ?? ""),
+            setInitialCutlistEntry({
+              ...createEmptyCutlistEntry(),
+              partType: String(savedEntry.partType ?? ""),
+              board: String(savedEntry.board ?? ""),
+              name: String(savedEntry.name ?? ""),
+              doorMode: normalizeDoorModeValue(savedEntry.doorMode),
+              doorFrontCount: normalizeDoorFrontCountValue(savedEntry.doorFrontCount),
+              doorTopGap: numericOnlyText(String(savedEntry.doorTopGap ?? "")),
+              doorBetweenGap: numericOnlyText(String(savedEntry.doorBetweenGap ?? "")),
+              doorSideLeft: normalizeDoorSideValue(savedEntry.doorSideLeft),
+              doorSideRight: normalizeDoorSideValue(savedEntry.doorSideRight),
+              doorSideLeftGap: numericDecimalText(String(savedEntry.doorSideLeftGap ?? "")),
+              doorSideRightGap: numericDecimalText(String(savedEntry.doorSideRightGap ?? "")),
+              doorFrontHeights: normalizeDoorFrontHeights(
+                savedEntry.doorFrontHeights,
+                Number.parseInt(String(savedEntry.doorFrontCount ?? ""), 10) || 0,
+              ),
+              doorFrontHeightManual: normalizeDoorFrontHeightManual(
+                savedEntry.doorFrontHeightManual,
+                Number.parseInt(String(savedEntry.doorFrontCount ?? ""), 10) || 0,
+              ),
+              height: String(savedEntry.height ?? ""),
             width: String(savedEntry.width ?? ""),
             depth: String(savedEntry.depth ?? ""),
             quantity: String(savedEntry.quantity ?? "1"),
@@ -9886,6 +10377,30 @@ export default function ProjectDetailsPage() {
       setLockMessage("");
     } else {
       setLockMessage("Could not save project details.");
+    }
+    setIsSavingGeneralDetails(false);
+    return ok;
+  };
+
+  const persistProjectGapAllowances = async (next: GapAllowancesSettings) => {
+    if (!project || !settingsAccess.edit) return false;
+    const normalizedNext = normalizeGapAllowancesSettings(next);
+    const currentSettings = ((project.projectSettings ?? {}) as Record<string, unknown>) || {};
+    const nextSettings: Record<string, unknown> = {
+      ...currentSettings,
+      gapAllowancesSettings: normalizedNext,
+    };
+    setIsSavingGeneralDetails(true);
+    const ok = await updateProjectPatch(project, {
+      projectSettings: nextSettings,
+      projectSettingsJson: JSON.stringify(nextSettings),
+    });
+    if (ok) {
+      setProject({ ...project, projectSettings: nextSettings });
+      setProjectGapAllowancesDraft(normalizedNext);
+      setLockMessage("");
+    } else {
+      setLockMessage("Could not save gap allowances.");
     }
     setIsSavingGeneralDetails(false);
     return ok;
@@ -10439,15 +10954,18 @@ export default function ProjectDetailsPage() {
       frontsThickness: next.existing.frontsThickness,
       baseCabHeight: next.cabinetry.baseCabHeight,
       footDistanceBack: next.cabinetry.footDistanceBack,
-      tallCabHeight: next.cabinetry.tallCabHeight,
-      footHeight: next.cabinetry.footHeight,
-      hobCentre: next.cabinetry.hobCentre,
-      hobSide: next.cabinetry.hobSide,
-      hardwareCategory: next.hardware.hardwareCategory,
-      newDrawerType: next.hardware.newDrawerType,
-      hingeType: next.hardware.hingeType,
-      boardTypes,
-    };
+        tallCabHeight: next.cabinetry.tallCabHeight,
+        footHeight: next.cabinetry.footHeight,
+        hobCentre: next.cabinetry.hobCentre,
+        hobSide: next.cabinetry.hobSide,
+        topScribers: Boolean(next.cabinetry.topScribers),
+        hardwareCategory: next.hardware.hardwareCategory,
+        newDrawerType: next.hardware.newDrawerType,
+        hingeType: next.hardware.hingeType,
+        standardHandles: Boolean(next.hardware.standardHandles),
+        wrapOverHandles: Boolean(next.hardware.wrapOverHandles),
+        boardTypes,
+      };
 
     const ok = await updateProjectPatch(project, {
       projectSettings: nextSettings,
@@ -10622,6 +11140,18 @@ export default function ProjectDetailsPage() {
     }));
   };
 
+  const onCabinetryTopScribersChange = async (value: boolean) => {
+    const next = {
+      ...productionForm,
+      cabinetry: {
+        ...productionForm.cabinetry,
+        topScribers: value,
+      },
+    };
+    setProductionForm(next);
+    await persistProductionForm(next);
+  };
+
   const onCabinetryBlurSave = async () => {
     await persistProductionForm(productionForm);
   };
@@ -10629,14 +11159,15 @@ export default function ProjectDetailsPage() {
   const onHardwareCategoryChange = async (category: string) => {
     if (hasDrawerRowsInUse) return;
     const drawer = defaultDrawerForCategory(category);
-    const next = {
-      ...productionForm,
-      hardware: {
-        hardwareCategory: category,
-        newDrawerType: drawer,
-        hingeType: category,
-      },
-    };
+      const next = {
+        ...productionForm,
+        hardware: {
+          ...productionForm.hardware,
+          hardwareCategory: category,
+          newDrawerType: drawer,
+          hingeType: category,
+        },
+      };
     setProductionForm(next);
     await persistProductionForm(next);
   };
@@ -10646,6 +11177,26 @@ export default function ProjectDetailsPage() {
     const next = {
       ...productionForm,
       hardware: { ...productionForm.hardware, newDrawerType: value },
+    };
+    setProductionForm(next);
+    await persistProductionForm(next);
+  };
+
+  const onToggleHardwareHandle = async (
+    key: keyof Pick<ProductionFormState["hardware"], "standardHandles" | "wrapOverHandles">,
+  ) => {
+    const nextChecked = !productionForm.hardware[key];
+    const resetHandles = {
+      standardHandles: false,
+      wrapOverHandles: false,
+    };
+    const next = {
+      ...productionForm,
+      hardware: {
+        ...productionForm.hardware,
+        ...resetHandles,
+        [key]: nextChecked,
+      },
     };
     setProductionForm(next);
     await persistProductionForm(next);
@@ -10747,6 +11298,23 @@ export default function ProjectDetailsPage() {
         );
       if (compareDepth != null && !hasValidHardwareDepth) {
         errors.push({ field: "depth", message: `${rowLabel}: Depth is too small for selected drawer hardware.` });
+      }
+    }
+
+    if (isDoorPartType(partType) && normalizeDoorModeValue(row.doorMode) === "drawer") {
+      const count = Number.parseInt(normalizeDoorFrontCountValue(row.doorFrontCount), 10) || 0;
+      const frontHeights = normalizeDoorFrontHeights(row.doorFrontHeights, count);
+      const totalLeft = computeDoorDrawerTotalLeft(
+        frontHeights,
+        String(row.height ?? ""),
+        String(row.doorTopGap ?? ""),
+        String(row.doorBetweenGap ?? ""),
+      );
+      if (Math.abs(totalLeft) > 0.01) {
+        errors.push({
+          field: "height",
+          message: `${rowLabel}: Drawer fronts and gaps must equal the total height. Total left ${formatDoorFrontHeightValue(Math.abs(totalLeft))}.`,
+        });
       }
     }
 
@@ -10944,11 +11512,11 @@ export default function ProjectDetailsPage() {
   };
 
   const addCutlistRow = async () => {
-    const singleErrors = validateCutlistRowInput(
-      cutlistEntry as Partial<CutlistRow>,
-      String(cutlistEntry.partType || "").trim(),
-      cutlistRowLabelFor(cutlistEntry as Partial<CutlistRow>, "Entry"),
-    );
+      const singleErrors = validateCutlistRowInput(
+        cutlistEntry as Partial<CutlistRow>,
+        String(cutlistEntry.partType || "").trim(),
+        cutlistRowLabelFor(cutlistEntry as Partial<CutlistRow>, "Entry"),
+      );
     if (singleErrors.length) {
       const warnings = { single: makeWarningMapForRow(singleErrors) };
       setCutlistCellWarnings(warnings);
@@ -10957,19 +11525,27 @@ export default function ProjectDetailsPage() {
       return;
     }
       setCutlistCellWarnings({});
-      const isCabinetry = isCabinetryPartType(cutlistEntry.partType);
-      const isDrawer = isDrawerPartType(cutlistEntry.partType);
-      const isDoor = isDoorPartType(cutlistEntry.partType);
-      const drawerTokens = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
+        const isCabinetry = isCabinetryPartType(cutlistEntry.partType);
+        const isDrawer = isDrawerPartType(cutlistEntry.partType);
+        const isDoor = isDoorPartType(cutlistEntry.partType);
+        const doorMode = normalizeDoorModeValue(cutlistEntry.doorMode);
+        const doorFrontCount = normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount);
+        const drawerTokens = parseDrawerHeightTokens(String(cutlistEntry.height ?? ""));
     const defaults = defaultClashingForPartType(cutlistEntry.partType, cutlistEntry.board);
     const left = String(cutlistEntry.clashLeft ?? "").trim().toUpperCase() || defaults.left;
     const right = String(cutlistEntry.clashRight ?? "").trim().toUpperCase() || defaults.right;
     const row: CutlistRow = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      room: cutlistEntryRoom || "Project Cutlist",
-      ...cutlistEntry,
-      height: isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(cutlistEntry.height ?? ""),
-      quantity: isDrawer ? String(Math.max(1, drawerTokens.length)) : String(cutlistEntry.quantity ?? "1"),
+        room: cutlistEntryRoom || "Project Cutlist",
+        ...cutlistEntry,
+        doorMode,
+        doorFrontCount,
+        height: isDrawer ? formatDrawerHeightTokens(drawerTokens) : String(cutlistEntry.height ?? ""),
+        quantity: isDrawer
+          ? String(Math.max(1, drawerTokens.length))
+          : isDoor && doorMode !== "manual" && doorFrontCount
+            ? doorFrontCount
+            : String(cutlistEntry.quantity ?? "1"),
         clashing: isCabinetry ? "" : joinClashing(left, right),
         clashLeft: isCabinetry ? "" : left,
         clashRight: isCabinetry ? "" : right,
@@ -10986,27 +11562,7 @@ export default function ProjectDetailsPage() {
     logCutlistActivity(`${row.name || "Part"} added to ${row.room || "Project Cutlist"}`, {
       partType: row.partType,
     });
-    setCutlistEntry({
-      partType: "",
-      board: "",
-      name: "",
-      height: "",
-      width: "",
-      depth: "",
-      quantity: "1",
-      clashing: "",
-      clashLeft: "",
-      clashRight: "",
-        fixedShelf: "",
-        adjustableShelf: "",
-        fixedShelfDrilling: "No",
-        adjustableShelfDrilling: "No",
-        hingesUp: [],
-        hingesDown: [],
-        information: "",
-        grain: false,
-        grainValue: "",
-      });
+      setCutlistEntry(createEmptyCutlistEntry());
     await persistCutlistRows(next);
   };
 
@@ -11028,14 +11584,843 @@ export default function ProjectDetailsPage() {
       const defaults = defaultClashingForPartType(partType, prev.board);
       const clashLeft = defaults.left;
       const clashRight = defaults.right;
+      const isDoor = isDoorPartType(partType);
       return {
         ...prev,
         partType,
+        doorMode: isDoor ? "" : "",
+        doorFrontCount: "",
+        doorTopGap: "",
+        doorBetweenGap: "",
+        doorSideLeftGap: "",
+        doorSideRightGap: "",
+        doorFrontHeights: [],
+        doorFrontHeightManual: [],
         clashLeft,
         clashRight,
         clashing: joinClashing(clashLeft, clashRight),
       };
     });
+  };
+
+  const onCutlistEntryDoorModeChange = (mode: "manual" | "door" | "drawer") => {
+    const nextTopGap =
+      mode === "door"
+        ? productionForm.cabinetry.topScribers
+          ? projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers
+          : projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers
+        : projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer;
+    const nextBetweenGap =
+      mode === "door"
+        ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
+        : productionForm.hardware.wrapOverHandles
+          ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
+          : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
+    const nextSideGap = numericDecimalText(projectGapAllowancesDraft.baseVerticalGapDoorsPanels);
+    setCutlistEntry((prev) => ({
+      ...prev,
+      doorMode: mode,
+      doorFrontCount: mode === "manual" ? "" : prev.doorFrontCount || "1",
+      quantity: mode === "manual" ? prev.quantity : prev.doorFrontCount || "1",
+      doorTopGap: mode === "manual" ? "" : numericOnlyText(nextTopGap),
+      doorBetweenGap: mode === "manual" ? "" : numericOnlyText(nextBetweenGap),
+      doorSideLeft: mode === "manual" ? "panel" : prev.doorSideLeft ?? "panel",
+      doorSideRight: mode === "manual" ? "panel" : prev.doorSideRight ?? "panel",
+      doorSideLeftGap: mode === "manual" ? "" : (prev.doorSideLeftGap || nextSideGap),
+      doorSideRightGap: mode === "manual" ? "" : (prev.doorSideRightGap || nextSideGap),
+      doorFrontHeights:
+        mode === "drawer"
+          ? rebalanceDoorFrontHeights(
+              normalizeDoorFrontHeights(prev.doorFrontHeights, Number.parseInt(prev.doorFrontCount || "1", 10) || 1),
+              String(prev.height ?? ""),
+              numericOnlyText(nextTopGap),
+              numericOnlyText(nextBetweenGap),
+              [],
+            ).heights
+          : [],
+      doorFrontHeightManual: mode === "drawer" ? [] : [],
+    }));
+  };
+
+  const onCutlistEntryDoorFrontCountChange = (count: string) => {
+    const normalizedCount = normalizeDoorFrontCountValue(count);
+    setCutlistEntry((prev) => ({
+      ...prev,
+      doorFrontCount: normalizedCount,
+      quantity: normalizedCount || prev.quantity,
+      doorFrontHeights:
+        normalizeDoorModeValue(prev.doorMode) === "drawer"
+          ? rebalanceDoorFrontHeights(
+              normalizeDoorFrontHeights(prev.doorFrontHeights, Number.parseInt(normalizedCount, 10) || 0),
+              String(prev.height ?? ""),
+              String(prev.doorTopGap ?? ""),
+              String(prev.doorBetweenGap ?? ""),
+              normalizeDoorFrontHeightManual(prev.doorFrontHeightManual, Number.parseInt(normalizedCount, 10) || 0),
+            ).heights
+          : [],
+      doorFrontHeightManual:
+        normalizeDoorModeValue(prev.doorMode) === "drawer"
+          ? normalizeDoorFrontHeightManual(prev.doorFrontHeightManual, Number.parseInt(normalizedCount, 10) || 0)
+          : [],
+    }));
+  };
+
+  const onDraftDoorModeChange = (id: string, mode: "manual" | "door" | "drawer") => {
+    const nextTopGap =
+      mode === "door"
+        ? productionForm.cabinetry.topScribers
+          ? projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers
+          : projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers
+        : projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer;
+    const nextBetweenGap =
+      mode === "door"
+        ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
+        : productionForm.hardware.wrapOverHandles
+          ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
+          : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
+    const nextSideGap = numericDecimalText(projectGapAllowancesDraft.baseVerticalGapDoorsPanels);
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    updateDraftCutlistRow(id, {
+      doorMode: mode,
+      doorFrontCount: mode === "manual" ? "" : "1",
+      quantity: mode === "manual" ? "" : "1",
+      doorTopGap: mode === "manual" ? "" : numericOnlyText(nextTopGap),
+      doorBetweenGap: mode === "manual" ? "" : numericOnlyText(nextBetweenGap),
+      doorSideLeft: mode === "manual" ? "panel" : existing?.doorSideLeft ?? "panel",
+      doorSideRight: mode === "manual" ? "panel" : existing?.doorSideRight ?? "panel",
+      doorSideLeftGap: mode === "manual" ? "" : (existing?.doorSideLeftGap || nextSideGap),
+      doorSideRightGap: mode === "manual" ? "" : (existing?.doorSideRightGap || nextSideGap),
+      doorFrontHeights:
+        mode === "drawer"
+          ? rebalanceDoorFrontHeights(
+              normalizeDoorFrontHeights(existing?.doorFrontHeights, 1),
+              String(existing?.height ?? ""),
+              numericOnlyText(nextTopGap),
+              numericOnlyText(nextBetweenGap),
+              [],
+            ).heights
+          : [],
+      doorFrontHeightManual: mode === "drawer" ? [] : [],
+    });
+  };
+
+  const onDraftDoorFrontCountChange = (id: string, count: string) => {
+    const normalizedCount = normalizeDoorFrontCountValue(count);
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    updateDraftCutlistRow(id, {
+      doorFrontCount: normalizedCount,
+      quantity: normalizedCount || "",
+      doorFrontHeights:
+        normalizeDoorModeValue(existing?.doorMode) === "drawer"
+          ? rebalanceDoorFrontHeights(
+              normalizeDoorFrontHeights(existing?.doorFrontHeights, Number.parseInt(normalizedCount, 10) || 0),
+              String(existing?.height ?? ""),
+              String(existing?.doorTopGap ?? ""),
+              String(existing?.doorBetweenGap ?? ""),
+              normalizeDoorFrontHeightManual(existing?.doorFrontHeightManual, Number.parseInt(normalizedCount, 10) || 0),
+            ).heights
+          : [],
+      doorFrontHeightManual:
+        normalizeDoorModeValue(existing?.doorMode) === "drawer"
+          ? normalizeDoorFrontHeightManual(existing?.doorFrontHeightManual, Number.parseInt(normalizedCount, 10) || 0)
+          : [],
+    });
+  };
+
+  const onCutlistEntryDoorGapChange = (key: "doorTopGap" | "doorBetweenGap", value: string) => {
+    const nextValue = numericOnlyText(value);
+    setCutlistEntry((prev) => {
+      const next = { ...prev, [key]: nextValue };
+      if (normalizeDoorModeValue(prev.doorMode) === "drawer") {
+        const rebalanced = rebalanceDoorFrontHeights(
+          normalizeDoorFrontHeights(prev.doorFrontHeights, Number.parseInt(prev.doorFrontCount || "", 10) || 0),
+          String(prev.height ?? ""),
+          String(key === "doorTopGap" ? nextValue : prev.doorTopGap ?? ""),
+          String(key === "doorBetweenGap" ? nextValue : prev.doorBetweenGap ?? ""),
+          prev.doorFrontHeightManual,
+        );
+        next.doorFrontHeights = rebalanced.heights;
+        next.doorFrontHeightManual = rebalanced.manual;
+      }
+      return next;
+    });
+  };
+
+  const onCutlistEntryDoorSideChange = (key: "doorSideLeft" | "doorSideRight", value: "front" | "panel") => {
+    setCutlistEntry((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const onCutlistEntryDoorFrontHeightChange = (index: number, value: string) => {
+    const nextValue = numericDecimalText(value);
+    setCutlistEntry((prev) => {
+      const count = Number.parseInt(prev.doorFrontCount || "", 10) || 0;
+      const nextHeights = normalizeDoorFrontHeights(prev.doorFrontHeights, count);
+      const nextManual = normalizeDoorFrontHeightManual(prev.doorFrontHeightManual, count);
+      nextHeights[index] = nextValue;
+      nextManual[index] = String(nextValue).trim().length > 0;
+      const rebalanced = rebalanceDoorFrontHeights(
+        nextHeights,
+        String(prev.height ?? ""),
+        String(prev.doorTopGap ?? ""),
+        String(prev.doorBetweenGap ?? ""),
+        nextManual,
+      );
+      return {
+        ...prev,
+        doorFrontHeights: rebalanced.heights,
+        doorFrontHeightManual: rebalanced.manual,
+      };
+    });
+  };
+
+  const onCutlistEntryDoorOverallHeightChange = (value: string) => {
+    const nextHeight = numericDecimalText(value);
+    setCutlistEntry((prev) => {
+      if (normalizeDoorModeValue(prev.doorMode) !== "drawer") {
+        return { ...prev, height: nextHeight };
+      }
+      const count = Number.parseInt(prev.doorFrontCount || "", 10) || 0;
+      const rebalanced = rebalanceDoorFrontHeights(
+        normalizeDoorFrontHeights(prev.doorFrontHeights, count),
+        nextHeight,
+        String(prev.doorTopGap ?? ""),
+        String(prev.doorBetweenGap ?? ""),
+        normalizeDoorFrontHeightManual(prev.doorFrontHeightManual, count),
+      );
+      return {
+        ...prev,
+        height: nextHeight,
+        doorFrontHeights: rebalanced.heights,
+        doorFrontHeightManual: rebalanced.manual,
+      };
+    });
+  };
+
+  const onDraftDoorGapChange = (id: string, key: "doorTopGap" | "doorBetweenGap", value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    const nextValue = numericOnlyText(value);
+    const nextPatch: Partial<CutlistDraftRow> = { [key]: nextValue };
+    if (normalizeDoorModeValue(existing?.doorMode) === "drawer") {
+      const rebalanced = rebalanceDoorFrontHeights(
+        normalizeDoorFrontHeights(existing?.doorFrontHeights, Number.parseInt(existing?.doorFrontCount || "", 10) || 0),
+        String(existing?.height ?? ""),
+        String(key === "doorTopGap" ? nextValue : existing?.doorTopGap ?? ""),
+        String(key === "doorBetweenGap" ? nextValue : existing?.doorBetweenGap ?? ""),
+        existing?.doorFrontHeightManual,
+      );
+      nextPatch.doorFrontHeights = rebalanced.heights;
+      nextPatch.doorFrontHeightManual = rebalanced.manual;
+    }
+    updateDraftCutlistRow(id, nextPatch);
+  };
+
+  const onDraftDoorSideChange = (id: string, key: "doorSideLeft" | "doorSideRight", value: "front" | "panel") => {
+    updateDraftCutlistRow(id, { [key]: value });
+  };
+  const onCutlistEntryDoorSideGapChange = (key: "doorSideLeftGap" | "doorSideRightGap", value: string) => {
+    setCutlistEntry((prev) => ({ ...prev, [key]: numericDecimalText(value) }));
+  };
+
+  const onDraftDoorSideGapChange = (id: string, key: "doorSideLeftGap" | "doorSideRightGap", value: string) => {
+    updateDraftCutlistRow(id, { [key]: numericDecimalText(value) });
+  };
+
+  const onDraftDoorFrontHeightChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const nextHeights = normalizeDoorFrontHeights(
+      existing.doorFrontHeights,
+      Number.parseInt(existing.doorFrontCount || "", 10) || 0,
+    );
+    const nextManual = normalizeDoorFrontHeightManual(
+      existing.doorFrontHeightManual,
+      Number.parseInt(existing.doorFrontCount || "", 10) || 0,
+    );
+    nextHeights[index] = numericDecimalText(value);
+    nextManual[index] = String(value).trim().length > 0;
+    const rebalanced = rebalanceDoorFrontHeights(
+      nextHeights,
+      String(existing.height ?? ""),
+      String(existing.doorTopGap ?? ""),
+      String(existing.doorBetweenGap ?? ""),
+      nextManual,
+    );
+    updateDraftCutlistRow(id, {
+      doorFrontHeights: rebalanced.heights,
+      doorFrontHeightManual: rebalanced.manual,
+    });
+  };
+
+  const renderDoorModeConfigurator = ({
+    mode,
+    frontCount,
+    onModeChange,
+    onFrontCountChange,
+    disabled,
+    textColor,
+    borderColor,
+    fieldBg,
+    fieldText,
+  }: {
+    mode: DoorModeValue;
+    frontCount: string;
+    onModeChange: (mode: "manual" | "door" | "drawer") => void;
+    onFrontCountChange: (count: string) => void;
+    disabled: boolean;
+    textColor: string;
+    borderColor: string;
+    fieldBg: string;
+    fieldText: string;
+  }) => {
+    const countLabel = mode === "drawer" ? "Drawer" : "Door";
+    return (
+      <div className="space-y-2 rounded-[8px] border px-2 py-2" style={{ borderColor }}>
+        <div className="flex flex-wrap items-center gap-4 text-[11px] font-semibold" style={{ color: textColor }}>
+          {(["manual", "door", "drawer"] as const).map((option) => (
+            <label key={option} className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={mode === option}
+                onChange={() => onModeChange(option)}
+              />
+              <span>{option === "manual" ? "Manual" : option === "door" ? "Door" : "Drawer"}</span>
+            </label>
+          ))}
+        </div>
+        {mode === "door" || mode === "drawer" ? (
+          <div className="flex items-center gap-3 text-[11px] font-semibold" style={{ color: textColor }}>
+            <span>{countLabel} Setup</span>
+            <div className="min-w-[120px]">
+              <BoardPillDropdown
+                value={frontCount || "1"}
+                options={Array.from({ length: 6 }, (_, index) => String(index + 1))}
+                disabled={disabled}
+                bg={fieldBg}
+                border={borderColor}
+                text={fieldText}
+                size="default"
+                getSize={() => ""}
+                getLabel={(v) => `${v} ${countLabel}`}
+                onChange={(value) => onFrontCountChange(value)}
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderDoorSetupDesigner = ({
+    mode,
+    frontCount,
+    overallHeight,
+    overallWidth,
+    topGap,
+    betweenGap,
+    sideLeft,
+    sideRight,
+    sideLeftGap,
+    sideRightGap,
+    frontHeights,
+    frontHeightManual,
+    onTopGapChange,
+    onBetweenGapChange,
+    onSideChange,
+    onSideGapChange,
+    onFrontHeightChange,
+    disabled,
+    textColor,
+    borderColor,
+    fieldBg,
+    fieldText,
+  }: {
+    mode: "door" | "drawer";
+    frontCount: string;
+    overallHeight: string;
+    overallWidth: string;
+    topGap: string;
+    betweenGap: string;
+    sideLeft: "front" | "panel";
+    sideRight: "front" | "panel";
+    sideLeftGap?: string;
+    sideRightGap?: string;
+    frontHeights: string[];
+    frontHeightManual?: boolean[];
+    onTopGapChange: (value: string) => void;
+    onBetweenGapChange: (value: string) => void;
+    onSideChange: (key: "doorSideLeft" | "doorSideRight", value: "front" | "panel") => void;
+    onSideGapChange: (key: "doorSideLeftGap" | "doorSideRightGap", value: string) => void;
+    onFrontHeightChange: (index: number, value: string) => void;
+    disabled: boolean;
+    textColor: string;
+    borderColor: string;
+    fieldBg: string;
+    fieldText: string;
+  }) => {
+    const count = Number.parseInt(frontCount || "", 10) || 0;
+    if (count <= 0) return null;
+    const totalHeight =
+      Number.parseFloat(String(overallHeight || "").replace(/[^\d.-]/g, "")) ||
+      (mode === "drawer"
+        ? Number.parseFloat(String(productionForm.cabinetry.baseCabHeight || "").replace(/[^\d.-]/g, "")) || 0
+        : Number.parseFloat(String(productionForm.cabinetry.tallCabHeight || "").replace(/[^\d.-]/g, "")) || 0);
+    const totalWidth = Number.parseFloat(String(overallWidth || "").replace(/[^\d.-]/g, "")) || 0;
+    const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
+    const between = Number.parseFloat(String(betweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+    const sideGap = Number.parseFloat(String(projectGapAllowancesDraft.baseVerticalGapDoorsPanels || "").replace(/[^\d.-]/g, "")) || 0;
+    const defaultLeftDeduction = sideLeft === "front" ? sideGap / 2 : sideGap;
+    const defaultRightDeduction = sideRight === "front" ? sideGap / 2 : sideGap;
+    const leftDeduction = Number.parseFloat(String(sideLeftGap || "").replace(/[^\d.-]/g, "")) || defaultLeftDeduction;
+    const rightDeduction = Number.parseFloat(String(sideRightGap || "").replace(/[^\d.-]/g, "")) || defaultRightDeduction;
+    const clearWidth = Math.max(0, totalWidth - leftDeduction - rightDeduction - (mode === "door" ? between * Math.max(0, count - 1) : 0));
+    const doorWidth = count > 0 ? clearWidth / count : 0;
+    const doorHeight = Math.max(0, totalHeight - top);
+    const normalizedHeights = normalizeDoorFrontHeights(frontHeights, count);
+    const normalizedHeightManual = normalizeDoorFrontHeightManual(frontHeightManual, count);
+    const svgWidth = 430;
+    const svgHeight = 320;
+    const frameX = 34;
+    const frameY = 36;
+    const frameW = 350;
+    const frameH = 246;
+    const availableHeightPx = Math.max(16, frameH - 8);
+    const availableWidthPx = Math.max(16, frameW - 8);
+    const VISUAL_GAP_SCALE = 3;
+    const amplifyGapPx = (rawPx: number, maxPx: number) => {
+      if (!(rawPx > 0)) return 0;
+      return Math.max(1, Math.min(maxPx, rawPx * VISUAL_GAP_SCALE));
+    };
+    const rawTopPx =
+      totalHeight > 0
+        ? Math.max(0, (top / totalHeight) * availableHeightPx)
+        : 18;
+    const topPx =
+      totalHeight > 0
+        ? amplifyGapPx(rawTopPx, availableHeightPx - 24)
+        : 18;
+    const rawLeftGapPx =
+      totalWidth > 0
+        ? Math.max(0, (leftDeduction / totalWidth) * availableWidthPx)
+        : 0;
+    const leftGapPx =
+      totalWidth > 0
+        ? amplifyGapPx(rawLeftGapPx, availableWidthPx - 24)
+        : 0;
+    const rawRightGapPx =
+      totalWidth > 0
+        ? Math.max(0, (rightDeduction / totalWidth) * availableWidthPx)
+        : 0;
+    const rightGapPx =
+      totalWidth > 0
+        ? amplifyGapPx(rawRightGapPx, availableWidthPx - 24)
+        : 0;
+    const frontLeftX = frameX + leftGapPx;
+    const frontRightX = frameX + frameW - rightGapPx;
+    const frontWidthPx = Math.max(24, frontRightX - frontLeftX);
+    const overallHeightLabelX = mode === "drawer" ? frameX - 18 : frameX - 64;
+    const formatSvgMeasure = (value: number) => {
+      if (!Number.isFinite(value)) return "0";
+      return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+    };
+    const horizontalGapLineColor = "#00E35B";
+    const verticalGapLineColor = "#FF2A2A";
+    const topInputLeftPx = frameX + frameW + 8;
+    const topInputTopPx = Math.max(2, frameY + topPx / 2 - 14);
+    const rectsOverlap = (
+      a: { left: number; top: number; right: number; bottom: number },
+      b: { left: number; top: number; right: number; bottom: number },
+    ) => !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+    const gapInputWidth = 64;
+    const topGuideThickness = Math.max(1, topPx);
+    const leftGuideThickness = Math.max(1, leftGapPx);
+    const rightGuideThickness = Math.max(1, rightGapPx);
+    type BetweenGapInput = { key: string; leftPx: number; topPx: number; gapCenterX: number; gapCenterY: number; gapThickness: number };
+    type SideGapInput = {
+      key: string;
+      leftPx: number;
+      topPx: number;
+      value: string;
+      gapX: number;
+      gapTopY: number;
+      gapBottomY: number;
+      side: "left" | "right";
+    };
+    const resolveHorizontalGapInputs = (inputs: BetweenGapInput[]) => {
+      if (inputs.length <= 1) return inputs;
+      const minLeft = frameX + 4;
+      const maxLeft = frameX + frameW - gapInputWidth - 4;
+      const minSpacing = gapInputWidth + 6;
+      const sorted = [...inputs].sort((a, b) => a.leftPx - b.leftPx);
+      const pushedRight = sorted.map((input, index) => {
+        const previousRight = index === 0 ? minLeft - 6 : sorted[index - 1].leftPx + minSpacing;
+        return {
+          ...input,
+          leftPx: Math.max(minLeft, Math.min(maxLeft, Math.max(input.leftPx, previousRight))),
+        };
+      });
+      for (let index = pushedRight.length - 2; index >= 0; index -= 1) {
+        const nextLeft = pushedRight[index + 1].leftPx;
+        pushedRight[index].leftPx = Math.max(
+          minLeft,
+          Math.min(pushedRight[index].leftPx, nextLeft - minSpacing),
+        );
+      }
+      return pushedRight;
+    };
+    const computeDrawerLayout = () => {
+      const filledHeights = rebalanceDoorFrontHeights(
+        normalizedHeights,
+        String(totalHeight),
+        String(topGap),
+        String(betweenGap),
+        normalizedHeightManual,
+      ).heights;
+      const numericFilledHeights = filledHeights.map((value) => Number.parseFloat(String(value || "").replace(/[^\d.-]/g, "")) || 0);
+      const sumHeights = numericFilledHeights.reduce((sum, value) => sum + value, 0) || 1;
+      const gapPx =
+        count > 1 && totalHeight > 0
+          ? amplifyGapPx((between / totalHeight) * availableHeightPx, 36)
+          : 0;
+      const usableDrawerHeightPx = Math.max(24, availableHeightPx - topPx - gapPx * Math.max(0, count - 1));
+      let runningY = frameY + topPx;
+      const overlays = filledHeights.map((value, index) => {
+        const computedFrontHeightPx = Math.max(16, ((numericFilledHeights[index] || 1) / sumHeights) * usableDrawerHeightPx);
+        const rectY = runningY;
+        const frontHeightPx =
+          index === filledHeights.length - 1
+            ? Math.max(16, frameY + frameH - rectY)
+            : computedFrontHeightPx;
+        runningY += frontHeightPx + gapPx;
+        return {
+          key: `drawer_overlay_${index}`,
+          heightValue: value,
+          heightInputLeftPx: frameX + frameW / 2 - 29,
+          inputTopPx: rectY + Math.max(20, frontHeightPx / 2) - 14,
+          rectY,
+          frontHeightPx,
+          drawRectY: rectY + (index > 0 ? 0.5 : 0),
+          drawRectHeight: Math.max(0, frontHeightPx - (index < filledHeights.length - 1 ? 0.5 : 0)),
+        };
+      });
+      const betweenInputs = overlays.slice(0, -1).map((overlay, index) => {
+        const nextOverlay = overlays[index + 1];
+        const gapCenterY = overlay.rectY + overlay.frontHeightPx + gapPx / 2;
+        return {
+          key: `between_v_${index}`,
+          leftPx: frameX + frameW + 8,
+          topPx: gapCenterY - 14,
+          gapCenterX: frameX + frameW / 2,
+          gapCenterY,
+          gapThickness: Math.max(1, gapPx),
+        };
+      });
+      return { overlays, betweenInputs };
+    };
+    const drawerLayout = mode === "drawer" ? computeDrawerLayout() : null;
+    const drawerTotalLeft =
+      mode === "drawer"
+        ? computeDoorDrawerTotalLeft(
+            drawerLayout?.overlays.map((overlay) => overlay.heightValue) ?? normalizedHeights,
+            String(totalHeight),
+            String(topGap),
+            String(betweenGap),
+          )
+        : 0;
+    const drawerTotalLeftDisplay = formatDoorFrontHeightValue(Math.abs(drawerTotalLeft));
+    const drawerTotalLeftIsClear = Math.abs(drawerTotalLeft) <= 0.01;
+    const betweenGapInputs =
+      mode === "door"
+        ? resolveHorizontalGapInputs(
+            Array.from({ length: Math.max(0, count - 1) }, (_, index) => {
+              const segmentWidth = frontWidthPx / count;
+              const gapX = frameX + 4 + segmentWidth * (index + 1) + 6;
+              const doorGapPx =
+                count > 1 && totalWidth > 0
+                  ? amplifyGapPx((between / totalWidth) * frontWidthPx, 36)
+                  : 1;
+              return {
+                key: `between_h_${index}`,
+                leftPx: Math.max(frontLeftX, gapX),
+                topPx: frameY + topPx + Math.max(22, (availableHeightPx - topPx) / 2) - 13,
+                gapCenterX: frontLeftX + segmentWidth * (index + 1),
+                gapCenterY: frameY + topPx + Math.max(22, (availableHeightPx - topPx) / 2),
+                gapThickness: doorGapPx,
+              };
+            }),
+          )
+        : drawerLayout?.betweenInputs ?? [];
+    const sideGapInputs =
+        [
+            {
+              key: "left_side_gap",
+              leftPx: Math.max(0, frameX + 2 - 26),
+              topPx: Math.min(svgHeight - 30, frameY + frameH + 8),
+              value: formatSvgMeasure(leftDeduction || 0),
+              gapX: frameX + leftGapPx / 2,
+              gapTopY: frameY,
+              gapBottomY: frameY + frameH - 4,
+              side: "left" as const,
+            },
+            {
+              key: "right_side_gap",
+              leftPx: Math.min(svgWidth - 52, frameX + frameW - 2 - 26),
+              topPx: Math.min(svgHeight - 30, frameY + frameH + 8),
+              value: formatSvgMeasure(rightDeduction || 0),
+              gapX: frameX + frameW - rightGapPx / 2,
+              gapTopY: frameY,
+              gapBottomY: frameY + frameH - 4,
+              side: "right" as const,
+            },
+          ];
+    const drawerFrontOverlays = drawerLayout?.overlays ?? [];
+    const drawerFrontSizeRows =
+      mode === "drawer"
+        ? drawerFrontOverlays.map((overlay, index) => ({
+            index: index + 1,
+            height: overlay.heightValue || "0",
+            width: formatSvgMeasure(frontWidthPx > 0 && totalWidth > 0 ? Math.max(0, totalWidth - leftDeduction - rightDeduction) : 0),
+          }))
+        : [];
+    const drawerOverlayObstacles = drawerFrontOverlays.map((overlay) => ({
+      left: overlay.heightInputLeftPx,
+      top: overlay.inputTopPx,
+      right: overlay.heightInputLeftPx + 58,
+      bottom: overlay.inputTopPx + 28,
+    }));
+    const resolveGapInputAgainstDrawerOverlays = (
+      input: { key?: string; leftPx: number; topPx: number },
+      width: number,
+      height: number,
+    ) => {
+      if (mode !== "drawer") return input;
+      const preferred = { left: input.leftPx, top: input.topPx, right: input.leftPx + width, bottom: input.topPx + height };
+      if (drawerOverlayObstacles.every((obstacle) => !rectsOverlap(preferred, obstacle))) return input;
+      const minLeft = frameX + 8;
+      const maxLeft = frameX + frameW - width - 8;
+      const candidates = [
+        { leftPx: minLeft, topPx: input.topPx },
+        { leftPx: maxLeft, topPx: input.topPx },
+        { leftPx: Math.max(minLeft, Math.min(maxLeft, frameX + 20)), topPx: input.topPx },
+        { leftPx: Math.max(minLeft, Math.min(maxLeft, frameX + frameW - width - 20)), topPx: input.topPx },
+      ];
+      for (const candidate of candidates) {
+        const rect = { left: candidate.leftPx, top: candidate.topPx, right: candidate.leftPx + width, bottom: candidate.topPx + height };
+        if (drawerOverlayObstacles.every((obstacle) => !rectsOverlap(rect, obstacle))) return candidate;
+      }
+      return input;
+    };
+    const resolvedTopGapInput = resolveGapInputAgainstDrawerOverlays({ leftPx: topInputLeftPx, topPx: topInputTopPx }, 64, 28);
+    const resolvedBetweenGapInputs = betweenGapInputs.map((input) => ({ ...input, ...resolveGapInputAgainstDrawerOverlays(input, 64, 28) }));
+    return (
+      <div className="space-y-3">
+        <div className="px-1 py-1">
+          <div className="flex w-full max-w-[620px] items-start gap-2">
+          <div className="relative -mt-2 h-[320px] w-full max-w-[430px] flex-1">
+          <input
+            disabled={disabled}
+            value={topGap}
+            onChange={(e) => onTopGapChange(e.target.value)}
+            className="absolute z-10 h-7 w-[64px] rounded-[8px] border px-2 text-center text-[12px]"
+            style={{
+              left: resolvedTopGapInput.leftPx,
+              top: resolvedTopGapInput.topPx,
+              borderColor,
+              backgroundColor: fieldBg,
+              color: fieldText,
+            }}
+          />
+          {resolvedBetweenGapInputs.map((input) => (
+            <input
+              key={input.key}
+              disabled={disabled}
+              value={betweenGap}
+              onChange={(e) => onBetweenGapChange(e.target.value)}
+              className="absolute z-10 h-7 w-[64px] rounded-[8px] border px-2 text-center text-[12px]"
+              style={{
+                left: input.leftPx,
+                top: input.topPx,
+                borderColor,
+                backgroundColor: fieldBg,
+                color: fieldText,
+              }}
+            />
+          ))}
+          {sideGapInputs.map((input) => (
+            <input
+              key={input.key}
+              value={input.value}
+              onChange={(e) =>
+                onSideGapChange(
+                  input.side === "left" ? "doorSideLeftGap" : "doorSideRightGap",
+                  e.target.value,
+                )
+              }
+              className="absolute z-10 h-7 w-[52px] rounded-[8px] border px-1 text-center text-[12px]"
+              style={{
+                left: input.leftPx,
+                top: input.topPx,
+                borderColor,
+                backgroundColor: fieldBg,
+                color: fieldText,
+              }}
+            />
+          ))}
+          {drawerFrontOverlays.map((overlay, index) => (
+            <div key={overlay.key}>
+              <input
+                disabled={disabled}
+                value={overlay.heightValue}
+                onChange={(e) => onFrontHeightChange(index, e.target.value)}
+                className="absolute z-10 h-7 w-[58px] rounded-[8px] border px-2 text-center text-[12px]"
+                style={{
+                  left: overlay.heightInputLeftPx,
+                  top: overlay.inputTopPx,
+                  borderColor,
+                  backgroundColor: fieldBg,
+                  color: fieldText,
+                }}
+              />
+            </div>
+          ))}
+          <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="h-full w-full">
+            <line
+              x1={frameX}
+              y1={frameY + topPx / 2}
+              x2={frameX + frameW}
+              y2={frameY + topPx / 2}
+              stroke={horizontalGapLineColor}
+              strokeWidth={topGuideThickness}
+            />
+            <line
+              x1={frameX + frameW}
+              y1={frameY + topPx / 2}
+              x2={resolvedTopGapInput.leftPx + 6}
+              y2={resolvedTopGapInput.topPx + 14}
+              stroke={horizontalGapLineColor}
+              strokeWidth={topGuideThickness}
+            />
+            {resolvedBetweenGapInputs.map((input) => (
+              mode === "door" ? (
+                <g key={`between_line_${input.key}`}>
+                  <line
+                    x1={input.gapCenterX}
+                    y1={frameY + topPx + 4}
+                    x2={input.gapCenterX}
+                    y2={frameY + frameH - 4}
+                    stroke={verticalGapLineColor}
+                    strokeWidth={input.gapThickness}
+                  />
+                  <line
+                    x1={input.gapCenterX}
+                    y1={input.gapCenterY}
+                    x2={input.leftPx}
+                    y2={input.gapCenterY}
+                    stroke={verticalGapLineColor}
+                    strokeWidth="1"
+                  />
+                </g>
+              ) : (
+                <g key={`between_line_${input.key}`}>
+                  <line
+                    x1={frontLeftX}
+                    y1={input.gapCenterY}
+                    x2={frontRightX}
+                    y2={input.gapCenterY}
+                    stroke={horizontalGapLineColor}
+                    strokeWidth={input.gapThickness}
+                  />
+                  <line
+                    x1={frontRightX}
+                    y1={input.gapCenterY}
+                    x2={input.leftPx + 6}
+                    y2={input.gapCenterY}
+                    stroke={horizontalGapLineColor}
+                    strokeWidth={input.gapThickness}
+                  />
+                </g>
+              )
+            ))}
+            {sideGapInputs.map((input) => (
+              <g key={`side_line_${input.key}`}>
+                <line
+                  x1={input.gapX}
+                  y1={input.gapTopY}
+                  x2={input.gapX}
+                  y2={input.topPx + 14}
+                  stroke={verticalGapLineColor}
+                  strokeWidth={input.side === "left" ? leftGuideThickness : rightGuideThickness}
+                />
+              </g>
+            ))}
+            <rect x={frameX} y={frameY} width={frameW} height={frameH} fill="none" stroke={textColor} strokeWidth="1.5" />
+            {mode === "door"
+              ? Array.from({ length: count }, (_, index) => {
+                  const segmentWidth = availableWidthPx / count;
+                  const doorSegmentWidth = frontWidthPx / count;
+                  const doorX = frontLeftX + index * doorSegmentWidth;
+                  const doorY = frameY + topPx;
+                  const doorW = Math.max(18, doorSegmentWidth - (index < count - 1 ? 4 : 0));
+                  const doorHpx = Math.max(24, availableHeightPx - topPx);
+                  return (
+                    <g key={`door_svg_${index}`}>
+                      <rect x={doorX} y={doorY} width={doorW} height={doorHpx} fill="none" stroke={textColor} strokeWidth="1.4" />
+                      <text x={doorX + doorW / 2} y={doorY + doorHpx / 2} textAnchor="middle" fontSize="10" fill={textColor}>
+                        {formatSvgMeasure(doorWidth)} x {formatSvgMeasure(doorHeight)}
+                      </text>
+                    </g>
+                  );
+                })
+              : (drawerLayout?.overlays ?? []).map((overlay, index) => (
+                  <g key={`drawer_svg_${index}`}>
+                    <rect x={frontLeftX} y={overlay.drawRectY} width={frontWidthPx} height={overlay.drawRectHeight} fill="none" stroke={textColor} strokeWidth="1.4" />
+                  </g>
+                ))}
+            <text x={overallHeightLabelX} y={frameY + frameH / 2} textAnchor="middle" fontSize="10" fill={textColor} transform={`rotate(-90 ${overallHeightLabelX} ${frameY + frameH / 2})`}>
+              Height {formatSvgMeasure(totalHeight)}
+            </text>
+            <text x={frameX + frameW / 2} y={frameY + frameH + 34} textAnchor="middle" fontSize="10" fill={textColor}>
+              Width {formatSvgMeasure(totalWidth)}
+            </text>
+          </svg>
+          {mode === "drawer" ? (
+            <div
+              className="absolute left-0 right-0 top-[324px] flex items-center justify-center text-[12px] font-semibold"
+            >
+              <span
+                className="inline-flex items-center rounded-full border px-3 py-1"
+                style={{
+                  borderColor: drawerTotalLeftIsClear ? "#A9DDBF" : "#F3A5A5",
+                  backgroundColor: drawerTotalLeftIsClear ? "#EAF8F0" : "#FCEAEA",
+                  color: drawerTotalLeftIsClear ? "#1F8A4C" : "#C62828",
+                }}
+              >
+                Remaining Height: {drawerTotalLeftDisplay || "0"}
+              </span>
+            </div>
+          ) : null}
+        </div>
+        {mode === "drawer" ? (
+          <div className="ml-10 w-[150px] shrink-0 space-y-2 pt-2">
+            {drawerFrontSizeRows.map((row) => (
+              <div
+                key={`drawer_front_size_${row.index}`}
+                className="rounded-[10px] border px-3 py-2 text-[12px] font-semibold"
+                style={{
+                  borderColor,
+                  backgroundColor: fieldBg,
+                  color: fieldText,
+                }}
+              >
+                {row.index}: {row.height} x {row.width}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        </div>
+      </div>
+      </div>
+    );
   };
 
   const onCutlistEntryBoardChange = (board: string) => {
@@ -11084,19 +12469,53 @@ export default function ProjectDetailsPage() {
   };
 
   const updateDraftCutlistRow = (id: string, patch: Partial<CutlistDraftRow>) => {
-    setCutlistDraftRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== id) return row;
-        const next = { ...row, ...patch };
-        if (isDrawerPartType(next.partType)) {
-          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
-          next.height = formatDrawerHeightTokens(tokens);
-          next.quantity = String(Math.max(1, tokens.length));
-        }
-        return next;
-      }),
-    );
-  };
+      setCutlistDraftRows((prev) =>
+        prev.map((row) => {
+          if (row.id !== id) return row;
+          const next = { ...row, ...patch };
+          if (isDrawerPartType(next.partType)) {
+            const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
+            next.height = formatDrawerHeightTokens(tokens);
+            next.quantity = String(Math.max(1, tokens.length));
+          } else if (isDoorPartType(next.partType)) {
+            const nextMode = normalizeDoorModeValue(next.doorMode);
+            const nextCount = normalizeDoorFrontCountValue(next.doorFrontCount);
+            next.doorTopGap = numericOnlyText(String(next.doorTopGap ?? ""));
+            next.doorBetweenGap = numericOnlyText(String(next.doorBetweenGap ?? ""));
+            next.doorSideLeft = normalizeDoorSideValue(next.doorSideLeft);
+            next.doorSideRight = normalizeDoorSideValue(next.doorSideRight);
+            next.doorSideLeftGap = numericDecimalText(String(next.doorSideLeftGap ?? ""));
+            next.doorSideRightGap = numericDecimalText(String(next.doorSideRightGap ?? ""));
+            next.doorFrontHeights = normalizeDoorFrontHeights(
+              next.doorFrontHeights,
+              Number.parseInt(nextCount, 10) || 0,
+            );
+            next.doorFrontHeightManual = normalizeDoorFrontHeightManual(
+              next.doorFrontHeightManual,
+              Number.parseInt(nextCount, 10) || 0,
+            );
+            if (nextMode !== "manual" && nextCount) {
+              next.quantity = nextCount;
+            }
+            if (nextMode === "drawer") {
+              const rebalanced = rebalanceDoorFrontHeights(
+                next.doorFrontHeights,
+                String(next.height ?? ""),
+                String(next.doorTopGap ?? ""),
+                String(next.doorBetweenGap ?? ""),
+                next.doorFrontHeightManual,
+              );
+              next.doorFrontHeights = rebalanced.heights;
+              next.doorFrontHeightManual = rebalanced.manual;
+            } else {
+              next.doorFrontHeights = [];
+              next.doorFrontHeightManual = [];
+            }
+          }
+          return next;
+        }),
+      );
+    };
 
   const updateDraftDrawerHeightTokens = (id: string, tokens: string[]) => {
     const formatted = formatDrawerHeightTokens(tokens);
@@ -11945,6 +13364,10 @@ export default function ProjectDetailsPage() {
     () => matchesGrainDimension(String(cutlistEntry.grainValue ?? ""), cutlistEntry.depth, "depth"),
     [cutlistEntry.grainValue, cutlistEntry.depth],
   );
+  const cutlistEntrySelectedDoorMode = useMemo(
+    () => (isDoorPartType(cutlistEntry.partType) ? selectedDoorModeValue(cutlistEntry.doorMode) : ""),
+    [cutlistEntry.doorMode, cutlistEntry.partType, isDoorPartType],
+  );
 
   useEffect(() => {
     if (!isDrawerPartType(cutlistEntry.partType)) return;
@@ -12141,8 +13564,10 @@ export default function ProjectDetailsPage() {
     cncVisibilityMap,
     isCabinetryPartType,
     isDrawerPartType,
+    isDoorPartType,
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
   ]);
   const cncExpandedRowsForPrintIds = useMemo(() => {
     const out: CncDisplayRow[] = [];
@@ -12226,6 +13651,56 @@ export default function ProjectDetailsPage() {
         continue;
       }
 
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        const pieces = buildConfiguredDoorDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          out.push({
+            ...row,
+            id: `${row.id}__dor__${piece.key}`,
+            sourceRowId: row.id,
+            name: String(piece.partName || row.name || ""),
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+            grainValue: String(piece.grainValue || row.grainValue || ""),
+          });
+        }
+        continue;
+      }
+
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        const pieces = buildConfiguredDoorDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          out.push({
+            ...row,
+            id: `${row.id}__dor__${piece.key}`,
+            sourceRowId: row.id,
+            name: String(piece.partName || row.name || ""),
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+            grainValue: String(piece.grainValue || row.grainValue || ""),
+          });
+        }
+        continue;
+      }
+
       const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
       if (qty <= 0) continue;
       out.push({ ...row, sourceRowId: row.id });
@@ -12233,10 +13708,12 @@ export default function ProjectDetailsPage() {
     return out;
   }, [
     buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
     cncPrintSourceRows,
     cncVisibilityMap,
     isCabinetryPartType,
     isDrawerPartType,
+    isDoorPartType,
   ]);
 
   const filteredCncRows = useMemo(() => {
@@ -12676,6 +14153,37 @@ export default function ProjectDetailsPage() {
         continue;
       }
 
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        const pieces = buildConfiguredDoorDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          const nestedRow: CutlistRow = {
+            ...row,
+            id: `${row.id}__dor__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+            grainValue: String(piece.grainValue || row.grainValue || ""),
+          };
+          if (
+            !q ||
+            [nestedRow.name, nestedRow.board, nestedRow.partType, nestedRow.room, nestedRow.information]
+              .some((v) => String(v || "").toLowerCase().includes(q))
+          ) {
+            expanded.push(nestedRow);
+          }
+        }
+        continue;
+      }
+
       if (
         !q ||
         [row.name, row.board, row.partType, row.room, row.information]
@@ -12688,9 +14196,11 @@ export default function ProjectDetailsPage() {
   }, [
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
     effectiveCutlistRows,
     isCabinetryPartType,
     isDrawerPartType,
+    isDoorPartType,
     isPartTypeIncludedInNesting,
     nestingSearch,
     shouldComputeNesting,
@@ -12749,15 +14259,41 @@ export default function ProjectDetailsPage() {
         continue;
       }
 
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        const pieces = buildConfiguredDoorDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          expanded.push({
+            ...row,
+            id: `${row.id}__dor__${piece.key}`,
+            name: piece.partName || row.name,
+            parentName: String(row.name || ""),
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashing: joinClashing(String(piece.clashLeft || ""), String(piece.clashRight || "")),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            information: String(row.information || ""),
+            grainValue: String(piece.grainValue || row.grainValue || ""),
+          });
+        }
+        continue;
+      }
+
       expanded.push(row);
     }
     return expanded;
   }, [
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
     effectiveCutlistRows,
     isCabinetryPartType,
     isDrawerPartType,
+    isDoorPartType,
     isPartTypeIncludedInNesting,
     shouldComputeNesting,
   ]);
@@ -13037,6 +14573,16 @@ export default function ProjectDetailsPage() {
     () => normalizeEdgebandingSettings((companyDoc as Record<string, unknown> | null)?.edgebandingSettings),
     [companyDoc],
   );
+  const effectiveProjectGapAllowances = useMemo(() => {
+    const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
+    return normalizeGapAllowancesSettings(
+      projectSettings.gapAllowancesSettings ??
+        (companyDoc as Record<string, unknown> | null)?.gapAllowancesSettings,
+    );
+  }, [project?.projectSettings, companyDoc]);
+  useEffect(() => {
+    setProjectGapAllowancesDraft(effectiveProjectGapAllowances);
+  }, [effectiveProjectGapAllowances]);
   const requiredEdgetapeByBoardRowId = useMemo(() => {
     const out: Record<string, string> = {};
     const excessPerEndMm = Math.max(
@@ -13089,6 +14635,24 @@ export default function ProjectDetailsPage() {
             quantity: String(qty),
             clashLeft: String(piece.clashLeft || ""),
             clashRight: String(piece.clashRight || ""),
+          });
+        }
+        continue;
+      }
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        const pieces = buildConfiguredDoorDerivedPieces(row);
+        for (const piece of pieces) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({
+            ...row,
+            height: String(piece.height || ""),
+            width: String(piece.width || ""),
+            depth: String(piece.depth || ""),
+            quantity: String(qty),
+            clashLeft: String(piece.clashLeft || ""),
+            clashRight: String(piece.clashRight || ""),
+            grainValue: String(piece.grainValue || row.grainValue || ""),
           });
         }
         continue;
@@ -13167,8 +14731,10 @@ export default function ProjectDetailsPage() {
     effectiveCutlistRows,
     isCabinetryPartType,
     isDrawerPartType,
+    isDoorPartType,
     buildCabinetryDerivedPieces,
     buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
     resolveBoardKey,
   ]);
   const toggleNestingGroup = (key: string) => {
@@ -15183,12 +16749,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   />
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                <div className="space-y-3">
-                  {salesItemsFilteredCategories.map((category) => {
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <div>
+                  {salesItemsFilteredCategories.map((category, categoryIndex) => {
                     const collapsed = collapsedSalesItemCategories[category.id] ?? false;
                     return (
-                      <section key={`mobile_sales_item_cat_${category.id}`} className="overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white">
+                      <section key={`mobile_sales_item_cat_${category.id}`} className="relative overflow-hidden bg-white">
+                        <div
+                          className="pointer-events-none absolute inset-y-0 left-0 z-[3] w-[6px]"
+                          style={{ backgroundColor: category.color }}
+                        />
+                        {categoryIndex > 0 ? <div className="ml-[6px] border-t border-[#D7DEE8]" /> : null}
                         <button
                           type="button"
                           onClick={() =>
@@ -15197,8 +16768,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               [category.id]: !(prev[category.id] ?? false),
                             }))
                           }
-                          className="flex w-full items-center justify-between gap-3 border-l-[6px] px-4 py-3 text-left"
-                          style={{ borderLeftColor: category.color }}
+                          className="relative z-[2] flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
                         >
                           <div className="min-w-0">
                             <p className="text-[13px] font-bold text-[#0F172A]">{category.name}</p>
@@ -15210,32 +16780,58 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           />
                         </button>
                         {!collapsed ? (
-                          <div className="space-y-2 border-t border-[#EEF2F7] p-3">
-                            {category.items.map((item) => (
-                              <button
-                                key={`mobile_sales_item_${category.id}_${item.name}`}
-                                type="button"
-                                disabled={!activeSalesItemsRoom || salesReadOnly}
-                                onClick={() => {
-                                  onAddSalesItemsLibraryItem(category, item);
-                                  setIsItemsLibraryModalOpen(false);
-                                }}
-                                className="flex w-full items-center justify-between gap-3 rounded-[12px] border border-[#D7DEE8] bg-[#F8FAFD] px-3 py-3 text-left disabled:opacity-60"
-                              >
-                                <div className="min-w-0">
-                                  <p className="truncate text-[12px] font-semibold text-[#111827]">{item.name}</p>
-                                  {item.subcategory ? (
-                                    <p className="truncate text-[11px] text-[#667085]">{item.subcategory}</p>
+                          <div>
+                            <div className="ml-[6px] border-t border-[#D7DEE8]" />
+                            {category.items.map((item, itemIndex) => {
+                              const itemKey = `${category.id}__${item.name}`.toLowerCase();
+                              const descriptionExpanded = expandedSalesItemDescriptions[itemKey] ?? false;
+                              const hasDescription = String(item.description || "").trim().length > 0;
+                              return (
+                                <div
+                                  key={`mobile_sales_item_${category.id}_${item.name}`}
+                                  className="relative z-[2] overflow-hidden bg-[#F8FAFD]"
+                                >
+                                  {itemIndex > 0 ? <div className="ml-[6px] border-t border-[#D7DEE8]" /> : null}
+                                  <div className="flex items-stretch">
+                                    <button
+                                      type="button"
+                                      disabled={!activeSalesItemsRoom || salesReadOnly}
+                                      onClick={() => {
+                                        onAddSalesItemsLibraryItem(category, item);
+                                        setIsItemsLibraryModalOpen(false);
+                                      }}
+                                      className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left disabled:opacity-60"
+                                    >
+                                      <div className="min-w-0">
+                                        <p className="truncate text-[12px] font-semibold text-[#111827]">{item.name}</p>
+                                        {item.subcategory ? (
+                                          <p className="truncate text-[11px] text-[#667085]">{item.subcategory}</p>
+                                        ) : null}
+                                      </div>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setExpandedSalesItemDescriptions((prev) => ({
+                                          ...prev,
+                                          [itemKey]: !(prev[itemKey] ?? false),
+                                        }));
+                                      }}
+                                      className="inline-flex w-8 shrink-0 items-center justify-center bg-transparent"
+                                      title={descriptionExpanded ? "Hide description" : "Show description"}
+                                    >
+                                      <TintedAngleDownIcon color="#475467" size={12} expanded={descriptionExpanded} />
+                                    </button>
+                                  </div>
+                                  {descriptionExpanded ? (
+                                    <div className="border-t border-[#D7DEE8] bg-white/70 px-3 py-2 text-[11px] leading-5 text-[#475467]">
+                                      {hasDescription ? item.description : "No description"}
+                                    </div>
                                   ) : null}
                                 </div>
-                                <span
-                                  className="inline-flex shrink-0 rounded-full px-2 py-1 text-[10px] font-bold text-white"
-                                  style={{ backgroundColor: category.color }}
-                                >
-                                  Add
-                                </span>
-                              </button>
-                            ))}
+                              );
+                            })}
                           </div>
                         ) : null}
                       </section>
@@ -15450,17 +17046,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <input value={salesItemsSearch} onChange={(e) => setSalesItemsSearch(e.currentTarget.value)} placeholder="Search items across all categories" className="h-full w-full bg-transparent text-[13px] outline-none placeholder:text-[#98A2B3]" style={{ color: projectPalette.inputText }} />
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <div className="space-y-3">
-              {salesItemsFilteredCategories.length > 0 ? salesItemsFilteredCategories.map((category) => {
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div>
+              {salesItemsFilteredCategories.length > 0 ? salesItemsFilteredCategories.map((category, categoryIndex) => {
                 const collapsed = collapsedSalesItemCategories[category.id] ?? false;
                 return (
-                  <section key={`sales_item_cat_${category.id}`} className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
+                  <section
+                    key={`sales_item_cat_${category.id}`}
+                    className="relative overflow-hidden"
+                    style={{
+                      backgroundColor: projectPalette.panelBg,
+                    }}
+                  >
+                    <div
+                      className="pointer-events-none absolute inset-y-0 left-0 z-[3] w-[6px]"
+                      style={{ backgroundColor: category.color }}
+                    />
+                    {categoryIndex > 0 ? <div style={{ marginLeft: 6, borderTop: `1px solid ${projectPalette.border}` }} /> : null}
                     <button
                       type="button"
                       onClick={() => setCollapsedSalesItemCategories((prev) => ({ ...prev, [category.id]: !(prev[category.id] ?? false) }))}
-                      className="flex w-full items-center justify-between gap-3 border-l-[6px] px-4 py-3 text-left"
-                      style={{ borderLeftColor: category.color }}
+                      className="relative z-[2] flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
                     >
                       <div className="min-w-0">
                         <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.text }}>{category.name}</p>
@@ -15468,21 +17074,64 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
                       <ChevronDown size={16} className={`shrink-0 transition-transform ${collapsed ? "" : "rotate-180"}`} style={{ color: projectPalette.textMuted }} />
                     </button>
-                    {!collapsed ? (
-                      <div className="space-y-2 border-t p-3" style={{ borderTopColor: projectPalette.border }}>
-                        {category.items.map((item) => (
-                          <div key={`sales_item_row_${category.id}_${item.name}`} draggable onDragStart={(event) => onSalesItemsLibraryDragStart(event, category, item)} className="flex items-center gap-3 rounded-[12px] border px-3 py-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
-                            <GripVertical size={14} className="shrink-0" style={{ color: projectPalette.textMuted }} />
-                            <div className="min-w-0 flex-1">
-                              <div className="inline-flex items-center gap-2">
-                                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: category.color }} />
-                                <p className="truncate text-[12px] font-semibold" style={{ color: projectPalette.text }}>{item.name}</p>
+                        {!collapsed ? (
+                      <div>
+                        <div style={{ marginLeft: 6, borderTop: `1px solid ${projectPalette.border}` }} />
+                        {category.items.map((item, itemIndex) => {
+                          const itemKey = `${category.id}__${item.name}`.toLowerCase();
+                          const descriptionExpanded = expandedSalesItemDescriptions[itemKey] ?? false;
+                          const hasDescription = String(item.description || "").trim().length > 0;
+                          return (
+                            <div
+                              key={`sales_item_row_${category.id}_${item.name}`}
+                              className="relative z-[2] overflow-hidden"
+                              style={{
+                                backgroundColor: projectPalette.panelMuted,
+                              }}
+                            >
+                              {itemIndex > 0 ? <div style={{ marginLeft: 6, borderTop: `1px solid ${projectPalette.border}` }} /> : null}
+                              <div className="flex items-stretch">
+                                <button
+                                  type="button"
+                                  draggable
+                                  onDragStart={(event) => onSalesItemsLibraryDragStart(event, category, item)}
+                                  disabled={!activeSalesItemsRoom || salesReadOnly}
+                                  onClick={() => onAddSalesItemsLibraryItem(category, item)}
+                                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left disabled:opacity-60"
+                                >
+                                  <GripVertical size={14} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="inline-flex items-center gap-2">
+                                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: category.color }} />
+                                      <p className="truncate text-[12px] font-semibold" style={{ color: projectPalette.text }}>{item.name}</p>
+                                    </div>
+                                    {item.subcategory ? <p className="mt-1 truncate text-[11px]" style={{ color: projectPalette.textMuted }}>{item.subcategory}</p> : null}
+                                  </div>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setExpandedSalesItemDescriptions((prev) => ({
+                                      ...prev,
+                                      [itemKey]: !(prev[itemKey] ?? false),
+                                    }));
+                                  }}
+                                  className="inline-flex w-8 shrink-0 items-center justify-center"
+                                  style={{ backgroundColor: "transparent" }}
+                                  title={descriptionExpanded ? "Hide description" : "Show description"}
+                                >
+                                  <TintedAngleDownIcon color={projectPalette.textMuted} size={12} expanded={descriptionExpanded} />
+                                </button>
                               </div>
-                              {item.subcategory ? <p className="mt-1 truncate text-[11px]" style={{ color: projectPalette.textMuted }}>{item.subcategory}</p> : null}
+                              {descriptionExpanded ? (
+                                <div className="border-t px-3 py-2 text-[11px] leading-5" style={{ borderTopColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.textMuted }}>
+                                  {hasDescription ? item.description : "No description"}
+                                </div>
+                              ) : null}
                             </div>
-                            <button type="button" disabled={!activeSalesItemsRoom || salesReadOnly} onClick={() => onAddSalesItemsLibraryItem(category, item)} className="inline-flex h-9 shrink-0 items-center rounded-[10px] border border-[#BFD3F2] bg-[#EFF4FF] px-3 text-[12px] font-bold text-[#24589A] disabled:opacity-60">+ Add</button>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : null}
                   </section>
@@ -16166,7 +17815,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         case "width":
         case "depth":
         case "quantity":
-          updated[target.key] = numericOnlyText(value);
+          updated[target.key] = sanitizeCutlistNumericInput(target.key, value);
           break;
         default:
           updated[target.key] = value;
@@ -19351,7 +21000,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 inputMode="numeric"
                                 pattern="[0-9]*"
                                 value={draft.height}
-                                onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericOnlyText(e.target.value) })}
+                                onChange={(e) => updateInitialDraftCutlistRow(draft.id, { height: numericDecimalText(e.target.value) })}
                                 className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center"
                                 style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("height") }}
                               />
@@ -19361,7 +21010,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               inputMode="numeric"
                               pattern="[0-9]*"
                               value={draft.width}
-                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericOnlyText(e.target.value) })}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { width: numericDecimalText(e.target.value) })}
                               className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center"
                               style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("width") }}
                             />
@@ -19370,7 +21019,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               inputMode="numeric"
                               pattern="[0-9]*"
                               value={draft.depth}
-                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericOnlyText(e.target.value) })}
+                              onChange={(e) => updateInitialDraftCutlistRow(draft.id, { depth: numericDecimalText(e.target.value) })}
                               className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center"
                               style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor, ...initialCutlistEntryCellStyle("depth") }}
                             />
@@ -19868,7 +21517,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               <input
                                                 autoFocus
                                                 value={initialEditingCellValue}
-                                                onChange={(e) => setInitialEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
+                                                onChange={(e) => setInitialEditingCellValue(isNumericCutlistInputKey(key) ? sanitizeCutlistNumericInput(key, e.target.value) : e.target.value)}
                                                 onBlur={() => void commitInitialCellEdit()}
                                                 onKeyDown={(e) => {
                                                   if (e.key === "Enter") {
@@ -20155,9 +21804,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
                           const draftFieldBg = lightenHex(color, 0.12);
                           const draftFieldBorder = darkenHex(color, 0.2);
-                          const draftIsCabinetry = isCabinetryPartType(draft.partType);
-                          const draftIsDoor = isDoorPartType(draft.partType);
-                          const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
+                            const draftIsCabinetry = isCabinetryPartType(draft.partType);
+                            const draftIsDoor = isDoorPartType(draft.partType);
+                            const draftDoorMode = selectedDoorModeValue(draft.doorMode);
+                            const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
                           const draftGrainValue = String(draft.grainValue ?? "").trim();
                           const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
                           const draftWidthGrainMatch = matchesGrainDimension(draftGrainValue, draft.width, "width");
@@ -20255,17 +21905,62 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <div className={`space-y-1 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Part Name</p>
                                   <div className="relative z-[20] grid gap-[4px] overflow-visible">
-                                    <PartNameSuggestionInput
-                                      disabled={productionReadOnly}
-                                      title={nameWarn || undefined}
-                                      value={draft.name}
-                                      options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                                      onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
-                                      className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                                      style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                    />
+                                      <PartNameSuggestionInput
+                                        disabled={productionReadOnly}
+                                        title={nameWarn || undefined}
+                                        value={draft.name}
+                                        options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                                        onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                                        className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                                        style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                                      />
+                                      {draftIsDoor
+                                        ? renderDoorModeConfigurator({
+                                            mode: draftDoorMode,
+                                            frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                            onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
+                                            onFrontCountChange: (count) => onDraftDoorFrontCountChange(draft.id, count),
+                                            disabled: productionReadOnly,
+                                            textColor: draftTextColor,
+                                            borderColor: draftFieldBorder,
+                                            fieldBg: draftFieldBg,
+                                            fieldText: draftTextColor,
+                                          })
+                                        : null}
+                                      {draftIsDoor && draftDoorMode !== "" && draftDoorMode !== "manual"
+                                        ? renderDoorSetupDesigner({
+                                            mode: draftDoorMode === "drawer" ? "drawer" : "door",
+                                            frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                            overallHeight: String(draft.height ?? ""),
+                                          overallWidth: String(draft.width ?? ""),
+                                          topGap: String(draft.doorTopGap ?? ""),
+                                          betweenGap: String(draft.doorBetweenGap ?? ""),
+                                          sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
+                                          sideRight: normalizeDoorSideValue(draft.doorSideRight),
+                                          sideLeftGap: String(draft.doorSideLeftGap ?? ""),
+                                          sideRightGap: String(draft.doorSideRightGap ?? ""),
+                                          frontHeights: normalizeDoorFrontHeights(
+                                            draft.doorFrontHeights,
+                                            Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                                          ),
+                                            frontHeightManual: normalizeDoorFrontHeightManual(
+                                              draft.doorFrontHeightManual,
+                                              Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                                            ),
+                                          onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
+                                          onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
+                                          onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
+                                          onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
+                                          onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                          disabled: productionReadOnly,
+                                          textColor: draftTextColor,
+                                          borderColor: draftFieldBorder,
+                                            fieldBg: draftFieldBg,
+                                            fieldText: draftTextColor,
+                                          })
+                                        : null}
+                                    </div>
                                   </div>
-                                </div>
                                 <div className={`grid grid-cols-3 gap-2 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Height</p>
@@ -20283,22 +21978,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
                                       />
                                     ) : (
-                                      <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDecimalText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                     )}
                                   </div>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Width</p>
-                                    <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: numericDecimalText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Depth</p>
-                                    <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDecimalText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                 </div>
                                 <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-1" : draftBoardAllowsGrain && showCutlistGrainColumn ? "grid-cols-4" : "grid-cols-3"} ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Quantity</p>
-                                    <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                                    <input disabled={productionReadOnly || isDrawerPartType(draft.partType) || (draftIsDoor && draftDoorMode !== "manual")} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                                   </div>
                                   {!draftIsCabinetry ? (
                                     <>
@@ -20382,7 +22077,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </label>
                                     <div className="relative overflow-visible">
                                       <div className="pointer-events-auto">
-                                        {draftDoorHingesEnabled ? renderDoorHingeEditor({
+                                      {draftDoorHingesEnabled && draftDoorMode === "manual" ? renderDoorHingeEditor({
                                           upValues: normalizeDoorHingeValues(draft.hingesUp),
                                           downValues: normalizeDoorHingeValues(draft.hingesDown),
                                           onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
@@ -20589,7 +22284,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             pattern="[0-9]*"
                                             onClick={(e) => e.stopPropagation()}
                                             onChange={(e) => {
-                                              const next = numericOnlyText(e.target.value);
+                                              const next = sanitizeCutlistNumericInput("quantity", e.target.value);
                                               editingCellValueRef.current = next;
                                               if (next !== e.currentTarget.value) e.currentTarget.value = next;
                                             }}
@@ -20748,7 +22443,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   inputMode="numeric"
                                                   pattern="[0-9]*"
                                                   onChange={(e) => {
-                                                    const next = numericOnlyText(e.target.value);
+                                                    const next = sanitizeCutlistNumericInput("height", e.target.value);
                                                     editingCellValueRef.current = next;
                                                     if (next !== e.currentTarget.value) e.currentTarget.value = next;
                                                   }}
@@ -20783,7 +22478,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 onChange={(e) => {
-                                                  const next = numericOnlyText(e.target.value);
+                                                  const next = sanitizeCutlistNumericInput("width", e.target.value);
                                                   editingCellValueRef.current = next;
                                                   if (next !== e.currentTarget.value) e.currentTarget.value = next;
                                                 }}
@@ -20817,7 +22512,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 onChange={(e) => {
-                                                  const next = numericOnlyText(e.target.value);
+                                                  const next = sanitizeCutlistNumericInput("depth", e.target.value);
                                                   editingCellValueRef.current = next;
                                                   if (next !== e.currentTarget.value) e.currentTarget.value = next;
                                                 }}
@@ -20851,7 +22546,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 onChange={(e) => {
-                                                  const next = numericOnlyText(e.target.value);
+                                                  const next = sanitizeCutlistNumericInput("quantity", e.target.value);
                                                   editingCellValueRef.current = next;
                                                   if (next !== e.currentTarget.value) e.currentTarget.value = next;
                                                 }}
@@ -20888,7 +22583,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       inputMode="numeric"
                                                       pattern="[0-9]*"
                                                       onChange={(e) => {
-                                                        const next = numericOnlyText(e.target.value);
+                                                        const next = sanitizeCutlistNumericInput("fixedShelf", e.target.value);
                                                         editingFixedShelfRef.current = next;
                                                         setEditingFixedShelf(next);
                                                       }}
@@ -20948,7 +22643,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       inputMode="numeric"
                                                       pattern="[0-9]*"
                                                       onChange={(e) => {
-                                                        const next = numericOnlyText(e.target.value);
+                                                        const next = sanitizeCutlistNumericInput("adjustableShelf", e.target.value);
                                                         editingAdjustableShelfRef.current = next;
                                                         setEditingAdjustableShelf(next);
                                                       }}
@@ -21469,7 +23164,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         const draftFieldBg = lightenHex(color, 0.12);
                         const draftFieldBorder = darkenHex(color, 0.2);
                         const draftIsCabinetry = isCabinetryPartType(draft.partType);
-                        const draftIsDoor = isDoorPartType(draft.partType);
+                            const draftIsDoor = isDoorPartType(draft.partType);
+                            const draftDoorMode = selectedDoorModeValue(draft.doorMode);
                         const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
                       const draftGrainValue = String(draft.grainValue ?? "").trim();
                       const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
@@ -21481,6 +23177,231 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       const widthWarn = warningForCell(draft.id, "width");
                       const depthWarn = warningForCell(draft.id, "depth");
                       const quantityWarn = warningForCell(draft.id, "quantity");
+                      if (draftIsDoor && draftDoorMode === "") {
+                        return (
+                          <div
+                            key={draft.id}
+                            className="relative overflow-visible border-y px-3 py-3"
+                            style={{ backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                          >
+                            <div className="grid grid-cols-[32px_minmax(0,360px)] items-start gap-4">
+                              <button
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={() => removeDraftCutlistRow(draft.id)}
+                                className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                              >
+                                <X size={15} className="mx-auto" strokeWidth={2.8} />
+                              </button>
+                              <div className="space-y-3">
+                                {renderDoorModeConfigurator({
+                                  mode: draftDoorMode,
+                                  frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                  onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
+                                  onFrontCountChange: (count) => onDraftDoorFrontCountChange(draft.id, count),
+                                  disabled: productionReadOnly,
+                                  textColor: draftTextColor,
+                                  borderColor: draftFieldBorder,
+                                  fieldBg: draftFieldBg,
+                                  fieldText: draftTextColor,
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (draftIsDoor && draftDoorMode !== "manual") {
+                        return (
+                          <div
+                            key={draft.id}
+                            className="relative overflow-visible border-y px-3 py-3"
+                            style={{ backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                          >
+                            <div className="grid grid-cols-[32px_minmax(0,360px)_minmax(0,1fr)] items-start gap-4">
+                              <button
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={() => removeDraftCutlistRow(draft.id)}
+                                className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                              >
+                                <X size={15} className="mx-auto" strokeWidth={2.8} />
+                              </button>
+                              <div className="space-y-3">
+                                {renderDoorModeConfigurator({
+                                  mode: draftDoorMode,
+                                  frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                  onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
+                                  onFrontCountChange: (count) => onDraftDoorFrontCountChange(draft.id, count),
+                                  disabled: productionReadOnly,
+                                  textColor: draftTextColor,
+                                  borderColor: draftFieldBorder,
+                                  fieldBg: draftFieldBg,
+                                  fieldText: draftTextColor,
+                                })}
+                                <div className="space-y-1">
+                                  <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Board Type</p>
+                                  <div className="relative z-[120] pointer-events-auto">
+                                    <BoardPillDropdown
+                                      value={draft.board}
+                                      options={cutlistBoardOptions}
+                                      disabled={productionReadOnly}
+                                      title={boardWarn || undefined}
+                                      className={warningClassForCell(draft.id, "board")}
+                                      bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                                      border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                                      text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                                      getSize={boardSizeFor}
+                                      getLabel={boardDisplayLabel}
+                                      onChange={(next) => onDraftBoardChange(draft.id, next)}
+                                    />
+                                  </div>
+                                </div>
+                                <div className={`grid gap-2 ${showCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_120px]" : "grid-cols-1"}`}>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Part Name</p>
+                                    <PartNameSuggestionInput
+                                      disabled={productionReadOnly}
+                                      title={nameWarn || undefined}
+                                      value={draft.name}
+                                      options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                                      onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                                      className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                                      style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                                    />
+                                  </div>
+                                  {showCutlistGrainColumn && draftBoardAllowsGrain ? (
+                                    <div className="space-y-1">
+                                      <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Grain</p>
+                                      <BoardPillDropdown
+                                        value={String(draft.grainValue ?? "")}
+                                        options={grainDimensionOptionsForRow(draft)}
+                                        disabled={productionReadOnly}
+                                        bg={draftFieldBg}
+                                        border={draftFieldBorder}
+                                        text={draftTextColor}
+                                        size="default"
+                                        getSize={() => ""}
+                                        getLabel={(v) => v || "Select"}
+                                        onChange={(v) =>
+                                          updateDraftCutlistRow(draft.id, {
+                                            grainValue: v,
+                                            grain: Boolean(String(v).trim()),
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div className="grid grid-cols-5 gap-2">
+                                  <div className="space-y-1">
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Height</p>
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDecimalText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Width</p>
+                                    <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: numericDecimalText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
+                                    <input disabled value={draft.quantity} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }) }} />
+                                  </div>
+                                  <div className="space-y-1 col-span-2">
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                    <BoardPillDropdown
+                                      value={draft.clashLeft ?? ""}
+                                      options={CLASH_LEFT_OPTIONS}
+                                      disabled={productionReadOnly}
+                                      bg={draftFieldBg}
+                                      border={draftFieldBorder}
+                                      text={draftTextColor}
+                                      size="default"
+                                      getSize={() => ""}
+                                      getLabel={(v) => v}
+                                      onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
+                                    />
+                                    <BoardPillDropdown
+                                      value={draft.clashRight ?? ""}
+                                      options={CLASH_RIGHT_OPTIONS}
+                                      disabled={productionReadOnly}
+                                      bg={draftFieldBg}
+                                      border={draftFieldBorder}
+                                      text={draftTextColor}
+                                      size="default"
+                                      getSize={() => ""}
+                                      getLabel={(v) => v}
+                                      onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
+                                    />
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
+                                  <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Information</p>
+                                  <div className="grid gap-[2px]">
+                                    {informationLinesFromValue(draft.information).map((line, idx) => (
+                                      <div key={`${draft.id}_configured_info_${idx}`} className="flex items-center gap-[3px]">
+                                        <button
+                                          type="button"
+                                          disabled={productionReadOnly}
+                                          onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
+                                          className={
+                                            idx === 0
+                                              ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                                              : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                          }
+                                        >
+                                          {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                        </button>
+                                        <input
+                                          disabled={productionReadOnly}
+                                          value={line}
+                                          onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
+                                          placeholder="Information"
+                                          className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                          style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="self-stretch">
+                                {renderDoorSetupDesigner({
+                                  mode: draftDoorMode === "drawer" ? "drawer" : "door",
+                                  frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                  overallHeight: String(draft.height ?? ""),
+                                  overallWidth: String(draft.width ?? ""),
+                                  topGap: String(draft.doorTopGap ?? ""),
+                                  betweenGap: String(draft.doorBetweenGap ?? ""),
+                                  sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
+                                  sideRight: normalizeDoorSideValue(draft.doorSideRight),
+                                  sideLeftGap: String(draft.doorSideLeftGap ?? ""),
+                                  sideRightGap: String(draft.doorSideRightGap ?? ""),
+                                  frontHeights: normalizeDoorFrontHeights(
+                                    draft.doorFrontHeights,
+                                    Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                                  ),
+                                  frontHeightManual: normalizeDoorFrontHeightManual(
+                                    draft.doorFrontHeightManual,
+                                    Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                                  ),
+                                  onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
+                                  onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
+                                  onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
+                                  onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
+                                  onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                  disabled: productionReadOnly,
+                                  textColor: draftTextColor,
+                                  borderColor: draftFieldBorder,
+                                  fieldBg: draftFieldBg,
+                                  fieldText: draftTextColor,
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
                       return (
                           <div
                             key={draft.id}
@@ -21523,8 +23444,57 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
                               style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                             />
-                            {draftIsDoor ? (
-                              <div className="relative h-[40px] w-0 overflow-visible">
+                            {draftIsDoor
+                              ? renderDoorModeConfigurator({
+                                  mode: draftDoorMode,
+                                  frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                  onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
+                                  onFrontCountChange: (count) => onDraftDoorFrontCountChange(draft.id, count),
+                                  disabled: productionReadOnly,
+                                  textColor: draftTextColor,
+                                  borderColor: draftFieldBorder,
+                                  fieldBg: draftFieldBg,
+                                  fieldText: draftTextColor,
+                                })
+                              : null}
+                            {draftIsDoor && draftDoorMode !== "manual"
+                              ? (
+                                <div style={cutlistEntryCellStyle("information", 2)}>
+                                  {renderDoorSetupDesigner({
+                                    mode: draftDoorMode === "drawer" ? "drawer" : "door",
+                                    frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
+                                    overallHeight: String(draft.height ?? ""),
+                                    overallWidth: String(draft.width ?? ""),
+                                    topGap: String(draft.doorTopGap ?? ""),
+                                    betweenGap: String(draft.doorBetweenGap ?? ""),
+                                    sideLeft: normalizeDoorSideValue(draft.doorSideLeft),
+                                    sideRight: normalizeDoorSideValue(draft.doorSideRight),
+                                    sideLeftGap: String(draft.doorSideLeftGap ?? ""),
+                                    sideRightGap: String(draft.doorSideRightGap ?? ""),
+                                    frontHeights: normalizeDoorFrontHeights(
+                                      draft.doorFrontHeights,
+                                      Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                                    ),
+                                    frontHeightManual: normalizeDoorFrontHeightManual(
+                                      draft.doorFrontHeightManual,
+                                      Number.parseInt(draft.doorFrontCount || "", 10) || 0,
+                                    ),
+                                    onTopGapChange: (value) => onDraftDoorGapChange(draft.id, "doorTopGap", value),
+                                    onBetweenGapChange: (value) => onDraftDoorGapChange(draft.id, "doorBetweenGap", value),
+                                    onSideChange: (key, value) => onDraftDoorSideChange(draft.id, key, value),
+                                    onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
+                                    onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                    disabled: productionReadOnly,
+                                    textColor: draftTextColor,
+                                    borderColor: draftFieldBorder,
+                                    fieldBg: draftFieldBg,
+                                    fieldText: draftTextColor,
+                                  })}
+                                </div>
+                              )
+                              : null}
+                                {draftIsDoor && draftDoorMode === "manual" ? (
+                                <div className="relative h-[40px] w-0 overflow-visible">
                                 <div className="pointer-events-auto absolute left-0 top-0">
                                   {renderDoorHingeEditor({
                                     upValues: normalizeDoorHingeValues(draft.hingesUp),
@@ -21558,11 +23528,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             />
                             </div>
                           ) : (
-                            <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                            <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDecimalText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                           )}
-                          <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
-                          <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
-                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                          <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => updateDraftCutlistRow(draft.id, { width: numericDecimalText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                          <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDecimalText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                          <input disabled={productionReadOnly || isDrawerPartType(draft.partType) || (draftIsDoor && draftDoorMode !== "manual")} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                           {draftIsCabinetry ? (
                             <div className="grid content-start gap-[1px]" style={cutlistEntryCellStyle("clashing", 2)}>
                               <div className="grid content-start gap-0">
@@ -21870,18 +23840,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 const rowIsCabinetry = isCabinetryPartType(row.partType);
                                 const rowIsDrawer = isDrawerPartType(row.partType);
                                 const rowIsDoor = isDoorPartType(row.partType);
+                                const rowIsConfiguredDoor = rowIsDoor && normalizeDoorModeValue(row.doorMode) !== "manual";
                                 const rowPendingDelete = pendingGroupRows.includes(row.id);
                                 const cabinetryOpen = Boolean(expandedCabinetryRows[row.id]);
                                 const drawerOpen = Boolean(expandedDrawerRows[row.id]);
                                 const doorOpen = Boolean(expandedDoorRows[row.id]);
                                 const cabinetryPieces = rowIsCabinetry ? buildCabinetryDerivedPieces(row) : [];
                                 const drawerPieces = rowIsDrawer ? buildDrawerDerivedPieces(row) : [];
-                                const spillInfoToSubRows = rowIsCabinetry || rowIsDrawer;
+                                const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
+                                const spillInfoToSubRows = rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor;
                                 const visibleSubRowCount = rowIsCabinetry
                                   ? (cabinetryOpen ? cabinetryPieces.length : 0)
                                   : rowIsDrawer
                                     ? (drawerOpen ? drawerPieces.length : 0)
-                                    : 0;
+                                    : rowIsConfiguredDoor
+                                      ? (doorOpen ? doorPieces.length : 0)
+                                      : 0;
                                 const mainInfoCount = spillInfoToSubRows
                                   ? Math.max(1, infoLines.length - visibleSubRowCount)
                                   : infoLines.length;
@@ -21919,7 +23893,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       </button>
                                       <button
                                         type="button"
-                                        disabled={!(rowIsCabinetry || rowIsDrawer || rowIsDoor)}
+                                        disabled={!(rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor)}
                                         onClick={() => {
                                           if (rowIsCabinetry) {
                                             toggleCabinetryRowExpand(row.id);
@@ -21929,11 +23903,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             toggleDrawerRowExpand(row.id);
                                             return;
                                           }
-                                          if (rowIsDoor) {
+                                          if (rowIsConfiguredDoor) {
                                             toggleDoorRowExpand(row.id);
                                           }
                                         }}
-                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer || rowIsDoor) ? "" : "invisible pointer-events-none"}`}
+                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor) ? "" : "invisible pointer-events-none"}`}
                                         style={{
                                           backgroundColor: color,
                                           borderColor: darkenHex(color, 0.18),
@@ -22161,7 +24135,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 inputMode="numeric"
                                                 pattern="[0-9]*"
                                                 onChange={(e) => {
-                                                  const next = numericOnlyText(e.target.value);
+                                              const next = sanitizeCutlistNumericInput(key, e.target.value);
                                                   editingCellValueRef.current = next;
                                                   if (next !== e.currentTarget.value) {
                                                     e.currentTarget.value = next;
@@ -22210,7 +24184,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     inputMode="numeric"
                                                     pattern="[0-9]*"
                                                     onChange={(e) => {
-                                                      const next = numericOnlyText(e.target.value);
+                                                      const next = sanitizeCutlistNumericInput(key, e.target.value);
                                                       editingFixedShelfRef.current = next;
                                                       setEditingFixedShelf(next);
                                                     }}
@@ -22275,7 +24249,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     inputMode="numeric"
                                                     pattern="[0-9]*"
                                                     onChange={(e) => {
-                                                      const next = numericOnlyText(e.target.value);
+                                                      const next = sanitizeCutlistNumericInput(key, e.target.value);
                                                       editingAdjustableShelfRef.current = next;
                                                       setEditingAdjustableShelf(next);
                                                     }}
@@ -22635,11 +24609,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     })}
                                   </tr>
                                 ))}
-                                {rowIsDoor && doorOpen && (
+                                {rowIsConfiguredDoor && doorOpen && doorPieces.map((piece, pieceIdx) => (
                                   <tr
-                                    key={`${row.id}_door_hinges`}
+                                    key={`${row.id}_${piece.key}`}
                                     data-cutlist-subrow-parent={row.id}
-                                    data-cutlist-subrow-key="door_hinges"
+                                    data-cutlist-subrow-key={piece.key}
                                     className="border-t"
                                     style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
                                   >
@@ -22652,57 +24626,44 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     {cutlistListColumnDefs.map((col) => {
                                       const key = col.key as CutlistEditableField;
                                       const alignClass = cutlistCellAlignClass(key);
-                                      const editingDoorHinges = isEditing(row.id, "hinges");
+                                      const infoLineIndex = mainInfoCount + pieceIdx;
+                                      const editingThisInfoCell = col.key === "information" && isEditing(row.id, "information");
+                                      const pieceGrainValue = String(piece.grainValue || row.grainValue || "");
+                                      let value = "";
+                                      if (col.key === "partType") value = "";
+                                      if (col.key === "board") value = "";
+                                      if (col.key === "name") value = piece.partName;
+                                      if (col.key === "height") value = piece.height;
+                                      if (col.key === "width") value = piece.width;
+                                      if (col.key === "depth") value = piece.depth;
+                                      if (col.key === "quantity") value = piece.quantity;
+                                      if (col.key === "clashing") value = joinClashing(piece.clashLeft, piece.clashRight);
+                                      if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
+                                      if (col.key === "grain") value = pieceGrainValue;
+                                      const isPieceGrainMatchedDimension =
+                                        (key === "height" && matchesGrainDimension(pieceGrainValue, piece.height, "height")) ||
+                                        (key === "width" && matchesGrainDimension(pieceGrainValue, piece.width, "width")) ||
+                                        (key === "depth" && matchesGrainDimension(pieceGrainValue, piece.depth, "depth"));
                                       return (
                                         <td
-                                          key={`${row.id}_door_hinges_${col.key}`}
+                                          key={`${row.id}_${piece.key}_${col.key}`}
                                           className={`px-2 py-[3px] align-middle text-[11px] ${alignClass}`}
                                           onDoubleClick={() => {
-                                            if (col.key !== "name") return;
-                                            startCellEdit(row, "hinges");
+                                            if (col.key !== "information") return;
+                                            startCellEdit(row, "information", infoLineIndex);
                                           }}
-                                          style={{ ...cutlistListColumnStyle(key), color: groupTextColor }}
+                                          style={{
+                                            ...cutlistListColumnStyle(key),
+                                            color: groupTextColor,
+                                            ...(isPieceGrainMatchedDimension ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                          }}
                                         >
-                                          {col.key === "name"
-                                            ? editingDoorHinges
-                                              ? (
-                                                <div data-cutlist-door-hinges-edit={row.id}>
-                                                  {renderDoorHingeEditor({
-                                                    upValues: editingHingesUp,
-                                                    downValues: editingHingesDown,
-                                                    onChange: (direction, index, next) => {
-                                                      if (direction === "up") {
-                                                        const values = updateDoorHingeValues(editingHingesUpRef.current, index, next);
-                                                        editingHingesUpRef.current = values;
-                                                        setEditingHingesUp(values);
-                                                        return;
-                                                      }
-                                                      const values = updateDoorHingeValues(editingHingesDownRef.current, index, next);
-                                                      editingHingesDownRef.current = values;
-                                                      setEditingHingesDown(values);
-                                                    },
-                                                    disabled: productionReadOnly,
-                                                    bg: "#FFFFFF",
-                                                    border: "#94A3B8",
-                                                      text: "#0F172A",
-                                                      rowKey: row.id,
-                                                      rowLabel: cutlistRowLabelFor(row, "Entry"),
-                                                      maxValue: maxDoorHingeValueForRowLike(row),
-                                                      onBlur: (event) => onDoorHingeInputBlur(event, row.id),
-                                                      onCommit: () => void commitCellEdit(),
-                                                    })}
-                                                  </div>
-                                                )
-                                              : renderDoorHingeDisplay(
-                                                  normalizeDoorHingeValues(row.hingesUp),
-                                                  normalizeDoorHingeValues(row.hingesDown),
-                                                )
-                                            : ""}
+                                          {editingThisInfoCell ? "" : value}
                                         </td>
                                       );
                                     })}
                                   </tr>
-                                )}
+                                ))}
                                 </Fragment>
                                 );
                               })}
@@ -25493,9 +27454,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               </div>
                               <input disabled={salesReadOnly} value={initialCutlistEntry.name} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, name: e.target.value }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("name") }} />
-                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
-                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
-                              <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.height} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, height: numericDecimalText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("height") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.width} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, width: numericDecimalText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("width") }} />
+                              <input disabled={salesReadOnly} inputMode="decimal" value={initialCutlistEntry.depth} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, depth: numericDecimalText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("depth") }} />
                               <input disabled={salesReadOnly} inputMode="numeric" pattern="[0-9]*" value={initialCutlistEntry.quantity} onChange={(e) => setInitialCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-8 rounded-[8px] border bg-transparent px-2 text-center text-[12px]" style={{ backgroundColor: activeInitialCutlistEntryFieldBg, borderColor: activeInitialCutlistEntryFieldBorder, color: activeInitialCutlistEntryTextColor, ...initialCutlistEntryCellStyle("quantity") }} />
                               <div style={initialCutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown value={initialCutlistEntry.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={salesReadOnly} bg={activeInitialCutlistEntryFieldBg} border={activeInitialCutlistEntryFieldBorder} text={activeInitialCutlistEntryTextColor} size="default" getSize={() => ""} getLabel={(v) => v} onChange={(v) => setInitialCutlistEntry((prev) => ({ ...prev, clashLeft: v }))} />
@@ -26074,18 +28035,212 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             })}
                           </div>
 
-                          <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
-                            <p></p>
-                            {cutlistEntryColumnDefs.map((col) => (
-                              <p
-                                key={`single_header_${col.key}`}
-                                className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                                style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
-                              >
-                                {col.key === "clashing" ? (singleEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
-                              </p>
-                            ))}
-                          </div>
+                          {!isDoorPartType(cutlistEntry.partType) || cutlistEntrySelectedDoorMode === "manual" ? (
+                            <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
+                              <p></p>
+                              {cutlistEntryColumnDefs.map((col) => (
+                                <p
+                                  key={`single_header_${col.key}`}
+                                  className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                                  style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                                >
+                                  {col.key === "clashing" ? (singleEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                          {isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode === "" ? (
+                            <div className="border-y px-3 py-3" style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
+                              <div className="max-w-[360px]">
+                                {renderDoorModeConfigurator({
+                                  mode: cutlistEntrySelectedDoorMode,
+                                  frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
+                                      onModeChange: onCutlistEntryDoorModeChange,
+                                      onFrontCountChange: onCutlistEntryDoorFrontCountChange,
+                                      disabled: productionReadOnly,
+                                      textColor: activeCutlistEntryTextColor,
+                                      borderColor: activeCutlistEntryFieldBorder,
+                                      fieldBg: activeCutlistEntryFieldBg,
+                                      fieldText: activeCutlistEntryTextColor,
+                                    })}
+                              </div>
+                            </div>
+                          ) : isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode !== "manual" ? (
+                            <div className="border-y px-3 py-3" style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
+                              <div className="grid items-start gap-4 grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+                                <div className="space-y-3">
+                                  {renderDoorModeConfigurator({
+                                    mode: cutlistEntrySelectedDoorMode,
+                                    frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
+                                    onModeChange: onCutlistEntryDoorModeChange,
+                                    onFrontCountChange: onCutlistEntryDoorFrontCountChange,
+                                    disabled: productionReadOnly,
+                                    textColor: activeCutlistEntryTextColor,
+                                    borderColor: activeCutlistEntryFieldBorder,
+                                    fieldBg: activeCutlistEntryFieldBg,
+                                    fieldText: activeCutlistEntryTextColor,
+                                  })}
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Board Type</p>
+                                    <BoardPillDropdown
+                                      value={cutlistEntry.board}
+                                      options={cutlistBoardOptions}
+                                      disabled={productionReadOnly}
+                                      title={warningForCell("single", "board") || undefined}
+                                      className={warningClassForCell("single", "board")}
+                                      bg={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).backgroundColor ?? activeCutlistEntryFieldBg}
+                                      border={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).borderColor ?? activeCutlistEntryFieldBorder}
+                                      text={warningStyleForCell("single", "board", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }).color ?? activeCutlistEntryTextColor}
+                                      getSize={boardSizeFor}
+                                      getLabel={boardDisplayLabel}
+                                      onChange={onCutlistEntryBoardChange}
+                                    />
+                                  </div>
+                                  <div className={`grid gap-2 ${showSingleCutlistEntryGrain && selectedCutlistEntryBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_120px]" : "grid-cols-1"}`}>
+                                    <div className="space-y-1">
+                                      <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Part Name</p>
+                                      <PartNameSuggestionInput
+                                        disabled={productionReadOnly}
+                                        title={warningForCell("single", "name") || undefined}
+                                        value={cutlistEntry.name}
+                                        options={productionPartNameSuggestionsForRoom(cutlistEntryRoom, cutlistEntry.name)}
+                                        onChange={(next) => setCutlistEntry((prev) => ({ ...prev, name: next }))}
+                                        className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
+                                        style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
+                                      />
+                                    </div>
+                                    {showSingleCutlistEntryGrain && selectedCutlistEntryBoardAllowsGrain ? (
+                                      <div className="space-y-1">
+                                        <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Grain</p>
+                                        <BoardPillDropdown
+                                          value={String(cutlistEntry.grainValue ?? "")}
+                                          options={grainDimensionOptionsForRow(cutlistEntry)}
+                                          disabled={productionReadOnly}
+                                          bg={activeCutlistEntryFieldBg}
+                                          border={activeCutlistEntryFieldBorder}
+                                          text={activeCutlistEntryTextColor}
+                                          size="default"
+                                          getSize={() => ""}
+                                          getLabel={(v) => v || "Select"}
+                                          onChange={(v) =>
+                                            setCutlistEntry((prev) => ({
+                                              ...prev,
+                                              grainValue: v,
+                                              grain: Boolean(String(v).trim()),
+                                            }))
+                                          }
+                                        />
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <div className="grid grid-cols-5 gap-2">
+                                    <div className="space-y-1">
+                                      <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Height</p>
+                                      <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={{ ...warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Width</p>
+                                      <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: numericDecimalText(e.target.value) }))} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
+                                      <input disabled value={cutlistEntry.quantity} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
+                                    </div>
+                                    <div className="space-y-1 col-span-2">
+                                      <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
+                                      <div className="grid grid-cols-2 gap-2">
+                                      <BoardPillDropdown
+                                        value={cutlistEntry.clashLeft ?? ""}
+                                        options={CLASH_LEFT_OPTIONS}
+                                        disabled={productionReadOnly}
+                                        bg={activeCutlistEntryFieldBg}
+                                        border={activeCutlistEntryFieldBorder}
+                                        text={activeCutlistEntryTextColor}
+                                        size="default"
+                                        getSize={() => ""}
+                                        getLabel={(v) => v}
+                                        onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashLeft: v }))}
+                                      />
+                                      <BoardPillDropdown
+                                        value={cutlistEntry.clashRight ?? ""}
+                                        options={CLASH_RIGHT_OPTIONS}
+                                        disabled={productionReadOnly}
+                                        bg={activeCutlistEntryFieldBg}
+                                        border={activeCutlistEntryFieldBorder}
+                                        text={activeCutlistEntryTextColor}
+                                        size="default"
+                                        getSize={() => ""}
+                                        getLabel={(v) => v}
+                                        onChange={(v) => setCutlistEntry((prev) => ({ ...prev, clashRight: v }))}
+                                      />
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Information</p>
+                                    <div className="grid gap-[2px]">
+                                      {informationLinesFromValue(cutlistEntry.information).map((line, idx) => (
+                                        <div key={`entry_info_configured_${idx}`} className="flex items-center gap-[3px]">
+                                          <button
+                                            type="button"
+                                            disabled={productionReadOnly}
+                                            onClick={() => (idx === 0 ? onCutlistEntryAddInformationLine() : onCutlistEntryRemoveInformationLine(idx))}
+                                            className={
+                                              idx === 0
+                                                ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                                                : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                            }
+                                          >
+                                            {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                          </button>
+                                          <input
+                                            disabled={productionReadOnly}
+                                            value={line}
+                                            onChange={(e) => onCutlistEntryInformationLineChange(idx, e.target.value)}
+                                            placeholder="Information"
+                                            className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                            style={{ backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }}
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="self-stretch">
+                                  {renderDoorSetupDesigner({
+                                    mode: cutlistEntrySelectedDoorMode === "drawer" ? "drawer" : "door",
+                                    frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
+                                    overallHeight: String(cutlistEntry.height ?? ""),
+                                    overallWidth: String(cutlistEntry.width ?? ""),
+                                    topGap: String(cutlistEntry.doorTopGap ?? ""),
+                                    betweenGap: String(cutlistEntry.doorBetweenGap ?? ""),
+                                    sideLeft: normalizeDoorSideValue(cutlistEntry.doorSideLeft),
+                                    sideRight: normalizeDoorSideValue(cutlistEntry.doorSideRight),
+                                    sideLeftGap: String(cutlistEntry.doorSideLeftGap ?? ""),
+                                    sideRightGap: String(cutlistEntry.doorSideRightGap ?? ""),
+                                    frontHeights: normalizeDoorFrontHeights(
+                                      cutlistEntry.doorFrontHeights,
+                                      Number.parseInt(cutlistEntry.doorFrontCount || "", 10) || 0,
+                                    ),
+                                    frontHeightManual: normalizeDoorFrontHeightManual(
+                                      cutlistEntry.doorFrontHeightManual,
+                                      Number.parseInt(cutlistEntry.doorFrontCount || "", 10) || 0,
+                                    ),
+                                    onTopGapChange: (value) => onCutlistEntryDoorGapChange("doorTopGap", value),
+                                    onBetweenGapChange: (value) => onCutlistEntryDoorGapChange("doorBetweenGap", value),
+                                    onSideChange: onCutlistEntryDoorSideChange,
+                                    onSideGapChange: onCutlistEntryDoorSideGapChange,
+                                    onFrontHeightChange: onCutlistEntryDoorFrontHeightChange,
+                                    disabled: productionReadOnly,
+                                    textColor: activeCutlistEntryTextColor,
+                                    borderColor: activeCutlistEntryFieldBorder,
+                                    fieldBg: activeCutlistEntryFieldBg,
+                                    fieldText: activeCutlistEntryTextColor,
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
                             <div className={`grid gap-2 border-y px-1 py-1 ${isDoorPartType(cutlistEntry.partType) ? "items-start" : ""}`} style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                             <p></p>
                             <div style={cutlistEntryCellStyle("board")}>
@@ -26107,19 +28262,68 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className="relative z-[20] grid gap-[4px] overflow-visible"
                               style={cutlistEntryCellStyle("name")}
                             >
-                              <PartNameSuggestionInput
-                                disabled={productionReadOnly}
-                                title={warningForCell("single", "name") || undefined}
-                                value={cutlistEntry.name}
-                                options={productionPartNameSuggestionsForRoom(cutlistEntryRoom, cutlistEntry.name)}
-                                onChange={(next) => setCutlistEntry((prev) => ({ ...prev, name: next }))}
-                                className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
-                                style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
-                              />
-                              {isDoorPartType(cutlistEntry.partType) ? (
-                                <div className="relative h-[40px] w-0 overflow-visible">
-                                  <div className="pointer-events-auto absolute left-0 top-0">
-                                    {renderDoorHingeEditor({
+                                <PartNameSuggestionInput
+                                  disabled={productionReadOnly}
+                                  title={warningForCell("single", "name") || undefined}
+                                  value={cutlistEntry.name}
+                                  options={productionPartNameSuggestionsForRoom(cutlistEntryRoom, cutlistEntry.name)}
+                                  onChange={(next) => setCutlistEntry((prev) => ({ ...prev, name: next }))}
+                                  className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
+                                  style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
+                                />
+                                {isDoorPartType(cutlistEntry.partType)
+                                  ? renderDoorModeConfigurator({
+                                      mode: normalizeDoorModeValue(cutlistEntry.doorMode),
+                                      frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
+                                      onModeChange: onCutlistEntryDoorModeChange,
+                                      onFrontCountChange: onCutlistEntryDoorFrontCountChange,
+                                      disabled: productionReadOnly,
+                                      textColor: activeCutlistEntryTextColor,
+                                      borderColor: activeCutlistEntryFieldBorder,
+                                      fieldBg: activeCutlistEntryFieldBg,
+                                      fieldText: activeCutlistEntryTextColor,
+                                    })
+                                  : null}
+                                {isDoorPartType(cutlistEntry.partType) && normalizeDoorModeValue(cutlistEntry.doorMode) !== "manual"
+                                  ? (
+                                    <div style={cutlistEntryCellStyle("information", 2)}>
+                                      {renderDoorSetupDesigner({
+                                        mode: normalizeDoorModeValue(cutlistEntry.doorMode) === "drawer" ? "drawer" : "door",
+                                        frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
+                                        overallHeight: String(cutlistEntry.height ?? ""),
+                                        overallWidth: String(cutlistEntry.width ?? ""),
+                                        topGap: String(cutlistEntry.doorTopGap ?? ""),
+                                        betweenGap: String(cutlistEntry.doorBetweenGap ?? ""),
+                                        sideLeft: normalizeDoorSideValue(cutlistEntry.doorSideLeft),
+                                        sideRight: normalizeDoorSideValue(cutlistEntry.doorSideRight),
+                                        sideLeftGap: String(cutlistEntry.doorSideLeftGap ?? ""),
+                                        sideRightGap: String(cutlistEntry.doorSideRightGap ?? ""),
+                                        frontHeights: normalizeDoorFrontHeights(
+                                          cutlistEntry.doorFrontHeights,
+                                          Number.parseInt(cutlistEntry.doorFrontCount || "", 10) || 0,
+                                        ),
+                                        frontHeightManual: normalizeDoorFrontHeightManual(
+                                          cutlistEntry.doorFrontHeightManual,
+                                          Number.parseInt(cutlistEntry.doorFrontCount || "", 10) || 0,
+                                        ),
+                                        onTopGapChange: (value) => onCutlistEntryDoorGapChange("doorTopGap", value),
+                                        onBetweenGapChange: (value) => onCutlistEntryDoorGapChange("doorBetweenGap", value),
+                                        onSideChange: onCutlistEntryDoorSideChange,
+                                        onSideGapChange: onCutlistEntryDoorSideGapChange,
+                                        onFrontHeightChange: onCutlistEntryDoorFrontHeightChange,
+                                        disabled: productionReadOnly,
+                                        textColor: activeCutlistEntryTextColor,
+                                        borderColor: activeCutlistEntryFieldBorder,
+                                        fieldBg: activeCutlistEntryFieldBg,
+                                        fieldText: activeCutlistEntryTextColor,
+                                      })}
+                                    </div>
+                                  )
+                                  : null}
+                                {isDoorPartType(cutlistEntry.partType) && normalizeDoorModeValue(cutlistEntry.doorMode) === "manual" ? (
+                                  <div className="relative h-[40px] w-0 overflow-visible">
+                                    <div className="pointer-events-auto absolute left-0 top-0">
+                                      {renderDoorHingeEditor({
                                       upValues: normalizeDoorHingeValues(cutlistEntry.hingesUp),
                                       downValues: normalizeDoorHingeValues(cutlistEntry.hingesDown),
                                       onChange: onCutlistEntryHingeChange,
@@ -26151,11 +28355,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               </div>
                             ) : (
-                              <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, height: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={{ ...warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                            <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "height") || undefined} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "height")}`} style={{ ...warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                             )}
-                            <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
-                            <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
-                            <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType)} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                            <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, width: numericDecimalText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                            <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: numericDecimalText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                              <input disabled={productionReadOnly || isDrawerPartType(cutlistEntry.partType) || (isDoorPartType(cutlistEntry.partType) && normalizeDoorModeValue(cutlistEntry.doorMode) !== "manual")} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <>
                               <div style={cutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown
@@ -26235,6 +28439,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </div>
                             )}
                           </div>
+                          )}
                           <button
                             disabled={productionReadOnly}
                             onClick={() => void addCutlistRow()}
@@ -26841,7 +29046,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 value={editingCellValue}
                                                 inputMode={isNumericCutlistInputKey(key) ? "numeric" : undefined}
                                                 pattern={isNumericCutlistInputKey(key) ? "[0-9]*" : undefined}
-                                                onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? numericOnlyText(e.target.value) : e.target.value)}
+                                                onChange={(e) => setEditingCellValue(isNumericCutlistInputKey(key) ? sanitizeCutlistNumericInput(key, e.target.value) : e.target.value)}
                                                 onBlur={() => void commitCellEdit()}
                                                 onKeyDown={(e) => {
                                                   if (e.key === "Enter") {
@@ -27275,11 +29480,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
                         </div>
                       ))}
-                      <div className="grid grid-cols-[1fr_58px_58px_26px] items-center gap-2">
-                          <p className="font-semibold text-[#334155]">Hob Centre</p>
-                          <select
-                            disabled={productionReadOnly}
-                            value={productionForm.cabinetry.hobSide}
+                        <div className="grid grid-cols-[1fr_58px_58px_26px] items-center gap-2">
+                            <p className="font-semibold text-[#334155]">Hob Centre</p>
+                            <select
+                              disabled={productionReadOnly}
+                              value={productionForm.cabinetry.hobSide}
                             onChange={(e) => onCabinetryDraftChange("hobSide", e.target.value)}
                             onBlur={() => void onCabinetryBlurSave()}
                             className="h-7 rounded-[8px] border px-1 text-[11px]"
@@ -27296,11 +29501,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onBlur={() => void onCabinetryBlurSave()}
                             className="h-7 rounded-[8px] border px-2 text-[12px]"
                             style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
-                          />
-                          <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
+                            />
+                            <p className="font-semibold" style={{ color: projectPalette.textMuted }}>mm</p>
+                        </div>
+                        <div className="grid grid-cols-[1fr_auto] items-start gap-2">
+                          <p className="font-semibold text-[#334155]">Top Scribers</p>
+                          <div className="flex items-center gap-4">
+                            <label className="inline-flex items-center gap-2 font-semibold" style={{ color: projectPalette.textSoft }}>
+                              <input
+                                disabled={productionReadOnly}
+                                type="checkbox"
+                                checked={Boolean(productionForm.cabinetry.topScribers)}
+                                onChange={() => void onCabinetryTopScribersChange(true)}
+                              />
+                              Yes
+                            </label>
+                            <label className="inline-flex items-center gap-2 font-semibold" style={{ color: projectPalette.textSoft }}>
+                              <input
+                                disabled={productionReadOnly}
+                                type="checkbox"
+                                checked={!productionForm.cabinetry.topScribers}
+                                onChange={() => void onCabinetryTopScribersChange(false)}
+                              />
+                              No
+                            </label>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </section>
+                    </section>
 
                   <section className="relative z-10 overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
@@ -27346,19 +29574,42 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           Hardware and drawer type are locked while drawer rows exist in cutlist.
                         </p>
                       )}
-                      <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                          <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Hinge Type</p>
-                          <select
-                            disabled
-                            value={productionForm.hardware.hardwareCategory}
+                        <div className="grid grid-cols-[92px_1fr] items-center gap-2">
+                            <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Hinge Type</p>
+                            <select
+                              disabled
+                              value={productionForm.hardware.hardwareCategory}
                             className="h-7 rounded-[8px] border px-2 text-[12px]"
                             style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: projectPalette.textSoft }}
-                          >
-                          <option value={productionForm.hardware.hardwareCategory}>{productionForm.hardware.hardwareCategory}</option>
-                        </select>
+                            >
+                            <option value={productionForm.hardware.hardwareCategory}>{productionForm.hardware.hardwareCategory}</option>
+                          </select>
+                        </div>
+                        <div className="grid grid-cols-[92px_1fr] items-start gap-2">
+                          <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Handles</p>
+                          <div className="flex flex-col items-start gap-2 pt-[1px]">
+                            <label className="inline-flex items-center gap-2" style={{ color: projectPalette.textSoft }}>
+                              <input
+                                disabled={productionReadOnly}
+                                type="checkbox"
+                                checked={Boolean(productionForm.hardware.standardHandles)}
+                                onChange={() => void onToggleHardwareHandle("standardHandles")}
+                              />
+                              <span>Standard</span>
+                            </label>
+                            <label className="inline-flex items-center gap-2" style={{ color: projectPalette.textSoft }}>
+                              <input
+                                disabled={productionReadOnly}
+                                type="checkbox"
+                                checked={Boolean(productionForm.hardware.wrapOverHandles)}
+                                onChange={() => void onToggleHardwareHandle("wrapOverHandles")}
+                              />
+                              <span>Wrap over</span>
+                            </label>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </section>
+                    </section>
                 </div>
 
                 <section className="relative z-10 overflow-visible rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
@@ -27745,11 +29996,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div className="-mx-4 -mb-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg }}>
               <div className="space-y-4 px-[22px] pb-4 pt-4 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
             <div className="grid gap-4 xl:grid-cols-2">
-              <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
-                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Project Assignment</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 pt-3 text-[12px]">
+                <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
+                    <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Project Assignment</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3 pt-3 text-[12px]">
                   <div className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
                     <p className="font-semibold" style={{ color: projectPalette.textSoft }}>Project Creator</p>
                     <select
@@ -27782,14 +30033,58 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </option>
                       ))}
                     </select>
-                  </div>
-                </CardContent>
-              </Card>
+                    </div>
+                  </CardContent>
+                </Card>
 
-              <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
-                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Project Permissions</CardTitle>
-                </CardHeader>
+                <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
+                    <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Gap Allowances</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4 pt-3 text-[12px]">
+                    <div className="grid gap-4 xl:grid-cols-2">
+                      {PROJECT_GAP_ALLOWANCE_SECTIONS.map((section) => (
+                        <div key={section.title} className="space-y-2">
+                          <p className="text-[11px] font-extrabold uppercase tracking-[0.7px]" style={{ color: projectPalette.textMuted }}>
+                            {section.title}
+                          </p>
+                          <div className="grid grid-cols-[45px_1fr] items-center gap-2 text-[12px]">
+                            {section.rows.map((row) => (
+                              <Fragment key={row.key}>
+                                <input
+                                  value={projectGapAllowancesDraft[row.key]}
+                                  onChange={(e) => {
+                                    const nextValue = e.target.value;
+                                    setProjectGapAllowancesDraft((prev) => ({ ...prev, [row.key]: nextValue }));
+                                  }}
+                                  onBlur={(e) => {
+                                    const nextValue = String(e.target.value ?? "").trim();
+                                    const nextDraft = {
+                                      ...projectGapAllowancesDraft,
+                                      [row.key]: nextValue,
+                                    };
+                                    setProjectGapAllowancesDraft(nextDraft);
+                                    if (nextValue === effectiveProjectGapAllowances[row.key]) return;
+                                    void persistProjectGapAllowances(nextDraft);
+                                  }}
+                                  disabled={!settingsAccess.edit || isSavingGeneralDetails}
+                                  className="h-7 rounded-[8px] border px-2 text-[12px] disabled:opacity-60"
+                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                                />
+                                <p style={{ color: projectPalette.textSoft }}>{row.label}</p>
+                              </Fragment>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+  
+                <Card style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
+                  <CardHeader className="flex min-h-[50px] flex-row items-center border-b px-4 py-0" style={{ borderColor: projectPalette.border }}>
+                    <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>Project Permissions</CardTitle>
+                  </CardHeader>
                 <CardContent className="px-0 pt-3 text-[12px]">
                   <div className="grid gap-0 xl:grid-cols-3">
                     {projectPermissionColumns.map((column) => {

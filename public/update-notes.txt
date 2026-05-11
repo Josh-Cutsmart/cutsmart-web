@@ -1,13 +1,14 @@
-Version: v0.2.9
+Version: v0.3.0
 
 whatsNew: [
-<u><b>General:</u></b>
-- Mobile Friendly Views now work in "Production" tab:
-- - Cutlist
-- - Nesting
-- - CNC Cutlist
-- - Print
-
 <u><b>Project Details "Production":</u></b>
-- "Assigned" User now stays unnassigned until manually changed - does not default to the creator.
+- Can now select Entry Modes for Door / Drawer Part Types:
+- - Editable SVG Drawing for drawer banks, multiple door / drawer entries at once, rather than separate.
+- - Door / Drawer Part types now show as sub robs with actual sizes within the sub row.
+
+<u><b>Project Details "Settings":</u></b>
+- Added settings for gap allowances, used for the "Doors / Drawer" Part tyes.
+
+<u><b>Company Settings:</u></b>
+- Added settings for gap allowances, used for the "Doors / Drawer" Part tyes.
 ]
