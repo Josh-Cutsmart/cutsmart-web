@@ -12536,15 +12536,15 @@ export default function ProjectDetailsPage() {
             normalizedWidthManual,
           ).widths
         : [];
-    const svgWidth = 430;
-    const svgHeight = 320;
-    const frameX = 34;
-    const frameY = 36;
-    const maxFrameW = 300;
-    const maxFrameH = 246;
+    const svgWidth = isCompactProjectViewport ? 620 : 430;
+    const svgHeight = isCompactProjectViewport ? 460 : 320;
+    const frameX = isCompactProjectViewport ? 24 : 34;
+    const frameY = isCompactProjectViewport ? 10 : 36;
+    const maxFrameW = isCompactProjectViewport ? 520 : 300;
+    const maxFrameH = isCompactProjectViewport ? 380 : 246;
     const fallbackFrameW = 230;
     const fallbackFrameH = 210;
-    const mmToPxBaseScale = 0.45;
+    const mmToPxBaseScale = isCompactProjectViewport ? 1 : 0.45;
     const scaledFromRealSize =
       totalWidth > 0 && totalHeight > 0
         ? (() => {
@@ -12591,7 +12591,7 @@ export default function ProjectDetailsPage() {
     const frontLeftX = frameX + leftGapPx;
     const frontRightX = frameX + frameW - rightGapPx;
     const frontWidthPx = Math.max(24, frontRightX - frontLeftX);
-    const overallHeightLabelX = frameX - 18;
+    const overallHeightLabelX = isCompactProjectViewport ? frameX - 10 : frameX - 18;
     const formatSvgMeasure = (value: number) => {
       if (!Number.isFinite(value)) return "0";
       const floored = Math.floor(value * 10) / 10;
@@ -12599,9 +12599,16 @@ export default function ProjectDetailsPage() {
     };
     const horizontalGapLineColor = "#00E35B";
     const verticalGapLineColor = "#FF2A2A";
-    const svgInputWidth = 52;
+    const svgInputWidth = isCompactProjectViewport ? 110 : 52;
+    const svgInputHeight = isCompactProjectViewport ? 50 : 28;
+    const svgInputFontSize = isCompactProjectViewport ? 20 : 12;
+    const svgGapInputWidth = isCompactProjectViewport ? 96 : 42;
+    const svgGapInputHeight = isCompactProjectViewport ? 40 : 22;
+    const svgGapInputFontSize = isCompactProjectViewport ? 16 : 10;
     const gapInputWidth = svgInputWidth;
-    const defaultTopInputLeftPx = frameX + frameW + 8;
+    const compactGreenGapInputOffsetX = isCompactProjectViewport ? 24 : 0;
+    const compactRedGapInputOffsetY = isCompactProjectViewport ? 18 : 0;
+    const defaultTopInputLeftPx = frontRightX - 2;
     let topInputLeftPx = defaultTopInputLeftPx;
     const rectsOverlap = (
       a: { left: number; top: number; right: number; bottom: number },
@@ -12652,6 +12659,9 @@ export default function ProjectDetailsPage() {
           : 0;
       const usableDoorWidthPx = Math.max(24, frontWidthPx - doorGapPx * Math.max(0, count - 1));
       let runningX = frontLeftX;
+      const doorY = frameY + topPx;
+      const doorHpx = Math.max(24, frameY + frameH - doorY);
+      const centeredInputTopPx = doorY + Math.max(20, Math.max(24, frameY + frameH - doorY) / 2) - svgInputHeight / 2;
       const overlays = Array.from({ length: count }, (_, index) => {
         const computedDoorWidthPx = Math.max(18, ((numericFilledWidths[index] || 1) / sumWidths) * usableDoorWidthPx);
         const rectX = runningX;
@@ -12666,22 +12676,54 @@ export default function ProjectDetailsPage() {
           rectW,
           widthValue: resolvedDoorWidths[index] || formatSvgMeasure(doorWidth),
           widthInputLeftPx: rectX + rectW / 2 - svgInputWidth / 2,
-          widthInputTopPx: frameY + topPx + Math.max(20, Math.max(24, frameY + frameH - (frameY + topPx)) / 2) - 14,
+          widthInputTopPx: centeredInputTopPx,
         };
       });
+      const doorOverlaysNeedStagger =
+        isCompactProjectViewport &&
+        overlays.some((overlay, index) => {
+          const currentLeft = overlay.widthInputLeftPx;
+          const currentRight = currentLeft + svgInputWidth;
+          const exceedsOwnPiece =
+            currentLeft < overlay.rectX + 8 ||
+            currentRight > overlay.rectX + overlay.rectW - 8;
+          const next = overlays[index + 1];
+          const overlapsNext =
+            !!next &&
+            currentRight > next.widthInputLeftPx;
+          const previous = overlays[index - 1];
+          const overlapsPrevious =
+            !!previous &&
+            currentLeft < previous.widthInputLeftPx + svgInputWidth;
+          const pieceTooNarrowForCenteredBox = overlay.rectW < svgInputWidth + 20;
+          return exceedsOwnPiece || overlapsNext || overlapsPrevious || pieceTooNarrowForCenteredBox;
+        });
+      const staggerTopInset = 12;
+      const staggerBottomInset = 12;
+      const staggerTopY = doorY + staggerTopInset;
+      const staggerBottomY = Math.max(
+        staggerTopY,
+        doorY + doorHpx - svgInputHeight - staggerBottomInset,
+      );
+      const resolvedOverlays = doorOverlaysNeedStagger
+        ? overlays.map((overlay, index) => ({
+            ...overlay,
+            widthInputTopPx: index % 2 === 0 ? staggerTopY : staggerBottomY,
+          }))
+        : overlays;
       const betweenInputs = overlays.slice(0, -1).map((overlay, index) => {
         const gapStartX = overlay.rectX + overlay.rectW;
         const gapCenterX = gapStartX + doorGapPx / 2;
         return {
           key: `between_h_${index}`,
-          leftPx: Math.max(0, Math.min(svgWidth - gapInputWidth, gapCenterX - gapInputWidth / 2)),
-          topPx: Math.min(svgHeight - 30, frameY + frameH + 8),
+          leftPx: Math.max(0, Math.min(svgWidth - svgGapInputWidth, gapCenterX - svgGapInputWidth / 2)),
+          topPx: Math.min(svgHeight - (svgGapInputHeight + 2), frameY + frameH + 8),
           gapCenterX,
           gapCenterY: frameY + topPx + Math.max(22, (availableHeightPx - topPx) / 2),
           gapThickness: Math.max(1, doorGapPx),
         };
       });
-      return { overlays, betweenInputs };
+      return { overlays: resolvedOverlays, betweenInputs };
     };
     const computeDrawerLayout = () => {
       const filledHeights = rebalanceDoorFrontHeights(
@@ -12711,8 +12753,8 @@ export default function ProjectDetailsPage() {
           key: `drawer_overlay_${index}`,
           heightValue: value,
           heightInputLeftPx: frontLeftX + frontWidthPx / 2 - svgInputWidth / 2,
-          inputTopPx: rectY + Math.max(20, frontHeightPx / 2) - 14,
-          widthLabelLeftPx: frontLeftX + frontWidthPx / 2 + svgInputWidth / 2 + 8,
+          inputTopPx: rectY + Math.max(20, frontHeightPx / 2) - svgInputHeight / 2,
+          widthLabelLeftPx: frontLeftX + frontWidthPx / 2 + svgInputWidth / 2 + (isCompactProjectViewport ? 10 : 8),
           widthLabelCenterYPx: rectY + frontHeightPx / 2,
           rectY,
           frontHeightPx,
@@ -12725,8 +12767,8 @@ export default function ProjectDetailsPage() {
         const gapCenterY = overlay.rectY + overlay.frontHeightPx + gapPx / 2;
         return {
           key: `between_v_${index}`,
-          leftPx: frameX + frameW + 8,
-          topPx: gapCenterY - 14,
+          leftPx: frontRightX - 2,
+          topPx: gapCenterY - svgGapInputHeight / 2,
           gapCenterX: frameX + frameW / 2,
           gapCenterY,
           gapThickness: Math.max(1, gapPx),
@@ -12767,7 +12809,7 @@ export default function ProjectDetailsPage() {
     if (mode === "drawer") {
       const drawerRemainingHeightLabel = `Remaining Height: ${drawerTotalLeftDisplay || "0"}`;
       const remainingHeightPillWidthPx = drawerRemainingHeightLabel.length * 6.4 + 30;
-      const defaultTopInputRightPx = defaultTopInputLeftPx + gapInputWidth;
+      const defaultTopInputRightPx = defaultTopInputLeftPx + svgGapInputWidth;
       const remainingHeightPillLeftPx = frameX + frameW / 2 - remainingHeightPillWidthPx / 2;
       const remainingHeightPillRightPx = remainingHeightPillLeftPx + remainingHeightPillWidthPx;
       const topGapWouldOverlapRemainingHeight =
@@ -12777,7 +12819,9 @@ export default function ProjectDetailsPage() {
         topInputLeftPx = frameX + frameW + 54;
       }
     }
-    const topInputTopPx = Math.max(2, frameY + topPx / 2 - 14);
+    const topLineY = frameY + topPx / 2;
+    const topInputTopPx = topLineY - svgGapInputHeight / 2;
+    const remainingPillAnchorY = frameY - 10;
     const betweenGapInputs =
       mode === "door"
         ? resolveHorizontalGapInputs(doorLayout?.betweenInputs ?? [])
@@ -12787,7 +12831,7 @@ export default function ProjectDetailsPage() {
             {
               key: "left_side_gap",
               leftPx: Math.max(0, frameX + leftGapPx / 2 - svgInputWidth / 2),
-              topPx: Math.min(svgHeight - 30, frameY + frameH + 8),
+              topPx: Math.min(svgHeight - (svgGapInputHeight + 2), frameY + frameH + (isCompactProjectViewport ? 14 : 8)),
               value: formatSvgMeasure(leftDeduction || 0),
               gapX: frameX + leftGapPx / 2,
               gapTopY: frameY,
@@ -12796,8 +12840,8 @@ export default function ProjectDetailsPage() {
             },
             {
               key: "right_side_gap",
-              leftPx: Math.min(svgWidth - svgInputWidth, frameX + frameW - rightGapPx / 2 - svgInputWidth / 2),
-              topPx: Math.min(svgHeight - 30, frameY + frameH + 8),
+              leftPx: Math.min(svgWidth - svgGapInputWidth, frameX + frameW - rightGapPx / 2 - svgGapInputWidth / 2),
+              topPx: Math.min(svgHeight - (svgGapInputHeight + 2), frameY + frameH + (isCompactProjectViewport ? 14 : 8)),
               value: formatSvgMeasure(rightDeduction || 0),
               gapX: frameX + frameW - rightGapPx / 2,
               gapTopY: frameY,
@@ -12805,11 +12849,11 @@ export default function ProjectDetailsPage() {
               side: "right" as const,
             },
           ];
-    const widthLabelY = frameY + frameH + 34;
+    const widthLabelY = frameY + frameH + (isCompactProjectViewport ? 24 : 34);
     const widthValueText = formatSvgMeasure(totalWidth);
     const widthLabelFullText = `Width ${widthValueText}`;
     const estimatedSvgTextWidth = (text: string, fontSize: number) => text.length * fontSize * 0.58;
-    const widthLabelFontSize = 11.5;
+    const widthLabelFontSize = isCompactProjectViewport ? 18 : 11.5;
     const widthLabelFullWidth = estimatedSvgTextWidth(widthLabelFullText, widthLabelFontSize);
     const widthLabelNumberWidth = estimatedSvgTextWidth(widthValueText, widthLabelFontSize);
     const widthLabelCenterX = frameX + frameW / 2;
@@ -12822,12 +12866,13 @@ export default function ProjectDetailsPage() {
     const widthLabelWouldOverlapSideGapInputs = sideGapInputs.some((input) =>
       rectsOverlap(widthLabelBox, {
         left: input.leftPx,
-        right: input.leftPx + svgInputWidth,
+        right: input.leftPx + svgGapInputWidth,
         top: input.topPx,
-        bottom: input.topPx + 28,
+        bottom: input.topPx + svgGapInputHeight,
       }),
     );
     const widthLabelText = widthLabelWouldOverlapSideGapInputs ? widthValueText : widthLabelFullText;
+    const widthLabelDisplayWidth = widthLabelText === widthValueText ? widthLabelNumberWidth : widthLabelFullWidth;
     const drawerFrontOverlays = drawerLayout?.overlays ?? [];
     const drawerFrontWidthLabel = formatSvgMeasure(
       frontWidthPx > 0 && totalWidth > 0 ? Math.max(0, totalWidth - leftDeduction - rightDeduction) : 0,
@@ -12860,110 +12905,41 @@ export default function ProjectDetailsPage() {
       }
       return input;
     };
-    const resolvedTopGapInput = resolveGapInputAgainstDrawerOverlays({ leftPx: topInputLeftPx, topPx: topInputTopPx }, 64, 28);
-    const resolvedBetweenGapInputs = betweenGapInputs.map((input) => ({ ...input, ...resolveGapInputAgainstDrawerOverlays(input, 64, 28) }));
+    const resolvedTopGapInput = resolveGapInputAgainstDrawerOverlays({ leftPx: topInputLeftPx, topPx: topInputTopPx }, svgGapInputWidth, svgGapInputHeight);
+    const resolvedBetweenGapInputs = betweenGapInputs.map((input) => ({ ...input, ...resolveGapInputAgainstDrawerOverlays(input, svgGapInputWidth, svgGapInputHeight) }));
+    const svgCanvasWidth = isCompactProjectViewport
+      ? Math.max(
+          frameX + frameW + 8,
+          resolvedTopGapInput.leftPx + compactGreenGapInputOffsetX + svgGapInputWidth + 8,
+          ...resolvedBetweenGapInputs.map((input) => input.leftPx + compactGreenGapInputOffsetX + svgGapInputWidth + 8),
+          ...sideGapInputs.map((input) => input.leftPx + svgGapInputWidth + 8),
+          widthLabelCenterX + widthLabelDisplayWidth / 2 + 8,
+        )
+      : svgWidth;
+    const svgCanvasHeight = isCompactProjectViewport
+      ? Math.max(
+          frameY + frameH + 8,
+          resolvedTopGapInput.topPx + svgGapInputHeight + 8,
+          ...resolvedBetweenGapInputs.map((input) => input.gapCenterY + svgGapInputHeight / 2 + 8),
+          ...sideGapInputs.map((input) => input.topPx + compactRedGapInputOffsetY + svgGapInputHeight + 8),
+          widthLabelY + widthLabelFontSize + 10,
+        )
+      : svgHeight;
+    const svgLeft = (value: number) => `${(value / svgCanvasWidth) * 100}%`;
+    const svgTop = (value: number) => `${(value / svgCanvasHeight) * 100}%`;
     return (
       <div className="space-y-3">
         <div className="px-1 py-1">
-          <div className="flex w-full max-w-[620px] items-start gap-2">
-          <div className="relative -mt-2 h-[320px] w-full max-w-[430px] flex-1">
-          <input
-            disabled={disabled}
-            value={topGap}
-            onChange={(e) => onTopGapChange(e.target.value)}
-            className="absolute z-10 h-7 w-[52px] rounded-[8px] border px-1 text-center text-[12px]"
-            style={{
-              left: resolvedTopGapInput.leftPx,
-              top: resolvedTopGapInput.topPx,
-              borderColor,
-              backgroundColor: fieldBg,
-              color: fieldText,
-            }}
-          />
-          {resolvedBetweenGapInputs.map((input) => (
-            <input
-              key={input.key}
-              disabled={disabled}
-              value={betweenGap}
-              onChange={(e) => onBetweenGapChange(e.target.value)}
-              className="absolute z-10 h-7 w-[52px] rounded-[8px] border px-1 text-center text-[12px]"
-              style={{
-                left: input.leftPx,
-                top: input.topPx,
-                borderColor,
-                backgroundColor: fieldBg,
-                color: fieldText,
-              }}
-            />
-          ))}
-          {sideGapInputs.map((input) => (
-            <input
-              key={input.key}
-              value={input.value}
-              onChange={(e) =>
-                onSideGapChange(
-                  input.side === "left" ? "doorSideLeftGap" : "doorSideRightGap",
-                  e.target.value,
-                )
-              }
-              className="absolute z-10 h-7 w-[52px] rounded-[8px] border px-1 text-center text-[12px]"
-              style={{
-                left: input.leftPx,
-                top: input.topPx,
-                borderColor,
-                backgroundColor: fieldBg,
-                color: fieldText,
-              }}
-            />
-          ))}
-          {drawerFrontOverlays.map((overlay, index) => (
-            <div key={overlay.key}>
-              <input
-                disabled={disabled}
-                value={overlay.heightValue}
-                onChange={(e) => onFrontHeightChange(index, e.target.value)}
-                className="absolute z-10 h-7 w-[52px] rounded-[8px] border px-1 text-center text-[12px]"
-                style={{
-                  left: overlay.heightInputLeftPx,
-                  top: overlay.inputTopPx,
-                  borderColor,
-                  backgroundColor: fieldBg,
-                  color: fieldText,
-                }}
-              />
-              <span
-                className="absolute z-10 whitespace-nowrap text-[12px] font-medium"
-                style={{
-                  left: overlay.widthLabelLeftPx,
-                  top: overlay.widthLabelCenterYPx,
-                  transform: "translateY(-50%)",
-                  color: fieldText,
-                }}
-              >
-                x {drawerFrontWidthLabel}
-              </span>
-            </div>
-          ))}
-          {mode === "door"
-            ? (doorLayout?.overlays ?? []).map((overlay, index) => (
-                <div key={`door_width_input_${overlay.key}`}>
-                  <input
-                    disabled={disabled}
-                    value={overlay.widthValue}
-                    onChange={(e) => onFrontWidthChange(index, e.target.value)}
-                    className="absolute z-10 h-7 w-[52px] rounded-[8px] border px-1 text-center text-[12px]"
-                    style={{
-                      left: overlay.widthInputLeftPx,
-                      top: overlay.widthInputTopPx,
-                      borderColor,
-                      backgroundColor: fieldBg,
-                      color: fieldText,
-                    }}
-                  />
-                </div>
-              ))
-            : null}
-          <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="h-full w-full">
+          <div className={`flex w-full items-start gap-2 ${isCompactProjectViewport ? "max-w-none" : "max-w-[620px]"}`}>
+          <div
+            className={`relative -mt-2 w-full ${isCompactProjectViewport ? "max-w-none" : "flex-1 h-[320px] max-w-[430px]"}`}
+            style={
+              isCompactProjectViewport
+                ? { aspectRatio: `${svgCanvasWidth} / ${svgCanvasHeight}`, marginTop: "12px" }
+                : undefined
+            }
+          >
+          <svg viewBox={`0 0 ${svgCanvasWidth} ${svgCanvasHeight}`} className="h-full w-full" style={{ overflow: "visible" }}>
             {resolvedBetweenGapInputs.map((input) => (
               mode === "door" ? (
                 <g key={`between_line_${input.key}`}>
@@ -12989,7 +12965,7 @@ export default function ProjectDetailsPage() {
                   <line
                     x1={frontRightX}
                     y1={input.gapCenterY}
-                    x2={input.leftPx}
+                    x2={input.leftPx + compactGreenGapInputOffsetX}
                     y2={input.gapCenterY}
                     stroke={horizontalGapLineColor}
                     strokeWidth={input.gapThickness}
@@ -13003,7 +12979,7 @@ export default function ProjectDetailsPage() {
                   x1={input.gapX}
                   y1={input.gapTopY}
                   x2={input.gapX}
-                  y2={input.topPx + 14}
+                  y2={input.topPx + compactRedGapInputOffsetY + 14}
                   stroke={verticalGapLineColor}
                   strokeWidth={input.side === "left" ? leftGuideThickness : rightGuideThickness}
                 />
@@ -13011,17 +12987,17 @@ export default function ProjectDetailsPage() {
             ))}
             <line
               x1={frameX}
-              y1={frameY + topPx / 2}
+              y1={topLineY}
               x2={frameX + frameW}
-              y2={frameY + topPx / 2}
+              y2={topLineY}
               stroke={horizontalGapLineColor}
               strokeWidth={topGuideThickness}
             />
             <line
               x1={frameX + frameW}
-              y1={frameY + topPx / 2}
-              x2={resolvedTopGapInput.leftPx}
-              y2={resolvedTopGapInput.topPx + 14}
+              y1={topLineY}
+              x2={resolvedTopGapInput.leftPx + compactGreenGapInputOffsetX}
+              y2={topLineY}
               stroke={horizontalGapLineColor}
               strokeWidth={topGuideThickness}
             />
@@ -13047,17 +13023,91 @@ export default function ProjectDetailsPage() {
                     <rect x={frontLeftX} y={overlay.drawRectY} width={frontWidthPx} height={overlay.drawRectHeight} fill="none" stroke={textColor} strokeWidth="1.4" />
                   </g>
                 ))}
-            <text x={overallHeightLabelX} y={frameY + frameH / 2} textAnchor="middle" fontSize="11.5" fill={textColor} transform={`rotate(-90 ${overallHeightLabelX} ${frameY + frameH / 2})`}>
+            <text x={overallHeightLabelX} y={frameY + frameH / 2} textAnchor="middle" fontSize={isCompactProjectViewport ? "18" : "11.5"} fill={textColor} transform={`rotate(-90 ${overallHeightLabelX} ${frameY + frameH / 2})`}>
               Height {formatSvgMeasure(totalHeight)}
             </text>
-            <text x={widthLabelCenterX} y={widthLabelY} textAnchor="middle" fontSize="11.5" fill={textColor}>
+            <text x={widthLabelCenterX} y={widthLabelY} textAnchor="middle" fontSize={widthLabelFontSize} fill={textColor}>
               {widthLabelText}
             </text>
+            <foreignObject x={resolvedTopGapInput.leftPx + compactGreenGapInputOffsetX} y={topInputTopPx} width={svgGapInputWidth} height={svgGapInputHeight}>
+              <div style={{ width: "100%", height: "100%" }}>
+                <input
+                  disabled={disabled}
+                  value={topGap}
+                  onChange={(e) => onTopGapChange(e.target.value)}
+                  className="rounded-[8px] border px-1 text-center text-[12px]"
+                  style={{ width: svgGapInputWidth, height: svgGapInputHeight, fontSize: svgGapInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
+                />
+              </div>
+            </foreignObject>
+            {resolvedBetweenGapInputs.map((input) => (
+              <foreignObject key={`gap_input_${input.key}`} x={input.leftPx + compactGreenGapInputOffsetX} y={input.gapCenterY - svgGapInputHeight / 2} width={svgGapInputWidth} height={svgGapInputHeight}>
+                <div style={{ width: "100%", height: "100%" }}>
+                  <input
+                    disabled={disabled}
+                    value={betweenGap}
+                    onChange={(e) => onBetweenGapChange(e.target.value)}
+                    className="rounded-[8px] border px-1 text-center text-[12px]"
+                    style={{ width: svgGapInputWidth, height: svgGapInputHeight, fontSize: svgGapInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
+                  />
+                </div>
+              </foreignObject>
+            ))}
+            {sideGapInputs.map((input) => (
+              <foreignObject key={`side_input_${input.key}`} x={input.leftPx} y={input.topPx + compactRedGapInputOffsetY} width={svgGapInputWidth} height={svgGapInputHeight}>
+                <div style={{ width: "100%", height: "100%" }}>
+                  <input
+                    value={input.value}
+                    onChange={(e) =>
+                      onSideGapChange(
+                        input.side === "left" ? "doorSideLeftGap" : "doorSideRightGap",
+                        e.target.value,
+                      )
+                    }
+                    className="rounded-[8px] border px-1 text-center text-[12px]"
+                    style={{ width: svgGapInputWidth, height: svgGapInputHeight, fontSize: svgGapInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
+                  />
+                </div>
+              </foreignObject>
+            ))}
+            {drawerFrontOverlays.map((overlay, index) => (
+              <g key={`drawer_input_${overlay.key}`}>
+                <foreignObject x={overlay.heightInputLeftPx} y={overlay.inputTopPx} width={svgInputWidth} height={svgInputHeight}>
+                  <div style={{ width: "100%", height: "100%" }}>
+                    <input
+                      disabled={disabled}
+                      value={overlay.heightValue}
+                      onChange={(e) => onFrontHeightChange(index, e.target.value)}
+                      className="rounded-[8px] border px-1 text-center text-[12px]"
+                      style={{ width: svgInputWidth, height: svgInputHeight, fontSize: svgInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
+                    />
+                  </div>
+                </foreignObject>
+                <text x={overlay.widthLabelLeftPx} y={overlay.widthLabelCenterYPx} dominantBaseline="middle" fontSize={isCompactProjectViewport ? 20 : 12} fill={fieldText}>
+                  x {drawerFrontWidthLabel}
+                </text>
+              </g>
+            ))}
+            {mode === "door"
+              ? (doorLayout?.overlays ?? []).map((overlay, index) => (
+                  <foreignObject key={`door_width_input_${overlay.key}`} x={overlay.widthInputLeftPx} y={overlay.widthInputTopPx} width={svgInputWidth} height={svgInputHeight}>
+                    <div style={{ width: "100%", height: "100%" }}>
+                      <input
+                        disabled={disabled}
+                        value={overlay.widthValue}
+                        onChange={(e) => onFrontWidthChange(index, e.target.value)}
+                        className="rounded-[8px] border px-1 text-center text-[12px]"
+                        style={{ width: svgInputWidth, height: svgInputHeight, fontSize: svgInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
+                      />
+                    </div>
+                  </foreignObject>
+                ))
+              : null}
           </svg>
           {mode === "drawer" ? (
             <div
               className="absolute text-[12px] font-semibold"
-              style={{ left: frameX + frameW / 2, top: frameY - 5, transform: "translate(-50%, -100%)" }}
+              style={{ left: svgLeft(frameX + frameW / 2), top: `${remainingPillAnchorY}px`, transform: "translate(-50%, -100%)" }}
             >
               <span
                 className="inline-flex items-center rounded-full border px-3 py-1"
@@ -13073,7 +13123,7 @@ export default function ProjectDetailsPage() {
           ) : mode === "door" ? (
             <div
               className="absolute text-[12px] font-semibold"
-              style={{ left: frameX + frameW / 2, top: frameY - 5, transform: "translate(-50%, -100%)" }}
+              style={{ left: svgLeft(frameX + frameW / 2), top: `${remainingPillAnchorY}px`, transform: "translate(-50%, -100%)" }}
             >
               <span
                 className="inline-flex items-center rounded-full border px-3 py-1"
