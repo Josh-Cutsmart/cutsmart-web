@@ -5735,6 +5735,19 @@ export default function ProjectDetailsPage() {
     if (matchesGrainDimension(g, depth, "depth")) return "depth";
     return null;
   };
+  const formatGrainColumnValue = (
+    grainValue: string,
+    height: string,
+    width: string,
+    depth: string,
+  ) => {
+    const g = String(grainValue ?? "").trim();
+    if (!g) return "";
+    const axis = resolveGrainAxis(g, height, width, depth);
+    if (!axis) return g;
+    const prefix = axis === "height" ? "H:" : axis === "width" ? "W:" : "D:";
+    return /^[HWD]\s*:/i.test(g) ? `${prefix}${g.replace(/^[HWD]\s*:\s*/i, "").trim()}` : `${prefix}${g}`;
+  };
   const grainDimensionOptionsForRow = (rowLike: Pick<CutlistRow, "partType" | "height" | "width" | "depth">) => {
     if (isCabinetryPartType(String(rowLike.partType || ""))) {
       const h = String(rowLike.height ?? "").trim();
@@ -7316,35 +7329,40 @@ export default function ProjectDetailsPage() {
     const mode = normalizeDoorModeValue(row.doorMode);
     const pieces = buildConfiguredDoorDerivedPieces(row);
     if (mode === "manual" || pieces.length <= 1) return pieces;
-    const grouped = new Map<string, { piece: DrawerDerivedPiece; indexes: number[] }>();
-    pieces.forEach((piece, index) => {
-      const signature = [
-        sanitizeDerivedValue(piece.height),
-        sanitizeDerivedValue(piece.width),
-        sanitizeDerivedValue(piece.depth),
-        sanitizeDerivedValue(piece.clashLeft),
-        sanitizeDerivedValue(piece.clashRight),
-        sanitizeDerivedValue(piece.grainValue),
-      ].join("|");
-      const existing = grouped.get(signature);
-      if (existing) {
-        existing.indexes.push(index + 1);
-        return;
-      }
-      grouped.set(signature, {
-        piece,
-        indexes: [index + 1],
+    const baseName = String(row.name || "").trim() || (mode === "drawer" ? "Drawer Front" : "Door");
+    const groupPiecesWithinBank = (bankPieces: DrawerDerivedPiece[]) => {
+      const grouped = new Map<string, { piece: DrawerDerivedPiece; indexes: number[] }>();
+      bankPieces.forEach((piece, index) => {
+        const signature = [
+          sanitizeDerivedValue(piece.height),
+          sanitizeDerivedValue(piece.width),
+          sanitizeDerivedValue(piece.depth),
+          sanitizeDerivedValue(piece.clashLeft),
+          sanitizeDerivedValue(piece.clashRight),
+          sanitizeDerivedValue(piece.grainValue),
+        ].join("|");
+        const existing = grouped.get(signature);
+        if (existing) {
+          existing.indexes.push(index + 1);
+          return;
+        }
+        grouped.set(signature, {
+          piece,
+          indexes: [index + 1],
+        });
       });
-    });
-    return Array.from(grouped.values()).map(({ piece, indexes }, groupIndex) => ({
+      return Array.from(grouped.values());
+    };
+    return groupPiecesWithinBank(pieces).map(({ piece, indexes }, groupIndex) => ({
       ...piece,
       key: `${piece.key}__sub_${groupIndex + 1}`,
-      partName: `${String(row.name || piece.partName || (mode === "drawer" ? "Drawer Front" : "Door")).trim()} (${indexes.join(", ")})`,
+      partName: `${baseName} (${indexes.join(", ")})`,
       quantity: String(
         Math.max(1, Number.parseInt(String(piece.quantity || "1"), 10) || 1) * Math.max(1, indexes.length),
       ),
     }));
   };
+
 
   const salesRoomSheetAnalysis = useMemo(() => {
     type FlatPiece = {
@@ -12124,6 +12142,34 @@ export default function ProjectDetailsPage() {
       const nextManual = normalizeDoorFrontHeightManual(prev.doorFrontHeightManual, count);
       nextHeights[index] = nextValue;
       nextManual[index] = String(nextValue).trim().length > 0;
+      if (String(nextValue).trim().length === 0) {
+        return {
+          ...prev,
+          doorFrontHeights: nextHeights,
+          doorFrontHeightManual: nextManual,
+        };
+      }
+      const rebalanced = rebalanceDoorFrontHeights(
+        nextHeights,
+        String(prev.height ?? ""),
+        String(prev.doorTopGap ?? ""),
+        String(prev.doorBetweenGap ?? ""),
+        nextManual,
+      );
+      return {
+        ...prev,
+        doorFrontHeights: rebalanced.heights,
+        doorFrontHeightManual: rebalanced.manual,
+      };
+    });
+  };
+
+  const onCutlistEntryDoorFrontHeightBlur = (index: number) => {
+    setCutlistEntry((prev) => {
+      const count = Number.parseInt(prev.doorFrontCount || "", 10) || 0;
+      const nextHeights = normalizeDoorFrontHeights(prev.doorFrontHeights, count);
+      const nextManual = normalizeDoorFrontHeightManual(prev.doorFrontHeightManual, count);
+      if (String(nextHeights[index] ?? "").trim().length > 0) return prev;
       const rebalanced = rebalanceDoorFrontHeights(
         nextHeights,
         String(prev.height ?? ""),
@@ -12287,6 +12333,35 @@ export default function ProjectDetailsPage() {
       const nextManual = normalizeDoorFrontWidthManual(prev.doorFrontWidthManual, count);
       nextWidths[index] = nextValue;
       nextManual[index] = String(nextValue).trim().length > 0;
+      if (String(nextValue).trim().length === 0) {
+        return {
+          ...prev,
+          doorFrontWidths: nextWidths,
+          doorFrontWidthManual: nextManual,
+        };
+      }
+      const rebalanced = rebalanceDoorFrontWidths(
+        nextWidths,
+        String(prev.width ?? ""),
+        String(prev.doorSideLeftGap ?? ""),
+        String(prev.doorSideRightGap ?? ""),
+        String(prev.doorBetweenGap ?? ""),
+        nextManual,
+      );
+      return {
+        ...prev,
+        doorFrontWidths: rebalanced.widths,
+        doorFrontWidthManual: rebalanced.manual,
+      };
+    });
+  };
+
+  const onCutlistEntryDoorFrontWidthBlur = (index: number) => {
+    setCutlistEntry((prev) => {
+      const count = Number.parseInt(prev.doorFrontCount || "", 10) || 0;
+      const nextWidths = normalizeDoorFrontWidths(prev.doorFrontWidths, count);
+      const nextManual = normalizeDoorFrontWidthManual(prev.doorFrontWidthManual, count);
+      if (String(nextWidths[index] ?? "").trim().length > 0) return prev;
       const rebalanced = rebalanceDoorFrontWidths(
         nextWidths,
         String(prev.width ?? ""),
@@ -12306,6 +12381,7 @@ export default function ProjectDetailsPage() {
   const onDraftDoorFrontWidthChange = (id: string, index: number, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
     if (!existing) return;
+    const nextValue = numericDimensionText(value);
     const nextWidths = normalizeDoorFrontWidths(
       existing.doorFrontWidths,
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
@@ -12314,8 +12390,36 @@ export default function ProjectDetailsPage() {
       existing.doorFrontWidthManual,
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
     );
-    nextWidths[index] = numericDimensionText(value);
-    nextManual[index] = String(value).trim().length > 0;
+    nextWidths[index] = nextValue;
+    nextManual[index] = String(nextValue).trim().length > 0;
+    if (String(nextValue).trim().length === 0) {
+      updateDraftCutlistRow(id, {
+        doorFrontWidths: nextWidths,
+        doorFrontWidthManual: nextManual,
+      });
+      return;
+    }
+    const rebalanced = rebalanceDoorFrontWidths(
+      nextWidths,
+      String(existing.width ?? ""),
+      String(existing.doorSideLeftGap ?? ""),
+      String(existing.doorSideRightGap ?? ""),
+      String(existing.doorBetweenGap ?? ""),
+      nextManual,
+    );
+    updateDraftCutlistRow(id, {
+      doorFrontWidths: rebalanced.widths,
+      doorFrontWidthManual: rebalanced.manual,
+    });
+  };
+
+  const onDraftDoorFrontWidthBlur = (id: string, index: number) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Number.parseInt(existing.doorFrontCount || "", 10) || 0;
+    const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
+    const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
+    if (String(nextWidths[index] ?? "").trim().length > 0) return;
     const rebalanced = rebalanceDoorFrontWidths(
       nextWidths,
       String(existing.width ?? ""),
@@ -12333,6 +12437,7 @@ export default function ProjectDetailsPage() {
   const onDraftDoorFrontHeightChange = (id: string, index: number, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
     if (!existing) return;
+    const nextValue = numericDimensionText(value);
     const nextHeights = normalizeDoorFrontHeights(
       existing.doorFrontHeights,
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
@@ -12341,8 +12446,35 @@ export default function ProjectDetailsPage() {
       existing.doorFrontHeightManual,
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
     );
-    nextHeights[index] = numericDimensionText(value);
-    nextManual[index] = String(value).trim().length > 0;
+    nextHeights[index] = nextValue;
+    nextManual[index] = String(nextValue).trim().length > 0;
+    if (String(nextValue).trim().length === 0) {
+      updateDraftCutlistRow(id, {
+        doorFrontHeights: nextHeights,
+        doorFrontHeightManual: nextManual,
+      });
+      return;
+    }
+    const rebalanced = rebalanceDoorFrontHeights(
+      nextHeights,
+      String(existing.height ?? ""),
+      String(existing.doorTopGap ?? ""),
+      String(existing.doorBetweenGap ?? ""),
+      nextManual,
+    );
+    updateDraftCutlistRow(id, {
+      doorFrontHeights: rebalanced.heights,
+      doorFrontHeightManual: rebalanced.manual,
+    });
+  };
+
+  const onDraftDoorFrontHeightBlur = (id: string, index: number) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Number.parseInt(existing.doorFrontCount || "", 10) || 0;
+    const nextHeights = normalizeDoorFrontHeights(existing.doorFrontHeights, count);
+    const nextManual = normalizeDoorFrontHeightManual(existing.doorFrontHeightManual, count);
+    if (String(nextHeights[index] ?? "").trim().length > 0) return;
     const rebalanced = rebalanceDoorFrontHeights(
       nextHeights,
       String(existing.height ?? ""),
@@ -12460,6 +12592,8 @@ export default function ProjectDetailsPage() {
     onSideGapChange,
     onFrontWidthChange,
     onFrontHeightChange,
+    onFrontWidthBlur,
+    onFrontHeightBlur,
     disabled,
     textColor,
     borderColor,
@@ -12486,6 +12620,8 @@ export default function ProjectDetailsPage() {
     onSideGapChange: (key: "doorSideLeftGap" | "doorSideRightGap", value: string) => void;
     onFrontWidthChange: (index: number, value: string) => void;
     onFrontHeightChange: (index: number, value: string) => void;
+    onFrontWidthBlur?: (index: number) => void;
+    onFrontHeightBlur?: (index: number) => void;
     disabled: boolean;
     textColor: string;
     borderColor: string;
@@ -12599,12 +12735,12 @@ export default function ProjectDetailsPage() {
     };
     const horizontalGapLineColor = "#00E35B";
     const verticalGapLineColor = "#FF2A2A";
-    const svgInputWidth = isCompactProjectViewport ? 110 : 52;
-    const svgInputHeight = isCompactProjectViewport ? 50 : 28;
-    const svgInputFontSize = isCompactProjectViewport ? 20 : 12;
-    const svgGapInputWidth = isCompactProjectViewport ? 96 : 42;
-    const svgGapInputHeight = isCompactProjectViewport ? 40 : 22;
-    const svgGapInputFontSize = isCompactProjectViewport ? 16 : 10;
+    const svgInputWidth = isCompactProjectViewport ? 64 : 52;
+    const svgInputHeight = isCompactProjectViewport ? 32 : 28;
+    const svgInputFontSize = isCompactProjectViewport ? 13 : 12;
+    const svgGapInputWidth = isCompactProjectViewport ? 50 : 30;
+    const svgGapInputHeight = isCompactProjectViewport ? 32 : 20;
+    const svgGapInputFontSize = isCompactProjectViewport ? 13 : 9;
     const gapInputWidth = svgInputWidth;
     const compactGreenGapInputOffsetX = isCompactProjectViewport ? 24 : 0;
     const compactRedGapInputOffsetY = isCompactProjectViewport ? 18 : 0;
@@ -12661,7 +12797,12 @@ export default function ProjectDetailsPage() {
       let runningX = frontLeftX;
       const doorY = frameY + topPx;
       const doorHpx = Math.max(24, frameY + frameH - doorY);
-      const centeredInputTopPx = doorY + Math.max(20, Math.max(24, frameY + frameH - doorY) / 2) - svgInputHeight / 2;
+      const doorHeightValue = formatSvgMeasure(doorHeight);
+      const doorHeightFontSize = isCompactProjectViewport ? 12 : 10;
+      const doorXFontSize = isCompactProjectViewport ? 12 : 10;
+      const doorStackGapPx = isCompactProjectViewport ? 4 : 3;
+      const doorStackHeightPx = svgInputHeight + doorStackGapPx + doorXFontSize + doorStackGapPx + doorHeightFontSize;
+      const centeredInputTopPx = doorY + Math.max(10, doorHpx / 2 - doorStackHeightPx / 2);
       const overlays = Array.from({ length: count }, (_, index) => {
         const computedDoorWidthPx = Math.max(18, ((numericFilledWidths[index] || 1) / sumWidths) * usableDoorWidthPx);
         const rectX = runningX;
@@ -12674,9 +12815,15 @@ export default function ProjectDetailsPage() {
           key: `door_overlay_${index}`,
           rectX,
           rectW,
-          widthValue: resolvedDoorWidths[index] || formatSvgMeasure(doorWidth),
+          widthValue:
+            String(normalizedWidths[index] ?? "").trim() === ""
+              ? ""
+              : resolvedDoorWidths[index] || formatSvgMeasure(doorWidth),
           widthInputLeftPx: rectX + rectW / 2 - svgInputWidth / 2,
           widthInputTopPx: centeredInputTopPx,
+          xTextY: centeredInputTopPx + svgInputHeight + doorStackGapPx + doorXFontSize / 2,
+          heightTextY: centeredInputTopPx + svgInputHeight + doorStackGapPx + doorXFontSize + doorStackGapPx + doorHeightFontSize / 2,
+          doorHeightValue,
         };
       });
       const doorOverlaysNeedStagger =
@@ -12685,30 +12832,41 @@ export default function ProjectDetailsPage() {
           const currentLeft = overlay.widthInputLeftPx;
           const currentRight = currentLeft + svgInputWidth;
           const exceedsOwnPiece =
-            currentLeft < overlay.rectX + 8 ||
-            currentRight > overlay.rectX + overlay.rectW - 8;
+            currentLeft < overlay.rectX + 2 ||
+            currentRight > overlay.rectX + overlay.rectW - 2;
           const next = overlays[index + 1];
           const overlapsNext =
             !!next &&
-            currentRight > next.widthInputLeftPx;
+            currentRight > next.widthInputLeftPx + 2;
           const previous = overlays[index - 1];
           const overlapsPrevious =
             !!previous &&
-            currentLeft < previous.widthInputLeftPx + svgInputWidth;
-          const pieceTooNarrowForCenteredBox = overlay.rectW < svgInputWidth + 20;
-          return exceedsOwnPiece || overlapsNext || overlapsPrevious || pieceTooNarrowForCenteredBox;
+            currentLeft < previous.widthInputLeftPx + svgInputWidth - 2;
+          return exceedsOwnPiece || overlapsNext || overlapsPrevious;
         });
-      const staggerTopInset = 12;
-      const staggerBottomInset = 12;
-      const staggerTopY = doorY + staggerTopInset;
-      const staggerBottomY = Math.max(
-        staggerTopY,
-        doorY + doorHpx - svgInputHeight - staggerBottomInset,
+      const staggerInsetPx = 10;
+      const staggerStepPx = svgInputHeight + doorStackGapPx + doorXFontSize + 2;
+      const staggerSpanPx = doorStackHeightPx + Math.max(0, count - 1) * staggerStepPx;
+      const staggerStartY = Math.max(
+        doorY + staggerInsetPx,
+        doorY + (doorHpx - staggerSpanPx) / 2,
+      );
+      const maxStackTopY = Math.max(
+        doorY + staggerInsetPx,
+        doorY + doorHpx - doorStackHeightPx - staggerInsetPx,
       );
       const resolvedOverlays = doorOverlaysNeedStagger
         ? overlays.map((overlay, index) => ({
             ...overlay,
-            widthInputTopPx: index % 2 === 0 ? staggerTopY : staggerBottomY,
+            widthInputTopPx: Math.min(maxStackTopY, staggerStartY + index * staggerStepPx),
+            xTextY: Math.min(maxStackTopY, staggerStartY + index * staggerStepPx) + svgInputHeight + doorStackGapPx + doorXFontSize / 2,
+            heightTextY:
+              Math.min(maxStackTopY, staggerStartY + index * staggerStepPx) +
+              svgInputHeight +
+              doorStackGapPx +
+              doorXFontSize +
+              doorStackGapPx +
+              doorHeightFontSize / 2,
           }))
         : overlays;
       const betweenInputs = overlays.slice(0, -1).map((overlay, index) => {
@@ -12717,13 +12875,13 @@ export default function ProjectDetailsPage() {
         return {
           key: `between_h_${index}`,
           leftPx: Math.max(0, Math.min(svgWidth - svgGapInputWidth, gapCenterX - svgGapInputWidth / 2)),
-          topPx: Math.min(svgHeight - (svgGapInputHeight + 2), frameY + frameH + 8),
+          topPx: Math.min(svgHeight - (svgGapInputHeight + 2), frameY + frameH + (isCompactProjectViewport ? 14 : 8)),
           gapCenterX,
           gapCenterY: frameY + topPx + Math.max(22, (availableHeightPx - topPx) / 2),
           gapThickness: Math.max(1, doorGapPx),
         };
       });
-      return { overlays: resolvedOverlays, betweenInputs };
+      return { overlays: resolvedOverlays, betweenInputs, doorHeightFontSize, doorXFontSize };
     };
     const computeDrawerLayout = () => {
       const filledHeights = rebalanceDoorFrontHeights(
@@ -12751,7 +12909,7 @@ export default function ProjectDetailsPage() {
         runningY += frontHeightPx + gapPx;
         return {
           key: `drawer_overlay_${index}`,
-          heightValue: value,
+          heightValue: String(normalizedHeights[index] ?? "").trim() === "" ? "" : value,
           heightInputLeftPx: frontLeftX + frontWidthPx / 2 - svgInputWidth / 2,
           inputTopPx: rectY + Math.max(20, frontHeightPx / 2) - svgInputHeight / 2,
           widthLabelLeftPx: frontLeftX + frontWidthPx / 2 + svgInputWidth / 2 + (isCompactProjectViewport ? 10 : 8),
@@ -12935,7 +13093,7 @@ export default function ProjectDetailsPage() {
             className={`relative -mt-2 w-full ${isCompactProjectViewport ? "max-w-none" : "flex-1 h-[320px] max-w-[430px]"}`}
             style={
               isCompactProjectViewport
-                ? { aspectRatio: `${svgCanvasWidth} / ${svgCanvasHeight}`, marginTop: "12px" }
+                ? { aspectRatio: `${svgCanvasWidth} / ${svgCanvasHeight}`, marginTop: "20px" }
                 : undefined
             }
           >
@@ -12947,7 +13105,7 @@ export default function ProjectDetailsPage() {
                     x1={input.gapCenterX}
                     y1={frameY}
                     x2={input.gapCenterX}
-                    y2={input.topPx + 14}
+                    y2={input.topPx + compactRedGapInputOffsetY + svgGapInputHeight / 2}
                     stroke={verticalGapLineColor}
                     strokeWidth={input.gapThickness}
                   />
@@ -13012,8 +13170,25 @@ export default function ProjectDetailsPage() {
                   return (
                     <g key={`door_svg_${index}`}>
                       <rect x={doorX} y={doorY} width={doorW} height={doorHpx} fill="none" stroke={textColor} strokeWidth="1.4" />
-                      <text x={doorX + doorW / 2} y={doorY + doorHpx / 2} textAnchor="middle" fontSize="10" fill={textColor}>
-                        x {formatSvgMeasure(doorHeight)}
+                      <text
+                        x={doorX + doorW / 2}
+                        y={doorOverlay?.xTextY ?? (doorY + doorHpx / 2)}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        fontSize={doorLayout?.doorXFontSize ?? 10}
+                        fill={textColor}
+                      >
+                        x
+                      </text>
+                      <text
+                        x={doorX + doorW / 2}
+                        y={doorOverlay?.heightTextY ?? (doorY + doorHpx / 2)}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        fontSize={doorLayout?.doorHeightFontSize ?? 10}
+                        fill={textColor}
+                      >
+                        {doorOverlay?.doorHeightValue ?? formatSvgMeasure(doorHeight)}
                       </text>
                     </g>
                   );
@@ -13041,7 +13216,13 @@ export default function ProjectDetailsPage() {
               </div>
             </foreignObject>
             {resolvedBetweenGapInputs.map((input) => (
-              <foreignObject key={`gap_input_${input.key}`} x={input.leftPx + compactGreenGapInputOffsetX} y={input.gapCenterY - svgGapInputHeight / 2} width={svgGapInputWidth} height={svgGapInputHeight}>
+              <foreignObject
+                key={`gap_input_${input.key}`}
+                x={mode === "door" ? input.gapCenterX - svgGapInputWidth / 2 : input.leftPx + compactGreenGapInputOffsetX}
+                y={mode === "door" ? input.topPx + compactRedGapInputOffsetY : input.gapCenterY - svgGapInputHeight / 2}
+                width={svgGapInputWidth}
+                height={svgGapInputHeight}
+              >
                 <div style={{ width: "100%", height: "100%" }}>
                   <input
                     disabled={disabled}
@@ -13078,6 +13259,7 @@ export default function ProjectDetailsPage() {
                       disabled={disabled}
                       value={overlay.heightValue}
                       onChange={(e) => onFrontHeightChange(index, e.target.value)}
+                      onBlur={() => onFrontHeightBlur?.(index)}
                       className="rounded-[8px] border px-1 text-center text-[12px]"
                       style={{ width: svgInputWidth, height: svgInputHeight, fontSize: svgInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                     />
@@ -13096,6 +13278,7 @@ export default function ProjectDetailsPage() {
                         disabled={disabled}
                         value={overlay.widthValue}
                         onChange={(e) => onFrontWidthChange(index, e.target.value)}
+                        onBlur={() => onFrontWidthBlur?.(index)}
                         className="rounded-[8px] border px-1 text-center text-[12px]"
                         style={{ width: svgInputWidth, height: svgInputHeight, fontSize: svgInputFontSize, borderColor, backgroundColor: fieldBg, color: fieldText }}
                       />
@@ -14827,6 +15010,10 @@ export default function ProjectDetailsPage() {
     }
     return count;
   }, [boardGrainFor, cncRowsByBoardNonCab, isConfiguredDoorRowLike, isDrawerPartType]);
+  const cncBankCutNoteForRow = (row: CncDisplayRow) =>
+    isConfiguredDoorRowLike(row) && boardGrainFor(String(row.board || "").trim())
+      ? "NOTE: Cut as bank, (1) being the top."
+      : "";
   const cncCabinetCards = useMemo(() => {
     const q = String(cncSearch || "").trim().toLowerCase();
     const rows = cncSourceRows.filter((row) => {
@@ -15425,7 +15612,9 @@ export default function ProjectDetailsPage() {
         String(row.quantity ?? ""),
         String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
         ...(showCncGrainColumnForPrint ? [String(row.grainValue ?? "")] : []),
-        String(row.information ?? ""),
+        [String(row.information ?? ""), cncBankCutNoteForRow(row as CncDisplayRow)]
+          .filter((value) => String(value || "").trim().length > 0)
+          .join("\n"),
       ]);
       autoTable(doc, {
         startY: topPad + boardBarHeight,
@@ -19942,7 +20131,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           String(row.quantity ?? ""),
           String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
           ...(showCncGrainColumn ? [String(row.grainValue ?? "")] : []),
-          String(row.information ?? ""),
+          [String(row.information ?? ""), cncBankCutNoteForRow(row as CncDisplayRow)]
+            .filter((value) => String(value || "").trim().length > 0)
+            .join("\n"),
         ];
         for (let i = 0; i < values.length - 1; i += 1) {
           const c = tableStartCol + i;
@@ -20330,6 +20521,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const pxToPt = 0.75;
     const usableTableWidthPt = pageWidth - sidePad * 2;
     const allPdfRows = cncRowsByBoardNonCab.flatMap((group) => group.rows);
+    const groupedDividerRgb: [number, number, number] = [212, 216, 225];
     const anyBoardHasGrain = productionForm.boardTypes.some((row) => Boolean(row.grain));
     const helperWord = "Underlined";
     const helperTail = " Dimension has grain along it.";
@@ -20530,11 +20722,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       let stripeIndex = -1;
       let lastStripeKey = "";
       const rowBgByIndex: Array<[number, number, number]> = [];
-      const rows = group.rows.map((row, rowIdx) => {
+      const printRowKinds: Array<"normal" | "grouped-continuation" | "grouped-note"> = [];
+      const printRowPartTypeByIndex: string[] = [];
+      const printRowEndsGroup: boolean[] = [];
+      const grainColIndex = showCncGrainColumn ? 9 : 8;
+      const infoColIndex = showCncGrainColumn ? 10 : 9;
+      const rows = group.rows.flatMap((row, rowIdx) => {
         const partTypeForOutput =
           isCabinetryPartType(row.partType) && (row as CncDisplayRow).cncCabinetryRowKind && (row as CncDisplayRow).cncCabinetryRowKind !== "main"
             ? ""
             : String(row.partType ?? "");
+        const printPartHex =
+          normalizeHexColor(partTypeColors[partTypeForOutput] ?? partTypeColors[partTypeForOutput.toLowerCase()] ?? "") ?? null;
+        const printPartRgb = printPartHex ? toRgb(printPartHex) : null;
+        const printPartTextRgb = printPartHex ? (isLightHex(printPartHex) ? [15, 23, 42] : [255, 255, 255]) : [15, 23, 42];
         const isConfiguredDoorGroup = isConfiguredDoorRowLike(row);
         const isDrawer = isDrawerPartType(row.partType);
         const isDrawerOnGrainedBoard = isDrawer && boardGrainFor(String(row.board || "").trim());
@@ -20547,7 +20748,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           stripeIndex += 1;
           lastStripeKey = stripeKey;
         }
-        rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
         if (idKey !== lastIdKey) {
           runningId += 1;
           lastIdKey = idKey;
@@ -20560,6 +20760,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         const isGroupedContinuation =
           (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup)) &&
           prevGroupedKey === String((row as CncDisplayRow).sourceRowId || row.id);
+        const rowBoardHasGrain = boardGrainFor(String(row.board || "").trim());
         let groupedRowSpan = 1;
         if (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup) && !isGroupedContinuation) {
           for (let i = rowIdx + 1; i < group.rows.length; i += 1) {
@@ -20570,6 +20771,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             groupedRowSpan += 1;
           }
         }
+        const next = rowIdx + 1 < group.rows.length ? group.rows[rowIdx + 1] : null;
+        const isLastGroupedRowOfGroup =
+          (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup)) &&
+          (!next ||
+            !((isDrawerPartType(next.partType) && !boardGrainFor(String(next.board || "").trim())) || isConfiguredDoorRowLike(next)) ||
+            String((next as CncDisplayRow).sourceRowId || next.id) !== String((row as CncDisplayRow).sourceRowId || row.id));
+        const showGroupedBankNoteRow =
+          isConfiguredDoorGroup &&
+          rowBoardHasGrain &&
+          isLastGroupedRowOfGroup;
+        const grainText = formatGrainColumnValue(
+          String(row.grainValue ?? ""),
+          String(row.height ?? ""),
+          String(row.width ?? ""),
+          String(row.depth ?? ""),
+        ) || (row.grain ? "Yes" : "");
         const tailCells: any[] = [
           String(row.name ?? ""),
           String(row.height ?? ""),
@@ -20577,23 +20794,60 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           String(row.depth ?? ""),
           String(row.quantity ?? ""),
           String(joinClashing(String(row.clashLeft ?? ""), String(row.clashRight ?? "")) ?? ""),
-          ...(showCncGrainColumn ? [String(row.grainValue ?? "")] : []),
+          ...(showCncGrainColumn ? [grainText] : []),
           String(row.information ?? ""),
         ];
-        if (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup) && isGroupedContinuation) {
-          // Important: with rowSpan in first row, continuation rows must not emit overlapped cells.
-          return tailCells;
-        }
+          if (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup) && isGroupedContinuation) {
+            // Important: with rowSpan in first row, continuation rows must not emit overlapped cells.
+            rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
+            printRowKinds.push("grouped-continuation");
+            printRowPartTypeByIndex.push(partTypeForOutput);
+            printRowEndsGroup.push(!showGroupedBankNoteRow && isLastGroupedRowOfGroup);
+            const out: any[] = [tailCells];
+            if (showGroupedBankNoteRow) {
+              rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
+              printRowKinds.push("grouped-note");
+              printRowPartTypeByIndex.push(partTypeForOutput);
+              printRowEndsGroup.push(true);
+              out.push([
+                "",
+                "",
+                "",
+                { content: "- Cut as bank, (1) being the top.", colSpan: showCncGrainColumn ? 7 : 6, styles: { fontStyle: "italic", halign: "left", valign: "middle", cellPadding: { top: 4, right: 3, bottom: 4, left: 18 } } },
+                "",
+              ]);
+            }
+            return out;
+          }
+        const effectiveGroupedRowSpan = groupedRowSpan;
         const idCell: any = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
-          ? { content: String(runningId), rowSpan: groupedRowSpan, styles: { valign: "middle", halign: "center" } }
+          ? { content: String(runningId), rowSpan: effectiveGroupedRowSpan, styles: { valign: "middle", halign: "center" } }
           : String(runningId);
         const roomCell: any = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
-          ? { content: String(row.room ?? ""), rowSpan: groupedRowSpan, styles: { valign: "middle", halign: "center" } }
+          ? { content: String(row.room ?? ""), rowSpan: effectiveGroupedRowSpan, styles: { valign: "middle", halign: "center" } }
           : String(row.room ?? "");
         const typeCell: any = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
-          ? { content: partTypeForOutput, rowSpan: groupedRowSpan, styles: { valign: "middle", halign: "center" } }
+          ? { content: partTypeForOutput, rowSpan: effectiveGroupedRowSpan, styles: { valign: "middle", halign: "center" } }
           : partTypeForOutput;
-        return [idCell, roomCell, typeCell, ...tailCells] as any[];
+        rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
+        printRowKinds.push("normal");
+        printRowPartTypeByIndex.push(partTypeForOutput);
+        printRowEndsGroup.push(groupedRowSpan === 1 && !showGroupedBankNoteRow);
+        const out: any[] = [[idCell, roomCell, typeCell, ...tailCells] as any[]];
+        if (showGroupedBankNoteRow) {
+          rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
+          printRowKinds.push("grouped-note");
+          printRowPartTypeByIndex.push(partTypeForOutput);
+          printRowEndsGroup.push(true);
+          out.push([
+            "",
+            "",
+            "",
+            { content: "- Cut as bank, (1) being the top.", colSpan: showCncGrainColumn ? 7 : 6, styles: { fontStyle: "italic", halign: "left", valign: "middle", cellPadding: { top: 4, right: 3, bottom: 4, left: 18 } } },
+            "",
+          ]);
+        }
+        return out;
       });
       autoTable(doc, {
         startY: topPad + boardBarHeight,
@@ -20648,42 +20902,63 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             hookData.cell.styles.lineColor = blackRgb;
             hookData.cell.styles.lineWidth = {
               top: 0,
-              right: 0.5,
+              right: 0,
               bottom: 0.9,
-              left: 0.5,
+              left: 0,
             } as any;
-            if (colIndex === 0) {
-              // outer border drawn separately to keep rounded corners clean
-              (hookData.cell.styles.lineWidth as any).left = 0;
-            }
-            if (colIndex === lastCol) {
-              // outer border drawn separately to keep rounded corners clean
-              (hookData.cell.styles.lineWidth as any).right = 0;
-            }
             return;
           }
 
           if (hookData.section !== "body") return;
 
           const rowBg = rowBgByIndex[hookData.row.index] ?? rowBaseRgb;
+          const rowKind = printRowKinds[hookData.row.index] ?? "normal";
+          const rowEndsGroup = Boolean(printRowEndsGroup[hookData.row.index]);
           const isLastBodyRow = hookData.row.index === hookData.table.body.length - 1;
           // Last row background is painted once as a rounded row in willDrawCell.
           // Keep edge cells transparent so corners remain rounded.
           hookData.cell.styles.fillColor = (isLastBodyRow && (colIndex === 0 || colIndex === lastCol)) ? (false as any) : rowBg;
-          hookData.cell.styles.lineColor = blackRgb;
+          hookData.cell.styles.lineColor = groupedDividerRgb;
           hookData.cell.styles.lineWidth = {
             top: 0,
-            right: 0.5,
-            bottom: isLastBodyRow ? 0 : 0,
+            right: 0,
+            bottom: 0,
             left: 0,
           } as any;
-          if (colIndex === 0) {
-            // outer border drawn separately to keep rounded corners clean
-            (hookData.cell.styles.lineWidth as any).left = 0;
+          if (rowEndsGroup) {
+            hookData.cell.styles.lineColor = blackRgb;
+            (hookData.cell.styles.lineWidth as any).bottom = 0.7;
           }
-          if (colIndex === lastCol) {
-            // outer border drawn separately to keep rounded corners clean
-            (hookData.cell.styles.lineWidth as any).right = 0;
+          if (rowKind === "grouped-continuation" && colIndex >= 3 && colIndex <= grainColIndex) {
+            hookData.cell.styles.lineColor = groupedDividerRgb;
+            hookData.cell.styles.lineWidth = {
+              top: 0.5,
+              right: 0,
+              bottom: 0,
+              left: 0,
+            } as any;
+            if (rowEndsGroup) {
+              hookData.cell.styles.lineColor = blackRgb;
+              (hookData.cell.styles.lineWidth as any).bottom = 0.7;
+            }
+          }
+          if (rowKind === "grouped-note") {
+            if (colIndex === 3) {
+              hookData.cell.styles.lineColor = groupedDividerRgb;
+              hookData.cell.styles.lineWidth = {
+                top: 0.5,
+                right: 0,
+                bottom: 0,
+                left: 0,
+              } as any;
+            } else if (colIndex === infoColIndex) {
+              hookData.cell.styles.lineWidth = {
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 0,
+              } as any;
+            }
           }
 
           if (colIndex === 4 || colIndex === 5 || colIndex === 6) {
@@ -20704,6 +20979,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           }
 
           if (colIndex !== 2) return;
+          if (rowKind === "grouped-note") {
+            const notePartType = String(printRowPartTypeByIndex[hookData.row.index] || "").trim();
+            const notePartHex =
+              normalizeHexColor(partTypeColors[notePartType] ?? partTypeColors[notePartType.toLowerCase()] ?? "") ?? null;
+            if (!notePartHex) return;
+            const notePartRgb = toRgb(notePartHex);
+            hookData.cell.styles.fillColor = notePartRgb;
+            hookData.cell.styles.textColor = isLightHex(notePartHex) ? [15, 23, 42] : [255, 255, 255];
+            return;
+          }
           const raw = hookData.cell.raw as any;
           const partType = String((raw && typeof raw === "object" && "content" in raw) ? raw.content : raw ?? "").trim();
           const partHex =
@@ -20729,8 +21014,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           doc.rect(rowX, rowY, rowW, Math.max(0, rowH - r), "F");
         },
         didDrawCell: (hookData) => {
-          if (hookData.section !== "body") return;
           const colIndex = hookData.column.index;
+          const rowEndsGroup = Boolean(printRowEndsGroup[hookData.row.index]);
+          const lastCol = header.length - 1;
+          if (hookData.section === "body" && rowEndsGroup && colIndex === lastCol) {
+            const y = hookData.cell.y + hookData.cell.height;
+            const tailStartX =
+              sidePad +
+              Number(globalColumnWidthPtByHeader["ID"] ?? 0) +
+              Number(globalColumnWidthPtByHeader["Room"] ?? 0) +
+              Number(globalColumnWidthPtByHeader["Part Type"] ?? 0);
+            doc.setDrawColor(blackRgb[0], blackRgb[1], blackRgb[2]);
+            doc.setLineWidth(0.7);
+            doc.line(tailStartX, y, sidePad + usableTableWidthPt, y);
+          }
+
+          if (hookData.section !== "body") return;
           if (colIndex !== 4 && colIndex !== 5 && colIndex !== 6) return;
           const row = group.rows[hookData.row.index];
           if (!row) return;
@@ -20786,17 +21085,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       });
       const lastAuto = (doc as jsPDF & { lastAutoTable?: { finalY?: number } }).lastAutoTable;
       const finalY = Math.max(topPad + boardBarHeight + 10, Number(lastAuto?.finalY ?? 0));
-      // Draw table column dividers last using deterministic layout widths.
-      const dividerTop = topPad + boardBarHeight;
-      if (finalY > dividerTop) {
-        doc.setDrawColor(17, 17, 17);
-        doc.setLineWidth(0.7);
-        let x = sidePad;
-        for (let c = 0; c < header.length - 1; c += 1) {
-          x += Number(globalColumnWidthPtByHeader[header[c]] ?? 0);
-          doc.line(x, dividerTop, x, finalY);
-        }
-      }
       const sectionH = finalY - topPad;
       const cornerRadius = 7;
       const tableW = pageWidth - sidePad * 2;
@@ -22891,6 +23179,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
                                           onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
                                           onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                          onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
+                                          onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
                                           disabled: productionReadOnly,
                                           textColor: draftTextColor,
                                           borderColor: draftFieldBorder,
@@ -23113,6 +23403,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
                                             onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
                                             onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                            onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
+                                            onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
                                             disabled: productionReadOnly,
                                             textColor: draftTextColor,
                                             borderColor: draftFieldBorder,
@@ -23382,6 +23674,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               {group.rows.map((row, rowIndex) => {
                                 const infoLines = informationLinesFromValue(String(row.information ?? ""));
                                   const hasInformationContent = infoLines.some((line) => line.trim().length > 0);
+                                  const rowIsConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
+                                  const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
                                   const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
                                   const rowGrainValue = String(row.grainValue ?? "").trim();
                                   const clashingValue = joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
@@ -23583,159 +23877,196 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               </button>
                                             )}
 
-                                            <p className="font-bold text-[#0F172A]">Height</p>
-                                            {isEditing(row.id, "height") ? (
-                                              isDrawerPartType(row.partType) ? (
-                                                <DrawerHeightDropdown
-                                                  value={String(editingCellValue || "")}
-                                                  options={drawerHeightLetterOptions}
-                                                  compact
-                                                  title={warningForCell(row.id, "height") || undefined}
-                                                  className={warningClassForCell(row.id, "height")}
-                                                  bg={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).backgroundColor ?? "#FFFFFF"}
-                                                  border={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).borderColor ?? "#94A3B8"}
-                                                  text={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).color ?? "#0F172A"}
-                                                  onAdd={(token) => addEditingDrawerHeightToken(token)}
-                                                  onRemove={(token) => removeEditingDrawerHeightToken(token)}
-                                                  onOpenChange={(isOpen) => {
-                                                    if (!isOpen) {
-                                                      void commitCellEdit(editingCellValue);
-                                                    }
-                                                  }}
-                                                />
-                                              ) : (
-                                                <input
-                                                  autoFocus
-                                                  defaultValue={editingCellValue}
-                                                  inputMode="numeric"
-                                                  pattern="[0-9]*"
-                                                  onChange={(e) => {
-                                                    const next = sanitizeCutlistNumericInput("height", e.target.value);
-                                                    editingCellValueRef.current = next;
-                                                    if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                                  }}
-                                                  onBlur={() => void commitCellEdit()}
-                                                  onKeyDown={(e) => {
-                                                    if (e.key === "Enter") {
-                                                      e.preventDefault();
-                                                      void commitCellEdit();
-                                                    }
-                                                    if (e.key === "Escape") cancelCellEdit();
-                                                  }}
-                                                  className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                                />
-                                              )
-                                            ) : (
-                                              <button
-                                                type="button"
-                                                disabled={productionReadOnly}
-                                                onClick={() => startCellEdit(row, "height")}
-                                                className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
-                                                style={matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
-                                              >
-                                                {isDrawerPartType(row.partType) ? (summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height ?? "")) : (row.height || "-")}
-                                              </button>
-                                            )}
+                                            {!rowIsConfiguredDoor ? (
+                                              <>
+                                                <p className="font-bold text-[#0F172A]">Height</p>
+                                                {isEditing(row.id, "height") ? (
+                                                  isDrawerPartType(row.partType) ? (
+                                                    <DrawerHeightDropdown
+                                                      value={String(editingCellValue || "")}
+                                                      options={drawerHeightLetterOptions}
+                                                      compact
+                                                      title={warningForCell(row.id, "height") || undefined}
+                                                      className={warningClassForCell(row.id, "height")}
+                                                      bg={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).backgroundColor ?? "#FFFFFF"}
+                                                      border={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).borderColor ?? "#94A3B8"}
+                                                      text={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).color ?? "#0F172A"}
+                                                      onAdd={(token) => addEditingDrawerHeightToken(token)}
+                                                      onRemove={(token) => removeEditingDrawerHeightToken(token)}
+                                                      onOpenChange={(isOpen) => {
+                                                        if (!isOpen) {
+                                                          void commitCellEdit(editingCellValue);
+                                                        }
+                                                      }}
+                                                    />
+                                                  ) : (
+                                                    <input
+                                                      autoFocus
+                                                      defaultValue={editingCellValue}
+                                                      inputMode="numeric"
+                                                      pattern="[0-9]*"
+                                                      onChange={(e) => {
+                                                        const next = sanitizeCutlistNumericInput("height", e.target.value);
+                                                        editingCellValueRef.current = next;
+                                                        if (next !== e.currentTarget.value) e.currentTarget.value = next;
+                                                      }}
+                                                      onBlur={() => void commitCellEdit()}
+                                                      onKeyDown={(e) => {
+                                                        if (e.key === "Enter") {
+                                                          e.preventDefault();
+                                                          void commitCellEdit();
+                                                        }
+                                                        if (e.key === "Escape") cancelCellEdit();
+                                                      }}
+                                                      className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                    />
+                                                  )
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    disabled={productionReadOnly}
+                                                    onClick={() => startCellEdit(row, "height")}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    style={matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
+                                                  >
+                                                    {isDrawerPartType(row.partType) ? (summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height ?? "")) : (row.height || "-")}
+                                                  </button>
+                                                )}
 
-                                            <p className="font-bold text-[#0F172A]">Width</p>
-                                            {isEditing(row.id, "width") ? (
-                                              <input
-                                                autoFocus
-                                                defaultValue={editingCellValue}
-                                                inputMode="numeric"
-                                                pattern="[0-9]*"
-                                                onChange={(e) => {
-                                                  const next = sanitizeCutlistNumericInput("width", e.target.value);
-                                                  editingCellValueRef.current = next;
-                                                  if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                                }}
-                                                onBlur={() => void commitCellEdit()}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === "Enter") {
-                                                    e.preventDefault();
-                                                    void commitCellEdit();
-                                                  }
-                                                  if (e.key === "Escape") cancelCellEdit();
-                                                }}
-                                                className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                              />
-                                            ) : (
-                                              <button
-                                                type="button"
-                                                disabled={productionReadOnly}
-                                                onClick={() => startCellEdit(row, "width")}
-                                                className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
-                                                style={matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
-                                              >
-                                                {row.width || "-"}
-                                              </button>
-                                            )}
+                                                <p className="font-bold text-[#0F172A]">Width</p>
+                                                {isEditing(row.id, "width") ? (
+                                                  <input
+                                                    autoFocus
+                                                    defaultValue={editingCellValue}
+                                                    inputMode="numeric"
+                                                    pattern="[0-9]*"
+                                                    onChange={(e) => {
+                                                      const next = sanitizeCutlistNumericInput("width", e.target.value);
+                                                      editingCellValueRef.current = next;
+                                                      if (next !== e.currentTarget.value) e.currentTarget.value = next;
+                                                    }}
+                                                    onBlur={() => void commitCellEdit()}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                  />
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    disabled={productionReadOnly}
+                                                    onClick={() => startCellEdit(row, "width")}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    style={matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
+                                                  >
+                                                    {row.width || "-"}
+                                                  </button>
+                                                )}
 
-                                            <p className="font-bold text-[#0F172A]">Depth</p>
-                                            {isEditing(row.id, "depth") ? (
-                                              <input
-                                                autoFocus
-                                                defaultValue={editingCellValue}
-                                                inputMode="numeric"
-                                                pattern="[0-9]*"
-                                                onChange={(e) => {
-                                                  const next = sanitizeCutlistNumericInput("depth", e.target.value);
-                                                  editingCellValueRef.current = next;
-                                                  if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                                }}
-                                                onBlur={() => void commitCellEdit()}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === "Enter") {
-                                                    e.preventDefault();
-                                                    void commitCellEdit();
-                                                  }
-                                                  if (e.key === "Escape") cancelCellEdit();
-                                                }}
-                                                className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                              />
-                                            ) : (
-                                              <button
-                                                type="button"
-                                                disabled={productionReadOnly}
-                                                onClick={() => startCellEdit(row, "depth")}
-                                                className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
-                                                style={matchesGrainDimension(rowGrainValue, row.depth, "depth") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
-                                              >
-                                                {row.depth || "-"}
-                                              </button>
-                                            )}
+                                                <p className="font-bold text-[#0F172A]">Depth</p>
+                                                {isEditing(row.id, "depth") ? (
+                                                  <input
+                                                    autoFocus
+                                                    defaultValue={editingCellValue}
+                                                    inputMode="numeric"
+                                                    pattern="[0-9]*"
+                                                    onChange={(e) => {
+                                                      const next = sanitizeCutlistNumericInput("depth", e.target.value);
+                                                      editingCellValueRef.current = next;
+                                                      if (next !== e.currentTarget.value) e.currentTarget.value = next;
+                                                    }}
+                                                    onBlur={() => void commitCellEdit()}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                  />
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    disabled={productionReadOnly}
+                                                    onClick={() => startCellEdit(row, "depth")}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    style={matchesGrainDimension(rowGrainValue, row.depth, "depth") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
+                                                  >
+                                                    {row.depth || "-"}
+                                                  </button>
+                                                )}
 
-                                            <p className="font-bold text-[#0F172A]">Quantity</p>
-                                            {isEditing(row.id, "quantity") ? (
-                                              <input
-                                                autoFocus
-                                                defaultValue={editingCellValue}
-                                                inputMode="numeric"
-                                                pattern="[0-9]*"
-                                                onChange={(e) => {
-                                                  const next = sanitizeCutlistNumericInput("quantity", e.target.value);
-                                                  editingCellValueRef.current = next;
-                                                  if (next !== e.currentTarget.value) e.currentTarget.value = next;
-                                                }}
-                                                onBlur={() => void commitCellEdit()}
-                                                onKeyDown={(e) => {
-                                                  if (e.key === "Enter") {
-                                                    e.preventDefault();
-                                                    void commitCellEdit();
-                                                  }
-                                                  if (e.key === "Escape") cancelCellEdit();
-                                                }}
-                                                className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                              />
+                                                <p className="font-bold text-[#0F172A]">Quantity</p>
+                                                {isEditing(row.id, "quantity") ? (
+                                                  <input
+                                                    autoFocus
+                                                    defaultValue={editingCellValue}
+                                                    inputMode="numeric"
+                                                    pattern="[0-9]*"
+                                                    onChange={(e) => {
+                                                      const next = sanitizeCutlistNumericInput("quantity", e.target.value);
+                                                      editingCellValueRef.current = next;
+                                                      if (next !== e.currentTarget.value) e.currentTarget.value = next;
+                                                    }}
+                                                    onBlur={() => void commitCellEdit()}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        void commitCellEdit();
+                                                      }
+                                                      if (e.key === "Escape") cancelCellEdit();
+                                                    }}
+                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                  />
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    disabled={productionReadOnly}
+                                                    onClick={() => startCellEdit(row, "quantity")}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                  >
+                                                    {row.quantity || "1"}
+                                                  </button>
+                                                )}
+                                              </>
                                             ) : (
-                                              <button
-                                                type="button"
-                                                disabled={productionReadOnly}
-                                                onClick={() => startCellEdit(row, "quantity")}
-                                                className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
-                                              >
-                                                {row.quantity || "1"}
-                                              </button>
+                                              <>
+                                                <p className="font-bold text-[#0F172A]">Pieces</p>
+                                                <div className={`min-w-0 space-y-2 ${isMobileProjectViewport ? "text-right" : "text-left"}`}>
+                                                  {doorPieces.length ? doorPieces.map((piece) => (
+                                                    <div key={`${row.id}_compact_piece_${piece.key}`} className="rounded-[8px] border border-[#D7DEE8] bg-white/60 px-2 py-2">
+                                                      <p className="break-words font-semibold text-[#0F172A]">{piece.partName}</p>
+                                                      <p className="mt-1 break-words text-[#475569]">
+                                                        <span
+                                                          style={
+                                                            matchesGrainDimension(String(piece.grainValue ?? ""), piece.height, "height")
+                                                              ? { fontWeight: 700, textDecoration: "underline" }
+                                                              : undefined
+                                                          }
+                                                        >
+                                                          {piece.height || "-"} H
+                                                        </span>
+                                                        {" x "}
+                                                        <span
+                                                          style={
+                                                            matchesGrainDimension(String(piece.grainValue ?? ""), piece.width, "width")
+                                                              ? { fontWeight: 700, textDecoration: "underline" }
+                                                              : undefined
+                                                          }
+                                                        >
+                                                          {piece.width || "-"} W
+                                                        </span>
+                                                      </p>
+                                                      <p className="mt-1 text-[#475569]">Qty {piece.quantity || "1"}</p>
+                                                    </div>
+                                                  )) : <p className="text-[#475569]">-</p>}
+                                                </div>
+                                              </>
                                             )}
 
                                             <p className="font-bold text-[#0F172A]">Clashing</p>
@@ -24587,6 +24918,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
                                   onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
                                   onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                  onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
+                                  onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
                                   disabled: productionReadOnly,
                                   textColor: draftTextColor,
                                   borderColor: draftFieldBorder,
@@ -24689,6 +25022,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     onSideGapChange: (key, value) => onDraftDoorSideGapChange(draft.id, key, value),
                                     onFrontWidthChange: (index, value) => onDraftDoorFrontWidthChange(draft.id, index, value),
                                     onFrontHeightChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                    onFrontWidthBlur: (index) => onDraftDoorFrontWidthBlur(draft.id, index),
+                                    onFrontHeightBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
                                     disabled: productionReadOnly,
                                     textColor: draftTextColor,
                                     borderColor: draftFieldBorder,
@@ -26172,67 +26507,108 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 }
                               }
                               const hideIdentityCells = isCabinetryShelfRow || (useGroupedSourceKey && !isFirstGroupedRowOfGroup);
-                              const identityRowSpan = isCabinetryMainRow ? 3 : (isFirstGroupedRowOfGroup ? groupedRowSpan : 1);
                               const hidePartTypeCell = useGroupedSourceKey && !isFirstGroupedRowOfGroup;
-                              const partTypeRowSpan = isFirstGroupedRowOfGroup ? groupedRowSpan : 1;
                               const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                               const partText = isLightHex(partColor) ? "#111827" : "#F8FAFC";
                               const rowBoardHasGrain = boardGrainFor(String(row.board || "").trim());
+                              const showGroupedBankNoteRow =
+                                isConfiguredDoorGroup &&
+                                rowBoardHasGrain &&
+                                Boolean(groupedSourceKey);
+                              const identityRowSpan =
+                                isCabinetryMainRow
+                                  ? 3
+                                  : (isFirstGroupedRowOfGroup ? groupedRowSpan + (showGroupedBankNoteRow ? 1 : 0) : 1);
+                              const nextRow = idx + 1 < group.rows.length ? group.rows[idx + 1] : null;
+                              const isLastGroupedRowOfGroup =
+                                useGroupedSourceKey &&
+                                (!nextRow ||
+                                  !((isDrawerPartType(String(nextRow.partType || "")) && !boardGrainFor(String(nextRow.board || "").trim())) || isConfiguredDoorRowLike(nextRow)) ||
+                                  String((nextRow as CncDisplayRow).sourceRowId || nextRow.id) !== groupedSourceKey);
                               const isHeightGrainMatch =
                                 rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.height ?? ""), "height");
                               const isWidthGrainMatch =
                                 rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.width ?? ""), "width");
                               const isDepthGrainMatch =
                                 rowBoardHasGrain && matchesGrainDimension(String(row.grainValue ?? ""), String(row.depth ?? ""), "depth");
+                              const partTypeRowSpan =
+                                isFirstGroupedRowOfGroup
+                                  ? groupedRowSpan + (showGroupedBankNoteRow ? 1 : 0)
+                                  : 1;
+                              const groupedPieceDividerClass = isContinuationOfSameGroupedDoor ? " border-t border-[#D4D8E1]" : "";
                               return (
-                                <tr
-                                  key={`${group.boardKey}_${row.id}_${idx}`}
-                                  className={(isContinuationOfSameCabinetry || isContinuationOfSameGroupedDoor) ? "border-0" : "border-t border-[#E4E7EE]"}
-                                  style={{ backgroundColor: stripeIndex % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
-                                >
-                                  {!hideIdentityCells && (
-                                    <td
-                                      rowSpan={identityRowSpan}
-                                      className="px-2 py-[5px] text-center align-middle text-[#334155]"
+                                <Fragment key={`${group.boardKey}_${row.id}_${idx}`}>
+                                  <tr
+                                    className={(isContinuationOfSameCabinetry || isContinuationOfSameGroupedDoor) ? "border-0" : "border-t border-[#E4E7EE]"}
+                                    style={{ backgroundColor: stripeIndex % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
+                                  >
+                                    {!hideIdentityCells && (
+                                      <td
+                                        rowSpan={identityRowSpan}
+                                        className="px-2 py-[5px] text-center align-middle text-[#334155]"
+                                      >
+                                        {runningId}
+                                      </td>
+                                    )}
+                                    {!hideIdentityCells && (
+                                      <td
+                                        rowSpan={identityRowSpan}
+                                        className="px-2 py-[5px] text-center align-middle text-[#334155]"
+                                      >
+                                        {row.room || ""}
+                                      </td>
+                                    )}
+                                    {!hidePartTypeCell && (
+                                      <td rowSpan={partTypeRowSpan} className="w-[75px] px-2 py-[5px] text-center align-middle">
+                                        {partTypeForDisplay ? (
+                                          <span
+                                            className="mx-auto inline-flex max-w-[71px] truncate rounded-[7px] px-2 py-[1px] text-[11px] font-semibold"
+                                            style={{ backgroundColor: partColor, color: partText }}
+                                          >
+                                            {partTypeForDisplay}
+                                          </span>
+                                        ) : null}
+                                      </td>
+                                    )}
+                                    <td className={`px-2 py-[5px] font-semibold text-[#0F172A]${groupedPieceDividerClass}`}>{row.name || ""}</td>
+                                    <td className={`px-2 py-[5px] text-center align-middle text-[#334155]${groupedPieceDividerClass}`} style={isHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.height || ""}</td>
+                                    <td className={`px-2 py-[5px] text-center text-[#334155]${groupedPieceDividerClass}`} style={isWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.width || ""}</td>
+                                    <td className={`px-2 py-[5px] text-center text-[#334155]${groupedPieceDividerClass}`} style={isDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.depth || ""}</td>
+                                    <td className={`px-2 py-[5px] text-center font-bold text-[#0F172A]${groupedPieceDividerClass}`}>{row.quantity || ""}</td>
+                                    <td className={`px-2 py-[5px] text-center text-[#334155]${groupedPieceDividerClass}`}>{joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || ""}</td>
+                                    {showCncGrainColumn && (
+                                      <td className={`px-2 py-[5px] text-center text-[#334155]${groupedPieceDividerClass}`}>
+                                        {(() => {
+                                          const grainText = String(row.grainValue ?? "").trim();
+                                          if (!grainText) return row.grain ? "Yes" : "";
+                                          if (/^[HWD]\s*:/i.test(grainText)) return grainText.replace(/\s+/g, "");
+                                          if (isHeightGrainMatch) return `H:${grainText}`;
+                                          if (isWidthGrainMatch) return `W:${grainText}`;
+                                          if (isDepthGrainMatch) return `D:${grainText}`;
+                                          return grainText;
+                                        })()}
+                                      </td>
+                                    )}
+                                    <td className="px-2 py-[5px] text-[#334155]">
+                                      {informationLinesFromValue(String(row.information || "")).map((line, infoIdx) => (
+                                        <div key={`cnc-info-${row.id}-${idx}-${infoIdx}`}>{line}</div>
+                                      ))}
+                                    </td>
+                                  </tr>
+                                  {showGroupedBankNoteRow && isLastGroupedRowOfGroup && (
+                                    <tr
+                                      className="border-0"
+                                      style={{ backgroundColor: stripeIndex % 2 === 1 ? "#F6F8FB" : "#FFFFFF" }}
                                     >
-                                      {runningId}
-                                    </td>
+                                      <td colSpan={showCncGrainColumn ? 7 : 6} className="border-t border-[#D4D8E1] px-2 py-[6px] align-middle text-[11px] text-[#475467]">
+                                        <div className="pl-8 italic leading-none">
+                                          - Cut as bank, (1) being the top.
+                                        </div>
+                                      </td>
+                                      <td className="px-2 py-[6px]" />
+                                    </tr>
                                   )}
-                                  {!hideIdentityCells && (
-                                    <td
-                                      rowSpan={identityRowSpan}
-                                      className="px-2 py-[5px] align-middle text-[#334155]"
-                                    >
-                                      {row.room || ""}
-                                    </td>
-                                  )}
-                                  {!hidePartTypeCell && (
-                                    <td rowSpan={partTypeRowSpan} className="w-[75px] px-2 py-[5px] align-middle">
-                                      {partTypeForDisplay ? (
-                                        <span
-                                          className="inline-flex max-w-[71px] truncate rounded-[7px] px-2 py-[1px] text-[11px] font-semibold"
-                                          style={{ backgroundColor: partColor, color: partText }}
-                                        >
-                                          {partTypeForDisplay}
-                                        </span>
-                                      ) : null}
-                                    </td>
-                                  )}
-                                  <td className="px-2 py-[5px] font-semibold text-[#0F172A]">{row.name || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]" style={isHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.height || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]" style={isWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.width || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]" style={isDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : undefined}>{row.depth || ""}</td>
-                                  <td className="px-2 py-[5px] text-center font-bold text-[#0F172A]">{row.quantity || ""}</td>
-                                  <td className="px-2 py-[5px] text-center text-[#334155]">{joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || ""}</td>
-                                  {showCncGrainColumn && (
-                                    <td className="px-2 py-[5px] text-center text-[#334155]">{row.grainValue || (row.grain ? "Yes" : "")}</td>
-                                  )}
-                                  <td className="px-2 py-[5px] text-[#334155]">
-                                    {informationLinesFromValue(String(row.information || "")).map((line, infoIdx) => (
-                                      <div key={`cnc-info-${row.id}-${idx}-${infoIdx}`}>{line}</div>
-                                    ))}
-                                  </td>
-                                </tr>
+                                </Fragment>
                               );
                             })}
                           </tbody>
@@ -28976,6 +29352,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                             const rowPalette = groupColorPalette(rowPartColor);
                             const infoLines = informationLinesFromValue(String(row.information ?? ""));
+                            const rowIsConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
+                            const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
                             const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
                             const rowGrainValue = String(row.grainValue ?? "").trim();
                             const clashingValue = joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
@@ -29048,32 +29426,69 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <p className="font-bold text-[#0F172A]">Board</p>
                                       <p className={`min-w-0 break-words text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{boardDisplayLabel(row.board) || "-"}</p>
 
-                                      <p className="font-bold text-[#0F172A]">Height</p>
-                                      <p
-                                        className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                        style={matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
-                                      >
-                                        {row.height || "-"}
-                                      </p>
+                                      {!rowIsConfiguredDoor ? (
+                                        <>
+                                          <p className="font-bold text-[#0F172A]">Height</p>
+                                          <p
+                                            className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                            style={matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
+                                          >
+                                            {row.height || "-"}
+                                          </p>
 
-                                      <p className="font-bold text-[#0F172A]">Width</p>
-                                      <p
-                                        className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                        style={matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
-                                      >
-                                        {row.width || "-"}
-                                      </p>
+                                          <p className="font-bold text-[#0F172A]">Width</p>
+                                          <p
+                                            className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                            style={matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
+                                          >
+                                            {row.width || "-"}
+                                          </p>
 
-                                      <p className="font-bold text-[#0F172A]">Depth</p>
-                                      <p
-                                        className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                        style={matchesGrainDimension(rowGrainValue, row.depth, "depth") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
-                                      >
-                                        {row.depth || "-"}
-                                      </p>
+                                          <p className="font-bold text-[#0F172A]">Depth</p>
+                                          <p
+                                            className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                            style={matchesGrainDimension(rowGrainValue, row.depth, "depth") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
+                                          >
+                                            {row.depth || "-"}
+                                          </p>
 
-                                      <p className="font-bold text-[#0F172A]">Quantity</p>
-                                      <p className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{row.quantity || "1"}</p>
+                                          <p className="font-bold text-[#0F172A]">Quantity</p>
+                                          <p className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{row.quantity || "1"}</p>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <p className="font-bold text-[#0F172A]">Pieces</p>
+                                          <div className={`min-w-0 space-y-2 ${isMobileProjectViewport ? "text-right" : "text-left"}`}>
+                                            {doorPieces.length ? doorPieces.map((piece) => (
+                                              <div key={`${row.id}_mobile_piece_${piece.key}`} className="rounded-[8px] border border-[#D7DEE8] bg-white/60 px-2 py-2">
+                                                <p className="break-words font-semibold text-[#0F172A]">{piece.partName}</p>
+                                                <p className="mt-1 break-words text-[#475569]">
+                                                  <span
+                                                    style={
+                                                      matchesGrainDimension(String(piece.grainValue ?? ""), piece.height, "height")
+                                                        ? { fontWeight: 700, textDecoration: "underline" }
+                                                        : undefined
+                                                    }
+                                                  >
+                                                    {piece.height || "-"} H
+                                                  </span>
+                                                  {" x "}
+                                                  <span
+                                                    style={
+                                                      matchesGrainDimension(String(piece.grainValue ?? ""), piece.width, "width")
+                                                        ? { fontWeight: 700, textDecoration: "underline" }
+                                                        : undefined
+                                                    }
+                                                  >
+                                                    {piece.width || "-"} W
+                                                  </span>
+                                                </p>
+                                                <p className="mt-1 text-[#475569]">Qty {piece.quantity || "1"}</p>
+                                              </div>
+                                            )) : <p className="text-[#475569]">-</p>}
+                                          </div>
+                                        </>
+                                      )}
 
                                       <p className="font-bold text-[#0F172A]">Clashing</p>
                                       <p className={`min-w-0 break-words text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{clashingValue}</p>
@@ -29490,6 +29905,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     onSideGapChange: onCutlistEntryDoorSideGapChange,
                                     onFrontWidthChange: onCutlistEntryDoorFrontWidthChange,
                                     onFrontHeightChange: onCutlistEntryDoorFrontHeightChange,
+                                    onFrontWidthBlur: onCutlistEntryDoorFrontWidthBlur,
+                                    onFrontHeightBlur: onCutlistEntryDoorFrontHeightBlur,
                                     disabled: productionReadOnly,
                                     textColor: activeCutlistEntryTextColor,
                                     borderColor: activeCutlistEntryFieldBorder,
@@ -29580,6 +29997,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         onSideGapChange: onCutlistEntryDoorSideGapChange,
                                         onFrontWidthChange: onCutlistEntryDoorFrontWidthChange,
                                         onFrontHeightChange: onCutlistEntryDoorFrontHeightChange,
+                                        onFrontWidthBlur: onCutlistEntryDoorFrontWidthBlur,
+                                        onFrontHeightBlur: onCutlistEntryDoorFrontHeightBlur,
                                         disabled: productionReadOnly,
                                         textColor: activeCutlistEntryTextColor,
                                         borderColor: activeCutlistEntryFieldBorder,
