@@ -1475,6 +1475,20 @@ function normalizeCutlistDimensionValue(value: unknown): string {
   return raw;
 }
 
+function normalizeStoredCutlistHeightValue(partType: unknown, doorMode: unknown, value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const tokenized = parseDrawerHeightTokens(raw);
+  const lowerPartType = String(partType ?? "").trim().toLowerCase();
+  const normalizedDoorMode = String(doorMode ?? "").trim().toLowerCase();
+  const looksLikeClassicDrawer =
+    lowerPartType.includes("drawer") && normalizedDoorMode !== "door" && normalizedDoorMode !== "drawer";
+  if (tokenized.length > 1 || looksLikeClassicDrawer) {
+    return formatDrawerHeightTokens(tokenized);
+  }
+  return normalizeCutlistDimensionValue(raw);
+}
+
 function parseCutlistGrainFields(rawGrain: unknown, rawBoolean?: unknown): { grain: boolean; grainValue: string } {
   const raw = String(rawGrain ?? "").trim();
   const lower = raw.toLowerCase();
@@ -2554,6 +2568,54 @@ function computeNestingSheetLayouts(
   type FreeRect = { x: number; y: number; w: number; h: number };
   type SheetState = { index: number; placements: NestingSheetPlacement[]; freeRects: FreeRect[] };
   const sheets: SheetState[] = [];
+  type CompositeBundlePlacement = {
+    mode: "composite";
+    placements: NestingSheetPlacement[];
+    score: [number, number, number, number];
+    freeRectIndex: number;
+    commitRect: { x: number; y: number; w: number; h: number };
+  };
+  type SequentialBundlePlacement = {
+    mode: "sequential";
+    placements: Array<{ placement: NestingSheetPlacement; freeRectIndex: number }>;
+    score: [number, number, number, number];
+  };
+
+  const getLockedConfiguredBundleLayout = (bundle: PlacementBundle) => {
+    if (bundle.pieces.length <= 1) return null;
+    const firstPiece = bundle.pieces[0];
+    const mode = normalizeDoorModeValue(firstPiece?.row?.doorMode);
+    if (mode !== "drawer" && mode !== "door") return null;
+    if (!bundle.pieces.every((piece) => piece.nestingSetKey === bundle.key)) return null;
+
+    if (mode === "drawer") {
+      const maxWidth = Math.max(...bundle.pieces.map((piece) => piece.width));
+      let yOffset = 0;
+      const placements = bundle.pieces.map((piece, index) => {
+        const placement = { piece, x: 0, y: yOffset, w: piece.width, h: piece.height };
+        yOffset += piece.height + (index < bundle.pieces.length - 1 ? kerf : 0);
+        return placement;
+      });
+      return {
+        placements,
+        footprintW: maxWidth,
+        footprintH: yOffset,
+      };
+    }
+
+    const maxHeight = Math.max(...bundle.pieces.map((piece) => piece.height));
+    let xOffset = 0;
+    const placements = bundle.pieces.map((piece, index) => {
+      const placement = { piece, x: xOffset, y: 0, w: piece.width, h: piece.height };
+      xOffset += piece.width + (index < bundle.pieces.length - 1 ? kerf : 0);
+      return placement;
+    });
+    return {
+      placements,
+      footprintW: xOffset,
+      footprintH: maxHeight,
+    };
+  };
 
   const pruneFreeRects = (rects: FreeRect[]) => {
     const normalized = rects
@@ -2634,13 +2696,15 @@ function computeNestingSheetLayouts(
     return best;
   };
 
-  const commitPlacement = (
+  const commitRectPlacement = (
     sheet: SheetState,
-    choice: { placement: NestingSheetPlacement; freeRectIndex: number },
+    freeRectIndex: number,
+    commitRect: { x: number; y: number; w: number; h: number },
+    placementsToAdd: NestingSheetPlacement[],
   ) => {
-    const rect = sheet.freeRects[choice.freeRectIndex];
-    const { x, y, w, h } = choice.placement;
-    const nextRects = sheet.freeRects.filter((_, idx) => idx !== choice.freeRectIndex);
+    const rect = sheet.freeRects[freeRectIndex];
+    const { x, y, w, h } = commitRect;
+    const nextRects = sheet.freeRects.filter((_, idx) => idx !== freeRectIndex);
     const rightStart = x + w + kerf;
     const bottomStart = y + h + kerf;
     const rightWidth = rect.x + rect.w - rightStart;
@@ -2664,7 +2728,14 @@ function computeNestingSheetLayouts(
     }
 
     sheet.freeRects = pruneFreeRects(nextRects);
-    sheet.placements.push(choice.placement);
+    sheet.placements.push(...placementsToAdd);
+  };
+
+  const commitPlacement = (
+    sheet: SheetState,
+    choice: { placement: NestingSheetPlacement; freeRectIndex: number },
+  ) => {
+    commitRectPlacement(sheet, choice.freeRectIndex, choice.placement, [choice.placement]);
   };
 
   const cloneSheetState = (sheet: SheetState): SheetState => ({
@@ -2676,7 +2747,52 @@ function computeNestingSheetLayouts(
   const placeBundleOnSheet = (
     sheet: SheetState,
     bundle: PlacementBundle,
-  ): { placements: Array<{ placement: NestingSheetPlacement; freeRectIndex: number }>; score: [number, number, number, number] } | null => {
+  ): CompositeBundlePlacement | SequentialBundlePlacement | null => {
+    const lockedLayout = getLockedConfiguredBundleLayout(bundle);
+    if (lockedLayout) {
+      let best: CompositeBundlePlacement | null = null;
+      for (let rectIdx = 0; rectIdx < sheet.freeRects.length; rectIdx += 1) {
+        const rect = sheet.freeRects[rectIdx];
+        if (lockedLayout.footprintW > rect.w + 0.001 || lockedLayout.footprintH > rect.h + 0.001) continue;
+        const leftoverW = rect.w - lockedLayout.footprintW;
+        const leftoverH = rect.h - lockedLayout.footprintH;
+        const score: [number, number, number, number] = [
+          Math.min(leftoverW, leftoverH),
+          leftoverW * leftoverH,
+          rect.y,
+          rect.x,
+        ];
+        const placements = lockedLayout.placements.map((placement) => ({
+          ...placement,
+          x: rect.x + placement.x,
+          y: rect.y + placement.y,
+        }));
+        if (
+          !best ||
+          score[0] < best.score[0] - 0.001 ||
+          (Math.abs(score[0] - best.score[0]) <= 0.001 && score[1] < best.score[1] - 0.001) ||
+          (Math.abs(score[0] - best.score[0]) <= 0.001 &&
+            Math.abs(score[1] - best.score[1]) <= 0.001 &&
+            (score[2] < best.score[2] - 0.001 ||
+              (Math.abs(score[2] - best.score[2]) <= 0.001 && score[3] < best.score[3] - 0.001)))
+        ) {
+          best = {
+            mode: "composite",
+            placements,
+            score,
+            freeRectIndex: rectIdx,
+            commitRect: {
+              x: rect.x,
+              y: rect.y,
+              w: lockedLayout.footprintW,
+              h: lockedLayout.footprintH,
+            },
+          };
+        }
+      }
+      if (best) return best;
+    }
+
     const shadow = cloneSheetState(sheet);
     const placements: Array<{ placement: NestingSheetPlacement; freeRectIndex: number; score: [number, number, number, number] }> = [];
     for (const piece of bundle.pieces) {
@@ -2686,16 +2802,13 @@ function computeNestingSheetLayouts(
       commitPlacement(shadow, choice);
     }
     const last = placements[placements.length - 1];
-    return last ? { placements, score: last.score } : null;
+    return last ? { mode: "sequential", placements, score: last.score } : null;
   };
 
   for (const bundle of bundles) {
     let bestSheetChoice:
-      | {
-          sheetIndex: number;
-          placements: Array<{ placement: NestingSheetPlacement; freeRectIndex: number }>;
-          score: [number, number, number, number];
-        }
+      | (CompositeBundlePlacement & { sheetIndex: number })
+      | (SequentialBundlePlacement & { sheetIndex: number })
       | null = null;
 
     for (let sheetIdx = 0; sheetIdx < sheets.length; sheetIdx += 1) {
@@ -2716,7 +2829,11 @@ function computeNestingSheetLayouts(
       const newSheet = createSheet();
       const choice = placeBundleOnSheet(newSheet, bundle);
       if (choice) {
-        choice.placements.forEach((placementChoice) => commitPlacement(newSheet, placementChoice));
+        if (choice.mode === "composite") {
+          commitRectPlacement(newSheet, choice.freeRectIndex, choice.commitRect, choice.placements);
+        } else {
+          choice.placements.forEach((placementChoice) => commitPlacement(newSheet, placementChoice));
+        }
       } else {
         for (const piece of bundle.pieces) {
           const singleChoice = placeOnSheet(newSheet, piece);
@@ -2727,9 +2844,18 @@ function computeNestingSheetLayouts(
       continue;
     }
 
-    bestSheetChoice.placements.forEach((placementChoice) =>
-      commitPlacement(sheets[bestSheetChoice.sheetIndex], placementChoice),
-    );
+    if (bestSheetChoice.mode === "composite") {
+      commitRectPlacement(
+        sheets[bestSheetChoice.sheetIndex],
+        bestSheetChoice.freeRectIndex,
+        bestSheetChoice.commitRect,
+        bestSheetChoice.placements,
+      );
+    } else {
+      bestSheetChoice.placements.forEach((placementChoice) =>
+        commitPlacement(sheets[bestSheetChoice.sheetIndex], placementChoice),
+      );
+    }
   }
 
   return sheets
@@ -10020,7 +10146,11 @@ export default function ProjectDetailsPage() {
                 item.doorFrontHeightManual,
                 Number.parseInt(String(item.doorFrontCount ?? ""), 10) || 0,
               ),
-              height: normalizeCutlistDimensionValue(item.Height ?? item.height),
+              height: normalizeStoredCutlistHeightValue(
+                item.partType ?? item["Part Type"] ?? item.Part ?? item.part ?? "",
+                item.doorMode,
+                item.Height ?? item.height,
+              ),
             width: normalizeCutlistDimensionValue(item.Width ?? item.width),
             depth: normalizeCutlistDimensionValue(item.Depth ?? item.depth),
             quantity: String(item.Quantity ?? item.quantity ?? item.qty ?? 1),
@@ -10080,7 +10210,11 @@ export default function ProjectDetailsPage() {
           partType: String(part.partType ?? legacy["Part Type"] ?? ""),
           board: String(part.material ?? legacy.Board ?? ""),
           name: String(part.label ?? legacy.Name ?? ""),
-          height: normalizeCutlistDimensionValue(part.length ?? legacy.Height),
+          height: normalizeStoredCutlistHeightValue(
+            part.partType ?? legacy["Part Type"] ?? "",
+            legacy.doorMode,
+            part.length ?? legacy.Height,
+          ),
           width: normalizeCutlistDimensionValue(part.width ?? legacy.Width),
           depth: normalizeCutlistDimensionValue(part.depth ?? legacy.Depth),
           quantity: String(part.qty ?? legacy.Quantity ?? 1),
@@ -12673,7 +12807,7 @@ export default function ProjectDetailsPage() {
           ).widths
         : [];
     const svgWidth = isCompactProjectViewport ? 620 : 430;
-    const svgHeight = isCompactProjectViewport ? 460 : 320;
+    const svgHeight = isCompactProjectViewport ? 460 : 360;
     const frameX = isCompactProjectViewport ? 24 : 34;
     const frameY = isCompactProjectViewport ? 10 : 36;
     const maxFrameW = isCompactProjectViewport ? 520 : 300;
@@ -12738,13 +12872,14 @@ export default function ProjectDetailsPage() {
     const svgInputWidth = isCompactProjectViewport ? 64 : 52;
     const svgInputHeight = isCompactProjectViewport ? 32 : 28;
     const svgInputFontSize = isCompactProjectViewport ? 13 : 12;
-    const svgGapInputWidth = isCompactProjectViewport ? 50 : 30;
-    const svgGapInputHeight = isCompactProjectViewport ? 32 : 20;
-    const svgGapInputFontSize = isCompactProjectViewport ? 13 : 9;
+    const svgGapInputWidth = isCompactProjectViewport ? 50 : 42;
+    const svgGapInputHeight = isCompactProjectViewport ? 32 : 28;
+    const svgGapInputFontSize = isCompactProjectViewport ? 13 : 12;
     const gapInputWidth = svgInputWidth;
     const compactGreenGapInputOffsetX = isCompactProjectViewport ? 24 : 0;
     const compactRedGapInputOffsetY = isCompactProjectViewport ? 18 : 0;
-    const defaultTopInputLeftPx = frontRightX - 2;
+    const desktopTopGapInputOffsetX = isCompactProjectViewport ? 0 : 18;
+    const defaultTopInputLeftPx = frontRightX - 2 + desktopTopGapInputOffsetX;
     let topInputLeftPx = defaultTopInputLeftPx;
     const rectsOverlap = (
       a: { left: number; top: number; right: number; bottom: number },
@@ -12827,7 +12962,6 @@ export default function ProjectDetailsPage() {
         };
       });
       const doorOverlaysNeedStagger =
-        isCompactProjectViewport &&
         overlays.some((overlay, index) => {
           const currentLeft = overlay.widthInputLeftPx;
           const currentRight = currentLeft + svgInputWidth;
@@ -12845,23 +12979,25 @@ export default function ProjectDetailsPage() {
           return exceedsOwnPiece || overlapsNext || overlapsPrevious;
         });
       const staggerInsetPx = 10;
-      const staggerStepPx = svgInputHeight + doorStackGapPx + doorXFontSize + 2;
-      const staggerSpanPx = doorStackHeightPx + Math.max(0, count - 1) * staggerStepPx;
-      const staggerStartY = Math.max(
-        doorY + staggerInsetPx,
-        doorY + (doorHpx - staggerSpanPx) / 2,
-      );
+      const staggerStepPx = svgInputHeight + doorStackGapPx + doorXFontSize + 17;
       const maxStackTopY = Math.max(
         doorY + staggerInsetPx,
         doorY + doorHpx - doorStackHeightPx - staggerInsetPx,
       );
+      const resolveDoorStaggerTopPx = (index: number) => {
+        const centerTopPx = doorY + Math.max(staggerInsetPx, doorHpx / 2 - doorStackHeightPx / 2);
+        const proposedTopPx = index % 2 === 0
+          ? centerTopPx
+          : centerTopPx + staggerStepPx;
+        return Math.max(doorY + staggerInsetPx, Math.min(maxStackTopY, proposedTopPx));
+      };
       const resolvedOverlays = doorOverlaysNeedStagger
         ? overlays.map((overlay, index) => ({
             ...overlay,
-            widthInputTopPx: Math.min(maxStackTopY, staggerStartY + index * staggerStepPx),
-            xTextY: Math.min(maxStackTopY, staggerStartY + index * staggerStepPx) + svgInputHeight + doorStackGapPx + doorXFontSize / 2,
+            widthInputTopPx: resolveDoorStaggerTopPx(index),
+            xTextY: resolveDoorStaggerTopPx(index) + svgInputHeight + doorStackGapPx + doorXFontSize / 2,
             heightTextY:
-              Math.min(maxStackTopY, staggerStartY + index * staggerStepPx) +
+              resolveDoorStaggerTopPx(index) +
               svgInputHeight +
               doorStackGapPx +
               doorXFontSize +
@@ -12881,7 +13017,7 @@ export default function ProjectDetailsPage() {
           gapThickness: Math.max(1, doorGapPx),
         };
       });
-      return { overlays: resolvedOverlays, betweenInputs, doorHeightFontSize, doorXFontSize };
+      return { overlays: resolvedOverlays, betweenInputs, doorHeightFontSize, doorXFontSize, doorOverlaysNeedStagger };
     };
     const computeDrawerLayout = () => {
       const filledHeights = rebalanceDoorFrontHeights(
@@ -12980,11 +13116,11 @@ export default function ProjectDetailsPage() {
     const topLineY = frameY + topPx / 2;
     const topInputTopPx = topLineY - svgGapInputHeight / 2;
     const remainingPillAnchorY = frameY - 10;
-    const betweenGapInputs =
+    const baseBetweenGapInputs =
       mode === "door"
         ? resolveHorizontalGapInputs(doorLayout?.betweenInputs ?? [])
         : drawerLayout?.betweenInputs ?? [];
-    const sideGapInputs =
+    const baseSideGapInputs =
         [
             {
               key: "left_side_gap",
@@ -13007,7 +13143,62 @@ export default function ProjectDetailsPage() {
               side: "right" as const,
             },
           ];
-    const widthLabelY = frameY + frameH + (isCompactProjectViewport ? 24 : 34);
+    const resolveDoorBottomGapRow = <
+      T extends { key: string; leftPx: number; topPx: number }
+    >(inputs: T[]): T[] => {
+      if (mode !== "door" || inputs.length <= 1) return inputs;
+      const sorted = [...inputs].sort((a, b) => a.leftPx - b.leftPx);
+      const hasOverlap = sorted.some((input, index) => {
+        const next = sorted[index + 1];
+        if (!next) return false;
+        return input.leftPx + svgGapInputWidth > next.leftPx - 4;
+      });
+      const shouldStagger = Boolean(doorLayout?.doorOverlaysNeedStagger) && (hasOverlap || inputs.length > 1);
+      if (!shouldStagger) return inputs;
+      const baseTopPx = Math.min(...sorted.map((input) => input.topPx));
+      const staggeredTopPx = Math.min(svgHeight - (svgGapInputHeight + 2), baseTopPx + svgGapInputHeight + 8);
+      const topByKey = new Map<string, number>();
+      sorted.forEach((input, index) => {
+        topByKey.set(input.key, index % 2 === 0 ? baseTopPx : staggeredTopPx);
+      });
+      return inputs.map((input) => ({
+        ...input,
+        topPx: topByKey.get(input.key) ?? input.topPx,
+      }));
+    };
+    const allDoorBottomGapInputs =
+      mode === "door"
+        ? resolveDoorBottomGapRow([
+            ...baseBetweenGapInputs.map((input) => ({ ...input, kind: "between" as const })),
+            ...baseSideGapInputs.map((input) => ({ ...input, kind: "side" as const })),
+          ])
+        : [];
+    const betweenGapInputs =
+      mode === "door"
+        ? allDoorBottomGapInputs
+            .filter((input) => input.kind === "between")
+            .map(({ kind: _kind, ...input }) => input)
+        : baseBetweenGapInputs;
+    const sideGapInputs =
+      mode === "door"
+        ? allDoorBottomGapInputs
+            .filter((input) => input.kind === "side")
+            .map(({ kind: _kind, ...input }) => input)
+        : baseSideGapInputs;
+    const bottomGapRowBottomY =
+      Math.max(
+        0,
+        ...sideGapInputs.map((input) => input.topPx + compactRedGapInputOffsetY + svgGapInputHeight),
+        ...betweenGapInputs.map((input) =>
+          mode === "door"
+            ? input.topPx + compactRedGapInputOffsetY + svgGapInputHeight
+            : input.gapCenterY + svgGapInputHeight / 2,
+        ),
+      );
+    const widthLabelY =
+      mode === "door"
+        ? bottomGapRowBottomY + (isCompactProjectViewport ? 18 : 16)
+        : frameY + frameH + (isCompactProjectViewport ? 24 : 34);
     const widthValueText = formatSvgMeasure(totalWidth);
     const widthLabelFullText = `Width ${widthValueText}`;
     const estimatedSvgTextWidth = (text: string, fontSize: number) => text.length * fontSize * 0.58;
@@ -13090,7 +13281,7 @@ export default function ProjectDetailsPage() {
         <div className="px-1 py-1">
           <div className={`flex w-full items-start gap-2 ${isCompactProjectViewport ? "max-w-none" : "max-w-[620px]"}`}>
           <div
-            className={`relative -mt-2 w-full ${isCompactProjectViewport ? "max-w-none" : "flex-1 h-[320px] max-w-[430px]"}`}
+            className={`relative -mt-2 w-full ${isCompactProjectViewport ? "max-w-none" : "flex-1 h-[360px] max-w-[430px]"}`}
             style={
               isCompactProjectViewport
                 ? { aspectRatio: `${svgCanvasWidth} / ${svgCanvasHeight}`, marginTop: "20px" }
