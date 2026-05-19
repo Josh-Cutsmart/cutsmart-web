@@ -54,6 +54,7 @@ export interface Project {
   assignedTo: string;
   tags: string[];
   notes?: string;
+  productionNotes?: string;
   clientPhone?: string;
   clientEmail?: string;
   clientAddress?: string;

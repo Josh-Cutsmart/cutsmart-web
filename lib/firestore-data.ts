@@ -257,6 +257,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     pickFirstString(clientBlock, ["address", "clientAddress", "projectAddress"]);
   const notes = pickFirstString(data, ["notes", "projectNotes", "description"]) ||
     pickFirstString(clientBlock, ["notes", "projectNotes", "description"]);
+  const productionNotes = pickFirstString(data, ["productionNotes"]);
   const createdByName = pickFirstString(data, [
     "createdByName",
     "creatorName",
@@ -293,6 +294,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     ),
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     notes,
+    productionNotes,
     clientPhone,
     clientEmail,
     clientAddress,

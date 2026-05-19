@@ -18,6 +18,7 @@ type QuoteDocumentEditorProps = {
   onFocus?: () => void;
   onBlur?: () => void;
   onEditorReady?: (editor: any | null) => void;
+  toolbarDensity?: "default" | "compact";
 };
 
 export function QuoteDocumentEditor({
@@ -34,6 +35,7 @@ export function QuoteDocumentEditor({
   onFocus,
   onBlur,
   onEditorReady,
+  toolbarDensity = "default",
 }: QuoteDocumentEditorProps) {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -401,6 +403,24 @@ export function QuoteDocumentEditor({
           max-width: none;
           width: 100%;
         }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"][data-toolbar-density="compact"] .ck.ck-toolbar {
+          padding: 3px 4px;
+          border-radius: 10px;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"][data-toolbar-density="compact"] .ck.ck-toolbar .ck-toolbar__items {
+          gap: 1px;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"][data-toolbar-density="compact"] .ck.ck-toolbar .ck-button,
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"][data-toolbar-density="compact"] .ck.ck-toolbar .ck-dropdown__button {
+          min-width: 22px;
+          height: 22px;
+          padding: 1px 3px;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"][data-toolbar-density="compact"] .ck.ck-toolbar .ck-button .ck-icon,
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-toolbar-placement="inline"][data-toolbar-density="compact"] .ck.ck-toolbar .ck-dropdown__button .ck-icon {
+          width: 12px;
+          height: 12px;
+        }
         .cutsmart-quote-document-shell .quote-document-page,
         .cutsmart-quote-document-shell .quote-print-sheet {
           width: min(100%, 860px);
@@ -447,6 +467,7 @@ export function QuoteDocumentEditor({
         data-mode={mode}
         data-toolbar-placement={toolbarPlacement}
         data-embedded-chrome={embeddedChrome}
+        data-toolbar-density={toolbarDensity}
         style={
           mode === "embedded"
             ? ({

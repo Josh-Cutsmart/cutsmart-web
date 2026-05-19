@@ -4544,8 +4544,12 @@ export default function ProjectDetailsPage() {
   const [isDeletingProjectFile, setIsDeletingProjectFile] = useState(false);
   const [isEditingClientDetails, setIsEditingClientDetails] = useState(false);
   const [isEditingNotes, setIsEditingNotes] = useState(false);
+  const [isEditingProductionNotes, setIsEditingProductionNotes] = useState(false);
+  const [isProductionNotesPanelOpen, setIsProductionNotesPanelOpen] = useState(false);
   const [isSavingGeneralDetails, setIsSavingGeneralDetails] = useState(false);
   const [notesEditorInitialValue, setNotesEditorInitialValue] = useState("");
+  const [productionNotesEditorInitialValue, setProductionNotesEditorInitialValue] = useState("");
+  const [productionNotesDraft, setProductionNotesDraft] = useState("");
   const [generalDetailsDraft, setGeneralDetailsDraft] = useState({
     customer: "",
     clientPhone: "",
@@ -4592,6 +4596,7 @@ export default function ProjectDetailsPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [lockMessage, setLockMessage] = useState("");
   const [notesToolbarHost, setNotesToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [productionNotesToolbarHost, setProductionNotesToolbarHost] = useState<HTMLDivElement | null>(null);
   const [unlockTick, setUnlockTick] = useState(0);
   const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
   const [isUnlockEditModalOpen, setIsUnlockEditModalOpen] = useState(false);
@@ -4910,7 +4915,9 @@ export default function ProjectDetailsPage() {
   const [projectImageDragging, setProjectImageDragging] = useState(false);
   const clientDetailsContainerRef = useRef<HTMLDivElement | null>(null);
   const notesContainerRef = useRef<HTMLDivElement | null>(null);
+  const productionNotesContainerRef = useRef<HTMLDivElement | null>(null);
   const notesEditorDraftRef = useRef("");
+  const productionNotesEditorDraftRef = useRef("");
   useEffect(() => {
     setThemeMode(readThemeMode());
     if (typeof window === "undefined") return;
@@ -8547,6 +8554,7 @@ export default function ProjectDetailsPage() {
         clientAddress: String(projectItem?.clientAddress ?? ""),
         notes: String(projectItem?.notes ?? ""),
       });
+      setProductionNotesDraft(String(projectItem?.productionNotes ?? ""));
       setProjectGapAllowancesDraft(
         normalizeGapAllowancesSettings(
           ((projectItem?.projectSettings ?? {}) as Record<string, unknown>).gapAllowancesSettings,
@@ -8598,6 +8606,19 @@ export default function ProjectDetailsPage() {
     isEditingClientDetails,
     isEditingNotes,
   ]);
+
+  useEffect(() => {
+    if (!project) return;
+    setProductionNotesDraft((prev) =>
+      isEditingProductionNotes ? prev : String(project.productionNotes ?? ""),
+    );
+  }, [project?.productionNotes, isEditingProductionNotes, project]);
+
+  useEffect(() => {
+    if (productionNav !== "cutlist") {
+      setIsProductionNotesPanelOpen(false);
+    }
+  }, [productionNav]);
 
   useEffect(() => {
     const loadCompanyDoc = async () => {
@@ -10948,8 +10969,35 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const commitProductionNotesDetails = async () => {
+    if (!project || productionReadOnly) return;
+    const nextNotes = String(
+      (isEditingProductionNotes ? productionNotesEditorDraftRef.current : productionNotesDraft) ?? "",
+    );
+    if (nextNotes !== String(project.productionNotes ?? "")) {
+      await saveGeneralDetailsPatch({ productionNotes: nextNotes });
+    }
+  };
+
+  const openProductionNotesPanel = () => {
+    const nextNotesValue = notesToDisplayHtml(project?.productionNotes || "");
+    productionNotesEditorDraftRef.current = nextNotesValue;
+    setProductionNotesEditorInitialValue(nextNotesValue);
+    setProductionNotesDraft(nextNotesValue);
+    setIsEditingProductionNotes(true);
+    setIsProductionNotesPanelOpen(true);
+  };
+
+  const closeProductionNotesPanel = async () => {
+    if (isEditingProductionNotes) {
+      await commitProductionNotesDetails();
+    }
+    setIsEditingProductionNotes(false);
+    setIsProductionNotesPanelOpen(false);
+  };
+
   useEffect(() => {
-    if (!isEditingClientDetails && !isEditingNotes) return;
+    if (!isEditingClientDetails && !isEditingNotes && !isEditingProductionNotes) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (!target) return;
@@ -10969,11 +11017,26 @@ export default function ProjectDetailsPage() {
           void commitNotesDetails();
         }
       }
+
+      if (isEditingProductionNotes) {
+        const root = productionNotesContainerRef.current;
+        if (root && !root.contains(target)) {
+          void commitProductionNotesDetails();
+          setIsEditingProductionNotes(false);
+        }
+      }
     };
 
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [isEditingClientDetails, isEditingNotes, commitClientDetails, commitNotesDetails]);
+  }, [
+    isEditingClientDetails,
+    isEditingNotes,
+    isEditingProductionNotes,
+    commitClientDetails,
+    commitNotesDetails,
+    commitProductionNotesDetails,
+  ]);
 
   useEffect(() => {
     if (!projectStatusMenuPos) return;
@@ -14480,6 +14543,16 @@ export default function ProjectDetailsPage() {
       return mode === "door" || mode === "drawer";
     }),
     [visibleCutlistDraftRows],
+  );
+  const hideConfiguredDoorDraftHeaderRow = useMemo(
+    () =>
+      visibleCutlistDraftRows.length === 1 &&
+      visibleDraftRowsHaveConfiguredDoorMode,
+    [visibleCutlistDraftRows.length, visibleDraftRowsHaveConfiguredDoorMode],
+  );
+  const hideConfiguredDoorSingleEntryHeaderRow = useMemo(
+    () => cutlistEntryHasConfiguredDoorMode && visibleCutlistDraftRows.length === 0,
+    [cutlistEntryHasConfiguredDoorMode, visibleCutlistDraftRows.length],
   );
   const resolvedProductionBaseCabHeight = useMemo(() => {
     const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
@@ -22025,7 +22098,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-white px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
+            <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
+              <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px] text-[#12345B]">
+                <span className="truncate text-[#334155]">{String(initialCutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist"}</span>
+              </div>
+            </div>
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">
               <Ruler size={14} />
               <span>Initial Measure</span>
               <span className="text-[#6B7280]">|</span>
@@ -22034,7 +22112,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               onClick={() => void saveAndBackFromInitialMeasure()}
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+              className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
             >
               <ArrowLeft size={14} />
               Save & Back
@@ -24570,7 +24648,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+            <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
+              <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+                <span className="truncate" style={{ color: projectPalette.textSoft }}>
+                  {String(cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist"}
+                </span>
+              </div>
+            </div>
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
               <Scissors size={14} />
               <span>Cutlist</span>
               <span style={{ color: projectPalette.textMuted }}>|</span>
@@ -24579,7 +24664,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               onClick={() => void onSaveAndBackFromCutlist()}
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+              className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
             >
               <ArrowLeft size={14} />
               Save & Back
@@ -24755,7 +24840,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           </div>
-          <div className="grid min-h-0 flex-1 gap-0 xl:grid-cols-[190px_1fr]">
+          <div className={`grid min-h-0 flex-1 gap-0 ${isProductionNotesPanelOpen ? "xl:grid-cols-[190px_1fr_340px]" : "xl:grid-cols-[190px_1fr]"}`}>
             <aside className="border-r border-[#DCE3EC] bg-white">
               <div className="p-2">
                 <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
@@ -24801,6 +24886,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     + Add Room
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isProductionNotesPanelOpen) {
+                        void closeProductionNotesPanel();
+                        return;
+                      }
+                      openProductionNotesPanel();
+                    }}
+                    className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold"
+                    style={{
+                      borderColor: projectPalette.border,
+                      backgroundColor: isProductionNotesPanelOpen ? productionContainerHeaderBg : projectPalette.panelBg,
+                      color: isDarkMode ? "#f1f1f1" : "#12345B",
+                    }}
+                  >
+                    <Quote size={13} />
+                    Note
+                  </button>
                 </div>
               </div>
             </aside>
@@ -24834,7 +24938,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     })}
                   </div>
 
-                  {!visibleDraftRowsHaveConfiguredDoorMode ? (
+                  {!hideConfiguredDoorDraftHeaderRow ? (
                     <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: cutlistEntryGridTemplate }}>
                       <p></p>
                       {cutlistEntryColumnDefs.map((col) => (
@@ -26408,6 +26512,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </section>
             </div>
+            {isProductionNotesPanelOpen ? (
+              <aside className="hidden border-l border-[#DCE3EC] bg-white xl:block">
+                <div className="h-full min-h-0 overflow-hidden">
+                  {renderProductionNotesCard("sidebar")}
+                </div>
+              </aside>
+            ) : null}
           </div>
           {addRoomModalPortal}
           {unlockEditModalPortal}
@@ -28232,6 +28343,165 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  function renderProductionNotesCard(panelMode: "overview" | "sidebar" = "overview") {
+    if (panelMode === "sidebar") {
+      return (
+        <div ref={productionNotesContainerRef} className="flex h-full min-h-0 flex-col">
+          <div
+            className="shrink-0 overflow-hidden border-b px-4 py-2"
+            style={{ borderBottomColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p
+                className="text-[14px] font-medium uppercase tracking-[1px]"
+                style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}
+              >
+                Notes
+              </p>
+              <button
+                type="button"
+                disabled={isSavingGeneralDetails}
+                onClick={() => void closeProductionNotesPanel()}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
+                style={{ backgroundColor: "#7E9EBB", borderColor: "#2F4E68" }}
+                title="Save and close notes"
+              >
+                <img
+                  src="/angle-right.png"
+                  alt="Close"
+                  className="block object-contain"
+                  style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
+                  onError={(e) => {
+                    e.currentTarget.src = "/file.svg";
+                  }}
+                />
+              </button>
+            </div>
+            <div
+              ref={setProductionNotesToolbarHost}
+              className={`${!productionReadOnly ? "mt-2 min-w-0 overflow-hidden" : "hidden"}`}
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3" style={{ color: projectPalette.textSoft }}>
+            {!productionReadOnly ? (
+              <QuoteDocumentEditor
+                key="production-notes-sidebar"
+                mode="embedded"
+                toolbarPlacement="inline"
+                toolbarHost={productionNotesToolbarHost}
+                toolbarDensity="compact"
+                embeddedChrome="flat"
+                embeddedMinHeight={180}
+                embeddedEditableMinHeight={120}
+                value={productionNotesEditorInitialValue}
+                readOnly={isSavingGeneralDetails || productionReadOnly}
+                autoFocus
+                onChange={(nextValue) => {
+                  productionNotesEditorDraftRef.current = nextValue;
+                }}
+              />
+            ) : (
+              <div
+                className="min-h-[235px] notes-rich leading-[20px]"
+                dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project?.productionNotes || "") }}
+              />
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div ref={productionNotesContainerRef}>
+        <section
+          className="overflow-hidden rounded-[14px] border"
+          style={{
+            borderColor: projectPalette.border,
+            backgroundColor: projectPalette.panelBg,
+            boxShadow: projectPalette.shadow,
+          }}
+        >
+          <CardHeader
+            className="flex h-[50px] flex-row items-center justify-between overflow-hidden border-b px-4 py-2"
+            style={{ borderBottomColor: projectPalette.border }}
+          >
+            <CardTitle
+              className="text-[14px] font-medium uppercase tracking-[1px]"
+              style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}
+            >
+              Notes
+            </CardTitle>
+            <div className="flex items-center justify-end gap-2">
+              <div
+                ref={setProductionNotesToolbarHost}
+                className={`${isEditingProductionNotes && !productionReadOnly ? "shrink-0 overflow-hidden" : "hidden"}`}
+              />
+              <button
+                type="button"
+                disabled={productionReadOnly || isSavingGeneralDetails}
+                onClick={() => {
+                  if (isEditingProductionNotes) {
+                    void commitProductionNotesDetails();
+                  } else {
+                    const nextNotesValue = notesToDisplayHtml(project?.productionNotes || "");
+                    productionNotesEditorDraftRef.current = nextNotesValue;
+                    setProductionNotesEditorInitialValue(nextNotesValue);
+                    setProductionNotesDraft(nextNotesValue);
+                  }
+                  setIsEditingProductionNotes((prev) => !prev);
+                }}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
+                style={
+                  isEditingProductionNotes
+                    ? { backgroundColor: "#16A34A", borderColor: "#166534" }
+                    : { backgroundColor: "#7E9EBB", borderColor: "#2F4E68" }
+                }
+                title={isEditingProductionNotes ? "Save changes" : "Edit notes"}
+              >
+                <img
+                  src={isEditingProductionNotes ? "/tick.png" : "/edit.png"}
+                  alt={isEditingProductionNotes ? "Save" : "Edit"}
+                  className="block object-contain"
+                  style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
+                  onError={(e) => {
+                    e.currentTarget.src = "/file.svg";
+                  }}
+                />
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent
+            className="min-h-[155px] pt-3 text-[13px]"
+            style={{ color: projectPalette.textSoft }}
+          >
+            {isEditingProductionNotes && !productionReadOnly ? (
+              <QuoteDocumentEditor
+                key="production-notes-overview"
+                mode="embedded"
+                toolbarPlacement="inline"
+                toolbarHost={productionNotesToolbarHost}
+                embeddedChrome="flat"
+                embeddedMinHeight={53}
+                embeddedEditableMinHeight={23}
+                value={productionNotesEditorInitialValue}
+                readOnly={isSavingGeneralDetails || productionReadOnly}
+                autoFocus
+                onChange={(nextValue) => {
+                  productionNotesEditorDraftRef.current = nextValue;
+                }}
+              />
+            ) : (
+              <div
+                className="min-h-[130px] notes-rich leading-[20px]"
+                dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(project?.productionNotes || "") }}
+              />
+            )}
+          </CardContent>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <ProtectedRoute>
       <AppShell>
@@ -29392,7 +29662,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     : []),
                 ].map((item, idx, arr) => {
                   const Icon = item.icon;
-                  const active = item.key === "unlock" || item.key === "print" ? false : productionNav === item.key;
+                  const active =
+                    item.key === "unlock" || item.key === "print"
+                      ? false
+                      : productionNav === item.key;
                   return (
                     <div key={item.label} className="w-full sm:w-auto xl:w-full">
                       <button
@@ -29412,7 +29685,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             return;
                           }
                           setNestingFullscreen(false);
-                          setProductionNav(item.key);
+                          setProductionNav(item.key as ProductionNav);
                         }}
                         className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                         style={{
@@ -29437,8 +29710,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 className={
                   productionNav === "cutlist" || productionNav === "order"
-                    ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
-                    : "isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
+                    ? `relative isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0 ${
+                        productionNav === "cutlist" && isProductionNotesPanelOpen && !isCompactProjectViewport
+                          ? "xl:pr-[356px]"
+                          : ""
+                      }`
+                    : "relative isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
                 }
               >
                 {productionNav === "cutlist" ? (
@@ -29448,11 +29725,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         className="flex min-h-[52px] flex-col gap-3 rounded-[14px] border px-3 py-3"
                         style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
                       >
-                        <div className="inline-flex min-w-0 items-center gap-2">
-                          <ClipboardList size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
-                          <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist</p>
-                          <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
-                          <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
+                        <div className="flex min-w-0 items-center justify-between gap-3">
+                          <div className="inline-flex min-w-0 items-center gap-2">
+                            <ClipboardList size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
+                            <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist</p>
+                            <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
+                            <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (isProductionNotesPanelOpen) {
+                                void closeProductionNotesPanel();
+                                return;
+                              }
+                              openProductionNotesPanel();
+                            }}
+                            className="inline-flex h-8 shrink-0 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold"
+                            style={{
+                              borderColor: projectPalette.border,
+                              backgroundColor: isProductionNotesPanelOpen ? productionContainerHeaderBg : projectPalette.panelBg,
+                              color: isDarkMode ? "#f1f1f1" : "#12345B",
+                            }}
+                          >
+                            <Quote size={13} />
+                            Note
+                          </button>
                         </div>
                         <div className={`grid gap-2 ${isMobileProjectViewport ? "" : "sm:grid-cols-3"}`}>
                           {[
@@ -29777,6 +30075,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           >
                             + Add Room
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (isProductionNotesPanelOpen) {
+                                void closeProductionNotesPanel();
+                                return;
+                              }
+                              openProductionNotesPanel();
+                            }}
+                            className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold"
+                            style={{
+                              borderColor: projectPalette.border,
+                              backgroundColor: isProductionNotesPanelOpen ? productionContainerHeaderBg : projectPalette.panelBg,
+                              color: isDarkMode ? "#f1f1f1" : "#12345B",
+                            }}
+                          >
+                            <Quote size={13} />
+                            Note
+                          </button>
                         </div>
                           {initialMeasureLargerSheetWarningsByRoom.length > 0 && (
                             <div className="mt-auto pt-3">
@@ -29849,7 +30166,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             })}
                           </div>
 
-                          {!cutlistEntryHasConfiguredDoorMode ? (
+                          {!hideConfiguredDoorSingleEntryHeaderRow ? (
                             <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
                               <p></p>
                               {cutlistEntryColumnDefs.map((col) => (
@@ -31865,11 +32182,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </button>
                   </div>
                 </section>
+                <div className="mt-4">
+                  {renderProductionNotesCard("overview")}
+                </div>
                   </>
                 )}
               </div>
             </div>
           )}
+
+          {resolvedTab === "production" &&
+            productionAccess.view &&
+            productionNav === "cutlist" &&
+            isProductionNotesPanelOpen &&
+            (isCompactProjectViewport ? (
+              <div
+                className="fixed inset-x-3 top-[170px] z-[1450] overflow-hidden rounded-[14px] border xl:hidden"
+                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}
+              >
+                {renderProductionNotesCard("sidebar")}
+              </div>
+            ) : (
+              <div
+                className="fixed right-4 top-[132px] z-[1450] hidden w-[340px] overflow-hidden rounded-[14px] border xl:block"
+                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}
+              >
+                {renderProductionNotesCard("sidebar")}
+              </div>
+            ))}
 
           {resolvedTab === "settings" && settingsAccess.view && (
             <div className="-mx-4 -mb-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg }}>
