@@ -55,6 +55,8 @@ export interface Project {
   tags: string[];
   notes?: string;
   productionNotes?: string;
+  clientFirstName?: string;
+  clientLastName?: string;
   clientPhone?: string;
   clientEmail?: string;
   clientAddress?: string;

@@ -2863,9 +2863,10 @@ function computeNestingSheetLayouts(
     .map((sheet) => ({ index: sheet.index, placements: sheet.placements }));
 }
 
-function parseDerivedNestingRowId(rowId: string): { parentRowId: string; kind: "cab" | "drw" | null; subKey: string } {
+function parseDerivedNestingRowId(rowId: string): { parentRowId: string; kind: "cab" | "drw" | "dor" | null; subKey: string } {
   const cabToken = "__cab__";
   const drwToken = "__drw__";
+  const dorToken = "__dor__";
   const cabIdx = rowId.indexOf(cabToken);
   if (cabIdx > 0) {
     return {
@@ -2880,6 +2881,14 @@ function parseDerivedNestingRowId(rowId: string): { parentRowId: string; kind: "
       parentRowId: rowId.slice(0, drwIdx),
       kind: "drw",
       subKey: rowId.slice(drwIdx + drwToken.length),
+    };
+  }
+  const dorIdx = rowId.indexOf(dorToken);
+  if (dorIdx > 0) {
+    return {
+      parentRowId: rowId.slice(0, dorIdx),
+      kind: "dor",
+      subKey: rowId.slice(dorIdx + dorToken.length),
     };
   }
   return { parentRowId: rowId, kind: null, subKey: "" };
@@ -4840,7 +4849,7 @@ export default function ProjectDetailsPage() {
   const [expandedDoorRows, setExpandedDoorRows] = useState<Record<string, boolean>>({});
   const [cutlistJumpTarget, setCutlistJumpTarget] = useState<{
     parentRowId: string;
-    kind: "cab" | "drw" | null;
+    kind: "cab" | "drw" | "dor" | null;
     subKey: string;
   } | null>(null);
   const [cutlistUiStateReady, setCutlistUiStateReady] = useState(false);
@@ -8008,11 +8017,16 @@ export default function ProjectDetailsPage() {
       "Company",
     );
     const clientAddress = toStr(project?.clientAddress, "-");
+    const fullClientName = toStr(project?.customer, "-");
+    const clientNameParts = fullClientName === "-" ? [] : fullClientName.split(/\s+/).filter(Boolean);
+    const fallbackFirstName = clientNameParts[0] || "-";
+    const fallbackLastName = clientNameParts.length > 1 ? clientNameParts.slice(1).join(" ") : "-";
     return {
       company_name: companyName,
       project_name: toStr(project?.name, "-"),
-      client_name: toStr(project?.customer, "-"),
-      client_first_name: toStr(project?.customer, "-").split(/\s+/).filter(Boolean)[0] || "-",
+      client_name: fullClientName,
+      client_first_name: toStr(project?.clientFirstName, fallbackFirstName),
+      client_last_name: toStr(project?.clientLastName, fallbackLastName),
       client_phone: toStr(project?.clientPhone, "-"),
       client_email: toStr(project?.clientEmail, "-"),
       client_address: clientAddress,
@@ -11700,7 +11714,12 @@ export default function ProjectDetailsPage() {
     }));
   };
 
-  const onBoardFieldCommit = async (id: string, patch: Partial<ProductionBoardRow>, bumpColour = false) => {
+  const onBoardFieldCommit = async (
+    id: string,
+    patch: Partial<ProductionBoardRow>,
+    bumpColour = false,
+    previousColourRaw?: string,
+  ) => {
     const prevRows = productionForm.boardTypes;
     const next = {
       ...productionForm,
@@ -11709,7 +11728,7 @@ export default function ProjectDetailsPage() {
     setProductionForm(next);
     const ok = await persistProductionForm(next);
     if (ok && bumpColour) {
-      const oldColour = String(prevRows.find((row) => row.id === id)?.colour ?? "").trim();
+      const oldColour = String(previousColourRaw ?? prevRows.find((row) => row.id === id)?.colour ?? "").trim();
       const newColour = String(patch.colour ?? "").trim();
       if (newColour.toLowerCase() !== oldColour.toLowerCase()) {
         await syncBoardColourMemorySingleChange(oldColour, newColour);
@@ -16642,6 +16661,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setExpandedCabinetryRows((prev) => ({ ...prev, [parent.id]: true }));
     } else if (parsed.kind === "drw") {
       setExpandedDrawerRows((prev) => ({ ...prev, [parent.id]: true }));
+    } else if (parsed.kind === "dor") {
+      setExpandedDoorRows((prev) => ({ ...prev, [parent.id]: true }));
     }
     setCutlistJumpTarget(parsed);
     setProductionNav("cutlist");
@@ -16659,7 +16680,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
     const run = () => {
       const selector =
-        kind === "cab" || kind === "drw"
+        kind === "cab" || kind === "drw" || kind === "dor"
           ? `[data-cutlist-subrow-parent="${parentRowId}"][data-cutlist-subrow-key="${subKey}"]`
           : `[data-cutlist-row-id="${parentRowId}"]`;
       const target =
@@ -22749,7 +22770,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               {pendingGroupCount > 0 && (
                                 <button
                                   type="button"
-                                  onClick={() => void deletePendingInitialCutlistRowsForGroup(group.partType)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void deletePendingInitialCutlistRowsForGroup(group.partType);
+                                  }}
                                   className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold"
                                   style={{
                                     borderColor: groupDeleteConfirmArmed ? "#8AC0A0" : "#F2A7A7",
@@ -25614,7 +25638,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               {pendingGroupCount > 0 && (
                                 <button
                                   type="button"
-                                  onClick={() => void deletePendingCutlistRowsForGroup(group.partType)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void deletePendingCutlistRowsForGroup(group.partType);
+                                  }}
                                   className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold"
                                   style={{
                                     borderColor: groupDeleteConfirmArmed ? "#8AC0A0" : "#F2A7A7",
@@ -31874,11 +31901,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         setActiveBoardColourSuggestionsRowId(row.id);
                                       }}
                                       onBlur={(e) => {
+                                        const previousColour = String(
+                                          boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                        ).trim();
                                         delete boardColourEditStartRef.current[row.id];
                                         window.setTimeout(() => {
                                           setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
                                         }, 120);
-                                        void onBoardFieldCommit(row.id, { colour: e.target.value }, true);
+                                        void onBoardFieldCommit(row.id, { colour: e.target.value }, true, previousColour);
                                       }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Escape") {
@@ -31908,9 +31938,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 onMouseDown={(ev) => ev.preventDefault()}
                                                 onClick={() => {
+                                                  const previousColour = String(
+                                                    boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                                  ).trim();
                                                   delete boardColourEditStartRef.current[row.id];
                                                   setActiveBoardColourSuggestionsRowId(null);
-                                                  void onBoardFieldCommit(row.id, { colour }, true);
+                                                  void onBoardFieldCommit(row.id, { colour }, true, previousColour);
                                                 }}
                                                 className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
                                                 style={{ color: projectPalette.textSoft }}
@@ -32046,12 +32079,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     setActiveBoardColourSuggestionsRowId(row.id);
                                   }}
                                   onBlur={(e) => {
-                                  delete boardColourEditStartRef.current[row.id];
-                                  window.setTimeout(() => {
-                                    setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
-                                  }, 120);
-                                  void onBoardFieldCommit(row.id, { colour: e.target.value }, true);
-                                }}
+                                    const previousColour = String(
+                                      boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                    ).trim();
+                                    delete boardColourEditStartRef.current[row.id];
+                                    window.setTimeout(() => {
+                                      setActiveBoardColourSuggestionsRowId((prev) => (prev === row.id ? null : prev));
+                                    }, 120);
+                                    void onBoardFieldCommit(row.id, { colour: e.target.value }, true, previousColour);
+                                  }}
                                   onKeyDown={(e) => {
                                     if (e.key === "Escape") {
                                       setActiveBoardColourSuggestionsRowId(null);
@@ -32080,9 +32116,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             type="button"
                                             onMouseDown={(ev) => ev.preventDefault()}
                                             onClick={() => {
+                                              const previousColour = String(
+                                                boardColourEditStartRef.current[row.id] ?? row.colour ?? "",
+                                              ).trim();
                                               delete boardColourEditStartRef.current[row.id];
                                               setActiveBoardColourSuggestionsRowId(null);
-                                              void onBoardFieldCommit(row.id, { colour }, true);
+                                              void onBoardFieldCommit(row.id, { colour }, true, previousColour);
                                             }}
                                             className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
                                             style={{ color: projectPalette.textSoft }}

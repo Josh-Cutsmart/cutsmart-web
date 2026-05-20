@@ -249,6 +249,10 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
 
   const customer = pickFirstString(data, ["customer", "clientName", "client", "client_name"]) ||
     pickFirstString(clientBlock, ["name", "clientName", "client", "customer"]);
+  const clientFirstName = pickFirstString(data, ["clientFirstName", "customerFirstName", "firstName"]) ||
+    pickFirstString(clientBlock, ["clientFirstName", "customerFirstName", "firstName"]);
+  const clientLastName = pickFirstString(data, ["clientLastName", "customerLastName", "lastName"]) ||
+    pickFirstString(clientBlock, ["clientLastName", "customerLastName", "lastName"]);
   const clientPhone = pickFirstString(data, ["clientPhone", "clientNumber", "clientMobile", "phone"]) ||
     pickFirstString(clientBlock, ["phone", "mobile", "clientPhone", "clientNumber"]);
   const clientEmail = pickFirstString(data, ["clientEmail", "email"]) ||
@@ -295,6 +299,8 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     notes,
     productionNotes,
+    clientFirstName,
+    clientLastName,
     clientPhone,
     clientEmail,
     clientAddress,

@@ -10,6 +10,7 @@ export const QUOTE_TEMPLATE_PLACEHOLDERS: QuoteTemplatePlaceholderOption[] = [
   { key: "client_address", label: "Client Address", token: "{{client_address}}" },
   { key: "client_region", label: "Client Region", token: "{{client_region}}" },
   { key: "client_first_name", label: "Client First Name", token: "{{client_first_name}}" },
+  { key: "client_last_name", label: "Client Last Name", token: "{{client_last_name}}" },
   { key: "quote_total", label: "Quote Total", token: "{{quote_total}}" },
   { key: "discount_total", label: "Discount Total", token: "{{discount_total}}" },
   { key: "incl_gst", label: "Incl GST", token: "{{incl_gst}}" },
