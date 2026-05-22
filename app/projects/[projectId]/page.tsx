@@ -4701,6 +4701,7 @@ export default function ProjectDetailsPage() {
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [isProductionPrintModalOpen, setIsProductionPrintModalOpen] = useState(false);
   const [productionPrintSelections, setProductionPrintSelections] = useState<Record<string, boolean>>({
+    summary: true,
     nesting: true,
     cnc: true,
   });
@@ -20169,6 +20170,163 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     openPdfBlobInPrintWindow(pdfBlob);
   };
 
+  const buildProductionSummaryPdfBlob = (): Blob | null => {
+    if (!project) return null;
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 12;
+    const titleY = margin;
+    const titleH = 26;
+    const bodyTop = titleY + titleH + 8;
+    const bodyBottom = pageHeight - margin;
+    const bodyH = bodyBottom - bodyTop;
+    const gap = 7;
+    const col1W = 78;
+    const col2W = 92;
+    const col3W = pageWidth - margin * 2 - col1W - col2W - gap * 2;
+    const col1X = margin;
+    const col2X = col1X + col1W + gap;
+    const col3X = col2X + col2W + gap;
+    const lineH = 5;
+
+    const drawSectionCard = (
+      x: number,
+      y: number,
+      w: number,
+      title: string,
+      rows: Array<{ label: string; value: string; suffix?: string }>,
+    ) => {
+      const rowH = 11;
+      const headerH = 12;
+      const h = headerH + rows.length * rowH;
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(216, 222, 232);
+      doc.setLineWidth(0.6);
+      doc.roundedRect(x, y, w, h, 4, 4, "FD");
+      doc.setFillColor(238, 244, 255);
+      doc.roundedRect(x, y, w, headerH, 4, 4, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(18, 52, 91);
+      doc.text(title, x + 4, y + 8);
+
+      rows.forEach((row, idx) => {
+        const rowY = y + headerH + idx * rowH;
+        if (idx > 0) {
+          doc.setDrawColor(228, 231, 238);
+          doc.setLineWidth(0.35);
+          doc.line(x + 4, rowY, x + w - 4, rowY);
+        }
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(8.5);
+        doc.setTextColor(71, 84, 103);
+        doc.text(row.label, x + 4, rowY + 7);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9.5);
+        doc.setTextColor(15, 23, 42);
+        const suffix = String(row.suffix || "").trim();
+        const valueText = String(row.value || "").trim() || "-";
+        const value = suffix && valueText !== "-" ? `${valueText} ${suffix}` : valueText;
+        doc.text(value, x + w - 4, rowY + 7, { align: "right" });
+      });
+
+      return h;
+    };
+
+    const textToLines = (text: string, width: number) => doc.splitTextToSize(text || "-", width) as string[];
+    const clientNameParts = toStr(project?.customer, "").split(/\s+/).filter(Boolean);
+    const projectClientFirstName = toStr(project?.clientFirstName, "") || clientNameParts[0] || "-";
+    const assignedName = toStr(project?.assignedToName, "") || toStr(project?.assignedTo, "") || "-";
+    const topScribersLabel = productionForm.cabinetry.topScribers ? "Yes" : "No";
+    const hobCentreValue = [toStr(productionForm.cabinetry.hobSide, ""), toStr(productionForm.cabinetry.hobCentre, "")]
+      .filter(Boolean)
+      .join(" ")
+      .trim() || "-";
+    const generalNotesLines = textToLines(stripHtmlToPlainText(project?.notes), col3W - 8);
+    const productionNotesLines = textToLines(stripHtmlToPlainText(project?.productionNotes), col3W - 8);
+
+    doc.setFillColor(247, 250, 255);
+    doc.setDrawColor(216, 222, 232);
+    doc.setLineWidth(0.75);
+    doc.roundedRect(margin, titleY, pageWidth - margin * 2, titleH, 5, 5, "FD");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(102, 112, 133);
+    doc.text("PROJECT SUMMARY", margin + 6, titleY + 8);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(23);
+    doc.setTextColor(15, 23, 42);
+    doc.text(toStr(project?.name, "Untitled Project"), margin + 6, titleY + 18);
+
+    const detailsRows = [
+      { label: "Project Assigned", value: assignedName },
+      { label: "Project Client First Name", value: projectClientFirstName },
+      { label: "Project Address", value: toStr(project?.clientAddress, "-") },
+    ];
+    const existingRows = [
+      { label: "Carcass Thickness", value: toStr(productionForm.existing.carcassThickness, "-"), suffix: "mm" },
+      { label: "Panel Thickness", value: toStr(productionForm.existing.panelThickness, "-"), suffix: "mm" },
+      { label: "Fronts Thickness", value: toStr(productionForm.existing.frontsThickness, "-"), suffix: "mm" },
+    ];
+    const cabinetryRows = [
+      { label: "Base Cab Height", value: toStr(productionForm.cabinetry.baseCabHeight, "-"), suffix: "mm" },
+      { label: "Foot Distance Back", value: toStr(productionForm.cabinetry.footDistanceBack, "-"), suffix: "mm" },
+      { label: "Tall Cab Height", value: toStr(productionForm.cabinetry.tallCabHeight, "-"), suffix: "mm" },
+      { label: "Foot Height", value: toStr(productionForm.cabinetry.footHeight, "-"), suffix: "mm" },
+      { label: "Hob Centre", value: hobCentreValue, suffix: hobCentreValue !== "-" ? "mm" : "" },
+      { label: "Top Scribers", value: topScribersLabel },
+    ];
+
+    const existingH = drawSectionCard(col2X, bodyTop, col2W, "Existing", existingRows);
+    drawSectionCard(col1X, bodyTop, col1W, "Details", detailsRows);
+    drawSectionCard(col2X, bodyTop + existingH + 6, col2W, "Cabinetry", cabinetryRows);
+
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(216, 222, 232);
+    doc.setLineWidth(0.6);
+    doc.roundedRect(col3X, bodyTop, col3W, bodyH, 4, 4, "FD");
+    doc.setFillColor(238, 244, 255);
+    doc.roundedRect(col3X, bodyTop, col3W, 12, 4, 4, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(18, 52, 91);
+    doc.text("Notes", col3X + 4, bodyTop + 8);
+
+    const notesStartY = bodyTop + 18;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text("General Notes", col3X + 4, notesStartY);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(51, 65, 85);
+    doc.text(generalNotesLines, col3X + 4, notesStartY + 6);
+
+    const generalBlockH = Math.max(lineH, generalNotesLines.length * lineH);
+    const productionTitleY = notesStartY + 6 + generalBlockH + 8;
+    doc.setDrawColor(228, 231, 238);
+    doc.setLineWidth(0.35);
+    doc.line(col3X + 4, productionTitleY - 4, col3X + col3W - 4, productionTitleY - 4);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text("Production Notes", col3X + 4, productionTitleY);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(51, 65, 85);
+    doc.text(productionNotesLines, col3X + 4, productionTitleY + 6);
+
+    return doc.output("blob");
+  };
+
+  const onPrintProductionSummary = () => {
+    const pdfBlob = buildProductionSummaryPdfBlob();
+    if (!pdfBlob) return;
+    openPdfBlobInPrintWindow(pdfBlob);
+  };
+
   const onExportCncXlsx = async () => {
     if (typeof window === "undefined") return;
     const safeProject = (project?.name || "project")
@@ -21660,9 +21818,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
 
+  const canPrintProductionSummary = Boolean(project);
   const canPrintNesting = nestingBoardLayouts.some((group) => group.sheets.length > 0);
   const canPrintCnc = cncPrintSourceRows.length > 0;
   const productionPrintOptions = [
+    {
+      id: "summary",
+      label: "Project Summary",
+      description: "1 page",
+      enabled: canPrintProductionSummary,
+      onPrint: onPrintProductionSummary,
+    },
     {
       id: "nesting",
       label: "Nesting",
@@ -21680,6 +21846,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   ] as const;
   const openProductionPrintModal = () => {
     setProductionPrintSelections({
+      summary: canPrintProductionSummary,
       nesting: canPrintNesting,
       cnc: canPrintCnc,
     });
@@ -21701,6 +21868,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
     const blobs: Blob[] = [];
     for (const option of selected) {
+      if (option.id === "summary") {
+        const blob = buildProductionSummaryPdfBlob();
+        if (blob) blobs.push(blob);
+        continue;
+      }
       if (option.id === "nesting") {
         const blob = buildNestingPdfBlob();
         if (blob) blobs.push(blob);
