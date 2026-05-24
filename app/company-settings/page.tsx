@@ -13,6 +13,7 @@ import {
   fetchCompanyMembers,
   fetchProjects,
   removeTagsFromCompanyProjects,
+  removeCompanyMemberDetailed,
   fetchUserColorMapByUids,
   fetchUserNotifications,
   saveCompanyDocPatchDetailed,
@@ -121,6 +122,16 @@ type PendingOwnerTransferState = {
   currentOwnerUid: string;
   currentOwnerName: string;
   nextRoleId: string;
+};
+
+type PendingStaffRemovalState = {
+  uid: string;
+  displayName: string;
+  roleId: string;
+  activeProjectCount: number;
+  transferToUid: string;
+  typedName: string;
+  confirmPhase: "prompt" | "type_name";
 };
 
 const desktopPermissionKeys = [
@@ -1247,6 +1258,9 @@ export default function CompanySettingsPage() {
   const [openStaffRoleUid, setOpenStaffRoleUid] = useState("");
   const [pendingOwnerTransfer, setPendingOwnerTransfer] = useState<PendingOwnerTransferState | null>(null);
   const [pendingOwnerTransferTargetUid, setPendingOwnerTransferTargetUid] = useState("");
+  const [pendingStaffRemoval, setPendingStaffRemoval] = useState<PendingStaffRemovalState | null>(null);
+  const [preparingStaffRemovalUid, setPreparingStaffRemovalUid] = useState("");
+  const [removingStaffUid, setRemovingStaffUid] = useState("");
   const [showJoinKey, setShowJoinKey] = useState(false);
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
@@ -1513,6 +1527,19 @@ export default function CompanySettingsPage() {
 
   useEffect(() => {
     if (typeof document === "undefined") return;
+    if (!pendingStaffRemoval) return;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prevHtmlOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+    };
+  }, [pendingStaffRemoval]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
     if (!openStaffRoleUid) return;
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -1567,6 +1594,12 @@ export default function CompanySettingsPage() {
     if (currentMemberRole === "owner") return true;
     const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
     return perms.some((p) => String(p).trim().toLowerCase() === "staff.change.role");
+  }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
+
+  const canRemoveStaff = useMemo(() => {
+    if (currentMemberRole === "owner") return true;
+    const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
+    return perms.some((p) => String(p).trim().toLowerCase() === "staff.remove");
   }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
 
   const canAccessCompanySettings = useMemo(() => {
@@ -1659,6 +1692,14 @@ export default function CompanySettingsPage() {
     const currentOwnerUid = toStr(pendingOwnerTransfer?.currentOwnerUid);
     return staff.filter((member) => toStr(member.uid) && toStr(member.uid) !== currentOwnerUid);
   }, [pendingOwnerTransfer?.currentOwnerUid, staff]);
+
+  const staffRemovalTransferCandidates = useMemo(() => {
+    const targetUid = toStr(pendingStaffRemoval?.uid);
+    return staff.filter((member) => {
+      const uid = toStr(member.uid);
+      return uid && uid !== targetUid;
+    });
+  }, [pendingStaffRemoval?.uid, staff]);
 
   const inviteStaffFromTopBar = async () => {
     if (!activeCompanyId || !canAddStaff || isInvitingStaff) {
@@ -1838,6 +1879,92 @@ export default function CompanySettingsPage() {
     setPendingOwnerTransfer(null);
     setPendingOwnerTransferTargetUid("");
     setSaveLabel("Saved");
+  };
+
+  const openStaffRemovalDialog = async (row: CompanyMemberOption) => {
+    const uid = toStr(row.uid);
+    const roleId = normalizeRoleKey(row.roleId || row.role);
+    if (!uid || !activeCompanyId || !canRemoveStaff || roleId === "owner") {
+      if (roleId === "owner") {
+        setSaveLabel("Owner cannot be removed from the company");
+      }
+      return;
+    }
+    setPreparingStaffRemovalUid(uid);
+    try {
+      const projects = await fetchProjects(toStr(user?.uid), [activeCompanyId]);
+      const activeProjectCount = projects.filter((project) => {
+        if (String(project.companyId || "").trim() !== activeCompanyId) return false;
+        if (String(project.assignedToUid || "").trim() !== uid) return false;
+        const status = String(project.statusLabel || project.status || "").trim().toLowerCase();
+        return status !== "complete" && status !== "completed";
+      }).length;
+      setPendingStaffRemoval({
+        uid,
+        displayName: toStr(row.displayName || row.email || row.uid),
+        roleId,
+        activeProjectCount,
+        transferToUid: "",
+        typedName: "",
+        confirmPhase: "prompt",
+      });
+    } finally {
+      setPreparingStaffRemovalUid("");
+    }
+  };
+
+  const advanceStaffRemovalConfirmation = () => {
+    if (!pendingStaffRemoval) return;
+    if (normalizeRoleKey(pendingStaffRemoval.roleId) === "owner") {
+      setSaveLabel("Owner cannot be removed from the company");
+      return;
+    }
+    if (pendingStaffRemoval.activeProjectCount > 0 && !toStr(pendingStaffRemoval.transferToUid)) {
+      setSaveLabel("Choose who to transfer active projects to");
+      return;
+    }
+    setPendingStaffRemoval((current) =>
+      current
+        ? {
+            ...current,
+            confirmPhase: "type_name",
+          }
+        : current,
+    );
+  };
+
+  const confirmStaffRemoval = async () => {
+    if (!pendingStaffRemoval || !activeCompanyId) return;
+    if (normalizeRoleKey(pendingStaffRemoval.roleId) === "owner") {
+      setSaveLabel("Owner cannot be removed from the company");
+      return;
+    }
+    if (toStr(pendingStaffRemoval.typedName) !== toStr(pendingStaffRemoval.displayName)) {
+      setSaveLabel("Type the staff member name exactly to confirm");
+      return;
+    }
+    const transferTarget = staff.find((member) => toStr(member.uid) === toStr(pendingStaffRemoval.transferToUid));
+    setRemovingStaffUid(pendingStaffRemoval.uid);
+    const result = await removeCompanyMemberDetailed(activeCompanyId, pendingStaffRemoval.uid, {
+      transferToUid: pendingStaffRemoval.activeProjectCount > 0 ? toStr(transferTarget?.uid) : "",
+      transferToName:
+        pendingStaffRemoval.activeProjectCount > 0
+          ? toStr(transferTarget?.displayName || transferTarget?.email || transferTarget?.uid)
+          : "",
+    });
+    setRemovingStaffUid("");
+    if (!result.ok) {
+      setSaveLabel(`Staff removal failed (${result.error || "unknown"})`);
+      return;
+    }
+    setStaff((prev) => prev.filter((member) => toStr(member.uid) !== pendingStaffRemoval.uid));
+    setOpenStaffRoleUid((current) => (current === pendingStaffRemoval.uid ? "" : current));
+    setPendingStaffRemoval(null);
+    setSaveLabel(
+      result.transferredProjects > 0
+        ? `Removed ${pendingStaffRemoval.displayName} and transferred ${result.transferredProjects} active projects`
+        : `Removed ${pendingStaffRemoval.displayName}`,
+    );
   };
 
   const cutlistColumnRows = useMemo(
@@ -3562,8 +3689,9 @@ export default function CompanySettingsPage() {
                     <div className="space-y-2 text-[12px]">
                       <div
                         className="grid gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]"
-                        style={{ gridTemplateColumns: "74px minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
+                        style={{ gridTemplateColumns: "32px 74px minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
                       >
+                        <p></p>
                         <p className="text-center">Icon</p>
                         <p>Name</p>
                         <p>Staff Email</p>
@@ -3574,8 +3702,30 @@ export default function CompanySettingsPage() {
                         <div
                           key={row.uid}
                           className="grid items-center gap-2"
-                          style={{ gridTemplateColumns: "74px minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
+                          style={{ gridTemplateColumns: "32px 74px minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
                         >
+                          <button
+                            type="button"
+                            onClick={() => void openStaffRemovalDialog(row)}
+                            disabled={
+                              !canRemoveStaff ||
+                              normalizeRoleKey(row.roleId || row.role) === "owner" ||
+                              preparingStaffRemovalUid === row.uid ||
+                              removingStaffUid === row.uid
+                            }
+                            title={
+                              normalizeRoleKey(row.roleId || row.role) === "owner"
+                                ? "Owner cannot be removed"
+                                : "Remove staff member"
+                            }
+                            className={`inline-flex h-7 w-7 items-center justify-center rounded-[8px] border ${
+                              normalizeRoleKey(row.roleId || row.role) === "owner"
+                                ? "cursor-not-allowed border-[#E4E7EC] bg-[#F8FAFC] opacity-50"
+                                : "border-[#F7C9CC] bg-[#FDECEC]"
+                            } ${(preparingStaffRemovalUid === row.uid || removingStaffUid === row.uid) ? "opacity-60" : ""}`}
+                          >
+                            <img src="/trash.png" alt="" className="h-3.5 w-3.5 object-contain" />
+                          </button>
                           <div className="inline-flex h-7 w-full items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white">
                             {(() => {
                               const name = toStr(row.displayName, "CU");
@@ -3991,6 +4141,146 @@ export default function CompanySettingsPage() {
                           >
                             Confirm Transfer
                           </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {pendingStaffRemoval ? (
+                    <div className="fixed inset-0 z-[1725] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close remove staff popup"
+                        onClick={() => {
+                          if (removingStaffUid) return;
+                          setPendingStaffRemoval(null);
+                        }}
+                        className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+                      />
+                      <div className="relative z-[1726] flex w-full max-w-[560px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+                        <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                            Remove Staff Member
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (removingStaffUid) return;
+                              setPendingStaffRemoval(null);
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="space-y-4 px-4 py-4">
+                          <div className="space-y-1">
+                            <p className="text-[16px] font-extrabold text-[#0F2A4A]">Are you sure?</p>
+                            <p className="text-[12px] text-[#475467]">
+                              <span className="font-bold text-[#0F2A4A]">{pendingStaffRemoval.displayName}</span>
+                              {" "}
+                              has{" "}
+                              <span className="font-bold text-[#0F2A4A]">
+                                {pendingStaffRemoval.activeProjectCount}
+                              </span>
+                              {" "}
+                              active project{pendingStaffRemoval.activeProjectCount === 1 ? "" : "s"}.
+                            </p>
+                          </div>
+                          {pendingStaffRemoval.activeProjectCount > 0 ? (
+                            <div className="space-y-1">
+                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#98A2B3]">
+                                Transfer Projects To
+                              </p>
+                              <select
+                                value={pendingStaffRemoval.transferToUid}
+                                onChange={(e) =>
+                                  setPendingStaffRemoval((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          transferToUid: toStr(e.target.value),
+                                        }
+                                      : current,
+                                  )
+                                }
+                                disabled={pendingStaffRemoval.confirmPhase === "type_name" || !!removingStaffUid}
+                                className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                              >
+                                <option value="">Choose staff member</option>
+                                {staffRemovalTransferCandidates.map((member) => (
+                                  <option key={member.uid} value={member.uid}>
+                                    {toStr(member.displayName || member.email || member.uid)}
+                                  </option>
+                                ))}
+                              </select>
+                              {!staffRemovalTransferCandidates.length ? (
+                                <p className="text-[11px] font-semibold text-[#B42318]">
+                                  There are no other staff members available to transfer these projects to.
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {pendingStaffRemoval.confirmPhase === "type_name" ? (
+                            <div className="space-y-1">
+                              <p className="text-[12px] text-[#475467]">
+                                Type{" "}
+                                <span className="font-bold text-[#0F2A4A]">{pendingStaffRemoval.displayName}</span>
+                                {" "}
+                                to remove this user from the company.
+                              </p>
+                              <input
+                                value={pendingStaffRemoval.typedName}
+                                onChange={(e) =>
+                                  setPendingStaffRemoval((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          typedName: e.target.value,
+                                        }
+                                      : current,
+                                  )
+                                }
+                                className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                                placeholder={pendingStaffRemoval.displayName}
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={() => setPendingStaffRemoval(null)}
+                            disabled={!!removingStaffUid}
+                            className="rounded-[8px] border border-[#D8DEE8] bg-white px-3 py-1.5 text-[11px] font-bold text-[#475467]"
+                          >
+                            Cancel
+                          </button>
+                          {pendingStaffRemoval.confirmPhase === "type_name" ? (
+                            <button
+                              type="button"
+                              onClick={() => void confirmStaffRemoval()}
+                              disabled={
+                                !!removingStaffUid ||
+                                toStr(pendingStaffRemoval.typedName) !== toStr(pendingStaffRemoval.displayName)
+                              }
+                              className="rounded-[8px] bg-[#B42318] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60"
+                            >
+                              {removingStaffUid ? "Removing..." : "Confirm"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={advanceStaffRemovalConfirmation}
+                              disabled={
+                                !!removingStaffUid ||
+                                (pendingStaffRemoval.activeProjectCount > 0 &&
+                                  (!pendingStaffRemoval.transferToUid || !staffRemovalTransferCandidates.length))
+                              }
+                              className="rounded-[8px] bg-[#1EA44B] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60"
+                            >
+                              Confirm
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
