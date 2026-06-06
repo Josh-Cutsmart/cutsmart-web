@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import Script from "next/script";
 import { AuthProvider } from "@/lib/auth-context";
 import "./globals.css";
 
@@ -21,26 +20,32 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function () {
+                try {
+                  var mode = localStorage.getItem("cutsmart_theme_mode");
+                  var next = String(mode || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+                  document.documentElement.setAttribute("data-theme", next);
+                  document.documentElement.style.colorScheme = next;
+                  if (document.body) {
+                    document.body.setAttribute("data-theme", next);
+                    document.body.style.colorScheme = next;
+                  } else {
+                    document.addEventListener("DOMContentLoaded", function () {
+                      document.body.setAttribute("data-theme", next);
+                      document.body.style.colorScheme = next;
+                    }, { once: true });
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
       <body className="cs-app" suppressHydrationWarning>
-        <Script id="cutsmart-theme-boot" strategy="beforeInteractive">{`
-          (function () {
-            try {
-              var mode = localStorage.getItem("cutsmart_theme_mode");
-              var next = String(mode || "").trim().toLowerCase() === "dark" ? "dark" : "light";
-              document.documentElement.setAttribute("data-theme", next);
-              document.documentElement.style.colorScheme = next;
-              if (document.body) {
-                document.body.setAttribute("data-theme", next);
-                document.body.style.colorScheme = next;
-              } else {
-                document.addEventListener("DOMContentLoaded", function () {
-                  document.body.setAttribute("data-theme", next);
-                  document.body.style.colorScheme = next;
-                }, { once: true });
-              }
-            } catch (e) {}
-          })();
-        `}</Script>
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

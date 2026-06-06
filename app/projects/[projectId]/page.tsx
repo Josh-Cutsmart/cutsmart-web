@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
@@ -42,6 +42,71 @@ import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/use
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import type { Cutlist, Project, ProjectChange, ProjectImageAnnotation, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { storage } from "@/lib/firebase";
+import {
+  addCabinetBuilderChildDrawerHeightTokenInDraft as addCabinetBuilderChildDrawerHeightTokenInDraftModel,
+  addCabinetBuilderAttachmentInDraft as addCabinetBuilderAttachmentInDraftModel,
+  addCabinetBuilderChildRowInDraft as addCabinetBuilderChildRowInDraftModel,
+  blurCabinetBuilderConfiguredFrontValueRow as blurCabinetBuilderConfiguredFrontValueRowModel,
+  confirmCabinetBuilderPendingAttachmentInDraft as confirmCabinetBuilderPendingAttachmentInDraftModel,
+  createCabinetBuilderRootDraft as createCabinetBuilderRootDraftModel,
+  ensureCabinetBuilderSelectedFrontsInDraft as ensureCabinetBuilderSelectedFrontsInDraftModel,
+  removeCabinetBuilderChildDrawerHeightTokenInDraft as removeCabinetBuilderChildDrawerHeightTokenInDraftModel,
+  removeCabinetBuilderChildRowInDraft as removeCabinetBuilderChildRowInDraftModel,
+  setCabinetBuilderSelectedFrontModeInDraft as setCabinetBuilderSelectedFrontModeInDraftModel,
+  setCabinetBuilderSelectedNewCabinetInDraft as setCabinetBuilderSelectedNewCabinetInDraftModel,
+  updateCabinetBuilderAttachmentMetaInDraft as updateCabinetBuilderAttachmentMetaInDraftModel,
+  updateCabinetBuilderAttachmentRowInDraft as updateCabinetBuilderAttachmentRowInDraftModel,
+  updateCabinetBuilderChildRowByOwnerInDraft as updateCabinetBuilderChildRowByOwnerInDraftModel,
+  updateCabinetBuilderChildDrawerHeightTokensInDraft as updateCabinetBuilderChildDrawerHeightTokensInDraftModel,
+  updateCabinetBuilderChildRowInDraft as updateCabinetBuilderChildRowInDraftModel,
+  updateCabinetBuilderConfiguredFrontCountRow as updateCabinetBuilderConfiguredFrontCountRowModel,
+  updateCabinetBuilderConfiguredFrontIndexesRow as updateCabinetBuilderConfiguredFrontIndexesRowModel,
+  updateCabinetBuilderConfiguredFrontValueRow as updateCabinetBuilderConfiguredFrontValueRowModel,
+  updateCabinetBuilderConfiguredGapRow as updateCabinetBuilderConfiguredGapRowModel,
+  updateCabinetBuilderConfiguredRowByOwnerInDraft as updateCabinetBuilderConfiguredRowByOwnerInDraftModel,
+  updateCabinetBuilderConfiguredRowInDraft as updateCabinetBuilderConfiguredRowInDraftModel,
+  updateCabinetBuilderConfiguredSideGapRow as updateCabinetBuilderConfiguredSideGapRowModel,
+  updateCabinetBuilderConfiguredSideRow as updateCabinetBuilderConfiguredSideRowModel,
+} from "@/lib/wall-builder/actions";
+import {
+  applyCabinetBuilderWallOrder as applyCabinetBuilderWallOrderModel,
+  buildCabinetBuilderDeleteMeta as buildCabinetBuilderDeleteMetaModel,
+  buildCabinetBuilderDisplayPieceLayouts as buildCabinetBuilderDisplayPieceLayoutsModel,
+  buildCabinetBuilderPreviewWallPieces as buildCabinetBuilderPreviewWallPiecesModel,
+  buildCabinetBuilderWallPieces as buildCabinetBuilderWallPiecesModel,
+  getCabinetBuilderDeleteDescendantIds as getCabinetBuilderDeleteDescendantIdsModel,
+  getCabinetBuilderPanelBaseHeight as getCabinetBuilderPanelBaseHeightModel,
+  getCabinetBuilderPanelHeightBaseline as getCabinetBuilderPanelHeightBaselineModel,
+  getCabinetBuilderLaneRawWidth as getCabinetBuilderLaneRawWidthModel,
+  getCabinetBuilderSelectedConfiguredRow as getCabinetBuilderSelectedConfiguredRowModel,
+  getCabinetBuilderSelectedEditableCabinet as getCabinetBuilderSelectedEditableCabinetModel,
+  getCabinetBuilderSelectedFrontKind as getCabinetBuilderSelectedFrontKindModel,
+  getCabinetBuilderSelectedFrontRow as getCabinetBuilderSelectedFrontRowModel,
+  getCabinetBuilderSelectedWallPiece as getCabinetBuilderSelectedWallPieceModel,
+  getCabinetBuilderWallPieceHorizontalTrack as getCabinetBuilderWallPieceHorizontalTrackModel,
+  getCabinetBuilderWallPieceRawWidth as getCabinetBuilderWallPieceRawWidthModel,
+  getCabinetBuilderWallPieceVerticalBounds as getCabinetBuilderWallPieceVerticalBoundsModel,
+  removeCabinetBuilderWallByDeleteMeta as removeCabinetBuilderWallByDeleteMetaModel,
+} from "@/lib/wall-builder/model";
+import type {
+  CabinetBuilderAttachedDisplayRow,
+  CabinetBuilderAttachedDisplayRowSource,
+  CabinetBuilderAttachmentDraft,
+  CabinetBuilderAttachmentKind,
+  CabinetBuilderChildDraft,
+  CabinetBuilderDeleteMeta,
+  CabinetBuilderDisplayPieceLayout,
+  CabinetBuilderDraft,
+  CabinetBuilderEditableCabinetSelection,
+  CabinetBuilderPanelHeightMode,
+  CabinetBuilderPanelSpanMode,
+  CabinetBuilderRowKind,
+  CabinetBuilderWallPiece,
+  CutlistDraftRow,
+  CutlistEntryDraft,
+  CutlistRow,
+  DoorModeValue,
+} from "@/lib/wall-builder/model";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const QUOTE_SNAPSHOT_RENDERER_VERSION = "html-v1";
@@ -959,47 +1024,8 @@ type ProductionFormState = {
 type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: boolean };
 type OrderHingeRow = { id: string; name: string; qty: string };
 
-type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock" | "print";
+type ProductionNav = "overview" | "cutlist" | "drawings" | "nesting" | "cnc" | "order" | "unlock" | "print";
 type SalesNav = "initial" | "items" | "quote" | "specifications";
-type DoorModeValue = "" | "manual" | "door" | "drawer";
-type CutlistRow = {
-  id: string;
-  room: string;
-  partType: string;
-  board: string;
-  name: string;
-  doorMode?: DoorModeValue;
-  doorFrontCount?: string;
-  doorTopGap?: string;
-  doorBetweenGap?: string;
-  doorSideLeft?: "front" | "panel";
-  doorSideRight?: "front" | "panel";
-  doorSideLeftGap?: string;
-  doorSideRightGap?: string;
-  doorFrontWidths?: string[];
-  doorFrontWidthManual?: boolean[];
-  doorFrontHeights?: string[];
-  doorFrontHeightManual?: boolean[];
-  height: string;
-  width: string;
-  depth: string;
-  quantity: string;
-  clashing: string;
-  clashLeft?: string;
-  clashRight?: string;
-  fixedShelf?: string;
-  adjustableShelf?: string;
-  fixedShelfDrilling?: string;
-  adjustableShelfDrilling?: string;
-  hingesUp?: string[];
-  hingesDown?: string[];
-  information: string;
-  grain: boolean;
-  grainValue: string;
-  includeInNesting?: boolean;
-  parentName?: string;
-};
-type CutlistDraftRow = CutlistRow;
 type CabinetryDerivedPiece = {
   key: string;
   partName: string;
@@ -3183,6 +3209,16 @@ function splitClashing(raw: string): { left: string; right: string } {
   return { left, right };
 }
 
+function parseConfiguredFrontIndexesFromName(name: string): number[] {
+  const match = String(name || "").match(/\(([^)]+)\)\s*$/);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => value - 1);
+}
+
 function joinClashing(left: string, right: string): string {
   return [String(left || "").trim(), String(right || "").trim()].filter(Boolean).join(" ");
 }
@@ -4365,6 +4401,10 @@ function serializeCutlistRowsForStorage(
         Information: row.information,
         Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
         includeInNesting: row.includeInNesting !== false,
+        parentName: String(row.parentName ?? ""),
+        cabinetBuilderRowKind: row.cabinetBuilderRowKind ?? "",
+        cabinetBuilderContainerId: String(row.cabinetBuilderContainerId ?? ""),
+        cabinetBuilderData: row.cabinetBuilderData ?? null,
       };
   });
 }
@@ -4406,8 +4446,49 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         grain: Boolean(row.grain),
         grainValue: String(row.grainValue ?? ""),
         includeInNesting: row.includeInNesting !== false,
+        parentName: String(row.parentName ?? ""),
+        cabinetBuilderRowKind: String(row.cabinetBuilderRowKind ?? ""),
+        cabinetBuilderContainerId: String(row.cabinetBuilderContainerId ?? ""),
+        cabinetBuilderData: row.cabinetBuilderData ?? null,
       })),
   );
+}
+
+type SavedCabinetBuilderDraft = {
+  id: string;
+  name: string;
+  room: string;
+  updatedAt: string;
+  draft: CabinetBuilderDraft;
+};
+
+function normalizeSavedCabinetBuilderDrafts(raw: unknown): SavedCabinetBuilderDraft[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item, index) => {
+      const row = item as Record<string, unknown>;
+      const draft = row.draft && typeof row.draft === "object" ? (row.draft as CabinetBuilderDraft) : null;
+      if (!draft) return null;
+      return {
+        id: String(row.id ?? `wall_draft_${index + 1}`).trim() || `wall_draft_${index + 1}`,
+        name: String(row.name ?? draft.row?.name ?? "Wall").trim() || "Wall",
+        room: String(row.room ?? "Project Cutlist").trim() || "Project Cutlist",
+        updatedAt: String(row.updatedAt ?? "").trim() || new Date().toISOString(),
+        draft,
+      };
+    })
+    .filter(Boolean) as SavedCabinetBuilderDraft[];
+}
+
+function serializeSavedCabinetBuilderDraftsForStorage(drafts: SavedCabinetBuilderDraft[]) {
+  return drafts.map((draft) => ({
+    id: draft.id,
+    name: draft.name,
+    room: draft.room,
+    updatedAt: draft.updatedAt,
+    draft: JSON.parse(JSON.stringify(draft.draft)) as CabinetBuilderDraft,
+  }));
 }
 
 function normalizeCompanySalesProducts(raw: unknown): string[] {
@@ -4785,7 +4866,58 @@ export default function ProjectDetailsPage() {
   const [nestingCollapsedGroups, setNestingCollapsedGroups] = useState<Record<string, boolean>>({});
   const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
   const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>(createEmptyCutlistEntry());
+  const [cabinetBuilderDraft, setCabinetBuilderDraft] = useState<CabinetBuilderDraft | null>(null);
+  const [savedCabinetBuilderDrafts, setSavedCabinetBuilderDrafts] = useState<SavedCabinetBuilderDraft[]>([]);
+  const [activeCabinetBuilderSavedDraftId, setActiveCabinetBuilderSavedDraftId] = useState("");
+  const [cabinetBuilderWallName, setCabinetBuilderWallName] = useState("");
+  const [cabinetBuilderWallCreated, setCabinetBuilderWallCreated] = useState(false);
+  const [cabinetBuilderCreateOpen, setCabinetBuilderCreateOpen] = useState(false);
+  const [cabinetBuilderEditOpen, setCabinetBuilderEditOpen] = useState(false);
+  const [cabinetBuilderEditTab, setCabinetBuilderEditTab] = useState("edit");
+  const [cabinetBuilderDoorsOpen, setCabinetBuilderDoorsOpen] = useState(false);
+  const [cabinetBuilderDrawersOpen, setCabinetBuilderDrawersOpen] = useState(false);
+  const [cabinetBuilderDeleteWallConfirmOpen, setCabinetBuilderDeleteWallConfirmOpen] = useState(false);
+  const [cabinetBuilderDeleteConfirmOpen, setCabinetBuilderDeleteConfirmOpen] = useState(false);
+  const [cabinetBuilderDeleteTargetOverride, setCabinetBuilderDeleteTargetOverride] = useState<CabinetBuilderDeleteMeta | null>(null);
+  const [cabinetBuilderAttachmentMenuSide, setCabinetBuilderAttachmentMenuSide] = useState<"left" | "right" | null>(null);
+  const [cabinetBuilderAttachmentMenuAlign, setCabinetBuilderAttachmentMenuAlign] = useState<"top" | "bottom">("bottom");
+  const [cabinetBuilderPendingAttachment, setCabinetBuilderPendingAttachment] = useState<{ side: "left" | "right"; kind: CabinetBuilderAttachmentKind; align: "top" | "bottom" } | null>(null);
+  const [cabinetBuilderPendingNewCabinet, setCabinetBuilderPendingNewCabinet] = useState(false);
+  const [cabinetBuilderPendingPanelHeightMode, setCabinetBuilderPendingPanelHeightMode] = useState<"base" | "tall">("base");
+  const [cabinetBuilderPendingPanelSpanMode, setCabinetBuilderPendingPanelSpanMode] = useState<"floorToCeiling" | "floorToTopOfCab" | "bottomToCeiling" | "bottomToTopOfCab">("bottomToTopOfCab");
+  const [cabinetBuilderPendingPanelHeightError, setCabinetBuilderPendingPanelHeightError] = useState("");
+  const [cabinetBuilderSelectedWallId, setCabinetBuilderSelectedWallId] = useState("main");
+  const [cabinetBuilderHoveredWallId, setCabinetBuilderHoveredWallId] = useState("");
+  const [cabinetBuilderSelectedHoverActive, setCabinetBuilderSelectedHoverActive] = useState(false);
+  const [cabinetBuilderEditingAttachmentId, setCabinetBuilderEditingAttachmentId] = useState("");
+  const [cabinetBuilderDraggingWallId, setCabinetBuilderDraggingWallId] = useState("");
+  const [cabinetBuilderDragActive, setCabinetBuilderDragActive] = useState(false);
+  const [cabinetBuilderMeasureMode, setCabinetBuilderMeasureMode] = useState(false);
+  const [cabinetBuilderMeasurePoints, setCabinetBuilderMeasurePoints] = useState<Array<{ x: number; y: number }>>([]);
+  const [cabinetBuilderDrawingZoom, setCabinetBuilderDrawingZoom] = useState(1);
+  const [cabinetBuilderEditingGapPill, setCabinetBuilderEditingGapPill] = useState<null | {
+    pillId: string;
+    ownerId: string;
+    kind: "doorsRow" | "drawersRow";
+    key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap";
+    value: string;
+  }>(null);
+  const [cabinetBuilderSelectedPartsExpandedKey, setCabinetBuilderSelectedPartsExpandedKey] = useState("");
+  const [cabinetBuilderDragPointerX, setCabinetBuilderDragPointerX] = useState<number | null>(null);
+  const [cabinetBuilderDragViewport, setCabinetBuilderDragViewport] = useState<{
+    viewWidth: number;
+    viewHeight: number;
+    paddingX: number;
+    paddingY: number;
+  } | null>(null);
+  const cabinetBuilderAutosaveSnapshotRef = useRef("");
+  const cabinetBuilderDrawingViewportRef = useRef<HTMLDivElement | null>(null);
+  const cabinetBuilderDragStartPointerXRef = useRef<number | null>(null);
+  const cabinetBuilderHoverClearTimeoutRef = useRef<number | null>(null);
+  const cabinetBuilderMeasureLastRightClickAtRef = useRef(0);
+  const [pendingCabinetBuilderRow, setPendingCabinetBuilderRow] = useState<CutlistEntryDraft>(createEmptyCutlistEntry());
   const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
+  const [cutlistEntryMode, setCutlistEntryMode] = useState<"manual" | "wallBuilder">("manual");
   const [cutlistDraftRows, setCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
   const [cutlistDraftInitialized, setCutlistDraftInitialized] = useState(false);
   const [cutlistCellWarnings, setCutlistCellWarnings] = useState<Record<string, Record<string, string>>>({});
@@ -4815,6 +4947,7 @@ export default function ProjectDetailsPage() {
   const cutlistActivityHydratedProjectIdRef = useRef("");
   const lastPersistedCutlistActivityJsonRef = useRef("");
     const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
+    const [collapsedCabinetBuilderAttachedGroups, setCollapsedCabinetBuilderAttachedGroups] = useState<Record<string, boolean>>({});
     const [initialCollapsedCutlistGroups, setInitialCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
     const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
     const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
@@ -6254,6 +6387,42 @@ export default function ProjectDetailsPage() {
   const isDoorPartType = (partType: string) =>
     Boolean(partTypeDoorMap[String(partType || "").trim().toLowerCase()]);
 
+  const partTypePanelMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      const isPanel = category === "panel" || Boolean(item.panel ?? item.isPanel ?? false);
+      out[name.trim().toLowerCase()] = isPanel;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isPanelPartType = (partType: string) =>
+    Boolean(partTypePanelMap[String(partType || "").trim().toLowerCase()]);
+
+  const partTypeExtraMap = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const name = toStr(item.name);
+      if (!name) continue;
+      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
+      const isExtra = category === "extra" || Boolean(item.extra ?? item.isExtra ?? false);
+      out[name.trim().toLowerCase()] = isExtra;
+    }
+    return out;
+  }, [companyDoc?.partTypes]);
+
+  const isExtraPartType = (partType: string) =>
+    Boolean(partTypeExtraMap[String(partType || "").trim().toLowerCase()]);
+
   const isConfiguredDoorRowLike = (row: { partType?: unknown; doorMode?: unknown } | null | undefined) =>
     !!row && isDoorPartType(String(row.partType || "")) && isConfiguredDoorModeValue(row.doorMode);
 
@@ -6622,6 +6791,48 @@ export default function ProjectDetailsPage() {
       window.removeEventListener("pointercancel", onPointerUpWindow);
     };
   }, []);
+  useEffect(
+    () => () => {
+      if (cabinetBuilderHoverClearTimeoutRef.current != null) {
+        window.clearTimeout(cabinetBuilderHoverClearTimeoutRef.current);
+        cabinetBuilderHoverClearTimeoutRef.current = null;
+      }
+    },
+    [],
+  );
+  const clearCabinetBuilderHoverClearTimeout = useCallback(() => {
+    if (cabinetBuilderHoverClearTimeoutRef.current != null) {
+      window.clearTimeout(cabinetBuilderHoverClearTimeoutRef.current);
+      cabinetBuilderHoverClearTimeoutRef.current = null;
+    }
+  }, []);
+  const markCabinetBuilderWallHovered = useCallback(
+    (wallId: string) => {
+      clearCabinetBuilderHoverClearTimeout();
+      setCabinetBuilderHoveredWallId(wallId);
+      if (wallId === cabinetBuilderSelectedWallId) {
+        setCabinetBuilderSelectedHoverActive(true);
+      }
+    },
+    [cabinetBuilderSelectedWallId, clearCabinetBuilderHoverClearTimeout],
+  );
+  const scheduleCabinetBuilderWallHoverClear = useCallback(
+    (wallId: string) => {
+      clearCabinetBuilderHoverClearTimeout();
+      cabinetBuilderHoverClearTimeoutRef.current = window.setTimeout(() => {
+        setCabinetBuilderHoveredWallId((prev) => (prev === wallId ? "" : prev));
+        if (wallId === cabinetBuilderSelectedWallId) {
+          setCabinetBuilderSelectedHoverActive(false);
+        }
+        cabinetBuilderHoverClearTimeoutRef.current = null;
+      }, 3000);
+    },
+    [cabinetBuilderSelectedWallId, clearCabinetBuilderHoverClearTimeout],
+  );
+  const holdCabinetBuilderSelectedHover = useCallback(() => {
+    clearCabinetBuilderHoverClearTimeout();
+    setCabinetBuilderSelectedHoverActive(true);
+  }, [clearCabinetBuilderHoverClearTimeout]);
   const scrollCutlistActivityToLatest = () => {
     recalcCutlistActivityBounds(true);
   };
@@ -10143,10 +10354,12 @@ export default function ProjectDetailsPage() {
       if (!project?.id) {
         setProductionCutlist(null);
         setCutlistRows([]);
+        setSavedCabinetBuilderDrafts([]);
         return;
       }
       const projectRecord = project as unknown as Record<string, unknown>;
       const cutlistRecord = (projectRecord.cutlist ?? null) as Record<string, unknown> | null;
+      setSavedCabinetBuilderDrafts(normalizeSavedCabinetBuilderDrafts(cutlistRecord?.wallBuilderDrafts));
       const directRowsRaw = Array.isArray(cutlistRecord?.rows) ? (cutlistRecord?.rows as unknown[]) : [];
       if (directRowsRaw.length) {
         const mapped = directRowsRaw.map((row, idx) => {
@@ -10199,10 +10412,20 @@ export default function ProjectDetailsPage() {
             adjustableShelfDrilling: normalizeDrillingValue(item.adjustableShelfDrilling ?? item["Adjustable Shelf Drilling"]),
             hingesUp: normalizeDoorHingeValues(item.hingesUp ?? item.HingesUp ?? item.hingeUp ?? item.HingeUp),
             hingesDown: normalizeDoorHingeValues(item.hingesDown ?? item.HingesDown ?? item.hingeDown ?? item.HingeDown),
-            information: String(item.Information ?? item.information ?? item.info ?? ""),
-            grain: grainParsed.grain,
-            grainValue: grainParsed.grainValue,
-            includeInNesting,
+              information: String(item.Information ?? item.information ?? item.info ?? ""),
+              grain: grainParsed.grain,
+              grainValue: grainParsed.grainValue,
+              includeInNesting,
+              parentName: String(item.parentName ?? "").trim() || undefined,
+              cabinetBuilderRowKind:
+                item.cabinetBuilderRowKind === "container" || item.cabinetBuilderRowKind === "generated"
+                  ? (item.cabinetBuilderRowKind as CabinetBuilderRowKind)
+                  : undefined,
+              cabinetBuilderContainerId: String(item.cabinetBuilderContainerId ?? "").trim() || undefined,
+              cabinetBuilderData:
+                item.cabinetBuilderData && typeof item.cabinetBuilderData === "object"
+                  ? (item.cabinetBuilderData as CabinetBuilderDraft)
+                  : null,
           };
         });
         const mappedJson = serializeCutlistRowsSnapshot(mapped);
@@ -10267,6 +10490,16 @@ export default function ProjectDetailsPage() {
           grain: grainParsed.grain,
           grainValue: grainParsed.grainValue,
           includeInNesting: true,
+          parentName: String(legacy.parentName ?? "").trim() || undefined,
+          cabinetBuilderRowKind:
+            legacy.cabinetBuilderRowKind === "container" || legacy.cabinetBuilderRowKind === "generated"
+              ? (legacy.cabinetBuilderRowKind as CabinetBuilderRowKind)
+              : undefined,
+          cabinetBuilderContainerId: String(legacy.cabinetBuilderContainerId ?? "").trim() || undefined,
+          cabinetBuilderData:
+            legacy.cabinetBuilderData && typeof legacy.cabinetBuilderData === "object"
+              ? (legacy.cabinetBuilderData as CabinetBuilderDraft)
+              : null,
         };
       });
       const mappedJson = serializeCutlistRowsSnapshot(mapped);
@@ -10304,9 +10537,15 @@ export default function ProjectDetailsPage() {
           cutlistPartTypeFilter?: string;
           cutlistSearch?: string;
           cutlistEntryRoom?: string;
+          cutlistEntryMode?: "manual" | "wallBuilder";
           activeCutlistPartType?: string;
           cutlistEntry?: Partial<Omit<CutlistRow, "id" | "room">>;
           cutlistDraftRows?: Array<Partial<CutlistDraftRow>>;
+          cabinetBuilderDraft?: CabinetBuilderDraft | null;
+          activeCabinetBuilderSavedDraftId?: string;
+          cabinetBuilderWallName?: string;
+          cabinetBuilderWallCreated?: boolean;
+          cabinetBuilderSelectedWallId?: string;
           initialCutlistRoomFilter?: string;
           initialCutlistPartTypeFilter?: string;
           initialCutlistSearch?: string;
@@ -10319,6 +10558,7 @@ export default function ProjectDetailsPage() {
           nestingCollapsedGroups?: Record<string, boolean>;
           cncCollapsedGroups?: Record<string, boolean>;
           collapsedCutlistGroups?: Record<string, boolean>;
+          collapsedCabinetBuilderAttachedGroups?: Record<string, boolean>;
           expandedCabinetryRows?: Record<string, boolean>;
           expandedDrawerRows?: Record<string, boolean>;
           expandedDoorRows?: Record<string, boolean>;
@@ -10335,6 +10575,11 @@ export default function ProjectDetailsPage() {
         }
         if (typeof parsed.cutlistEntryRoom === "string" && parsed.cutlistEntryRoom.trim()) {
           setCutlistEntryRoom(parsed.cutlistEntryRoom);
+        }
+        if (parsed.cutlistEntryMode === "manual" || parsed.cutlistEntryMode === "wallBuilder") {
+          setCutlistEntryMode(parsed.cutlistEntryMode);
+        } else if (parsed.cabinetBuilderDraft) {
+          setCutlistEntryMode("wallBuilder");
         }
         if (typeof parsed.activeCutlistPartType === "string") {
           setActiveCutlistPartType(parsed.activeCutlistPartType);
@@ -10405,6 +10650,21 @@ export default function ProjectDetailsPage() {
             });
           setCutlistDraftRows(restoredDrafts);
           setCutlistDraftInitialized(true);
+        }
+        if (parsed.cabinetBuilderDraft && typeof parsed.cabinetBuilderDraft === "object") {
+          setCabinetBuilderDraft(parsed.cabinetBuilderDraft);
+        }
+        if (typeof parsed.activeCabinetBuilderSavedDraftId === "string") {
+          setActiveCabinetBuilderSavedDraftId(parsed.activeCabinetBuilderSavedDraftId);
+        }
+        if (typeof parsed.cabinetBuilderWallName === "string") {
+          setCabinetBuilderWallName(parsed.cabinetBuilderWallName);
+        }
+        if (typeof parsed.cabinetBuilderWallCreated === "boolean") {
+          setCabinetBuilderWallCreated(parsed.cabinetBuilderWallCreated);
+        }
+        if (typeof parsed.cabinetBuilderSelectedWallId === "string" && parsed.cabinetBuilderSelectedWallId.trim()) {
+          setCabinetBuilderSelectedWallId(parsed.cabinetBuilderSelectedWallId);
         }
         if (typeof parsed.initialCutlistRoomFilter === "string" && parsed.initialCutlistRoomFilter.trim()) {
           setInitialCutlistRoomFilter(parsed.initialCutlistRoomFilter);
@@ -10501,6 +10761,9 @@ export default function ProjectDetailsPage() {
         if (parsed.collapsedCutlistGroups && typeof parsed.collapsedCutlistGroups === "object") {
           setCollapsedCutlistGroups(parsed.collapsedCutlistGroups);
         }
+        if (parsed.collapsedCabinetBuilderAttachedGroups && typeof parsed.collapsedCabinetBuilderAttachedGroups === "object") {
+          setCollapsedCabinetBuilderAttachedGroups(parsed.collapsedCabinetBuilderAttachedGroups);
+        }
         if (parsed.expandedCabinetryRows && typeof parsed.expandedCabinetryRows === "object") {
           setExpandedCabinetryRows(parsed.expandedCabinetryRows);
         }
@@ -10518,16 +10781,21 @@ export default function ProjectDetailsPage() {
     }
   }, [cutlistUiStateStorageKey]);
 
-  useEffect(() => {
-    if (!cutlistUiStateStorageKey || !cutlistUiStateReady) return;
+  const cutlistUiStatePayloadJson = useMemo(() => {
     const payload = {
       cutlistRoomFilter,
       cutlistPartTypeFilter,
       cutlistSearch,
       cutlistEntryRoom,
+      cutlistEntryMode,
       activeCutlistPartType,
       cutlistEntry,
       cutlistDraftRows,
+      cabinetBuilderDraft,
+      activeCabinetBuilderSavedDraftId,
+      cabinetBuilderWallName,
+      cabinetBuilderWallCreated,
+      cabinetBuilderSelectedWallId,
       initialCutlistRoomFilter,
       initialCutlistPartTypeFilter,
       initialCutlistSearch,
@@ -10540,25 +10808,26 @@ export default function ProjectDetailsPage() {
       nestingCollapsedGroups,
       cncCollapsedGroups,
       collapsedCutlistGroups,
+      collapsedCabinetBuilderAttachedGroups,
       expandedCabinetryRows,
       expandedDrawerRows,
       expandedDoorRows,
     };
-    try {
-      window.localStorage.setItem(cutlistUiStateStorageKey, JSON.stringify(payload));
-    } catch {
-      // Ignore storage failures in private/incognito/browser-restricted modes.
-    }
+    return JSON.stringify(payload);
   }, [
-    cutlistUiStateStorageKey,
-    cutlistUiStateReady,
     cutlistRoomFilter,
     cutlistPartTypeFilter,
     cutlistSearch,
     cutlistEntryRoom,
+    cutlistEntryMode,
     activeCutlistPartType,
     cutlistEntry,
     cutlistDraftRows,
+    cabinetBuilderDraft,
+    activeCabinetBuilderSavedDraftId,
+    cabinetBuilderWallName,
+    cabinetBuilderWallCreated,
+    cabinetBuilderSelectedWallId,
     initialCutlistRoomFilter,
     initialCutlistPartTypeFilter,
     initialCutlistSearch,
@@ -10571,9 +10840,23 @@ export default function ProjectDetailsPage() {
     nestingCollapsedGroups,
     cncCollapsedGroups,
     collapsedCutlistGroups,
+    collapsedCabinetBuilderAttachedGroups,
     expandedCabinetryRows,
     expandedDrawerRows,
     expandedDoorRows,
+  ]);
+
+  useEffect(() => {
+    if (!cutlistUiStateStorageKey || !cutlistUiStateReady) return;
+    try {
+      window.localStorage.setItem(cutlistUiStateStorageKey, cutlistUiStatePayloadJson);
+    } catch {
+      // Ignore storage failures in private/incognito/browser-restricted modes.
+    }
+  }, [
+    cutlistUiStateStorageKey,
+    cutlistUiStateReady,
+    cutlistUiStatePayloadJson,
   ]);
 
   useEffect(() => {
@@ -11903,6 +12186,15 @@ export default function ProjectDetailsPage() {
     }
     return out;
   };
+  const cabinetBuilderWarningKeyForSource = (source: CabinetBuilderAttachedDisplayRowSource) => {
+    if (source.kind === "configuredFront") {
+      return `cab_builder:${source.ownerId}:${source.frontKind}:${source.indexes.join(",") || "all"}`;
+    }
+    if (source.kind === "child") {
+      return `cab_builder:${source.ownerId}:child:${source.childId}`;
+    }
+    return `cab_builder:${source.ownerId}:${source.kind}`;
+  };
   const sanitizeConfiguredDoorIssues = (
     row: Partial<CutlistRow>,
     issues: CutlistValidationIssue[],
@@ -12003,19 +12295,32 @@ export default function ProjectDetailsPage() {
     });
   };
 
-  const persistCutlistRows = async (nextRows: CutlistRow[]) => {
+  const persistCutlistContainer = async (
+    nextRows: CutlistRow[],
+    nextSavedWallBuilderDrafts: SavedCabinetBuilderDraft[] = savedCabinetBuilderDrafts,
+  ) => {
     if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
+    const wallBuilderDrafts = serializeSavedCabinetBuilderDraftsForStorage(nextSavedWallBuilderDrafts);
+    const currentCutlist =
+      project.cutlist && typeof project.cutlist === "object"
+        ? ({ ...(project.cutlist as Record<string, unknown>) } as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+    const nextCutlist = {
+      ...currentCutlist,
+      rows,
+      wallBuilderDrafts,
+    };
     pendingCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
     isPersistingCutlistRowsRef.current = true;
     try {
-      const ok = await updateProjectPatch(project, { cutlist: { rows } });
+      const ok = await updateProjectPatch(project, { cutlist: nextCutlist });
       if (ok) {
         setProject((prevProject) =>
           prevProject
             ? {
                 ...prevProject,
-                cutlist: { rows },
+                cutlist: nextCutlist,
               }
             : prevProject,
         );
@@ -12027,6 +12332,9 @@ export default function ProjectDetailsPage() {
       isPersistingCutlistRowsRef.current = false;
     }
   };
+  const persistCutlistRows = async (nextRows: CutlistRow[]) => persistCutlistContainer(nextRows);
+  const persistSavedCabinetBuilderDrafts = async (nextDrafts: SavedCabinetBuilderDraft[]) =>
+    persistCutlistContainer(cutlistRows, nextDrafts);
   const persistInitialCutlistRows = async (nextRows: CutlistRow[]) => {
     if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
@@ -12048,6 +12356,67 @@ export default function ProjectDetailsPage() {
   };
 
   const addCutlistRow = async () => {
+    if (cutlistEntryMode === "wallBuilder") {
+      if (!cabinetBuilderDraft) {
+        const warnings = { single: { partType: "Cabinet builder: Create a cabinet drawing first." } };
+        setCutlistCellWarnings(warnings);
+        flashCutlistWarningCells(warnings);
+        return;
+      }
+      const generatedGroups = buildCabinetBuilderRowsForAdd();
+      const generatedRows = generatedGroups.flatMap((group) => group.rows.map((entry) => entry.row));
+      if (!generatedRows.length) {
+        const warnings = { single: { partType: "Cabinet builder: Add a cabinet, fronts, panels, or child parts first." } };
+        setCutlistCellWarnings(warnings);
+        flashCutlistWarningCells(warnings);
+        return;
+      }
+      const nextWarnings: Record<string, Record<string, string>> = {};
+      const generatedIssues = generatedGroups.flatMap((group) =>
+        group.rows.flatMap(({ row, source }) => {
+          const issues = sanitizeConfiguredDoorIssues(
+            row,
+            validateCutlistRowInput(row, String(row.partType || "").trim(), cutlistRowLabelFor(row, group.ownerName)),
+          );
+          if (issues.length) {
+            nextWarnings[cabinetBuilderWarningKeyForSource(source)] = makeWarningMapForRow(issues);
+          }
+          return issues;
+        }),
+      );
+      if (generatedIssues.length) {
+        setCutlistCellWarnings(nextWarnings);
+        flashCutlistWarningCells(nextWarnings);
+        const firstOwnerId = generatedGroups.find((group) =>
+          group.rows.some(({ source }) => nextWarnings[cabinetBuilderWarningKeyForSource(source)]),
+        )?.ownerId;
+        if (firstOwnerId) setCabinetBuilderSelectedWallId(firstOwnerId);
+        logCutlistValidationIssues(generatedIssues, cutlistEntry.partType);
+      }
+      setCutlistCellWarnings({});
+      const savedRows = generatedGroups.flatMap((group) =>
+        group.rows.map(({ row }) => ({
+          ...row,
+          id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          parentName: String(row.parentName || group.ownerName).trim() || group.ownerName,
+          cabinetBuilderRowKind: undefined,
+          cabinetBuilderContainerId: undefined,
+          cabinetBuilderData: null,
+        })),
+      );
+      const nextRows = [...cutlistRows, ...savedRows];
+      setCutlistRows(nextRows);
+      logCutlistActivity(`${cabinetBuilderDraft.row.name || "Cabinet"} builder added to ${cutlistEntryRoom || "Project Cutlist"}`, {
+        partType: experimentalCabinetBuilderPartType,
+      });
+      setCabinetBuilderDraft(null);
+      setActiveCabinetBuilderSavedDraftId("");
+      setCabinetBuilderWallName("");
+      setCabinetBuilderWallCreated(false);
+      setCutlistEntry(createEmptyCutlistEntry());
+      await persistCutlistRows(nextRows);
+      return;
+    }
     const row = buildEffectiveProductionCutlistRow(
       cutlistEntry,
       cutlistEntryRoom || "Project Cutlist",
@@ -12076,6 +12445,13 @@ export default function ProjectDetailsPage() {
   };
 
   const addDraftRowForPartType = (partType: string) => {
+    const normalizedPartType = String(partType || "").trim().toLowerCase();
+    if (cutlistEntryMode === "wallBuilder" && (normalizedPartType === "cabinet" || isExperimentalCabinetBuilderPartType(partType))) {
+      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+      setCutlistEntry((prev) => ({ ...prev, partType: experimentalCabinetBuilderPartType }));
+      openCabinetBuilderCreate();
+      return;
+    }
     setActiveCutlistPartType(partType);
     setCutlistDraftRows((prev) => {
       const currentRoom = cutlistEntryRoom || defaultCutlistRoom;
@@ -12084,11 +12460,23 @@ export default function ProjectDetailsPage() {
         ? { board: last.board, room: last.room, quantity: "" }
         : { board: cutlistBoardOptions[0] ?? "", quantity: "" };
       setCutlistCompactDraftDeckIndex(prev.length);
-      return [...prev, createDraftCutlistRow(partType, currentRoom, seed)];
+      return [
+        ...prev,
+        createDraftCutlistRow(partType, currentRoom, {
+          ...seed,
+          doorMode: cutlistEntryMode === "manual" && isDoorPartType(partType) ? "manual" : undefined,
+        }),
+      ];
     });
   };
 
   const onSelectCutlistEntryPartType = (partType: string) => {
+    const normalizedPartType = String(partType || "").trim().toLowerCase();
+    if (cutlistEntryMode === "wallBuilder" && (normalizedPartType === "cabinet" || isExperimentalCabinetBuilderPartType(partType))) {
+      openCabinetBuilderCreate();
+    } else {
+      setCabinetBuilderCreateOpen(false);
+    }
     setCutlistEntry((prev) => {
       const defaults = defaultClashingForPartType(partType, prev.board);
       const clashLeft = defaults.left;
@@ -12097,7 +12485,7 @@ export default function ProjectDetailsPage() {
       return {
         ...prev,
         partType,
-        doorMode: isDoor ? "" : "",
+        doorMode: isDoor && cutlistEntryMode === "manual" ? "manual" : "",
         doorFrontCount: "",
         doorTopGap: "",
         doorBetweenGap: "",
@@ -12739,6 +13127,7 @@ export default function ProjectDetailsPage() {
     borderColor,
     fieldBg,
     fieldText,
+    layout = "default",
   }: {
     mode: DoorModeValue;
     frontCount: string;
@@ -12749,12 +13138,62 @@ export default function ProjectDetailsPage() {
     borderColor: string;
     fieldBg: string;
     fieldText: string;
+    layout?: "default" | "split-tabs";
   }) => {
     const countLabel = mode === "drawer" ? "Drawer" : "Door";
+    const frontModeOptions = ["door", "drawer"] as const;
+    if (layout === "split-tabs") {
+      return (
+        <div className="space-y-3">
+          <div
+            className="grid grid-cols-2 overflow-hidden rounded-[10px] border"
+            style={{ borderColor }}
+          >
+            {frontModeOptions.map((option, index) => {
+              const isActive = mode === option;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onModeChange(option)}
+                  className={`h-11 px-3 text-center text-[13px] font-semibold transition disabled:opacity-55 ${
+                    index === 0 ? "border-r" : ""
+                  }`}
+                  style={{
+                    borderColor,
+                    backgroundColor: isActive ? borderColor : fieldBg,
+                    color: fieldText,
+                  }}
+                >
+                  {option === "door" ? "Doors" : "Drawers"}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex justify-end">
+            <div className="min-w-[160px]">
+              <BoardPillDropdown
+                value={frontCount || "1"}
+                options={Array.from({ length: 6 }, (_, index) => String(index + 1))}
+                disabled={disabled}
+                bg={fieldBg}
+                border={borderColor}
+                text={fieldText}
+                size="default"
+                getSize={() => ""}
+                getLabel={(v) => `${v} ${countLabel}`}
+                onChange={(value) => onFrontCountChange(value)}
+              />
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="space-y-2 rounded-[8px] border px-2 py-2" style={{ borderColor }}>
         <div className="flex flex-wrap items-center gap-4 text-[11px] font-semibold" style={{ color: textColor }}>
-          {(["manual", "door", "drawer"] as const).map((option) => (
+          {frontModeOptions.map((option) => (
             <label key={option} className="inline-flex items-center gap-2">
               <input
                 type="checkbox"
@@ -12762,7 +13201,8 @@ export default function ProjectDetailsPage() {
                 checked={mode === option}
                 onChange={() => onModeChange(option)}
               />
-              <span>{option === "manual" ? "Manual" : option === "door" ? "Door" : "Drawer"}</span>
+              <span>{option === "door" ? "Door" : "Drawer"}</span>
+              
             </label>
           ))}
           {mode === "door" || mode === "drawer" ? (
@@ -12816,6 +13256,7 @@ export default function ProjectDetailsPage() {
     borderColor,
     fieldBg,
     fieldText,
+    fillAvailableSpace = false,
   }: {
     mode: "door" | "drawer";
     frontCount: string;
@@ -12844,6 +13285,7 @@ export default function ProjectDetailsPage() {
     borderColor: string;
     fieldBg: string;
     fieldText: string;
+    fillAvailableSpace?: boolean;
   }) => {
     const count = Number.parseInt(frontCount || "", 10) || 0;
     if (count <= 0) return null;
@@ -12889,15 +13331,31 @@ export default function ProjectDetailsPage() {
             normalizedWidthManual,
           ).widths
         : [];
-    const svgWidth = isCompactProjectViewport ? 620 : 430;
-    const svgHeight = isCompactProjectViewport ? 460 : 360;
-    const frameX = isCompactProjectViewport ? 24 : 34;
-    const frameY = isCompactProjectViewport ? 10 : 36;
-    const maxFrameW = isCompactProjectViewport ? 520 : 300;
-    const maxFrameH = isCompactProjectViewport ? 380 : 246;
+    const useExpandedDesktopDesigner = fillAvailableSpace && !isCompactProjectViewport;
+    const popupDesktopSafeArea = useExpandedDesktopDesigner
+      ? {
+          left: 62,
+          right: 96,
+          top: 56,
+          bottom: 44,
+        }
+      : null;
+    const svgWidth = isCompactProjectViewport ? 620 : useExpandedDesktopDesigner ? 640 : 430;
+    const svgHeight = isCompactProjectViewport ? 460 : useExpandedDesktopDesigner ? 430 : 360;
+    const baseFrameX = isCompactProjectViewport ? 24 : 34;
+    const maxFrameW = isCompactProjectViewport
+      ? 520
+      : useExpandedDesktopDesigner
+        ? Math.max(260, svgWidth - (popupDesktopSafeArea?.left ?? 0) - (popupDesktopSafeArea?.right ?? 0))
+        : 300;
+    const maxFrameH = isCompactProjectViewport
+      ? 380
+      : useExpandedDesktopDesigner
+        ? Math.max(220, svgHeight - (popupDesktopSafeArea?.top ?? 0) - (popupDesktopSafeArea?.bottom ?? 0))
+        : 246;
     const fallbackFrameW = 230;
     const fallbackFrameH = 210;
-    const mmToPxBaseScale = isCompactProjectViewport ? 1 : 0.45;
+    const mmToPxBaseScale = isCompactProjectViewport ? 1 : useExpandedDesktopDesigner ? 0.9 : 0.45;
     const scaledFromRealSize =
       totalWidth > 0 && totalHeight > 0
         ? (() => {
@@ -12910,6 +13368,16 @@ export default function ProjectDetailsPage() {
         : { width: fallbackFrameW, height: fallbackFrameH };
     const frameW = scaledFromRealSize.width;
     const frameH = scaledFromRealSize.height;
+    const frameX =
+      isCompactProjectViewport || !useExpandedDesktopDesigner
+        ? baseFrameX
+        : (popupDesktopSafeArea?.left ?? 0) + Math.max(0, (maxFrameW - frameW) / 2) + 16;
+    const frameY =
+      isCompactProjectViewport
+        ? 10
+        : useExpandedDesktopDesigner
+          ? (popupDesktopSafeArea?.top ?? 0) + Math.max(0, (maxFrameH - frameH) / 2)
+          : 36;
     const availableHeightPx = Math.max(16, frameH - 8);
     const availableWidthPx = Math.max(16, frameW - 8);
     const VISUAL_GAP_SCALE = 3;
@@ -13339,6 +13807,7 @@ export default function ProjectDetailsPage() {
     };
     const resolvedTopGapInput = resolveGapInputAgainstDrawerOverlays({ leftPx: topInputLeftPx, topPx: topInputTopPx }, svgGapInputWidth, svgGapInputHeight);
     const resolvedBetweenGapInputs = betweenGapInputs.map((input) => ({ ...input, ...resolveGapInputAgainstDrawerOverlays(input, svgGapInputWidth, svgGapInputHeight) }));
+    const drawerMiddleGapInputLeftPx = resolvedTopGapInput.leftPx;
     const svgCanvasWidth = isCompactProjectViewport
       ? Math.max(
           frameX + frameW + 8,
@@ -13362,9 +13831,9 @@ export default function ProjectDetailsPage() {
     return (
       <div className="space-y-3">
         <div className="px-1 py-1">
-          <div className={`flex w-full items-start gap-2 ${isCompactProjectViewport ? "max-w-none" : "max-w-[620px]"}`}>
+          <div className={`flex w-full items-start gap-2 ${isCompactProjectViewport || useExpandedDesktopDesigner ? "max-w-none" : "max-w-[620px]"}`}>
           <div
-            className={`relative -mt-2 w-full ${isCompactProjectViewport ? "max-w-none" : "flex-1 h-[360px] max-w-[430px]"}`}
+            className={`relative -mt-2 ${isCompactProjectViewport ? "w-full max-w-none" : useExpandedDesktopDesigner ? "mx-auto h-[400px] w-full max-w-none px-[30px]" : "flex-1 h-[360px] w-full max-w-[430px]"}`}
             style={
               isCompactProjectViewport
                 ? { aspectRatio: `${svgCanvasWidth} / ${svgCanvasHeight}`, marginTop: "20px" }
@@ -13397,7 +13866,7 @@ export default function ProjectDetailsPage() {
                   <line
                     x1={frontRightX}
                     y1={input.gapCenterY}
-                    x2={input.leftPx + compactGreenGapInputOffsetX}
+                    x2={drawerMiddleGapInputLeftPx + compactGreenGapInputOffsetX}
                     y2={input.gapCenterY}
                     stroke={horizontalGapLineColor}
                     strokeWidth={input.gapThickness}
@@ -13492,7 +13961,11 @@ export default function ProjectDetailsPage() {
             {resolvedBetweenGapInputs.map((input) => (
               <foreignObject
                 key={`gap_input_${input.key}`}
-                x={mode === "door" ? input.gapCenterX - svgGapInputWidth / 2 : input.leftPx + compactGreenGapInputOffsetX}
+                x={
+                  mode === "door"
+                    ? input.gapCenterX - svgGapInputWidth / 2
+                    : drawerMiddleGapInputLeftPx + compactGreenGapInputOffsetX
+                }
                 y={mode === "door" ? input.topPx + compactRedGapInputOffsetY : input.gapCenterY - svgGapInputHeight / 2}
                 width={svgGapInputWidth}
                 height={svgGapInputHeight}
@@ -13866,9 +14339,37 @@ export default function ProjectDetailsPage() {
     await persistCutlistRows(nextRows);
   };
 
+  const expandCabinetBuilderLinkedRowIds = useCallback(
+    (rowIds: string[], rows: CutlistRow[]) => {
+      const expanded = new Set(rowIds.map((id) => String(id || "").trim()).filter(Boolean));
+      const containerIds = new Set<string>();
+      for (const row of rows) {
+        const rowId = String(row.id || "").trim();
+        if (!expanded.has(rowId)) continue;
+        if (row.cabinetBuilderRowKind === "container") {
+          containerIds.add(rowId);
+        }
+        if (row.cabinetBuilderRowKind === "generated") {
+          const linkedContainerId = String(row.cabinetBuilderContainerId || "").trim();
+          if (linkedContainerId) containerIds.add(linkedContainerId);
+        }
+      }
+      for (const row of rows) {
+        const rowId = String(row.id || "").trim();
+        const linkedContainerId = String(row.cabinetBuilderContainerId || "").trim();
+        if (containerIds.has(rowId) || (linkedContainerId && containerIds.has(linkedContainerId))) {
+          expanded.add(rowId);
+        }
+      }
+      return expanded;
+    },
+    [],
+  );
+
   const removeCutlistRow = async (id: string) => {
+    const removeIds = expandCabinetBuilderLinkedRowIds([id], cutlistRows);
     const removed = cutlistRows.find((row) => row.id === id);
-    const next = cutlistRows.filter((row) => row.id !== id);
+    const next = cutlistRows.filter((row) => !removeIds.has(String(row.id || "").trim()));
     setCutlistRows(next);
     if (removed) {
       logCutlistActivity(`${removed.name || "Part"} removed`, {
@@ -13876,6 +14377,3210 @@ export default function ProjectDetailsPage() {
       });
     }
     await persistCutlistRows(next);
+  };
+
+  const openCabinetBuilderDoors = () => {
+    setCabinetBuilderDraft((prev) => {
+      if (!prev) return prev;
+      const selectedWall = getCabinetBuilderSelectedWallPiece(prev);
+      if (!selectedWall) return prev;
+      const createRow = () =>
+        createConfiguredCabinetFrontRow("door", {
+          name: selectedWall.row.name,
+          height: selectedWall.row.height,
+          width: selectedWall.row.width,
+          board: selectedWall.row.board,
+        });
+      if (selectedWall.isMain) {
+        return {
+          ...prev,
+          drawersRow: null,
+          doorsRow: prev.doorsRow ? prev.doorsRow : createRow(),
+        };
+      }
+      return {
+        ...prev,
+        attachments: prev.attachments.map((attachment) =>
+          attachment.id === selectedWall.id
+            ? {
+                ...attachment,
+                drawersRow: null,
+                doorsRow: attachment.doorsRow ? attachment.doorsRow : createRow(),
+              }
+            : attachment,
+        ),
+      };
+    });
+    setCabinetBuilderDoorsOpen(true);
+    setCabinetBuilderDrawersOpen(false);
+  };
+
+  const openCabinetBuilderDrawers = () => {
+    setCabinetBuilderDraft((prev) => {
+      if (!prev) return prev;
+      const selectedWall = getCabinetBuilderSelectedWallPiece(prev);
+      if (!selectedWall) return prev;
+      const createRow = () =>
+        createConfiguredCabinetFrontRow("drawer", {
+          name: selectedWall.row.name,
+          height: selectedWall.row.height,
+          width: selectedWall.row.width,
+          board: selectedWall.row.board,
+        });
+      if (selectedWall.isMain) {
+        return {
+          ...prev,
+          doorsRow: null,
+          drawersRow: prev.drawersRow ? prev.drawersRow : createRow(),
+        };
+      }
+      return {
+        ...prev,
+        attachments: prev.attachments.map((attachment) =>
+          attachment.id === selectedWall.id
+            ? {
+                ...attachment,
+                doorsRow: null,
+                drawersRow: attachment.drawersRow ? attachment.drawersRow : createRow(),
+              }
+            : attachment,
+        ),
+      };
+    });
+    setCabinetBuilderDrawersOpen(true);
+    setCabinetBuilderDoorsOpen(false);
+  };
+
+  const updateCabinetBuilderMainRow = (patch: Partial<CutlistEntryDraft>) => {
+    setCabinetBuilderDraft((prev) => {
+      if (!prev) return prev;
+      const selectedWall = getCabinetBuilderSelectedWallPiece(prev);
+      if (!selectedWall || (!selectedWall.isMain && selectedWall.kind !== "cabinet")) return prev;
+      const applyPatch = (target: {
+        row: CutlistEntryDraft;
+        doorsRow?: CutlistEntryDraft | null;
+        drawersRow?: CutlistEntryDraft | null;
+        childRows?: CabinetBuilderChildDraft[];
+      }) => {
+        const nextRow = { ...target.row, ...patch };
+        const inheritedName = String(nextRow.name || "").trim();
+        const nextDoors =
+          target.doorsRow
+            ? {
+                ...target.doorsRow,
+                name: inheritedName,
+                height: String(patch.height ?? target.doorsRow.height ?? ""),
+                width: String(patch.width ?? target.doorsRow.width ?? ""),
+                board: String(patch.board ?? target.doorsRow.board ?? ""),
+              }
+            : null;
+        const nextDrawers =
+          target.drawersRow
+            ? {
+                ...target.drawersRow,
+                name: inheritedName,
+                height: String(patch.height ?? target.drawersRow.height ?? ""),
+                width: String(patch.width ?? target.drawersRow.width ?? ""),
+                board: String(patch.board ?? target.drawersRow.board ?? ""),
+              }
+            : null;
+        const nextChildren = (target.childRows ?? []).map((child) => ({
+          ...child,
+          row: { ...child.row, name: inheritedName || child.row.name },
+        }));
+        return { nextRow, nextDoors, nextDrawers, nextChildren };
+      };
+      if (selectedWall.isMain) {
+        const { nextRow, nextDoors, nextDrawers, nextChildren } = applyPatch(prev);
+        return {
+          ...prev,
+          row: nextRow,
+          doorsRow: nextDoors,
+          drawersRow: nextDrawers,
+          childRows: nextChildren,
+          attachments: prev.attachments.map((attachment) => ({
+            ...attachment,
+            row: { ...attachment.row, name: cabinetBuilderSideName(attachment.side, String(nextRow.name || "").trim()) },
+          })),
+        };
+      }
+      return {
+        ...prev,
+        attachments: prev.attachments.map((attachment) => {
+          if (attachment.id !== selectedWall.id) return attachment;
+          const { nextRow, nextDoors, nextDrawers, nextChildren } = applyPatch(attachment);
+          return {
+            ...attachment,
+            row: nextRow,
+            doorsRow: nextDoors,
+            drawersRow: nextDrawers,
+            childRows: nextChildren,
+          };
+        }),
+      };
+    });
+  };
+
+  const setCabinetBuilderSelectedNewCabinet = (value: boolean) => {
+    setCabinetBuilderDraft((prev) =>
+      prev ? setCabinetBuilderSelectedNewCabinetInDraftModel(prev, cabinetBuilderSelectedWallId, value) : prev,
+    );
+  };
+
+  const updateCabinetBuilderConfiguredRow = (
+    kind: "doorsRow" | "drawersRow",
+    updater: (row: CutlistEntryDraft) => CutlistEntryDraft,
+  ) => {
+    setCabinetBuilderDraft((prev) =>
+      prev ? updateCabinetBuilderConfiguredRowInDraftModel(prev, cabinetBuilderSelectedWallId, kind, updater) : prev,
+    );
+  };
+
+  const updateCabinetBuilderConfiguredFrontCount = (kind: "doorsRow" | "drawersRow", value: string) => {
+    updateCabinetBuilderConfiguredRow(kind, (row) =>
+      updateCabinetBuilderConfiguredFrontCountRowModel(row, value, {
+        normalizeDoorModeValue,
+        normalizeDoorFrontCountValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        rebalanceDoorFrontWidths,
+        rebalanceDoorFrontHeights,
+      }),
+    );
+  };
+
+  const updateCabinetBuilderConfiguredGap = (
+    kind: "doorsRow" | "drawersRow",
+    key: "doorTopGap" | "doorBetweenGap",
+    value: string,
+  ) => {
+    updateCabinetBuilderConfiguredRow(kind, (row) =>
+      updateCabinetBuilderConfiguredGapRowModel(row, key, value, {
+        numericDecimalText,
+        normalizeDoorModeValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        rebalanceDoorFrontWidths,
+        rebalanceDoorFrontHeights,
+      }),
+    );
+  };
+
+  const updateCabinetBuilderConfiguredFrontValue = (
+    kind: "doorsRow" | "drawersRow",
+    index: number,
+    value: string,
+  ) => {
+    updateCabinetBuilderConfiguredRow(kind, (row) =>
+      updateCabinetBuilderConfiguredFrontValueRowModel(row, index, value, {
+        normalizeDoorModeValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        numericDimensionText,
+      }),
+    );
+  };
+
+  const blurCabinetBuilderConfiguredFrontValue = (kind: "doorsRow" | "drawersRow", index: number) => {
+    void index;
+    updateCabinetBuilderConfiguredRow(kind, (row) =>
+      blurCabinetBuilderConfiguredFrontValueRowModel(row, {
+        normalizeDoorModeValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        rebalanceDoorFrontWidths,
+        rebalanceDoorFrontHeights,
+      }),
+    );
+  };
+
+  const updateCabinetBuilderConfiguredSide = (
+    kind: "doorsRow" | "drawersRow",
+    key: "doorSideLeft" | "doorSideRight",
+    value: "front" | "panel",
+  ) => {
+    updateCabinetBuilderConfiguredRow(kind, (row) =>
+      updateCabinetBuilderConfiguredSideRowModel(row, key, value),
+    );
+  };
+
+  const updateCabinetBuilderConfiguredSideGap = (
+    kind: "doorsRow" | "drawersRow",
+    key: "doorSideLeftGap" | "doorSideRightGap",
+    value: string,
+  ) => {
+    updateCabinetBuilderConfiguredRow(kind, (row) =>
+      updateCabinetBuilderConfiguredSideGapRowModel(row, key, value, {
+        numericDecimalText,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        rebalanceDoorFrontWidths,
+      }),
+    );
+  };
+  const updateCabinetBuilderConfiguredGapByOwner = (
+    ownerId: string,
+    kind: "doorsRow" | "drawersRow",
+    key: "doorTopGap" | "doorBetweenGap",
+    value: string,
+  ) => {
+    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
+      updateCabinetBuilderConfiguredGapRowModel(row, key, value, {
+        numericDecimalText,
+        normalizeDoorModeValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        rebalanceDoorFrontWidths,
+        rebalanceDoorFrontHeights,
+      }),
+    );
+  };
+  const updateCabinetBuilderConfiguredSideGapByOwner = (
+    ownerId: string,
+    kind: "doorsRow" | "drawersRow",
+    key: "doorSideLeftGap" | "doorSideRightGap",
+    value: string,
+  ) => {
+    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
+      updateCabinetBuilderConfiguredSideGapRowModel(row, key, value, {
+        numericDecimalText,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        rebalanceDoorFrontWidths,
+      }),
+    );
+  };
+  const startCabinetBuilderOverlayGapEdit = useCallback(
+    (
+      pillId: string,
+      ownerId: string,
+      kind: "doorsRow" | "drawersRow",
+      key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap",
+      currentValue: number,
+    ) => {
+      if (productionReadOnly) return;
+      setCabinetBuilderSelectedWallId(ownerId);
+      setCabinetBuilderSelectedHoverActive(true);
+      setCabinetBuilderEditingGapPill({
+        pillId,
+        ownerId,
+        kind,
+        key,
+        value: formatDoorFrontHeightValue(currentValue),
+      });
+    },
+    [
+      productionReadOnly,
+    ],
+  );
+  const commitCabinetBuilderOverlayGapEdit = useCallback(() => {
+    if (!cabinetBuilderEditingGapPill) return;
+    const nextValue = numericDecimalText(cabinetBuilderEditingGapPill.value);
+    if (
+      cabinetBuilderEditingGapPill.key === "doorTopGap" ||
+      cabinetBuilderEditingGapPill.key === "doorBetweenGap"
+    ) {
+      updateCabinetBuilderConfiguredGapByOwner(
+        cabinetBuilderEditingGapPill.ownerId,
+        cabinetBuilderEditingGapPill.kind,
+        cabinetBuilderEditingGapPill.key,
+        nextValue,
+      );
+    } else {
+      updateCabinetBuilderConfiguredSideGapByOwner(
+        cabinetBuilderEditingGapPill.ownerId,
+        cabinetBuilderEditingGapPill.kind,
+        cabinetBuilderEditingGapPill.key,
+        nextValue,
+      );
+    }
+    setCabinetBuilderEditingGapPill(null);
+  }, [
+    cabinetBuilderEditingGapPill,
+    numericDecimalText,
+    updateCabinetBuilderConfiguredGapByOwner,
+    updateCabinetBuilderConfiguredSideGapByOwner,
+  ]);
+  const cancelCabinetBuilderOverlayGapEdit = useCallback(() => {
+    setCabinetBuilderEditingGapPill(null);
+  }, []);
+
+  const updateCabinetBuilderChildRow = (childId: string, patch: Partial<CutlistEntryDraft>) => {
+    setCabinetBuilderDraft((prev) => {
+      if (!prev) return prev;
+      const applyPatchToRow = (row: CutlistEntryDraft) => {
+        const next = { ...row, ...patch };
+        if (isClassicDrawerRowLike(next)) {
+          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
+          next.height = formatDrawerHeightTokens(tokens);
+          next.quantity = String(Math.max(1, tokens.length));
+        }
+        return next;
+      };
+      return updateCabinetBuilderChildRowInDraftModel(prev, cabinetBuilderSelectedWallId, childId, applyPatchToRow);
+    });
+  };
+
+  const removeCabinetBuilderChildRow = (childId: string) => {
+    setCabinetBuilderDraft((prev) =>
+      prev ? removeCabinetBuilderChildRowInDraftModel(prev, cabinetBuilderSelectedWallId, childId) : prev,
+    );
+  };
+
+  const updateCabinetBuilderAttachmentRow = (attachmentId: string, patch: Partial<CutlistEntryDraft>) => {
+    setCabinetBuilderDraft((prev) =>
+      prev ? updateCabinetBuilderAttachmentRowInDraftModel(prev, attachmentId, patch) : prev,
+    );
+  };
+  const updateCabinetBuilderAttachmentMeta = (
+    attachmentId: string,
+    patch: Partial<Pick<CabinetBuilderAttachmentDraft, "panelHeightMode" | "panelSpanMode">>,
+  ) => {
+    setCabinetBuilderDraft((prev) =>
+      prev ? updateCabinetBuilderAttachmentMetaInDraftModel(prev, attachmentId, patch) : prev,
+    );
+  };
+  const updateCabinetBuilderWallPieceRowById = (ownerId: string, patch: Partial<CutlistEntryDraft>) => {
+    if (ownerId === "main") {
+      setCabinetBuilderSelectedWallId("main");
+      updateCabinetBuilderMainRow(patch);
+      return;
+    }
+    updateCabinetBuilderAttachmentRow(ownerId, patch);
+  };
+  const updateCabinetBuilderChildRowByOwner = (ownerId: string, childId: string, patch: Partial<CutlistEntryDraft>) => {
+    setCabinetBuilderDraft((prev) => {
+      if (!prev) return prev;
+      const applyPatchToRow = (row: CutlistEntryDraft) => {
+        const next = { ...row, ...patch };
+        if (isClassicDrawerRowLike(next)) {
+          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
+          next.height = formatDrawerHeightTokens(tokens);
+          next.quantity = String(Math.max(1, tokens.length));
+        }
+        return next;
+      };
+      return updateCabinetBuilderChildRowByOwnerInDraftModel(prev, ownerId, childId, applyPatchToRow);
+    });
+  };
+  const updateCabinetBuilderChildDrawerHeightTokens = (childId: string, tokens: string[]) => {
+    setCabinetBuilderDraft((prev) =>
+      prev
+        ? updateCabinetBuilderChildDrawerHeightTokensInDraftModel(prev, cabinetBuilderSelectedWallId, childId, tokens, {
+            formatDrawerHeightTokens,
+            parseDrawerHeightTokens,
+          })
+        : prev,
+    );
+  };
+  const addCabinetBuilderChildDrawerHeightToken = (childId: string, token: string) => {
+    setCabinetBuilderDraft((prev) =>
+      prev
+        ? addCabinetBuilderChildDrawerHeightTokenInDraftModel(prev, cabinetBuilderSelectedWallId, childId, token, {
+            formatDrawerHeightTokens,
+            parseDrawerHeightTokens,
+          })
+        : prev,
+    );
+  };
+  const removeCabinetBuilderChildDrawerHeightToken = (childId: string, token: string) => {
+    setCabinetBuilderDraft((prev) =>
+      prev
+        ? removeCabinetBuilderChildDrawerHeightTokenInDraftModel(prev, cabinetBuilderSelectedWallId, childId, token, {
+            formatDrawerHeightTokens,
+            parseDrawerHeightTokens,
+          })
+        : prev,
+    );
+  };
+  const updateCabinetBuilderConfiguredRowByOwner = (
+    ownerId: string,
+    kind: "doorsRow" | "drawersRow",
+    updater: (row: CutlistEntryDraft) => CutlistEntryDraft,
+  ) => {
+    setCabinetBuilderDraft((prev) =>
+      prev ? updateCabinetBuilderConfiguredRowByOwnerInDraftModel(prev, ownerId, kind, updater) : prev,
+    );
+  };
+  const updateCabinetBuilderConfiguredFrontIndexesByOwner = (
+    ownerId: string,
+    kind: "doorsRow" | "drawersRow",
+    indexes: number[],
+    value: string,
+  ) => {
+    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
+      updateCabinetBuilderConfiguredFrontIndexesRowModel(row, indexes, value, {
+        normalizeDoorModeValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        numericDimensionText,
+      }),
+    );
+  };
+  const blurCabinetBuilderConfiguredFrontIndexesByOwner = (
+    ownerId: string,
+    kind: "doorsRow" | "drawersRow",
+  ) => {
+    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
+      blurCabinetBuilderConfiguredFrontValueRowModel(row, {
+        normalizeDoorModeValue,
+        normalizeDoorFrontWidths,
+        normalizeDoorFrontWidthManual,
+        normalizeDoorFrontHeights,
+        normalizeDoorFrontHeightManual,
+        rebalanceDoorFrontWidths,
+        rebalanceDoorFrontHeights,
+      }),
+    );
+  };
+  const getCabinetBuilderListedAttachments = useCallback((draft: CabinetBuilderDraft) => {
+    const listedAttachments = draft.attachments.filter(
+      (attachment) =>
+        attachment.kind === "panel" ||
+        Boolean(attachment.newCabinet) ||
+        Boolean(attachment.doorsRow || attachment.drawersRow || (attachment.childRows?.length ?? 0) > 0),
+    );
+    const mainHasPartRows = Boolean(draft.doorsRow || draft.drawersRow || (draft.childRows?.length ?? 0) > 0);
+    if (!mainHasPartRows) {
+      return listedAttachments;
+    }
+    const mainAttachmentLike: CabinetBuilderAttachmentDraft = {
+      id: "main",
+      side: "left",
+      position: 0,
+      kind: "cabinet",
+      newCabinet: draft.newCabinet,
+      row: draft.row,
+      doorsRow: draft.doorsRow,
+      drawersRow: draft.drawersRow,
+      childRows: draft.childRows,
+    };
+    return [mainAttachmentLike, ...listedAttachments];
+  }, []);
+  const getCabinetBuilderAttachmentPartRows = useCallback((attachment: CabinetBuilderAttachmentDraft): CabinetBuilderAttachedDisplayRow[] => {
+    const rows: CabinetBuilderAttachedDisplayRow[] = [];
+    if (attachment.newCabinet) {
+      rows.push({
+        row: { ...attachment.row, name: attachment.row.name || "Cabinet" },
+        source: attachment.kind === "panel"
+          ? { kind: "panelSelf", ownerId: attachment.id }
+          : { kind: "cabinetSelf", ownerId: attachment.id },
+      });
+    } else if (attachment.kind === "panel") {
+      rows.push({
+        row: { ...attachment.row, name: attachment.row.name || "Panel" },
+        source: { kind: "panelSelf", ownerId: attachment.id },
+      });
+    }
+    if (attachment.doorsRow) {
+      const sourceRow = { ...attachment.doorsRow, name: attachment.row.name } as CutlistRow;
+      const derivedPieces = buildConfiguredDoorListSubrows(sourceRow);
+      if (derivedPieces.length) {
+        for (const piece of derivedPieces) {
+          rows.push({
+            row: {
+              ...createEmptyCutlistEntry(),
+              partType: attachment.doorsRow.partType,
+              board: attachment.doorsRow.board,
+              name: piece.partName,
+              height: piece.height,
+              width: piece.width,
+              depth: piece.depth,
+              quantity: piece.quantity,
+              clashLeft: piece.clashLeft,
+              clashRight: piece.clashRight,
+              clashing: joinClashing(piece.clashLeft, piece.clashRight),
+              grainValue: String(piece.grainValue || ""),
+              grain: Boolean(String(piece.grainValue || "").trim()),
+              information: attachment.doorsRow.information ?? "",
+            },
+            source: {
+              kind: "configuredFront",
+              ownerId: attachment.id,
+              frontKind: "doorsRow",
+              indexes: parseConfiguredFrontIndexesFromName(piece.partName),
+            },
+          });
+        }
+      } else {
+        rows.push({
+          row: { ...attachment.doorsRow, name: attachment.row.name },
+          source: { kind: "configuredFront", ownerId: attachment.id, frontKind: "doorsRow", indexes: [] },
+        });
+      }
+    }
+    if (attachment.drawersRow) {
+      const sourceRow = { ...attachment.drawersRow, name: attachment.row.name } as CutlistRow;
+      const derivedPieces = buildConfiguredDoorListSubrows(sourceRow);
+      if (derivedPieces.length) {
+        for (const piece of derivedPieces) {
+          rows.push({
+            row: {
+              ...createEmptyCutlistEntry(),
+              partType: attachment.drawersRow.partType,
+              board: attachment.drawersRow.board,
+              name: piece.partName,
+              height: piece.height,
+              width: piece.width,
+              depth: piece.depth,
+              quantity: piece.quantity,
+              clashLeft: piece.clashLeft,
+              clashRight: piece.clashRight,
+              clashing: joinClashing(piece.clashLeft, piece.clashRight),
+              grainValue: String(piece.grainValue || ""),
+              grain: Boolean(String(piece.grainValue || "").trim()),
+              information: attachment.drawersRow.information ?? "",
+            },
+            source: {
+              kind: "configuredFront",
+              ownerId: attachment.id,
+              frontKind: "drawersRow",
+              indexes: parseConfiguredFrontIndexesFromName(piece.partName),
+            },
+          });
+        }
+      } else {
+        rows.push({
+          row: { ...attachment.drawersRow, name: attachment.row.name },
+          source: { kind: "configuredFront", ownerId: attachment.id, frontKind: "drawersRow", indexes: [] },
+        });
+      }
+    }
+    for (const child of attachment.childRows ?? []) {
+      rows.push({
+        row: { ...child.row, name: child.row.name || attachment.row.name },
+        source: { kind: "child", ownerId: attachment.id, childId: child.id },
+      });
+    }
+    return rows;
+  }, [buildConfiguredDoorListSubrows]);
+  const cabinetBuilderShellBg = "#FFFDF8";
+  const cabinetBuilderShellBorder = "#D8DEE8";
+  const cabinetBuilderShellText = "#1F2937";
+  const cabinetBuilderFieldBg = "#FFFFFF";
+  const cabinetBuilderFieldBorder = "#D8DEE8";
+  const renderCabinetBuilderToolbar = () => (
+    <div className="flex flex-wrap items-center gap-2 px-0">
+      <button
+        type="button"
+        disabled={productionReadOnly || (!cabinetBuilderWallCreated && !cabinetBuilderDraft)}
+        onClick={() => void startNewCabinetBuilderWall()}
+        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-50"
+        style={{
+          borderColor: cabinetBuilderFieldBorder,
+          backgroundColor: cabinetBuilderFieldBg,
+          color: cabinetBuilderShellText,
+        }}
+      >
+        <Plus size={14} />
+        <span>New Wall</span>
+      </button>
+      <button
+        type="button"
+        disabled={productionReadOnly || (!cabinetBuilderWallCreated && !cabinetBuilderDraft)}
+        onClick={() => setCabinetBuilderDeleteWallConfirmOpen(true)}
+        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-50"
+        style={{
+          borderColor: "#F4B5B5",
+          backgroundColor: "#FCEAEA",
+          color: "#C62828",
+        }}
+      >
+        <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
+        <span>Delete Wall</span>
+      </button>
+      <button
+        type="button"
+        disabled={!cabinetBuilderDraft}
+        onClick={toggleCabinetBuilderMeasureMode}
+        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-50"
+        style={{
+          borderColor: cabinetBuilderMeasureMode ? "#B7E4CF" : cabinetBuilderFieldBorder,
+          backgroundColor: cabinetBuilderMeasureMode ? "#EAF7EF" : cabinetBuilderFieldBg,
+          color: cabinetBuilderShellText,
+          boxShadow: cabinetBuilderMeasureMode ? "0 6px 18px rgba(20,83,45,0.08)" : "none",
+        }}
+      >
+        <img src="/ruler.png" alt="" className="h-4 w-4 object-contain" />
+        <span>Ruler</span>
+      </button>
+      {cabinetBuilderMeasureMode ? (
+        <span className="text-[12px] font-medium" style={{ color: projectPalette.textSoft }}>
+          {cabinetBuilderMeasurePoints.length >= 2
+            ? "Select again to start a new measurement."
+            : cabinetBuilderMeasurePoints.length === 1
+              ? "Select point B on the drawing."
+              : "Select point A on the drawing."}
+        </span>
+      ) : null}
+    </div>
+  );
+  const renderCabinetBuilderSelectedPartsPanel = (draft: CabinetBuilderDraft) => {
+    const selectedWall = getCabinetBuilderSelectedWallPiece(draft);
+    if (!selectedWall) return null;
+    if (!selectedWall.isMain && selectedWall.kind !== "cabinet") {
+      return (
+        <div className="w-full max-w-[360px] rounded-[12px] border p-3" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: "#FFFFFF" }}>
+          <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Selected Cabinet Parts</p>
+          <div className="mt-3 min-h-[84px]" />
+        </div>
+      );
+    }
+    const attachmentLike: CabinetBuilderAttachmentDraft = {
+      id: selectedWall.id,
+      side: selectedWall.side ?? "left",
+      position: selectedWall.position,
+      parentWallId: selectedWall.parentWallId,
+      kind: selectedWall.isMain ? "cabinet" : "cabinet",
+      newCabinet: selectedWall.newCabinet,
+      row: selectedWall.row,
+      doorsRow: selectedWall.doorsRow,
+      drawersRow: selectedWall.drawersRow,
+      childRows: selectedWall.childRows,
+    };
+    const rows = getCabinetBuilderAttachmentPartRows(attachmentLike);
+    const groupedRows = rows.reduce(
+      (acc, displayRow) => {
+        const partType = String(displayRow.row.partType || "Part").trim() || "Part";
+        const existing = acc.find((group) => group.partType === partType);
+        if (existing) {
+          existing.rows.push(displayRow);
+        } else {
+          acc.push({ partType, rows: [displayRow] });
+        }
+        return acc;
+      },
+      [] as Array<{ partType: string; rows: CabinetBuilderAttachedDisplayRow[] }>,
+    );
+    return (
+      <div className="w-full max-w-[360px] rounded-[12px] border p-3" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: "#FFFFFF" }}>
+        <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Selected Cabinet Parts</p>
+        <p className="mt-1 truncate text-[14px] font-bold text-[#111827]">{selectedWall.row.name || "Cabinet"}</p>
+        <div className="mt-3 space-y-2">
+          {groupedRows.length ? (
+            groupedRows.map((group) => {
+              const rowColor = partTypeColors[group.partType] ?? "#E2E8F0";
+              const expandKey = `${selectedWall.id}:${group.partType}`;
+              const expanded = cabinetBuilderSelectedPartsExpandedKey === expandKey;
+              return (
+                <div key={`cab_selected_parts_group_${expandKey}`} className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCabinetBuilderSelectedPartsExpandedKey((prev) => (prev === expandKey ? "" : expandKey))
+                    }
+                    className="inline-flex w-full items-center justify-between rounded-[999px] px-3 py-2 text-left"
+                    style={{ backgroundColor: lightenHex(rowColor, 0.26), color: "#000000" }}
+                  >
+                    <span className="text-[12px] font-medium">{group.partType}</span>
+                    <span className="text-[11px] text-[#475569]">{group.rows.length}</span>
+                  </button>
+                  {expanded ? (
+                    <div className="space-y-2">
+                      {group.rows.map((displayRow, index) => {
+                        const row = displayRow.row;
+                        return (
+                          <div
+                            key={`cab_selected_parts_${expandKey}_${displayRow.source.kind}_${index}`}
+                            className="rounded-[10px] border px-3 py-2"
+                            style={{ borderColor: darkenHex(rowColor, 0.12), backgroundColor: lightenHex(rowColor, 0.16) }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="min-w-0 break-words text-[12px] font-semibold text-[#111827]">{row.name || selectedWall.row.name || "-"}</p>
+                              <span className="shrink-0 text-[11px] text-[#475569]">
+                                {row.quantity || "1"} x
+                              </span>
+                            </div>
+                            <p className="mt-1 break-words text-[11px] text-[#475569]">
+                              {row.height || "-"} H x {row.width || "-"} W{row.depth ? ` x ${row.depth} D` : ""}
+                            </p>
+                            <p className="mt-1 break-words text-[11px] text-[#475569]">{boardDisplayLabel(row.board) || "-"}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })
+          ) : (
+            <p className="text-[12px] text-[#64748B]">No parts added to this cabinet yet.</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+  const renderCabinetBuilderAttachedPartsList = (
+    draft: CabinetBuilderDraft,
+    opts: {
+      wrapperBorder: string;
+      wrapperBg: string;
+      buttonBorder: string;
+      buttonBg: string;
+      buttonText: string;
+    },
+  ) => {
+    const wallPieces = buildCabinetBuilderWallPieces(draft);
+    const cabinetPieces = wallPieces.filter((piece) => piece.isMain || piece.kind === "cabinet");
+    const groups = cabinetPieces
+      .map((piece) => {
+        const rows: CabinetBuilderAttachedDisplayRow[] = [];
+        const attachmentLike: CabinetBuilderAttachmentDraft = {
+          id: piece.id,
+          side: "left",
+          position: piece.position,
+          parentWallId: piece.parentWallId,
+          kind: piece.isMain ? "cabinet" : (piece.kind as CabinetBuilderAttachmentKind),
+          newCabinet: piece.newCabinet,
+          row: piece.row,
+          doorsRow: piece.doorsRow,
+          drawersRow: piece.drawersRow,
+          childRows: piece.childRows,
+        };
+        rows.push(...getCabinetBuilderAttachmentPartRows(attachmentLike));
+        draft.attachments
+          .filter((attachment) => attachment.kind === "panel" && (attachment.parentWallId || "main") === piece.id)
+          .forEach((panelAttachment) => {
+            rows.push({
+              row: { ...panelAttachment.row, name: panelAttachment.row.name || piece.row.name || "Panel" },
+              source: { kind: "panelSelf", ownerId: panelAttachment.id },
+            });
+          });
+        return {
+          id: piece.id,
+          row: piece.row,
+          isMain: piece.isMain,
+          rows,
+        };
+      })
+      .filter((group) => group.rows.length > 0);
+    if (!groups.length) return null;
+
+    return (
+      <div className="space-y-3">
+        <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Attached Parts</p>
+        <div className="space-y-3">
+          {groups.map((group) => {
+            const attachmentColor = partTypeColors[group.row.partType || ""] ?? "#E2E8F0";
+            const attachmentText = isLightHex(attachmentColor) ? "#1F2937" : "#F8FAFC";
+            const collapsed = Boolean(collapsedCabinetBuilderAttachedGroups[group.id]);
+            const groupShowsGrain = group.rows.some(({ row }) =>
+              productionBoardAllowsGrainForValue(String(row.board || "").trim()),
+            );
+            const collapsedPartTypePills = group.rows.reduce<Array<{ partType: string; count: number; color: string }>>((acc, { row }) => {
+              const partType = String(row.partType || "").trim() || "Part";
+              const existing = acc.find((item) => item.partType === partType);
+              if (existing) {
+                existing.count += 1;
+                return acc;
+              }
+              acc.push({
+                partType,
+                count: 1,
+                color: partTypeColors[partType] ?? "#E2E8F0",
+              });
+              return acc;
+            }, []);
+            const groupGridTemplate = groupShowsGrain
+              ? "92px minmax(120px,1.05fr) minmax(160px,1.2fr) 68px 68px 68px 56px 92px 84px minmax(140px,1fr)"
+              : "92px minmax(120px,1.05fr) minmax(160px,1.2fr) 68px 68px 68px 56px 92px minmax(140px,1fr)";
+            return (
+              <div
+                key={group.id}
+                className="overflow-hidden"
+                style={{ backgroundColor: "#FFFFFF" }}
+              >
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    setCollapsedCabinetBuilderAttachedGroups((current) => ({
+                      ...current,
+                      [group.id]: !current[group.id],
+                    }));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setCollapsedCabinetBuilderAttachedGroups((current) => ({
+                        ...current,
+                        [group.id]: !current[group.id],
+                      }));
+                    }
+                  }}
+                  className="flex cursor-pointer items-center justify-start gap-2 px-3 py-2"
+                  style={{ backgroundColor: hexToRgba(attachmentColor, 0.18) }}
+                >
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (group.isMain) {
+                        setCabinetBuilderSelectedWallId("main");
+                        openCabinetBuilderEditForSelected("edit");
+                        return;
+                      }
+                      setCabinetBuilderEditingAttachmentId(group.id);
+                    }}
+                    className="inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-[8px] border"
+                    style={{ borderColor: opts.buttonBorder, backgroundColor: opts.buttonBg, color: opts.buttonText }}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <p className="min-w-0 truncate text-[15px] font-bold leading-none text-[#111827]">{group.row.name || "Cabinet"}</p>
+                    {collapsed ? (
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {collapsedPartTypePills.map((pill) => {
+                          const pillBg = lightenHex(pill.color, 0.18);
+                          const pillBorder = darkenHex(pill.color, 0.16);
+                          return (
+                            <span
+                              key={`${group.id}_${pill.partType}`}
+                              className="inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-medium text-[#000000]"
+                              style={{ backgroundColor: pillBg, borderColor: pillBorder }}
+                            >
+                              {pill.partType}
+                              {pill.count > 1 ? ` (${pill.count})` : ""}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="shrink-0" style={{ color: attachmentText }}>
+                    <ChevronDown size={16} className={`transition-transform ${collapsed ? "-rotate-90" : "rotate-0"}`} />
+                  </div>
+                </div>
+                {!collapsed && group.rows.length ? (
+                  <div className="overflow-x-auto">
+                    <div className="min-w-[980px]">
+                      <div
+                        className="grid gap-2 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.9px] text-[#111827]"
+                        style={{ gridTemplateColumns: groupGridTemplate }}
+                      >
+                        <p>Part Type</p>
+                        <p>Board</p>
+                        <p>Part Name</p>
+                        <p className="text-center">Height</p>
+                        <p className="text-center">Width</p>
+                        <p className="text-center">Depth</p>
+                        <p className="text-center">Qty</p>
+                        <p className="text-center">Clashing</p>
+                        {groupShowsGrain ? <p className="text-center">Grain</p> : null}
+                        <p>Information</p>
+                      </div>
+                    {group.rows.map((displayRow, index) => {
+                      const row = displayRow.row;
+                      const rowWarningKey = cabinetBuilderWarningKeyForSource(displayRow.source);
+                      const rowWarnings = cutlistCellWarnings[rowWarningKey] ?? {};
+                      const rowWarningMessages = Object.values(rowWarnings);
+                      const firstRowWarning = rowWarningMessages[0] ?? "";
+                      const rowColor = partTypeColors[row.partType || ""] ?? "#E2E8F0";
+                      const rowText = "#000000";
+                      const rowPalette = groupColorPalette(rowColor);
+                      const fieldBg = lightenHex(rowColor, 0.18);
+                      const fieldBorder = darkenHex(rowColor, 0.16);
+                      const fieldText = "#000000";
+                      const grainOptions = grainDimensionOptionsForRow(row);
+                      const configuredFrontSource =
+                        displayRow.source.kind === "configuredFront" ? displayRow.source : null;
+                      const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board || "").trim());
+                      const updateBoardValue = (value: string) => {
+                        const patch = productionBoardAllowsGrainForValue(String(value || "").trim())
+                          ? { board: value }
+                          : { board: value, grainValue: "", grain: false };
+                        if (displayRow.source.kind === "configuredFront") {
+                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                            ...sourceRow,
+                            ...patch,
+                          }));
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, patch);
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, patch);
+                      };
+                      const updateNameValue = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                            ...sourceRow,
+                            name: value,
+                          }));
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { name: value });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { name: value });
+                      };
+                      const updateHeightValue = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          if (displayRow.source.frontKind === "drawersRow") {
+                            updateCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind, displayRow.source.indexes, value);
+                          } else {
+                            updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                              ...sourceRow,
+                              height: value,
+                            }));
+                          }
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { height: value });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { height: value });
+                      };
+                      const updateWidthValue = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          if (displayRow.source.frontKind === "doorsRow") {
+                            updateCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind, displayRow.source.indexes, value);
+                          } else {
+                            updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                              ...sourceRow,
+                              width: value,
+                            }));
+                          }
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { width: value });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { width: value });
+                      };
+                      const updateDepthValue = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                            ...sourceRow,
+                            depth: value,
+                          }));
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { depth: value });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { depth: value });
+                      };
+                      const updateQuantityValue = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                            ...sourceRow,
+                            quantity: value,
+                          }));
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { quantity: value });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { quantity: value });
+                      };
+                      const updateClashLeft = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                            ...sourceRow,
+                            clashLeft: value,
+                            clashing: joinClashing(value, String(sourceRow.clashRight ?? "")),
+                          }));
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, {
+                            clashLeft: value,
+                            clashing: joinClashing(value, String(row.clashRight ?? "")),
+                          });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, {
+                          clashLeft: value,
+                          clashing: joinClashing(value, String(row.clashRight ?? "")),
+                        });
+                      };
+                      const updateClashRight = (value: string) => {
+                        if (displayRow.source.kind === "configuredFront") {
+                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                            ...sourceRow,
+                            clashRight: value,
+                            clashing: joinClashing(String(sourceRow.clashLeft ?? ""), value),
+                          }));
+                          return;
+                        }
+                        if (displayRow.source.kind === "child") {
+                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, {
+                            clashRight: value,
+                            clashing: joinClashing(String(row.clashLeft ?? ""), value),
+                          });
+                          return;
+                        }
+                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, {
+                          clashRight: value,
+                          clashing: joinClashing(String(row.clashLeft ?? ""), value),
+                        });
+                      };
+                      return (
+                        <Fragment key={`${group.id}_row_${index}`}>
+                        <div
+                          className="grid gap-2 border-t px-2 py-[3px] text-[12px]"
+                          title={firstRowWarning || undefined}
+                          style={{
+                            gridTemplateColumns: groupGridTemplate,
+                            borderTopColor: rowColor,
+                            backgroundColor: rowColor,
+                            color: "#000000",
+                            boxShadow: firstRowWarning ? "inset 0 0 0 1px #DC2626" : undefined,
+                          }}
+                        >
+                          <div className="flex items-center">
+                            <span
+                              className="inline-flex items-center rounded-full px-3 py-1 text-[11px] font-medium"
+                              style={{ backgroundColor: fieldBg, color: rowText, border: `1px solid ${fieldBorder}` }}
+                            >
+                              {row.partType}
+                            </span>
+                          </div>
+                          <div>
+                            <BoardPillDropdown
+                              value={row.board}
+                              options={cutlistBoardOptions}
+                              disabled={productionReadOnly}
+                              bg={fieldBg}
+                              border={fieldBorder}
+                              text={fieldText}
+                              size="compact"
+                              getSize={boardSizeFor}
+                              getLabel={boardDisplayLabel}
+                              onChange={updateBoardValue}
+                            />
+                          </div>
+                          <input value={row.name || ""} onChange={(e) => {
+                            updateNameValue(e.target.value);
+                          }} className="h-6 w-full rounded-[6px] border px-1 text-[11px] font-bold text-[#111827]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
+                          <input value={row.height || ""} onChange={(e) => {
+                            const value = numericDimensionText(e.target.value);
+                            updateHeightValue(value);
+                          }} onBlur={() => {
+                            if (displayRow.source.kind === "configuredFront" && displayRow.source.frontKind === "drawersRow") {
+                              blurCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind);
+                            }
+                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
+                          <input value={row.width || ""} onChange={(e) => {
+                            const value = numericDimensionText(e.target.value);
+                            updateWidthValue(value);
+                          }} onBlur={() => {
+                            if (displayRow.source.kind === "configuredFront" && displayRow.source.frontKind === "doorsRow") {
+                              blurCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind);
+                            }
+                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
+                          <input value={row.depth || ""} onChange={(e) => {
+                            const value = numericDimensionText(e.target.value);
+                            updateDepthValue(value);
+                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
+                          <input value={row.quantity || ""} onChange={(e) => {
+                            const value = numericOnlyText(e.target.value);
+                            updateQuantityValue(value);
+                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
+                          <div className="grid grid-cols-2 gap-1">
+                            <BoardPillDropdown value={String(row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg={fieldBg} border={fieldBorder} text={fieldText} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={updateClashLeft} />
+                            <BoardPillDropdown value={String(row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg={fieldBg} border={fieldBorder} text={fieldText} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={updateClashRight} />
+                          </div>
+                          {groupShowsGrain ? (
+                            <div>
+                            {rowBoardAllowsGrain ? (
+                              <BoardPillDropdown
+                                value={String(row.grainValue || "")}
+                                options={grainOptions}
+                                disabled={productionReadOnly}
+                                bg={fieldBg}
+                                border={fieldBorder}
+                                text={fieldText}
+                                size="compact"
+                                getSize={() => ""}
+                                getLabel={(v) => v || "Select"}
+                                onChange={(value) => {
+                                  if (displayRow.source.kind === "configuredFront") {
+                                    updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
+                                      ...sourceRow,
+                                      grainValue: value,
+                                      grain: Boolean(String(value).trim()),
+                                    }));
+                                    return;
+                                  }
+                                  if (displayRow.source.kind === "child") {
+                                    updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { grainValue: value, grain: Boolean(String(value).trim()) });
+                                    return;
+                                  }
+                                  updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { grainValue: value, grain: Boolean(String(value).trim()) });
+                                }}
+                              />
+                            ) : (
+                              <p className="pt-[3px] text-center text-[#334155]"></p>
+                            )}
+                          </div>
+                          ) : null}
+                          <input value={String(row.information || "")} onChange={(e) => {
+                            const value = e.target.value;
+                            if (displayRow.source.kind === "configuredFront") {
+                              updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({ ...sourceRow, information: value }));
+                              return;
+                            }
+                            if (displayRow.source.kind === "child") {
+                              updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { information: value });
+                              return;
+                            }
+                            updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { information: value });
+                          }} className="h-6 w-full rounded-[6px] border px-1 text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
+                        </div>
+                        {rowWarningMessages.length ? (
+                          <div
+                            className="border-t px-3 py-2 text-[11px] text-[#B42318]"
+                            style={{ borderTopColor: "#FCA5A5", backgroundColor: "#FEF2F2" }}
+                          >
+                            {rowWarningMessages.map((message, messageIndex) => (
+                              <p key={`${rowWarningKey}_${messageIndex}`}>{message}</p>
+                            ))}
+                          </div>
+                        ) : null}
+                        </Fragment>
+                      );
+                    })}
+                    </div>
+                  </div>
+                ) : !collapsed ? (
+                  <p className="mt-2 text-[11px] text-[#64748B]">No parts added inside this cabinet yet.</p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+  const renderCabinetBuilderOverlayGapGuides = ({
+    item,
+    ownerId,
+    frontKind,
+    overlayMode,
+    overlayTopGapValue,
+    overlayBetweenGapValue,
+    overlayLeftGapValue,
+    overlayRightGapValue,
+    overlayTopGapPx,
+    overlayBetweenGapPxForHeight,
+    overlayBetweenGapPxForWidth,
+    overlayLeftGapPx,
+    overlayRightGapPx,
+    overlayDoorWidths,
+    overlayDrawerHeights,
+    scale,
+    editingGapPill,
+    onStartEditGap,
+    onChangeEditGapValue,
+    onCommitEditGap,
+    onCancelEditGap,
+    placedLabelRects,
+    blockedRects,
+  }: {
+    item: CabinetBuilderWallPiece & CabinetBuilderDisplayPieceLayout;
+    ownerId: string;
+    frontKind: "doorsRow" | "drawersRow";
+    overlayMode: DoorModeValue;
+    overlayTopGapValue: number;
+    overlayBetweenGapValue: number;
+    overlayLeftGapValue: number;
+    overlayRightGapValue: number;
+    overlayTopGapPx: number;
+    overlayBetweenGapPxForHeight: number;
+    overlayBetweenGapPxForWidth: number;
+    overlayLeftGapPx: number;
+    overlayRightGapPx: number;
+    overlayDoorWidths: { widths: number[]; manual: boolean[] };
+    overlayDrawerHeights: { heights: number[]; manual: boolean[] };
+    scale: number;
+    editingGapPill?: null | {
+      pillId: string;
+      ownerId: string;
+      kind: "doorsRow" | "drawersRow";
+      key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap";
+      value: string;
+    };
+    onStartEditGap?: (
+      pillId: string,
+      ownerId: string,
+      kind: "doorsRow" | "drawersRow",
+      key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap",
+      currentValue: number,
+    ) => void;
+    onChangeEditGapValue?: (value: string) => void;
+    onCommitEditGap?: () => void;
+    onCancelEditGap?: () => void;
+    placedLabelRects?: Array<{ left: number; right: number; top: number; bottom: number }>;
+    blockedRects?: Array<{ left: number; right: number; top: number; bottom: number }>;
+  }): { lines: ReactNode[]; labels: ReactNode[] } => {
+    const gapStroke = "#FF2A2A";
+    const gapText = "#B42318";
+    const gapLabelBg = "#FFFFFF";
+    const gapLabelBorder = "#FCA5A5";
+    const labelFontSize = 10;
+    const labelHeight = 18;
+    const labelWidthFor = (value: string) => Math.max(28, value.length * 6.4 + 10);
+    const lines: ReactNode[] = [];
+    const labels: ReactNode[] = [];
+    const sharedPlacedLabelRects = placedLabelRects ?? [];
+    const staticBlockedRects = blockedRects ?? [];
+    const innerX = item.x + overlayLeftGapPx;
+    const innerRightX = item.x + item.width - overlayRightGapPx;
+    const innerY = item.y + overlayTopGapPx;
+    const innerBottomY = item.y + item.height;
+    const innerWidth = Math.max(0, innerRightX - innerX);
+    const innerHeight = Math.max(0, innerBottomY - innerY);
+    const rectsOverlap = (
+      a: { left: number; right: number; top: number; bottom: number },
+      b: { left: number; right: number; top: number; bottom: number },
+    ) => !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+    const addLabel = (
+      key: string,
+      cx: number,
+      cy: number,
+      value: number,
+      gapKey: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap",
+    ) => {
+      if (!(value > 0)) return null;
+      const text = formatDoorFrontHeightValue(value);
+      const labelWidth = labelWidthFor(text);
+      let adjustedCy = cy;
+      let nextRect = {
+        left: cx - labelWidth / 2,
+        right: cx + labelWidth / 2,
+        top: adjustedCy - labelHeight / 2,
+        bottom: adjustedCy + labelHeight / 2,
+      };
+      let guard = 0;
+      while (
+        (sharedPlacedLabelRects.some((existing) => rectsOverlap(existing, nextRect)) ||
+          staticBlockedRects.some((blocked) => rectsOverlap(blocked, nextRect))) &&
+        guard < 20
+      ) {
+        adjustedCy += labelHeight + 4;
+        nextRect = {
+          left: cx - labelWidth / 2,
+          right: cx + labelWidth / 2,
+          top: adjustedCy - labelHeight / 2,
+          bottom: adjustedCy + labelHeight / 2,
+        };
+        guard += 1;
+      }
+      sharedPlacedLabelRects.push(nextRect);
+      const pillId = `${item.id}_${key}`;
+      const isEditing = editingGapPill?.pillId === pillId;
+      const editScale = isEditing ? 1.45 : 1;
+      const editWidth = labelWidth;
+      return (
+        <g
+          key={`cab_gap_label_${key}`}
+          pointerEvents="auto"
+          transform={`translate(0 ${adjustedCy - cy}) translate(${cx} ${cy}) scale(${editScale}) translate(${-cx} ${-cy})`}
+          style={{ transition: "transform 180ms ease", cursor: onStartEditGap ? "pointer" : "default" }}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onStartEditGap?.(pillId, ownerId, frontKind, gapKey, value);
+          }}
+        >
+          <rect
+            x={cx - labelWidth / 2}
+            y={cy - labelHeight / 2}
+            width={editWidth}
+            height={labelHeight}
+            rx="6"
+            fill={gapLabelBg}
+            stroke={gapLabelBorder}
+          />
+          {isEditing ? (
+            <foreignObject
+              x={cx - editWidth / 2}
+              y={cy - labelHeight / 2}
+              width={editWidth}
+              height={labelHeight}
+            >
+              <input
+                autoFocus
+                value={editingGapPill?.value ?? ""}
+                onFocus={(event) => {
+                  event.currentTarget.select();
+                }}
+                onChange={(event) => {
+                  event.stopPropagation();
+                  onChangeEditGapValue?.(numericDecimalText(event.target.value));
+                }}
+                onBlur={() => onCommitEditGap?.()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onCommitEditGap?.();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCancelEditGap?.();
+                  }
+                }}
+                className="h-full w-full bg-transparent px-2 text-center text-[11px] font-bold text-[#B42318] outline-none"
+              />
+            </foreignObject>
+          ) : (
+            <text
+              x={cx}
+              y={cy}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontSize={labelFontSize}
+              fontWeight="700"
+              fill={gapText}
+            >
+              {text}
+            </text>
+          )}
+        </g>
+      );
+    };
+
+    if (overlayTopGapValue > 0 && overlayTopGapPx > 0 && innerWidth >= 18) {
+      const y = item.y + overlayTopGapPx / 2;
+      lines.push(
+        <g key={`cab_gap_top_${item.id}`} pointerEvents="none">
+          <line x1={innerX} y1={y} x2={innerRightX} y2={y} stroke={gapStroke} strokeWidth="1.5" />
+        </g>,
+      );
+      const labelNode = addLabel(`top_${item.id}`, item.x + item.width / 2, y, overlayTopGapValue, "doorTopGap");
+      if (labelNode) labels.push(labelNode);
+    }
+
+    if (overlayLeftGapValue > 0 && overlayLeftGapPx > 0 && innerHeight >= 18) {
+      const x = item.x + overlayLeftGapPx / 2;
+      const centerY = innerY + innerHeight / 2;
+      lines.push(
+        <g key={`cab_gap_left_${item.id}`} pointerEvents="none">
+          <line x1={x} y1={innerY} x2={x} y2={innerBottomY} stroke={gapStroke} strokeWidth="1.5" />
+        </g>,
+      );
+      const labelNode = addLabel(`left_${item.id}`, x, centerY, overlayLeftGapValue, "doorSideLeftGap");
+      if (labelNode) labels.push(labelNode);
+    }
+
+    if (overlayRightGapValue > 0 && overlayRightGapPx > 0 && innerHeight >= 18) {
+      const x = item.x + item.width - overlayRightGapPx / 2;
+      const centerY = innerY + innerHeight / 2;
+      lines.push(
+        <g key={`cab_gap_right_${item.id}`} pointerEvents="none">
+          <line x1={x} y1={innerY} x2={x} y2={innerBottomY} stroke={gapStroke} strokeWidth="1.5" />
+        </g>,
+      );
+      const labelNode = addLabel(`right_${item.id}`, x, centerY, overlayRightGapValue, "doorSideRightGap");
+      if (labelNode) labels.push(labelNode);
+    }
+
+    if (overlayBetweenGapValue > 0) {
+      if (overlayMode === "door" && overlayBetweenGapPxForWidth > 0) {
+        let currentX = innerX;
+        overlayDoorWidths.widths.forEach((pieceWidth, index) => {
+          const pieceScaledWidth = pieceWidth * scale;
+          const pieceRight = currentX + pieceScaledWidth;
+          const hasNext = index < overlayDoorWidths.widths.length - 1;
+          if (hasNext) {
+            const gapCenterX = pieceRight + overlayBetweenGapPxForWidth / 2;
+            lines.push(
+              <g key={`cab_gap_between_door_${item.id}_${index}`} pointerEvents="none">
+                <line
+                  x1={gapCenterX}
+                  y1={innerY}
+                  x2={gapCenterX}
+                  y2={innerBottomY}
+                  stroke={gapStroke}
+                  strokeWidth="1.5"
+                />
+              </g>,
+            );
+            const labelNode = addLabel(`door_between_${item.id}_${index}`, gapCenterX, innerY + innerHeight / 2, overlayBetweenGapValue, "doorBetweenGap");
+            if (labelNode) labels.push(labelNode);
+          }
+          currentX = pieceRight + overlayBetweenGapPxForWidth;
+        });
+      }
+
+      if (overlayMode === "drawer" && overlayBetweenGapPxForHeight > 0) {
+        let currentY = innerY;
+        overlayDrawerHeights.heights.forEach((pieceHeight, index) => {
+          const pieceScaledHeight = pieceHeight * scale;
+          const pieceBottom = currentY + pieceScaledHeight;
+          const hasNext = index < overlayDrawerHeights.heights.length - 1;
+          if (hasNext) {
+            const gapCenterY = pieceBottom + overlayBetweenGapPxForHeight / 2;
+            lines.push(
+              <g key={`cab_gap_between_drawer_${item.id}_${index}`} pointerEvents="none">
+                <line
+                  x1={innerX}
+                  y1={gapCenterY}
+                  x2={innerRightX}
+                  y2={gapCenterY}
+                  stroke={gapStroke}
+                  strokeWidth="1.5"
+                />
+              </g>,
+            );
+            const labelNode = addLabel(`drawer_between_${item.id}_${index}`, item.x + item.width / 2, gapCenterY, overlayBetweenGapValue, "doorBetweenGap");
+            if (labelNode) labels.push(labelNode);
+          }
+          currentY = pieceBottom + overlayBetweenGapPxForHeight;
+        });
+      }
+    }
+
+    return { lines, labels };
+  };
+  const getCabinetBuilderPiecePalette = (
+    item: CabinetBuilderWallPiece,
+    draft: CabinetBuilderDraft | null,
+  ) => {
+    const usesPartTypeColor =
+      item.kind !== "main" && item.kind !== "cabinet"
+        ? true
+        : Boolean(item.newCabinet);
+
+    if (!usesPartTypeColor) {
+      return {
+        fill: "#FFFFFF",
+        stroke: "#334155",
+        text: "#1F2937",
+        badgeBg: "#FFFFFF",
+        badgeBorder: "#CBD5E1",
+        badgeText: "#1F2937",
+      };
+    }
+
+    const baseColor =
+      partTypeColors[item.row.partType || ""] ??
+      (item.kind === "panel"
+        ? partTypeColors[experimentalPanelPartType] ?? "#CBD5E1"
+        : partTypeColors[experimentalCabinetBuilderPartType] ?? "#CBD5E1");
+    const fill = lightenHex(baseColor, 0.24);
+    const stroke = darkenHex(baseColor, 0.14);
+    const text = isLightHex(fill) ? "#1F2937" : "#F8FAFC";
+    return {
+      fill,
+      stroke,
+      text,
+      badgeBg: lightenHex(baseColor, 0.3),
+      badgeBorder: stroke,
+      badgeText: text,
+    };
+  };
+  const getCabinetBuilderAttachmentAnchorExclusionRects = (
+    selectedPiece: (CabinetBuilderWallPiece & CabinetBuilderDisplayPieceLayout & { rawHeight?: number }) | null,
+    viewWidth: number,
+    viewHeight: number,
+    resolvedBaseCabHeight: string,
+  ) => {
+    if (!selectedPiece) return [] as Array<{ left: number; right: number; top: number; bottom: number }>;
+    const selectedPieceHasDualAttachZones =
+      selectedPiece.kind === "panel" && selectedPiece.panelHeightMode === "tall";
+    const anchors = selectedPieceHasDualAttachZones
+      ? [
+          { x: selectedPiece.x, y: selectedPiece.y + 18 },
+          { x: selectedPiece.x, y: selectedPiece.y + selectedPiece.height - 18 },
+          { x: selectedPiece.x + selectedPiece.width, y: selectedPiece.y + 18 },
+          { x: selectedPiece.x + selectedPiece.width, y: selectedPiece.y + selectedPiece.height - 18 },
+        ]
+      : [
+          { x: selectedPiece.x, y: selectedPiece.y + selectedPiece.height / 2 },
+          { x: selectedPiece.x + selectedPiece.width, y: selectedPiece.y + selectedPiece.height / 2 },
+        ];
+    const buttonSize = 36;
+    const padding = 8;
+    return anchors.map((anchor) => {
+      const left =
+        anchor.x <= selectedPiece.x + 1
+          ? anchor.x - buttonSize - 10
+          : anchor.x + 10;
+      const top = anchor.y - buttonSize / 2;
+      return {
+        left: Math.max(0, left - padding),
+        right: Math.min(viewWidth, left + buttonSize + padding),
+        top: Math.max(0, top - padding),
+        bottom: Math.min(viewHeight, top + buttonSize + padding),
+      };
+    });
+  };
+  const renderCutlistEntryModeTabs = (className = "") => {
+    const manualActiveBg = isDarkMode ? "#1F2937" : "#FFFFFF";
+    const wallBuilderActiveBg = isDarkMode ? "#1F2937" : "#FFFFFF";
+    const inactiveBg = isDarkMode ? "#0F172A" : "#EEF2F7";
+    const inactiveText = isDarkMode ? "#CBD5E1" : "#475467";
+    return (
+      <div
+        className={`grid grid-cols-2 overflow-hidden rounded-b-[10px] border ${className}`.trim()}
+        style={{ borderColor: projectPalette.border, backgroundColor: inactiveBg }}
+      >
+        {[
+          { id: "manual" as const, label: "Manual" },
+          { id: "wallBuilder" as const, label: "Wall Builder" },
+        ].map((mode) => {
+          const isActive = cutlistEntryMode === mode.id;
+          const activeBg = mode.id === "wallBuilder" ? wallBuilderActiveBg : manualActiveBg;
+          const activeText = isLightHex(activeBg) ? "#1F2937" : "#F8FAFC";
+          return (
+            <button
+              key={`cutlist_entry_mode_${mode.id}`}
+              type="button"
+              onClick={() => setCutlistEntryModeWithUi(mode.id)}
+              className="rounded-t-none px-3 py-2 text-[12px] font-semibold transition-colors"
+              style={{
+                backgroundColor: isActive ? activeBg : "transparent",
+                color: isActive ? activeText : inactiveText,
+              }}
+            >
+              {mode.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+  const renderCabinetBuilderAttachmentEditPopup = (attachment: CabinetBuilderAttachmentDraft) => {
+    const close = () => setCabinetBuilderEditingAttachmentId("");
+    if (attachment.kind !== "panel") {
+      return (
+        <div className="w-full max-w-[720px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+          <div className="flex items-center justify-between">
+            <p className="text-[22px] font-extrabold text-[#12345B]">Edit Cabinet</p>
+            <button type="button" onClick={close} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+              <BoardPillDropdown value={attachment.row.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { board: value })} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
+              <input value={attachment.row.name} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+              <input value={attachment.row.height} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+              <input value={attachment.row.width} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+              <input value={attachment.row.depth} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    const panelHeightMode = attachment.panelHeightMode ?? "base";
+    const panelSpanMode = attachment.panelSpanMode ?? "bottomToTopOfCab";
+    const grainAllowed = productionBoardAllowsGrainForValue(String(attachment.row.board || "").trim());
+    return (
+      <div className="w-full max-w-[640px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            disabled={productionReadOnly}
+            onClick={() => promptDeleteCabinetBuilderWallId(attachment.id)}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
+          >
+            <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
+          </button>
+          <p className="text-[22px] font-extrabold text-[#12345B]">{attachment.row.name || "Panel"}</p>
+          <button type="button" onClick={close} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
+        </div>
+        <div className="mt-5 space-y-4">
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                <input
+                  type="checkbox"
+                  checked={panelHeightMode === "base"}
+                  onChange={() => {
+                    updateCabinetBuilderAttachmentMeta(attachment.id, { panelHeightMode: "base" });
+                    updateCabinetBuilderAttachmentRow(attachment.id, {
+                      height: getCabinetBuilderPanelHeightBaselineText("base", panelSpanMode),
+                    });
+                  }}
+                />
+                Base
+              </label>
+              <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                <input
+                  type="checkbox"
+                  checked={panelHeightMode === "tall"}
+                  onChange={() => {
+                    updateCabinetBuilderAttachmentMeta(attachment.id, { panelHeightMode: "tall" });
+                    updateCabinetBuilderAttachmentRow(attachment.id, {
+                      height: getCabinetBuilderPanelHeightBaselineText("tall", panelSpanMode),
+                    });
+                  }}
+                />
+                Tall
+              </label>
+            </div>
+            <div className="min-w-[220px] flex-1 space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Panel Span</p>
+              <BoardPillDropdown
+                value={panelSpanMode}
+                options={["floorToCeiling", "floorToTopOfCab", "bottomToCeiling", "bottomToTopOfCab"]}
+                disabled={productionReadOnly}
+                bg="#FFFFFF"
+                border="#D8DEE8"
+                text="#0F172A"
+                size="default"
+                getSize={() => ""}
+                getLabel={(value) =>
+                  value === "floorToCeiling"
+                    ? "Floor to ceiling"
+                    : value === "floorToTopOfCab"
+                      ? "Floor to top of cab"
+                      : value === "bottomToCeiling"
+                        ? "Bottom of cab to ceiling"
+                        : "Bottom of cab to top of cab"
+                }
+                onChange={(value) => {
+                  const nextSpanMode =
+                    value === "floorToCeiling" || value === "floorToTopOfCab" || value === "bottomToCeiling" || value === "bottomToTopOfCab"
+                      ? value
+                      : "bottomToTopOfCab";
+                  updateCabinetBuilderAttachmentMeta(attachment.id, { panelSpanMode: nextSpanMode });
+                  updateCabinetBuilderAttachmentRow(attachment.id, {
+                    height: getCabinetBuilderPanelHeightBaselineText(panelHeightMode, nextSpanMode),
+                  });
+                }}
+              />
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+              <BoardPillDropdown
+                value={attachment.row.board}
+                options={cutlistBoardOptions}
+                disabled={productionReadOnly}
+                bg="#FFFFFF"
+                border="#D8DEE8"
+                text="#0F172A"
+                getSize={boardSizeFor}
+                getLabel={boardDisplayLabel}
+                onChange={(value) => {
+                  const defaults = defaultClashingForPartType(experimentalPanelPartType, value);
+                  const grainAllowedForBoard = productionBoardAllowsGrainForValue(String(value || "").trim());
+                  updateCabinetBuilderAttachmentRow(attachment.id, {
+                    board: value,
+                    clashLeft: defaults.left,
+                    clashRight: defaults.right,
+                    clashing: joinClashing(defaults.left, defaults.right),
+                    grain: grainAllowedForBoard ? attachment.row.grain : false,
+                    grainValue: grainAllowedForBoard ? attachment.row.grainValue : "",
+                  });
+                }}
+              />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
+              <input value={attachment.row.name} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+              <input value={attachment.row.height} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+              <input value={attachment.row.width} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+              <input value={attachment.row.depth} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+              <input value={attachment.row.quantity} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { quantity: numericOnlyText(e.target.value) || "1" })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+            </div>
+          </div>
+          <div className={`grid gap-3 ${grainAllowed ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Long</p>
+              <BoardPillDropdown value={String(attachment.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { clashLeft: value, clashing: joinClashing(value, String(attachment.row.clashRight ?? "")) })} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Short</p>
+              <BoardPillDropdown value={String(attachment.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { clashRight: value, clashing: joinClashing(String(attachment.row.clashLeft ?? ""), value) })} />
+            </div>
+            {grainAllowed ? (
+              <div className="space-y-1">
+                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                <BoardPillDropdown value={String(attachment.row.grainValue ?? "")} options={grainDimensionOptionsForRow(attachment.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
+              </div>
+            ) : null}
+          </div>
+          <div className="space-y-1">
+            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+            <input value={attachment.row.information} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { information: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+          </div>
+        </div>
+      </div>
+    );
+  };
+  const renderCompactCabinetBuilderEntry = () => {
+    const color = cabinetBuilderShellBg;
+    const textColor = cabinetBuilderShellText;
+    const fieldBg = cabinetBuilderFieldBg;
+    const fieldBorder = cabinetBuilderFieldBorder;
+    const attachmentBeingEdited = cabinetBuilderDraft
+      ? cabinetBuilderDraft.attachments.find((item) => item.id === cabinetBuilderEditingAttachmentId) ?? null
+      : null;
+    const selectedEditableCabinet = cabinetBuilderDraft
+      ? getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)
+      : null;
+    const selectedFrontRowForEdit = cabinetBuilderDraft
+      ? getCabinetBuilderSelectedFrontRow(cabinetBuilderDraft)
+      : null;
+    const cabinetBuilderEditTabs = cabinetBuilderDraft
+      ? buildCabinetBuilderEditTabs(cabinetBuilderDraft)
+      : [{ id: "edit", label: "Edit", color: null as string | null }];
+    const activeCabinetBuilderEditTab =
+      cabinetBuilderEditTabs.find((tab) => tab.id === cabinetBuilderEditTab) ?? cabinetBuilderEditTabs[0];
+    const cabinetBuilderEditPanelBg = activeCabinetBuilderEditTab?.color
+      ? lightenHex(activeCabinetBuilderEditTab.color, 0.28)
+      : "#FFFFFF";
+    const cabinetBuilderEditPanelBorder = activeCabinetBuilderEditTab?.color
+      ? darkenHex(activeCabinetBuilderEditTab.color, 0.08)
+      : "#D8DEE8";
+    const selectedEditChild =
+      cabinetBuilderEditTab.startsWith("child:") && selectedEditableCabinet
+        ? selectedEditableCabinet.childRows.find((child) => child.id === cabinetBuilderEditTab.slice(6)) ?? null
+        : null;
+    const renderCabinetBuilderOverlay = (content: ReactNode) =>
+      typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+              {content}
+            </div>,
+            document.body,
+          )
+        : null;
+    const closeCabinetBuilderConfiguredPopup = () => {
+      setCabinetBuilderDoorsOpen(false);
+      setCabinetBuilderDrawersOpen(false);
+    };
+    const renderCabinetBuilderConfiguredFrontPopup = () => {
+      const kind = cabinetBuilderDraft ? getCabinetBuilderSelectedFrontKind(cabinetBuilderDraft) : null;
+      const resolvedKind = kind ?? (cabinetBuilderDoorsOpen ? "doorsRow" : "drawersRow");
+      const currentRow = cabinetBuilderDraft ? getCabinetBuilderSelectedConfiguredRow(cabinetBuilderDraft, resolvedKind) : null;
+      if (!currentRow) return null;
+      const grainAllowed = productionBoardAllowsGrainForValue(String(currentRow.board || "").trim());
+      return (
+        <div className="w-full max-w-[1100px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+          <div className="flex items-center justify-between">
+            <p className="text-[22px] font-extrabold text-[#12345B]">{resolvedKind === "doorsRow" ? "Doors" : "Drawers"}</p>
+            <button type="button" onClick={closeCabinetBuilderConfiguredPopup} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
+          </div>
+          <div className="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="space-y-3">
+              {renderDoorModeConfigurator({
+                mode: normalizeDoorModeValue(currentRow.doorMode),
+                frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
+                onModeChange: (mode) => setCabinetBuilderSelectedFrontMode(mode),
+                onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(resolvedKind, value),
+                disabled: productionReadOnly,
+                textColor: "#0F172A",
+                borderColor: "#D8DEE8",
+                fieldBg: "#FFFFFF",
+                fieldText: "#0F172A",
+              })}
+              <div className="space-y-1">
+                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                <BoardPillDropdown value={currentRow.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, board: value }))} />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                  <input value={currentRow.height} onChange={(e) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                  <input value={currentRow.width} onChange={(e) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                  <input value={currentRow.quantity} onChange={(e) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Left</p>
+                  <BoardPillDropdown value={currentRow.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, clashLeft: value, clashing: joinClashing(value, String(row.clashRight ?? "")) }))} />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Right</p>
+                  <BoardPillDropdown value={currentRow.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, clashRight: value, clashing: joinClashing(String(row.clashLeft ?? ""), value) }))} />
+                </div>
+              </div>
+              {grainAllowed ? (
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                  <BoardPillDropdown value={String(currentRow.grainValue ?? "")} options={grainDimensionOptionsForRow(currentRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
+                </div>
+              ) : null}
+            </div>
+            <div>
+              {renderDoorSetupDesigner({
+                mode: normalizeDoorModeValue(currentRow.doorMode) === "drawer" ? "drawer" : "door",
+                frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
+                overallHeight: String(currentRow.height ?? ""),
+                overallWidth: String(currentRow.width ?? ""),
+                topGap: String(currentRow.doorTopGap ?? ""),
+                betweenGap: String(currentRow.doorBetweenGap ?? ""),
+                sideLeft: normalizeDoorSideValue(currentRow.doorSideLeft),
+                sideRight: normalizeDoorSideValue(currentRow.doorSideRight),
+                sideLeftGap: String(currentRow.doorSideLeftGap ?? ""),
+                sideRightGap: String(currentRow.doorSideRightGap ?? ""),
+                frontWidths: normalizeDoorFrontWidths(currentRow.doorFrontWidths, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                frontWidthManual: normalizeDoorFrontWidthManual(currentRow.doorFrontWidthManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                frontHeights: normalizeDoorFrontHeights(currentRow.doorFrontHeights, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                frontHeightManual: normalizeDoorFrontHeightManual(currentRow.doorFrontHeightManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(resolvedKind, "doorTopGap", value),
+                onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(resolvedKind, "doorBetweenGap", value),
+                onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(resolvedKind, key, value),
+                onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(resolvedKind, key, value),
+                onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(resolvedKind, index, value),
+                onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(resolvedKind, index, value),
+                onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(resolvedKind, index),
+                onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(resolvedKind, index),
+                disabled: productionReadOnly,
+                textColor: "#0F172A",
+                borderColor: "#D8DEE8",
+                fieldBg: "#FFFFFF",
+                fieldText: "#0F172A",
+              })}
+            </div>
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" onClick={closeCabinetBuilderConfiguredPopup} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
+            <button type="button" onClick={closeCabinetBuilderConfiguredPopup} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Save</button>
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div className="space-y-3">
+        <div
+          className="overflow-visible px-0 py-0"
+          style={{ color: textColor }}
+        >
+          {!cabinetBuilderDraft ? (
+            <div className="flex min-h-[180px] items-center justify-center">
+              {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() ? (
+                <div className="flex flex-col items-center gap-3">
+                  <p className="text-[13px] font-semibold text-[#475467]">{cabinetBuilderWallName}</p>
+                  <button
+                    type="button"
+                    disabled={productionReadOnly}
+                    onClick={openCabinetBuilderCreate}
+                    className="rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
+                    style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: textColor }}
+                  >
+                    Create Cabinet
+                  </button>
+                </div>
+              ) : (
+                <div className="w-full max-w-[420px] space-y-3">
+                  <input
+                    value={cabinetBuilderWallName}
+                    onChange={(e) => setCabinetBuilderWallName(e.target.value)}
+                    placeholder="Wall name"
+                    className="h-11 w-full rounded-[12px] border border-[#D8DEE8] bg-white px-3 text-[13px] text-[#111827]"
+                  />
+                  <button
+                    type="button"
+                    disabled={productionReadOnly || !String(cabinetBuilderWallName || "").trim()}
+                    onClick={createCabinetBuilderWall}
+                    className="w-full rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
+                    style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: textColor }}
+                  >
+                    Create Wall
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className={`${isMobileProjectViewport ? "space-y-3" : "grid items-start gap-4 md:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]"}`}>
+                {renderCabinetBuilderSelectedPartsPanel(cabinetBuilderDraft) ? (
+                  <div className="px-1">{renderCabinetBuilderSelectedPartsPanel(cabinetBuilderDraft)}</div>
+                ) : null}
+                <div className="p-0">
+                  {(() => {
+                    const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
+                    const viewWidth = isTabletProjectViewport ? 760 : isMobileProjectViewport ? 560 : 1120;
+                    const viewHeight = isTabletProjectViewport ? 360 : isMobileProjectViewport ? 280 : 420;
+                    const paddingX = isTabletProjectViewport ? 80 : isMobileProjectViewport ? 52 : 42;
+                    const paddingY = isTabletProjectViewport ? 40 : isMobileProjectViewport ? 28 : 26;
+                    const dragViewport = { viewWidth, viewHeight, paddingX, paddingY };
+                    const displayWallPieces =
+                      cabinetBuilderDragActive && cabinetBuilderDraggingWallId && cabinetBuilderDragPointerX !== null
+                        ? buildCabinetBuilderPreviewWallPieces(cabinetBuilderDraft, cabinetBuilderDraggingWallId, cabinetBuilderDragPointerX, dragViewport)
+                        : wallPieces;
+                    const pieceLayouts = buildCabinetBuilderDisplayPieceLayouts(
+                      displayWallPieces,
+                      viewWidth,
+                      viewHeight,
+                      paddingX,
+                      paddingY,
+                      cabinetBuilderDraft,
+                    );
+                    const scale = pieceLayouts[0]?.scale ?? 1;
+                    const measureLengthText =
+                      cabinetBuilderMeasurePoints.length === 2 && scale > 0
+                        ? numericDimensionText(
+                            Math.sqrt(
+                              Math.pow(cabinetBuilderMeasurePoints[1].x - cabinetBuilderMeasurePoints[0].x, 2) +
+                                Math.pow(cabinetBuilderMeasurePoints[1].y - cabinetBuilderMeasurePoints[0].y, 2),
+                            ) / scale,
+                          )
+                        : "";
+                    const mainPiece = pieceLayouts.find((item) => item.isMain) ?? pieceLayouts[0];
+                    const selectedPiece = pieceLayouts.find((item) => item.id === cabinetBuilderSelectedWallId) ?? mainPiece;
+                    const hoveredPiece = pieceLayouts.find((item) => item.id === cabinetBuilderHoveredWallId) ?? null;
+                    const activeLabelPiece = hoveredPiece ?? selectedPiece ?? null;
+                    const activeGapBlockedRects =
+                      (cabinetBuilderSelectedHoverActive || cabinetBuilderAttachmentMenuSide !== null)
+                        ? getCabinetBuilderAttachmentAnchorExclusionRects(
+                            selectedPiece,
+                            viewWidth,
+                            viewHeight,
+                            resolvedProductionBaseCabHeight,
+                          )
+                        : [];
+                    const overlayItems = pieceLayouts.flatMap((item) => {
+                      const overlaySource = item.doorsRow || item.drawersRow;
+                      if (!overlaySource) return [];
+                      const overlayMode = normalizeDoorModeValue(overlaySource.doorMode);
+                      const overlayCount = Number.parseInt(String(overlaySource.doorFrontCount || "1"), 10) || 1;
+                      const overlayBaseColor = partTypeColors[String(overlaySource.partType || "").trim()] ?? "#CBD5E1";
+                      const overlayStroke = darkenHex(overlayBaseColor, 0.14);
+                      const overlayFill = lightenHex(overlayBaseColor, 0.2);
+                      const overlayText = isLightHex(overlayFill) ? "#1F2937" : "#F8FAFC";
+                      const overlayTotalHeight = Number.parseFloat(String(overlaySource.height ?? "").replace(/[^\d.-]/g, "")) || 0;
+                      const overlayTotalWidth = Number.parseFloat(String(overlaySource.width ?? "").replace(/[^\d.-]/g, "")) || 0;
+                      const overlayTopGapValue = Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0;
+                      const overlayBetweenGapValue = Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+                      const overlayLeftGapValue = Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0;
+                      const overlayRightGapValue = Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0;
+                      const overlayTopGapPx =
+                        overlayTotalHeight > 0 ? (overlayTopGapValue / overlayTotalHeight) * item.height : 0;
+                      const overlayBetweenGapPxForHeight =
+                        overlayTotalHeight > 0 ? (overlayBetweenGapValue / overlayTotalHeight) * item.height : 0;
+                      const overlayBetweenGapPxForWidth =
+                        overlayTotalWidth > 0 ? (overlayBetweenGapValue / overlayTotalWidth) * item.width : 0;
+                      const overlayLeftGapPx =
+                        overlayTotalWidth > 0 ? (overlayLeftGapValue / overlayTotalWidth) * item.width : 0;
+                      const overlayRightGapPx =
+                        overlayTotalWidth > 0 ? (overlayRightGapValue / overlayTotalWidth) * item.width : 0;
+                      const overlayClearHeight = Math.max(0, overlayTotalHeight - overlayTopGapValue);
+                      const overlayClearWidth = Math.max(0, overlayTotalWidth - overlayLeftGapValue - overlayRightGapValue);
+                                        return [
+                                          {
+                                            item,
+                                            ownerId: item.id,
+                                            frontKind: item.doorsRow ? "doorsRow" as const : "drawersRow" as const,
+                                            overlaySource,
+                                            overlayMode,
+                                            overlayStroke,
+                          overlayFill,
+                          overlayText,
+                          overlayTopGapPx,
+                          overlayBetweenGapPxForHeight,
+                          overlayBetweenGapPxForWidth,
+                          overlayLeftGapPx,
+                          overlayRightGapPx,
+                          overlayClearHeight,
+                          overlayClearWidth,
+                          overlayDrawerHeights:
+                            overlayMode === "drawer"
+                              ? resolveDoorFrontHeightNumbers(
+                                  normalizeDoorFrontHeights(overlaySource.doorFrontHeights, overlayCount),
+                                  String(overlaySource.height ?? ""),
+                                  String(overlaySource.doorTopGap ?? ""),
+                                  String(overlaySource.doorBetweenGap ?? ""),
+                                  normalizeDoorFrontHeightManual(overlaySource.doorFrontHeightManual, overlayCount),
+                                )
+                              : { heights: [], manual: [] as boolean[] },
+                          overlayDoorWidths:
+                            overlayMode === "door"
+                              ? resolveDoorFrontWidthNumbers(
+                                  normalizeDoorFrontWidths(overlaySource.doorFrontWidths, overlayCount),
+                                  String(overlaySource.width ?? ""),
+                                  String(overlaySource.doorSideLeftGap ?? ""),
+                                  String(overlaySource.doorSideRightGap ?? ""),
+                                  String(overlaySource.doorBetweenGap ?? ""),
+                                  normalizeDoorFrontWidthManual(overlaySource.doorFrontWidthManual, overlayCount),
+                                )
+                              : { widths: [], manual: [] as boolean[] },
+                        },
+                      ];
+                    });
+                    const overlayGapPlacementRects: Array<{ left: number; right: number; top: number; bottom: number }> = [];
+                    const overlayGapGuides = overlayItems.map(
+                      ({
+                        item,
+                        overlayMode,
+                        ownerId,
+                        frontKind,
+                        overlayTopGapPx,
+                        overlayBetweenGapPxForHeight,
+                        overlayBetweenGapPxForWidth,
+                        overlayLeftGapPx,
+                        overlayRightGapPx,
+                        overlayDrawerHeights,
+                        overlayDoorWidths,
+                        overlaySource,
+                      }) =>
+                        renderCabinetBuilderOverlayGapGuides({
+                          item,
+                          ownerId,
+                          frontKind,
+                          overlayMode,
+                          overlayTopGapValue: Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0,
+                          overlayBetweenGapValue: Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0,
+                          overlayLeftGapValue: Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0,
+                          overlayRightGapValue: Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0,
+                          overlayTopGapPx,
+                          overlayBetweenGapPxForHeight,
+                          overlayBetweenGapPxForWidth,
+                          overlayLeftGapPx,
+                          overlayRightGapPx,
+                          overlayDoorWidths,
+                          overlayDrawerHeights,
+                          scale,
+                          editingGapPill: cabinetBuilderEditingGapPill,
+                          onStartEditGap: startCabinetBuilderOverlayGapEdit,
+                          onChangeEditGapValue: (value) =>
+                            setCabinetBuilderEditingGapPill((prev) => (prev ? { ...prev, value } : prev)),
+                          onCommitEditGap: commitCabinetBuilderOverlayGapEdit,
+                          onCancelEditGap: cancelCabinetBuilderOverlayGapEdit,
+                          placedLabelRects: overlayGapPlacementRects,
+                          blockedRects: activeGapBlockedRects,
+                        }),
+                    );
+                    return (
+                      <div
+                        ref={cabinetBuilderDrawingViewportRef}
+                        tabIndex={0}
+                        onKeyDown={handleCabinetBuilderDrawingKeyDown}
+                        onWheelCapture={handleCabinetBuilderDrawingWheelCapture}
+                        onMouseEnter={clearCabinetBuilderHoverClearTimeout}
+                        onMouseLeave={() => {
+                          const activeHoverId =
+                            cabinetBuilderSelectedHoverActive ? selectedPiece?.id || "" : cabinetBuilderHoveredWallId || selectedPiece?.id || "";
+                          if (activeHoverId) scheduleCabinetBuilderWallHoverClear(activeHoverId);
+                        }}
+                        onMouseDownCapture={(event) => {
+                          event.currentTarget.focus();
+                        }}
+                        onContextMenu={handleCabinetBuilderMeasureContextMenu}
+                        className={`group relative mx-auto w-full overflow-visible outline-none ${isTabletProjectViewport ? "max-w-[760px]" : isMobileProjectViewport ? "max-w-[560px]" : "max-w-[1120px]"} ${cabinetBuilderMeasureMode ? "cursor-crosshair" : ""}`}
+                      >
+                      <div
+                        className="relative w-full"
+                        style={{
+                          transform: `scale(${cabinetBuilderDrawingZoom})`,
+                          transformOrigin: "center top",
+                        }}
+                      >
+                      <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} className="h-auto w-full overflow-visible">
+                        {cabinetBuilderMeasureMode ? (
+                          <rect
+                            x={0}
+                            y={0}
+                            width={viewWidth}
+                            height={viewHeight}
+                            fill="transparent"
+                            style={{ cursor: "crosshair" }}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              recordCabinetBuilderMeasurePoint(event.clientX, event.clientY, viewWidth, viewHeight, pieceLayouts);
+                            }}
+                          />
+                        ) : null}
+                        {pieceLayouts.map((item) => (
+                          <g
+                            key={`cab_wall_piece_${item.id}`}
+                            data-cabinet-piece="1"
+                            onMouseEnter={() => markCabinetBuilderWallHovered(item.id)}
+                            onMouseDown={(event) => {
+                              if (cabinetBuilderMeasureMode) return;
+                              if (event.button !== 0) return;
+                              event.preventDefault();
+                              beginCabinetBuilderWallDrag(item.id, dragViewport, event.clientX);
+                            }}
+                            onClick={() => {
+                              if (cabinetBuilderMeasureMode) return;
+                              setCabinetBuilderSelectedWallId(item.id);
+                              setCabinetBuilderSelectedHoverActive(true);
+                              setCabinetBuilderAttachmentMenuSide(null);
+                            }}
+                            onDoubleClick={() => {
+                              if (cabinetBuilderMeasureMode || productionReadOnly) return;
+                              setCabinetBuilderSelectedWallId(item.id);
+                              setCabinetBuilderSelectedHoverActive(true);
+                              setCabinetBuilderAttachmentMenuSide(null);
+                              openCabinetBuilderEditForSelected("edit");
+                            }}
+                            style={{ cursor: cabinetBuilderMeasureMode ? "crosshair" : cabinetBuilderDragActive && cabinetBuilderDraggingWallId === item.id ? "grabbing" : "grab" }}
+                          >
+                            <rect
+                              x={item.x}
+                              y={item.y}
+                              width={item.width}
+                              height={item.height}
+                              fill={item.palette.fill}
+                            />
+                            {(() => {
+                              const piecePrimaryText = numericDimensionText(item.row.height);
+                              const pieceSecondaryText = numericDimensionText(
+                                item.kind === "panel"
+                                  ? String(item.row.depth || "").trim() || String(item.row.width || "").trim()
+                                  : String(item.row.width || "").trim(),
+                              );
+                              const canShowInlineLabel = item.width >= 96 && item.height >= 28;
+                              const canShowStackedLabel = item.width >= 54 && item.height >= 86;
+                              return canShowInlineLabel ? (
+                                <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={item.palette.text}>
+                                  {`${piecePrimaryText} x ${pieceSecondaryText}`}
+                                </text>
+                              ) : canShowStackedLabel ? (
+                                <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" fontSize="11" fill={item.palette.text}>
+                                  <tspan x={item.x + item.width / 2} dy="-1.1em">{piecePrimaryText}</tspan>
+                                  <tspan x={item.x + item.width / 2} dy="1.15em">x</tspan>
+                                  <tspan x={item.x + item.width / 2} dy="1.15em">{pieceSecondaryText}</tspan>
+                                </text>
+                              ) : (
+                                <></>
+                              );
+                            })()}
+                          </g>
+                        ))}
+                        {pieceLayouts.map((item, index) => {
+                          const isSelected = item.id === selectedPiece?.id;
+                          const previousItem = pieceLayouts[index - 1] ?? null;
+                          const nextItem = pieceLayouts[index + 1] ?? null;
+                          const topBottomStroke = isSelected ? "#2563EB" : item.palette.stroke;
+                          const leftStroke = item.palette.stroke;
+                          const sharedRightStroke = nextItem?.palette.stroke ?? item.palette.stroke;
+                          const sharesLaneWithPrevious = Boolean(previousItem && previousItem.position === item.position);
+                          const sharesColumnWithNext = Boolean(
+                            nextItem &&
+                              nextItem.position === item.position &&
+                              Math.abs(nextItem.x - item.x) < 0.5 &&
+                              Math.abs(nextItem.width - item.width) < 0.5,
+                          );
+                          const leftBoundaryTop = item.y;
+                          const leftBoundaryBottom = item.y + item.height;
+                          const rightBoundaryTouchesNext = Boolean(
+                            nextItem &&
+                              nextItem.position !== item.position &&
+                              Math.abs((item.x + item.width) - nextItem.x) < 0.5,
+                          );
+                          const sharedBoundaryTop = sharesColumnWithNext
+                            ? item.y
+                            : rightBoundaryTouchesNext
+                              ? Math.min(item.y, nextItem.y)
+                              : item.y;
+                          const sharedBoundaryBottom = sharesColumnWithNext
+                            ? item.y + item.height
+                            : rightBoundaryTouchesNext
+                              ? Math.max(item.y + item.height, nextItem.y + nextItem.height)
+                              : item.y + item.height;
+                          return (
+                            <g key={`cab_wall_outline_${item.id}`} pointerEvents="none">
+                              <line x1={item.x} x2={item.x + item.width} y1={item.y} y2={item.y} stroke={topBottomStroke} strokeWidth="1" />
+                              <line x1={item.x} x2={item.x + item.width} y1={item.y + item.height} y2={item.y + item.height} stroke={topBottomStroke} strokeWidth="1" />
+                              {!previousItem || sharesLaneWithPrevious || Math.abs((previousItem.x + previousItem.width) - item.x) > 0.5 ? (
+                                <line x1={item.x} x2={item.x} y1={leftBoundaryTop} y2={leftBoundaryBottom} stroke={leftStroke} strokeWidth="1" />
+                              ) : null}
+                              <line
+                                x1={item.x + item.width}
+                                x2={item.x + item.width}
+                                y1={sharedBoundaryTop}
+                                y2={sharedBoundaryBottom}
+                                stroke={sharedRightStroke}
+                                strokeWidth="1"
+                              />
+                            </g>
+                          );
+                        })}
+                        {selectedPiece ? (
+                          <g key={`cab_wall_selected_outline_${selectedPiece.id}`} pointerEvents="none">
+                            <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y} stroke="#2563EB" strokeWidth="1" />
+                            <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y + selectedPiece.height} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
+                            <line x1={selectedPiece.x} x2={selectedPiece.x} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
+                            <line x1={selectedPiece.x + selectedPiece.width} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
+                          </g>
+                        ) : null}
+                        {overlayItems.map(({ item, overlaySource, overlayMode, overlayStroke, overlayFill, overlayText, overlayTopGapPx, overlayBetweenGapPxForHeight, overlayBetweenGapPxForWidth, overlayLeftGapPx, overlayRightGapPx, overlayClearHeight, overlayClearWidth, overlayDrawerHeights, overlayDoorWidths }) =>
+                          overlayMode === "drawer"
+                            ? (() => {
+                                let currentY = item.y + overlayTopGapPx;
+                                const innerX = item.x + overlayLeftGapPx;
+                                const innerWidth = Math.max(0, item.width - overlayLeftGapPx - overlayRightGapPx);
+                                return overlayDrawerHeights.heights.map((pieceHeight, index) => {
+                                  const pieceScaledHeight = pieceHeight * scale;
+                                  const y = currentY;
+                                  currentY += pieceScaledHeight + overlayBetweenGapPxForHeight;
+                                  return (
+                                    <g key={`cab_draw_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
+                                      <rect x={innerX} y={y} width={innerWidth} height={pieceScaledHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
+                                      <text x={innerX + innerWidth / 2} y={y + pieceScaledHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
+                                        {`${formatDoorFrontHeightValue(pieceHeight)} x ${formatDoorFrontHeightValue(overlayClearWidth)}`}
+                                      </text>
+                                    </g>
+                                  );
+                                });
+                              })()
+                            : overlayMode === "door"
+                              ? (() => {
+                                  let currentX = item.x + overlayLeftGapPx;
+                                  const frontY = item.y + overlayTopGapPx;
+                                  const frontHeight = Math.max(0, item.height - overlayTopGapPx);
+                                  return overlayDoorWidths.widths.map((pieceWidth, index) => {
+                                    const pieceScaledWidth = pieceWidth * scale;
+                                    const x = currentX;
+                                    currentX += pieceScaledWidth + overlayBetweenGapPxForWidth;
+                                    return (
+                                      <g key={`cab_door_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
+                                        <rect x={x} y={frontY} width={pieceScaledWidth} height={frontHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
+                                        <text x={x + pieceScaledWidth / 2} y={frontY + frontHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
+                                          {`${formatDoorFrontHeightValue(pieceWidth)} x ${formatDoorFrontHeightValue(overlayClearHeight)}`}
+                                        </text>
+                                      </g>
+                                    );
+                                  });
+                                })()
+                              : null,
+                        )}
+                        {overlayGapGuides.flatMap((guide) => guide.lines)}
+                        {overlayGapGuides.flatMap((guide) => guide.labels)}
+                        {cabinetBuilderMeasurePoints.length >= 1 ? (
+                          <>
+                            {cabinetBuilderMeasurePoints.length === 2 ? (
+                              <line
+                                x1={cabinetBuilderMeasurePoints[0].x}
+                                y1={cabinetBuilderMeasurePoints[0].y}
+                                x2={cabinetBuilderMeasurePoints[1].x}
+                                y2={cabinetBuilderMeasurePoints[1].y}
+                                stroke="#16A34A"
+                                strokeWidth="2"
+                                strokeDasharray="6 4"
+                              />
+                            ) : null}
+                            {cabinetBuilderMeasurePoints.map((point, index) => (
+                              <g key={`cab_measure_point_${index}`} pointerEvents="none">
+                                <circle cx={point.x} cy={point.y} r="3.5" fill="#16A34A" stroke="#FFFFFF" strokeWidth="1.5" />
+                                <text x={point.x + 10} y={point.y - 10} fontSize="11" fontWeight="700" fill="#14532D">
+                                  {index === 0 ? "A" : "B"}
+                                </text>
+                              </g>
+                            ))}
+                            {cabinetBuilderMeasurePoints.length === 2 && measureLengthText ? (
+                              <g pointerEvents="none">
+                                <rect
+                                  x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2 - 34}
+                                  y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2 - 16}
+                                  width="68"
+                                  height="24"
+                                  rx="8"
+                                  fill="#FFFFFF"
+                                  stroke="#16A34A"
+                                />
+                                <text
+                                  x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2}
+                                  y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2}
+                                  textAnchor="middle"
+                                  dominantBaseline="middle"
+                                  fontSize="11"
+                                  fontWeight="700"
+                                  fill="#14532D"
+                                >
+                                  {measureLengthText}
+                                </text>
+                              </g>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </svg>
+                      {activeLabelPiece ? (
+                        <div
+                          className="pointer-events-none absolute z-10 rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm"
+                          style={{
+                            left: `${((activeLabelPiece.x + activeLabelPiece.width / 2) / viewWidth) * 100}%`,
+                            top: `${(activeLabelPiece.y / viewHeight) * 100}%`,
+                            transform: "translate(-50%, calc(-100% - 8px))",
+                            borderColor: activeLabelPiece.palette.badgeBorder,
+                            backgroundColor: activeLabelPiece.palette.badgeBg,
+                            color: activeLabelPiece.palette.badgeText,
+                          }}
+                        >
+                          {activeLabelPiece.row.name || "Cabinet"}
+                        </div>
+                      ) : null}
+                      {selectedPiece ? (() => {
+                        const canShowInlineLabel = selectedPiece.width >= 96 && selectedPiece.height >= 28;
+                        const canShowStackedLabel = selectedPiece.width >= 54 && selectedPiece.height >= 86;
+                        if (canShowInlineLabel || canShowStackedLabel) return null;
+                        const selectedPrimaryText = numericDimensionText(selectedPiece.row.height);
+                        const selectedSecondaryText = numericDimensionText(
+                          selectedPiece.kind === "panel"
+                            ? String(selectedPiece.row.depth || "").trim() || String(selectedPiece.row.width || "").trim()
+                            : String(selectedPiece.row.width || "").trim(),
+                        );
+                        return (
+                          <div
+                            className="pointer-events-none absolute z-20 rounded-[8px] border px-2 py-1 text-[11px] font-bold shadow-sm"
+                            style={{
+                              left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
+                              top: `${((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100}%`,
+                              transform: "translate(-50%, -50%)",
+                              borderColor: selectedPiece.palette.badgeBorder,
+                              backgroundColor: selectedPiece.palette.badgeBg,
+                              color: selectedPiece.palette.badgeText,
+                            }}
+                          >
+                            <div className="text-center leading-[1.05]">
+                              <div>{selectedPrimaryText}</div>
+                              <div>x</div>
+                              <div>{selectedSecondaryText}</div>
+                            </div>
+                          </div>
+                        );
+                      })() : null}
+                      {!cabinetBuilderMeasureMode ? (
+                      <div className="pointer-events-none absolute inset-0">
+                        <div
+                          className="pointer-events-auto absolute z-10"
+                          style={{
+                            left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
+                            top: `${(((selectedPiece.y + selectedPiece.height + 42 > viewHeight ? selectedPiece.y : selectedPiece.y + selectedPiece.height)) / viewHeight) * 100}%`,
+                            transform:
+                              selectedPiece.y + selectedPiece.height + 42 > viewHeight
+                                ? "translate(-50%, calc(-100% - 8px))"
+                                : "translate(-50%, 8px)",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            disabled={productionReadOnly}
+                            onClick={() => openCabinetBuilderEditForSelected("edit")}
+                            className="rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm disabled:opacity-55"
+                            style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: textColor }}
+                          >
+                            {`Edit ${selectedPiece?.row.name || "Cabinet"}`}
+                          </button>
+                        </div>
+                        {(() => {
+                          const selectedPieceHasDualAttachZones =
+                            selectedPiece.kind === "panel" && selectedPiece.panelHeightMode === "tall";
+                          const attachmentAnchors: Array<{
+                            side: "left" | "right";
+                            align: "top" | "bottom";
+                            leftPercent: number;
+                            topPercent: number;
+                            transform: string;
+                            menuClassName: string;
+                          }> = selectedPieceHasDualAttachZones
+                            ? [
+                                {
+                                  side: "left",
+                                  align: "top",
+                                  leftPercent: (selectedPiece.x / viewWidth) * 100,
+                                  topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
+                                  transform: "translate(calc(-100% - 10px), -50%)",
+                                  menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                },
+                                {
+                                  side: "left",
+                                  align: "bottom",
+                                  leftPercent: (selectedPiece.x / viewWidth) * 100,
+                                  topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
+                                  transform: "translate(calc(-100% - 10px), -50%)",
+                                  menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                },
+                                {
+                                  side: "right",
+                                  align: "top",
+                                  leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
+                                  topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
+                                  transform: "translate(10px, -50%)",
+                                  menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                },
+                                {
+                                  side: "right",
+                                  align: "bottom",
+                                  leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
+                                  topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
+                                  transform: "translate(10px, -50%)",
+                                  menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                },
+                              ]
+                            : [
+                                {
+                                  side: "left",
+                                  align: "bottom",
+                                  leftPercent: (selectedPiece.x / viewWidth) * 100,
+                                  topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
+                                  transform: "translate(calc(-100% - 10px), -50%)",
+                                  menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                },
+                                {
+                                  side: "right",
+                                  align: "bottom",
+                                  leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
+                                  topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
+                                  transform: "translate(10px, -50%)",
+                                  menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                },
+                              ];
+                          return attachmentAnchors.map((anchor) => {
+                            const menuOpen =
+                              cabinetBuilderAttachmentMenuSide === anchor.side &&
+                              cabinetBuilderAttachmentMenuAlign === anchor.align;
+                            const showAnchor = cabinetBuilderSelectedHoverActive || menuOpen;
+                            return (
+                              <div
+                                key={`cab_attach_${anchor.side}_${anchor.align}`}
+                                className="absolute transition-opacity duration-150"
+                                onMouseEnter={holdCabinetBuilderSelectedHover}
+                                onMouseLeave={() => scheduleCabinetBuilderWallHoverClear(selectedPiece.id)}
+                                style={{
+                                  left: `${anchor.leftPercent}%`,
+                                  top: `${anchor.topPercent}%`,
+                                  transform: anchor.transform,
+                                  opacity: showAnchor ? 1 : 0,
+                                  pointerEvents: showAnchor ? "auto" : "none",
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  disabled={productionReadOnly}
+                                  onClick={() => {
+                                    const isOpen =
+                                      cabinetBuilderAttachmentMenuSide === anchor.side &&
+                                      cabinetBuilderAttachmentMenuAlign === anchor.align;
+                                    setCabinetBuilderAttachmentMenuSide(isOpen ? null : anchor.side);
+                                    setCabinetBuilderAttachmentMenuAlign(anchor.align);
+                                  }}
+                                  className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] hover:bg-[#CFEBDD] disabled:opacity-55"
+                                >
+                                  <img src="/plus.png" alt="" className="block object-contain" style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }} />
+                                </button>
+                                {menuOpen ? (
+                                  <div className={anchor.menuClassName} style={{ borderColor: fieldBorder, backgroundColor: fieldBg }}>
+                                    <button type="button" disabled={productionReadOnly} onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "cabinet", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold disabled:opacity-55" style={{ borderColor: fieldBorder, color: textColor }}>
+                                      Cabinet
+                                    </button>
+                                    <button type="button" disabled={productionReadOnly} onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "panel", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold disabled:opacity-55" style={{ borderColor: fieldBorder, color: textColor }}>
+                                      Panel
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                    );
+                  })()}
+                </div>
+              </div>
+              {renderCabinetBuilderAttachedPartsList(cabinetBuilderDraft, {
+                wrapperBorder: fieldBorder,
+                wrapperBg: fieldBg,
+                buttonBorder: fieldBorder,
+                buttonBg: "rgba(255,255,255,0.72)",
+                buttonText: textColor,
+              })}
+            </div>
+          )}
+        </div>
+
+        {cabinetBuilderCreateOpen ? renderCabinetBuilderOverlay(
+            <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+              {(() => {
+                const isPanelAttachment = cabinetBuilderPendingAttachment?.kind === "panel";
+                const grainAllowed = productionBoardAllowsGrainForValue(String(pendingCabinetBuilderRow.board || "").trim());
+                return (
+                  <>
+                    <p className="text-[22px] font-extrabold text-[#12345B]">
+                      {isPanelAttachment ? "Add Panel" : cabinetBuilderPendingAttachment ? "Add Cabinet" : "New Cabinet"}
+                    </p>
+                    {isPanelAttachment ? (
+                      <div className="mt-5 space-y-4">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                            <input
+                              type="checkbox"
+                              checked={cabinetBuilderPendingPanelHeightMode === "base"}
+                              onChange={() => {
+                                setCabinetBuilderPendingPanelHeightMode("base");
+                                setCabinetBuilderPendingPanelHeightError("");
+                                setPendingCabinetBuilderRow((prev) => ({
+                                  ...prev,
+                                  height: getCabinetBuilderPanelHeightBaselineText("base", cabinetBuilderPendingPanelSpanMode),
+                                }));
+                              }}
+                            />
+                            Base
+                          </label>
+                          <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                            <input
+                              type="checkbox"
+                              checked={cabinetBuilderPendingPanelHeightMode === "tall"}
+                              onChange={() => {
+                                setCabinetBuilderPendingPanelHeightMode("tall");
+                                setCabinetBuilderPendingPanelHeightError("");
+                                setPendingCabinetBuilderRow((prev) => ({
+                                  ...prev,
+                                  height: getCabinetBuilderPanelHeightBaselineText("tall", cabinetBuilderPendingPanelSpanMode),
+                                }));
+                              }}
+                            />
+                            Tall
+                          </label>
+                          <div className="min-w-[220px] flex-1 space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Panel Span</p>
+                            <BoardPillDropdown
+                              value={cabinetBuilderPendingPanelSpanMode}
+                              options={["floorToCeiling", "floorToTopOfCab", "bottomToCeiling", "bottomToTopOfCab"]}
+                              disabled={productionReadOnly}
+                              bg="#FFFFFF"
+                              border="#D8DEE8"
+                              text="#0F172A"
+                              size="default"
+                              getSize={() => ""}
+                              getLabel={(value) =>
+                                value === "floorToCeiling"
+                                  ? "Floor to ceiling"
+                                  : value === "floorToTopOfCab"
+                                    ? "Floor to top of cab"
+                                    : value === "bottomToCeiling"
+                                      ? "Bottom of cab to ceiling"
+                                      : "Bottom of cab to top of cab"
+                              }
+                              onChange={(value) => {
+                                const nextSpanMode =
+                                  value === "floorToCeiling" || value === "floorToTopOfCab" || value === "bottomToCeiling" || value === "bottomToTopOfCab"
+                                    ? value
+                                    : "bottomToTopOfCab";
+                                setCabinetBuilderPendingPanelSpanMode(nextSpanMode);
+                                setCabinetBuilderPendingPanelHeightError("");
+                                setPendingCabinetBuilderRow((prev) => ({
+                                  ...prev,
+                                  height: getCabinetBuilderPanelHeightBaselineText(cabinetBuilderPendingPanelHeightMode, nextSpanMode),
+                                }));
+                              }}
+                            />
+                          </div>
+                        </div>
+                        {cabinetBuilderPendingPanelNeedsExtraHeight ? (
+                          <p className="text-[12px] font-semibold text-[#B42318]">
+                            Add extra height above {cabinetBuilderPendingPanelBaselineText} before creating this panel.
+                          </p>
+                        ) : null}
+                        {cabinetBuilderPendingPanelHeightError ? (
+                          <p className="text-[12px] font-semibold text-[#B42318]">{cabinetBuilderPendingPanelHeightError}</p>
+                        ) : null}
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                            <BoardPillDropdown
+                              value={pendingCabinetBuilderRow.board}
+                              options={cutlistBoardOptions}
+                              disabled={productionReadOnly}
+                              bg="#FFFFFF"
+                              border="#D8DEE8"
+                              text="#0F172A"
+                              getSize={boardSizeFor}
+                              getLabel={boardDisplayLabel}
+                              onChange={(value) => {
+                                const defaults = defaultClashingForPartType(experimentalPanelPartType, value);
+                                const grainAllowedForBoard = productionBoardAllowsGrainForValue(String(value || "").trim());
+                                setPendingCabinetBuilderRow((prev) => ({
+                                  ...prev,
+                                  board: value,
+                                  clashLeft: defaults.left,
+                                  clashRight: defaults.right,
+                                  clashing: joinClashing(defaults.left, defaults.right),
+                                  grain: grainAllowedForBoard ? prev.grain : false,
+                                  grainValue: grainAllowedForBoard ? prev.grainValue : "",
+                                }));
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
+                            <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                          </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-4">
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                            <input value={pendingCabinetBuilderRow.height} onChange={(e) => { setCabinetBuilderPendingPanelHeightError(""); setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) })); }} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                            <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                            <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                            <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) || "" }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                          </div>
+                        </div>
+                        <div className={`grid gap-3 ${grainAllowed ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Long</p>
+                            <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashLeft: value, clashing: joinClashing(value, String(prev.clashRight ?? "")) }))} />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Short</p>
+                            <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashRight: value, clashing: joinClashing(String(prev.clashLeft ?? ""), value) }))} />
+                          </div>
+                          {grainAllowed ? (
+                            <div className="space-y-1">
+                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                              <BoardPillDropdown value={String(pendingCabinetBuilderRow.grainValue ?? "")} options={grainDimensionOptionsForRow(pendingCabinetBuilderRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, grainValue: value, grain: Boolean(String(value).trim()) }))} />
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                          <textarea value={pendingCabinetBuilderRow.information} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, information: e.target.value }))} className="min-h-[86px] w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-2 text-[13px]" />
+                        </div>
+                      </div>
+                        ) : (
+                          <div className="mt-5 space-y-3">
+                            <label className="inline-flex items-center gap-2 text-[13px] font-semibold text-[#334155]">
+                              <input
+                                type="checkbox"
+                                checked={cabinetBuilderPendingNewCabinet}
+                                onChange={(e) => setCabinetBuilderPendingNewCabinet(e.target.checked)}
+                              />
+                              New Cabinet
+                            </label>
+                            <div className="grid gap-3 sm:grid-cols-3">
+                              <div className="space-y-1">
+                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Cabinet Name</p>
+                                <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                <input value={pendingCabinetBuilderRow.height} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                              </div>
+                            </div>
+                            {cabinetBuilderPendingNewCabinet ? (
+                              <div className="space-y-4">
+                                <div className="grid gap-3 md:grid-cols-2">
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                                    <BoardPillDropdown
+                                      value={pendingCabinetBuilderRow.board}
+                                      options={cutlistBoardOptions}
+                                      disabled={productionReadOnly}
+                                      bg="#FFFFFF"
+                                      border="#D8DEE8"
+                                      text="#0F172A"
+                                      getSize={boardSizeFor}
+                                      getLabel={boardDisplayLabel}
+                                      onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, board: value }))}
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                                    <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                  </div>
+                                </div>
+                                <div className="grid gap-3 md:grid-cols-4">
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                                    <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
+                                    <input value={pendingCabinetBuilderRow.fixedShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
+                                    <input value={pendingCabinetBuilderRow.adjustableShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                                    <input value={pendingCabinetBuilderRow.information ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, information: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                  </div>
+                                </div>
+                                <div className="grid gap-3 md:grid-cols-2">
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Drilling</p>
+                                    <select value={pendingCabinetBuilderRow.fixedShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
+                                      <option value="No">No</option>
+                                      <option value="Yes">Yes</option>
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Drilling</p>
+                                    <select value={pendingCabinetBuilderRow.adjustableShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
+                                      <option value="No">No</option>
+                                      <option value="Yes">Yes</option>
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                  </>
+                );
+              })()}
+              <div className="mt-5 flex justify-end gap-2">
+                <button type="button" onClick={() => { setCabinetBuilderPendingAttachment(null); setCabinetBuilderPendingPanelHeightError(""); setCabinetBuilderCreateOpen(false); }} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
+                <button type="button" onClick={confirmCabinetBuilderCreate} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Create</button>
+              </div>
+            </div>
+        ) : null}
+
+        {cabinetBuilderEditOpen && cabinetBuilderDraft ? renderCabinetBuilderOverlay(
+            <div
+              className="flex w-full max-w-[760px] flex-col overflow-hidden rounded-[24px] bg-white px-0 pb-3 pt-0 shadow-2xl"
+              style={{ height: "min(86vh, 820px)" }}
+            >
+              <div className="relative border-b border-[#D8DEE8] bg-[#F8FAFC] px-12 py-3 text-center">
+                <button
+                  type="button"
+                  disabled={productionReadOnly}
+                  onClick={promptDeleteSelectedCabinetBuilderCabinet}
+                  className="absolute left-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] disabled:opacity-55"
+                >
+                  <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
+                </button>
+                <p className="text-[22px] font-extrabold text-[#12345B]">{selectedEditableCabinet?.row.name || "Cabinet"}</p>
+                <button type="button" onClick={() => setCabinetBuilderEditOpen(false)} className="absolute right-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
+              </div>
+              <div
+                className="mt-0 grid w-full grid-flow-col auto-cols-fr items-end gap-0 border-b border-[#D8DEE8] px-0"
+                style={{
+                  backgroundColor: cabinetBuilderEditPanelBg,
+                }}
+              >
+                {cabinetBuilderEditTabs.map((tab) => {
+                  const isActive = cabinetBuilderEditTab === tab.id;
+                  const bg = tab.color ? (isActive ? tab.color : lightenHex(tab.color, 0.18)) : isActive ? "#DDF2E7" : "#FFFFFF";
+                  const border = tab.color ? tab.color : isActive ? "#BFE8CF" : "#D8DEE8";
+                  const text = tab.color ? "#000000" : isActive ? "#14532D" : "#334155";
+                  const isFirst = tab.id === cabinetBuilderEditTabs[0]?.id;
+                  const isLast = tab.id === cabinetBuilderEditTabs[cabinetBuilderEditTabs.length - 1]?.id;
+                  return (
+                      <button
+                        key={`cab_edit_tab_${tab.id}`}
+                        type="button"
+                        onClick={() => setCabinetBuilderEditTab(tab.id)}
+                        className="-mb-px -ml-px first:ml-0 w-full rounded-t-none rounded-b-none border px-4 py-2 text-center text-[12px] font-bold"
+                        style={{
+                          borderTopColor: border,
+                          borderBottomColor: isActive ? bg : "#D8DEE8",
+                          borderLeftColor: border,
+                          borderRightColor: border,
+                          backgroundColor: bg,
+                          color: text,
+                          opacity: 1,
+                        }}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+              </div>
+              <div
+                className="min-h-0 flex-1 overflow-y-auto rounded-b-[16px] border border-t-0 px-3 py-3"
+                style={{ borderColor: cabinetBuilderEditPanelBorder, backgroundColor: cabinetBuilderEditPanelBg }}
+              >
+              <label className={`${cabinetBuilderEditTab === "edit" ? "inline-flex" : "hidden"} items-center gap-2 text-[13px] font-semibold text-[#334155]`}>
+                <input
+                  type="checkbox"
+                  checked={selectedEditableCabinet?.newCabinet ?? false}
+                  onChange={(e) => {
+                    setCabinetBuilderSelectedNewCabinet(e.target.checked);
+                    if (e.target.checked) {
+                      setCabinetBuilderEditTab("cabinet");
+                    } else if (cabinetBuilderEditTab === "cabinet") {
+                      setCabinetBuilderEditTab("edit");
+                    }
+                  }}
+                />
+                New Cabinet
+              </label>
+              {selectedEditableCabinet?.newCabinet ? (
+                <div className={`${cabinetBuilderEditTab === "cabinet" ? "mt-4 space-y-4" : "hidden"}`}>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                      <BoardPillDropdown value={selectedEditableCabinet?.row.board ?? ""} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderMainRow({ board: value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
+                      <input value={selectedEditableCabinet?.row.name ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                      <input value={selectedEditableCabinet?.row.height ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                      <input value={selectedEditableCabinet?.row.width ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                      <input value={selectedEditableCabinet?.row.depth ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                      <input value={selectedEditableCabinet?.row.quantity ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ quantity: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
+                      <input value={selectedEditableCabinet?.row.fixedShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ fixedShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
+                      <input value={selectedEditableCabinet?.row.adjustableShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ adjustableShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Drilling</p>
+                      <select value={selectedEditableCabinet?.row.fixedShelfDrilling ?? "No"} onChange={(e) => updateCabinetBuilderMainRow({ fixedShelfDrilling: normalizeDrillingValue(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
+                        <option value="No">No</option>
+                        <option value="Yes">Yes</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Drilling</p>
+                      <select value={selectedEditableCabinet?.row.adjustableShelfDrilling ?? "No"} onChange={(e) => updateCabinetBuilderMainRow({ adjustableShelfDrilling: normalizeDrillingValue(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
+                        <option value="No">No</option>
+                        <option value="Yes">Yes</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                    <textarea value={selectedEditableCabinet?.row.information ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ information: e.target.value })} className="min-h-[86px] w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-2 text-[13px]" />
+                  </div>
+                </div>
+              ) : null}
+              <div className={`${cabinetBuilderEditTab === "edit" ? "mt-5 rounded-[14px] border border-[#D8DEE8] p-3" : "hidden"}`}>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                    <input
+                      value={selectedEditableCabinet?.row.height ?? ""}
+                      onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })}
+                      className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                    <input
+                      value={selectedEditableCabinet?.row.width ?? ""}
+                      onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })}
+                      className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
+                    />
+                  </div>
+                </div>
+                <p className="mt-4 text-[12px] font-bold uppercase tracking-[1px] text-[#12345B]">Add parts inside this cabinet</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={productionReadOnly}
+                    onClick={ensureCabinetBuilderSelectedFronts}
+                    className="rounded-[8px] border px-2 py-1 text-[11px] font-bold disabled:opacity-55"
+                    style={{
+                      backgroundColor: partTypeColors[experimentalConfiguredFrontPartType] ?? "#CBD5E1",
+                      borderColor: partTypeColors[experimentalConfiguredFrontPartType] ?? "#CBD5E1",
+                      color: isLightHex(partTypeColors[experimentalConfiguredFrontPartType] ?? "#CBD5E1") ? "#1F2937" : "#F8FAFC",
+                    }}
+                  >
+                    Fronts
+                  </button>
+                  {partTypeOptions
+                    .filter((partType) => !isExperimentalCabinetBuilderPartType(partType) && partType !== experimentalConfiguredFrontPartType)
+                    .map((partType) => {
+                      const partColor = partTypeColors[partType] ?? "#CBD5E1";
+                      return (
+                        <button
+                          key={`cab_builder_child_${partType}`}
+                          type="button"
+                          disabled={productionReadOnly}
+                          onClick={() => {
+                            addCabinetBuilderChildRowAndOpenTab(partType);
+                          }}
+                          className="rounded-[8px] border px-2 py-1 text-[11px] font-bold disabled:opacity-55"
+                          style={{
+                            backgroundColor: partColor,
+                            borderColor: partColor,
+                            color: isLightHex(partColor) ? "#1F2937" : "#F8FAFC",
+                          }}
+                        >
+                          {partType}
+                        </button>
+                      );
+                    })}
+                </div>
+                {!(selectedEditableCabinet?.childRows.length ?? 0) ? (
+                  <p className="mt-4 text-[12px] text-[#64748B]">Add child parts here. They’ll each get their own tab.</p>
+                ) : null}
+              </div>
+              {selectedEditChild ? (
+                <div className="mt-5 space-y-3 rounded-[12px] border border-[#D8DEE8] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span
+                      className="inline-flex items-center rounded-[8px] border px-3 py-1.5 text-[11px] font-bold"
+                      style={{
+                        borderColor: partTypeColors[selectedEditChild.row.partType] ?? "#CBD5E1",
+                        backgroundColor: lightenHex(partTypeColors[selectedEditChild.row.partType] ?? "#CBD5E1", 0.18),
+                        color: "#000000",
+                      }}
+                    >
+                      {selectedEditChild.row.partType}
+                    </span>
+                    <button type="button" onClick={() => { removeCabinetBuilderChildRow(selectedEditChild.id); setCabinetBuilderEditTab("edit"); }} className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]">
+                      <X size={15} />
+                    </button>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                      <BoardPillDropdown value={selectedEditChild.row.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderChildRow(selectedEditChild.id, { board: value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
+                      <input value={selectedEditChild.row.name} onChange={(e) => updateCabinetBuilderChildRow(selectedEditChild.id, { name: e.target.value })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                      {isClassicDrawerRowLike(selectedEditChild.row) ? (
+                        <DrawerHeightDropdown
+                          value={String(selectedEditChild.row.height || "")}
+                          options={drawerHeightLetterOptions}
+                          disabled={productionReadOnly}
+                          bg="#FFFFFF"
+                          border="#D8DEE8"
+                          text="#0F172A"
+                          onAdd={(token) => addCabinetBuilderChildDrawerHeightToken(selectedEditChild.id, token)}
+                          onRemove={(token) => removeCabinetBuilderChildDrawerHeightToken(selectedEditChild.id, token)}
+                        />
+                      ) : (
+                        <input value={selectedEditChild.row.height} onChange={(e) => updateCabinetBuilderChildRow(selectedEditChild.id, { height: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                      <input value={selectedEditChild.row.width} onChange={(e) => updateCabinetBuilderChildRow(selectedEditChild.id, { width: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                      <input value={selectedEditChild.row.depth} onChange={(e) => updateCabinetBuilderChildRow(selectedEditChild.id, { depth: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                      <input value={selectedEditChild.row.quantity} disabled={isClassicDrawerRowLike(selectedEditChild.row)} onChange={(e) => updateCabinetBuilderChildRow(selectedEditChild.id, { quantity: numericOnlyText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px] disabled:opacity-90" />
+                    </div>
+                  </div>
+                  {!isCabinetryPartType(selectedEditChild.row.partType) ? (
+                    <div className={`grid gap-3 ${productionBoardAllowsGrainForValue(String(selectedEditChild.row.board || "").trim()) ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clashing Left</p>
+                        <BoardPillDropdown value={String(selectedEditChild.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(selectedEditChild.id, { clashLeft: value, clashing: joinClashing(value, String(selectedEditChild.row.clashRight ?? "")) })} />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clashing Right</p>
+                        <BoardPillDropdown value={String(selectedEditChild.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(selectedEditChild.id, { clashRight: value, clashing: joinClashing(String(selectedEditChild.row.clashLeft ?? ""), value) })} />
+                      </div>
+                      {productionBoardAllowsGrainForValue(String(selectedEditChild.row.board || "").trim()) ? (
+                        <div className="space-y-1">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                          <BoardPillDropdown value={String(selectedEditChild.row.grainValue ?? "")} options={grainDimensionOptionsForRow(selectedEditChild.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderChildRow(selectedEditChild.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                    <textarea value={selectedEditChild.row.information} onChange={(e) => updateCabinetBuilderChildRow(selectedEditChild.id, { information: e.target.value })} className="min-h-[72px] w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-2 text-[13px]" />
+                  </div>
+                </div>
+              ) : null}
+              {cabinetBuilderEditTab === "fronts"
+                ? (() => {
+                    const selectedFrontRow = selectedFrontRowForEdit;
+                    const frontKind = getCabinetBuilderSelectedFrontKind(cabinetBuilderDraft);
+                    if (!selectedFrontRow || !frontKind) return null;
+                    const grainAllowed = productionBoardAllowsGrainForValue(String(selectedFrontRow.board || "").trim());
+                    return (
+                      <div className="mt-5 space-y-4">
+                        {renderDoorModeConfigurator({
+                          mode: normalizeDoorModeValue(selectedFrontRow.doorMode),
+                          frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
+                          onModeChange: (mode) =>
+                            setCabinetBuilderSelectedFrontMode(mode),
+                          onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(frontKind, value),
+                          disabled: productionReadOnly,
+                          textColor: "#0F172A",
+                          borderColor: "#D8DEE8",
+                          fieldBg: "#FFFFFF",
+                          fieldText: "#0F172A",
+                          layout: "split-tabs",
+                        })}
+                        {grainAllowed ? (
+                          <div className="mx-auto w-full max-w-[240px] space-y-1">
+                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                            <BoardPillDropdown value={String(selectedFrontRow.grainValue ?? "")} options={grainDimensionOptionsForRow(selectedFrontRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(frontKind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
+                          </div>
+                        ) : null}
+                        <div className="flex justify-center">
+                          {renderDoorSetupDesigner({
+                            mode: normalizeDoorModeValue(selectedFrontRow.doorMode) === "drawer" ? "drawer" : "door",
+                            frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
+                            overallHeight: String(selectedFrontRow.height ?? ""),
+                            overallWidth: String(selectedFrontRow.width ?? ""),
+                            topGap: String(selectedFrontRow.doorTopGap ?? ""),
+                            betweenGap: String(selectedFrontRow.doorBetweenGap ?? ""),
+                            sideLeft: normalizeDoorSideValue(selectedFrontRow.doorSideLeft),
+                            sideRight: normalizeDoorSideValue(selectedFrontRow.doorSideRight),
+                            sideLeftGap: String(selectedFrontRow.doorSideLeftGap ?? ""),
+                            sideRightGap: String(selectedFrontRow.doorSideRightGap ?? ""),
+                            frontWidths: normalizeDoorFrontWidths(selectedFrontRow.doorFrontWidths, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                            frontWidthManual: normalizeDoorFrontWidthManual(selectedFrontRow.doorFrontWidthManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                            frontHeights: normalizeDoorFrontHeights(selectedFrontRow.doorFrontHeights, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                            frontHeightManual: normalizeDoorFrontHeightManual(selectedFrontRow.doorFrontHeightManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                            onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorTopGap", value),
+                            onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorBetweenGap", value),
+                            onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(frontKind, key, value),
+                            onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(frontKind, key, value),
+                            onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
+                            onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
+                            onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
+                            onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
+                            disabled: productionReadOnly,
+                            textColor: "#0F172A",
+                            borderColor: "#D8DEE8",
+                            fieldBg: "#FFFFFF",
+                            fieldText: "#0F172A",
+                            fillAvailableSpace: true,
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()
+                : null}
+              </div>
+            </div>
+        ) : null}
+        {cabinetBuilderDeleteConfirmOpen && cabinetBuilderActiveDeleteMeta ? renderCabinetBuilderOverlay(
+            <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+              <p className="text-[22px] font-extrabold text-[#12345B]">Are you sure?</p>
+              <p className="mt-3 text-[14px] text-[#475467]">
+                {cabinetBuilderActiveDeleteMeta.connectedPartsCount > 0
+                  ? `Deleting ${cabinetBuilderActiveDeleteMeta.name} will also remove ${cabinetBuilderActiveDeleteMeta.connectedPartsCount} connected part${cabinetBuilderActiveDeleteMeta.connectedPartsCount === 1 ? "" : "s"}.`
+                  : `Delete ${cabinetBuilderActiveDeleteMeta.name}?`}
+              </p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setCabinetBuilderDeleteConfirmOpen(false); setCabinetBuilderDeleteTargetOverride(null); }}
+                  className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={deleteSelectedCabinetBuilderCabinet}
+                  className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>,
+          ) : null}
+        {cabinetBuilderDeleteWallConfirmOpen ? renderCabinetBuilderOverlay(
+            <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+              <p className="text-[22px] font-extrabold text-[#12345B]">Delete Wall</p>
+              <p className="mt-3 text-[14px] text-[#475467]">Are you sure you want to delete this wall drawing?</p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCabinetBuilderDeleteWallConfirmOpen(false)}
+                  className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deleteCurrentCabinetBuilderWall()}
+                  className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
+                >
+                  Delete Wall
+                </button>
+              </div>
+            </div>,
+          ) : null}
+
+        {(cabinetBuilderDoorsOpen || cabinetBuilderDrawersOpen) && cabinetBuilderDraft ? renderCabinetBuilderOverlay(renderCabinetBuilderConfiguredFrontPopup()) : null}
+
+        {attachmentBeingEdited && cabinetBuilderDraft ? renderCabinetBuilderOverlay(
+            renderCabinetBuilderAttachmentEditPopup(attachmentBeingEdited)
+        ) : null}
+      </div>
+    );
   };
   const removeInitialCutlistRow = async (id: string) => {
     if (!salesAccess.edit) return;
@@ -14053,9 +17758,9 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    const pendingSet = new Set(pending);
-    const removedRows = cutlistRows.filter((row) => pendingSet.has(row.id));
-    const nextRows = cutlistRows.filter((row) => !pendingSet.has(row.id));
+    const pendingSet = expandCabinetBuilderLinkedRowIds(pending, cutlistRows);
+    const removedRows = cutlistRows.filter((row) => pendingSet.has(String(row.id || "").trim()));
+    const nextRows = cutlistRows.filter((row) => !pendingSet.has(String(row.id || "").trim()));
     setCutlistRows(nextRows);
     for (const removed of removedRows) {
       logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType });
@@ -14442,16 +18147,45 @@ export default function ProjectDetailsPage() {
     setEditingCellValue(nextValue);
   };
 
+  const cabinetBuilderGeneratedRowsByContainerId = useMemo(() => {
+    const grouped: Record<string, CutlistRow[]> = {};
+    for (const row of cutlistRows) {
+      if (row.cabinetBuilderRowKind !== "generated") continue;
+      const key = String(row.cabinetBuilderContainerId || "").trim();
+      if (!key) continue;
+      grouped[key] = [...(grouped[key] ?? []), row];
+    }
+    return grouped;
+  }, [cutlistRows]);
+  const groupCabinetBuilderGeneratedRows = useCallback((rows: CutlistRow[]) => {
+    const groups: Array<{ ownerName: string; rows: CutlistRow[] }> = [];
+    const byOwner = new Map<string, CutlistRow[]>();
+    const order: string[] = [];
+    for (const row of rows) {
+      const ownerName = String(row.parentName || row.name || "Cabinet").trim() || "Cabinet";
+      if (!byOwner.has(ownerName)) {
+        byOwner.set(ownerName, []);
+        order.push(ownerName);
+      }
+      byOwner.get(ownerName)?.push(row);
+    }
+    for (const ownerName of order) {
+      groups.push({ ownerName, rows: byOwner.get(ownerName) ?? [] });
+    }
+    return groups;
+  }, []);
+
   const effectiveCutlistRows = useMemo(() => {
     // Keep heavy Production derivations tied to committed rows only.
     // Live cell edits still render through the active input itself, but we avoid
     // recalculating Nesting/CNC/Order summaries on every keystroke.
-    return cutlistRows;
+    return cutlistRows.filter((row) => row.cabinetBuilderRowKind !== "container");
   }, [cutlistRows]);
 
   const visibleCutlistRows = useMemo(() => {
     const search = cutlistSearch.trim().toLowerCase();
-    return effectiveCutlistRows.filter((row) => {
+    return cutlistRows.filter((row) => {
+      if (row.cabinetBuilderRowKind === "generated") return false;
       const roomOk = cutlistRoomFilter === "Project Cutlist" ? true : row.room === cutlistRoomFilter;
       const typeOk = cutlistPartTypeFilter === "All Part Types" || row.partType === cutlistPartTypeFilter;
       const searchOk =
@@ -14459,7 +18193,7 @@ export default function ProjectDetailsPage() {
         [row.name, row.board, row.partType, row.information].some((v) => String(v || "").toLowerCase().includes(search));
       return roomOk && typeOk && searchOk;
     });
-  }, [effectiveCutlistRows, cutlistPartTypeFilter, cutlistSearch, cutlistRoomFilter]);
+  }, [cutlistRows, cutlistPartTypeFilter, cutlistSearch, cutlistRoomFilter]);
   const visibleCutlistDraftRows = useMemo(
     () =>
       cutlistDraftRows.filter((row) =>
@@ -14549,6 +18283,7 @@ export default function ProjectDetailsPage() {
     () => (isDoorPartType(cutlistEntry.partType) ? selectedDoorModeValue(cutlistEntry.doorMode) : ""),
     [cutlistEntry.doorMode, cutlistEntry.partType, isDoorPartType],
   );
+  const manualCutlistUsesPlainDoorRows = cutlistEntryMode === "manual";
   const singleEntrySuppressConfiguredHeightWarning = useMemo(
     () => isDoorPartType(cutlistEntry.partType) && normalizeDoorModeValue(cutlistEntry.doorMode) !== "manual",
     [cutlistEntry.doorMode, cutlistEntry.partType, isDoorPartType],
@@ -14578,7 +18313,1320 @@ export default function ProjectDetailsPage() {
     const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
     return numericDimensionText(productionForm.cabinetry.baseCabHeight || toStr(projectSettings.baseCabHeight));
   }, [productionForm.cabinetry.baseCabHeight, project]);
-
+  const experimentalCabinetBuilderPartType = useMemo(
+    () =>
+      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "cabinet") ??
+      partTypeOptions.find((option) => isCabinetryPartType(option)) ??
+      "Cabinet",
+    [isCabinetryPartType, partTypeOptions],
+  );
+  const experimentalPanelPartType = useMemo(
+    () =>
+      partTypeOptions.find((option) => isPanelPartType(option)) ??
+      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "panels") ??
+      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "panel") ??
+      "Panel",
+    [isPanelPartType, partTypeOptions],
+  );
+  const experimentalExtraPartType = useMemo(
+    () =>
+      partTypeOptions.find((option) => isExtraPartType(option)) ??
+      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "extra") ??
+      "Extra",
+    [isExtraPartType, partTypeOptions],
+  );
+  const experimentalConfiguredFrontPartType = useMemo(
+    () =>
+      partTypeOptions.find((option) => isDoorPartType(option)) ??
+      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "front") ??
+      "Front",
+    [isDoorPartType, partTypeOptions],
+  );
+  const isExperimentalCabinetBuilderPartType = useCallback(
+    (partType: string) =>
+      String(partType || "").trim().toLowerCase() ===
+      String(experimentalCabinetBuilderPartType || "").trim().toLowerCase(),
+    [experimentalCabinetBuilderPartType],
+  );
+  const cabinetBuilderEntryPartType = useMemo(
+    () => String(activeCutlistPartType || cutlistEntry.partType || "").trim(),
+    [activeCutlistPartType, cutlistEntry.partType],
+  );
+  const cabinetBuilderEntryActive = useMemo(
+    () => cutlistEntryMode === "wallBuilder",
+    [
+      cutlistEntryMode,
+    ],
+  );
+  const isCabinetBuilderContainerRow = useCallback(
+    (row: Partial<CutlistRow> | null | undefined) =>
+      Boolean(row && row.cabinetBuilderRowKind === "container" && isExperimentalCabinetBuilderPartType(String(row.partType || ""))),
+    [isExperimentalCabinetBuilderPartType],
+  );
+  const isCabinetBuilderGeneratedRow = useCallback(
+    (row: Partial<CutlistRow> | null | undefined) =>
+      Boolean(row && row.cabinetBuilderRowKind === "generated" && String(row.cabinetBuilderContainerId || "").trim()),
+    [],
+  );
+  const setCutlistEntryModeWithUi = useCallback(
+    (mode: "manual" | "wallBuilder") => {
+      setCutlistEntryMode(mode);
+      if (mode === "manual") {
+        setCabinetBuilderCreateOpen(false);
+        setCabinetBuilderAttachmentMenuSide(null);
+        setCabinetBuilderHoveredWallId("");
+        if (isExperimentalCabinetBuilderPartType(activeCutlistPartType)) {
+          setActiveCutlistPartType("");
+        }
+        if (isExperimentalCabinetBuilderPartType(cutlistEntry.partType)) {
+          setCutlistEntry((prev) => ({ ...prev, partType: "" }));
+        }
+        return;
+      }
+      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+    },
+    [activeCutlistPartType, cutlistEntry.partType, experimentalCabinetBuilderPartType, isExperimentalCabinetBuilderPartType],
+  );
+  const cabinetBuilderSideName = useCallback((side: "left" | "right", baseName: string) => {
+    const cleanBase = String(baseName || "").trim() || "Cabinet";
+    return `${side === "left" ? "LH" : "RH"} ${cleanBase}`;
+  }, []);
+  const buildCabinetBuilderWallPieces = useCallback(
+    (draft: CabinetBuilderDraft): CabinetBuilderWallPiece[] => buildCabinetBuilderWallPiecesModel(draft),
+    [],
+  );
+  const getCabinetBuilderSelectedWallPiece = useCallback(
+    (draft: CabinetBuilderDraft) => getCabinetBuilderSelectedWallPieceModel(draft, cabinetBuilderSelectedWallId),
+    [cabinetBuilderSelectedWallId],
+  );
+  const getCabinetBuilderSelectedConfiguredRow = useCallback(
+    (draft: CabinetBuilderDraft, kind: "doorsRow" | "drawersRow") =>
+      getCabinetBuilderSelectedConfiguredRowModel(draft, kind, cabinetBuilderSelectedWallId),
+    [cabinetBuilderSelectedWallId],
+  );
+  const getCabinetBuilderSelectedFrontRow = useCallback(
+    (draft: CabinetBuilderDraft) => getCabinetBuilderSelectedFrontRowModel(draft, cabinetBuilderSelectedWallId),
+    [cabinetBuilderSelectedWallId],
+  );
+  const getCabinetBuilderSelectedFrontKind = useCallback(
+    (draft: CabinetBuilderDraft): "doorsRow" | "drawersRow" | null =>
+      getCabinetBuilderSelectedFrontKindModel(draft, cabinetBuilderSelectedWallId),
+    [cabinetBuilderSelectedWallId],
+  );
+  const getCabinetBuilderSelectedEditableCabinet = useCallback(
+    (draft: CabinetBuilderDraft): CabinetBuilderEditableCabinetSelection | null =>
+      getCabinetBuilderSelectedEditableCabinetModel(draft, cabinetBuilderSelectedWallId),
+    [cabinetBuilderSelectedWallId],
+  );
+  const getCabinetBuilderDescendantAttachmentIds = useCallback(
+    (attachments: CabinetBuilderAttachmentDraft[], rootId: string) => {
+      const descendantIds = new Set<string>();
+      const queue = [rootId];
+      while (queue.length) {
+        const currentId = queue.shift();
+        if (!currentId) continue;
+        attachments.forEach((attachment) => {
+          if ((attachment.parentWallId || "main") === currentId && !descendantIds.has(attachment.id)) {
+            descendantIds.add(attachment.id);
+            queue.push(attachment.id);
+          }
+        });
+      }
+      return descendantIds;
+    },
+    [],
+  );
+  const getCabinetBuilderDeleteDescendantIds = useCallback(
+    (
+      draft: CabinetBuilderDraft,
+      selectedWall: Pick<CabinetBuilderWallPiece, "id" | "isMain" | "kind">,
+    ) => getCabinetBuilderDeleteDescendantIdsModel(),
+    [],
+  );
+  const buildCabinetBuilderDeleteMeta = useCallback(
+    (draft: CabinetBuilderDraft, wallId: string): CabinetBuilderDeleteMeta | null =>
+      buildCabinetBuilderDeleteMetaModel(draft, wallId, cabinetBuilderSelectedWallId),
+    [cabinetBuilderSelectedWallId],
+  );
+  const cabinetBuilderSelectedDeleteMeta = useMemo(() => {
+    if (!cabinetBuilderDraft) return null;
+    return buildCabinetBuilderDeleteMeta(cabinetBuilderDraft, cabinetBuilderSelectedWallId || "main");
+  }, [buildCabinetBuilderDeleteMeta, cabinetBuilderDraft, cabinetBuilderSelectedWallId]);
+  const cabinetBuilderActiveDeleteMeta = cabinetBuilderDeleteTargetOverride ?? cabinetBuilderSelectedDeleteMeta;
+  const buildCabinetBuilderEditTabs = useCallback(
+    (draft: CabinetBuilderDraft) => {
+      const selectedEditableCabinet = getCabinetBuilderSelectedEditableCabinet(draft);
+      const selectedFrontRow = getCabinetBuilderSelectedFrontRow(draft);
+      const tabs: Array<{ id: string; label: string; color: string | null }> = [
+        { id: "edit", label: "Edit", color: null },
+      ];
+      if (selectedEditableCabinet?.newCabinet) {
+        tabs.push({
+          id: "cabinet",
+          label: selectedEditableCabinet.row.partType || "Cabinet",
+          color: partTypeColors[selectedEditableCabinet.row.partType || experimentalCabinetBuilderPartType] ?? "#CBD5E1",
+        });
+      }
+      if (selectedFrontRow) {
+        tabs.push({
+          id: "fronts",
+          label: selectedFrontRow.partType || "Fronts",
+          color: partTypeColors[selectedFrontRow.partType || experimentalConfiguredFrontPartType] ?? "#CBD5E1",
+        });
+      }
+      const partTypeCounts: Record<string, number> = {};
+      for (const child of selectedEditableCabinet?.childRows ?? []) {
+        const labelBase = child.row.partType || "Part";
+        partTypeCounts[labelBase] = (partTypeCounts[labelBase] ?? 0) + 1;
+        const suffix = partTypeCounts[labelBase] > 1 ? ` ${partTypeCounts[labelBase]}` : "";
+        tabs.push({
+          id: `child:${child.id}`,
+          label: `${labelBase}${suffix}`,
+          color: partTypeColors[labelBase] ?? "#CBD5E1",
+        });
+      }
+      return tabs;
+    },
+    [
+      experimentalCabinetBuilderPartType,
+      experimentalConfiguredFrontPartType,
+      getCabinetBuilderSelectedEditableCabinet,
+      getCabinetBuilderSelectedFrontRow,
+      partTypeColors,
+    ],
+  );
+  const getCabinetBuilderWallPieceRawWidth = useCallback(
+    (item: CabinetBuilderWallPiece) => getCabinetBuilderWallPieceRawWidthModel(item, boardThicknessFor),
+    [boardThicknessFor],
+  );
+  const getCabinetBuilderLaneRawWidth = useCallback(
+    (laneItems: CabinetBuilderWallPiece[]) => getCabinetBuilderLaneRawWidthModel(laneItems, getCabinetBuilderWallPieceRawWidth),
+    [getCabinetBuilderWallPieceRawWidth],
+  );
+  const getCabinetBuilderWallPieceHorizontalTrack = useCallback(
+    (item: CabinetBuilderWallPiece) => getCabinetBuilderWallPieceHorizontalTrackModel(item),
+    [],
+  );
+  const buildCabinetBuilderPreviewWallPieces = useCallback(
+    (
+      draft: CabinetBuilderDraft,
+      draggingId: string,
+      pointerX: number | null,
+      viewport: { viewWidth: number; viewHeight: number; paddingX: number; paddingY: number } | null,
+    ): CabinetBuilderWallPiece[] =>
+      buildCabinetBuilderPreviewWallPiecesModel({
+        draft,
+        draggingId,
+        pointerX,
+        viewport,
+        getRawWidth: getCabinetBuilderWallPieceRawWidth,
+      }),
+    [getCabinetBuilderWallPieceRawWidth],
+  );
+  const applyCabinetBuilderWallOrder = useCallback(
+    (draft: CabinetBuilderDraft, previewPieces: CabinetBuilderWallPiece[]): CabinetBuilderDraft =>
+      applyCabinetBuilderWallOrderModel(draft, previewPieces),
+    [],
+  );
+  const createCabinetBuilderBaseRow = useCallback(
+    (partType: string, overrides?: Partial<CutlistEntryDraft>): CutlistEntryDraft => {
+      const nextBoard = String(overrides?.board ?? cabinetBuilderDraft?.row.board ?? cutlistBoardOptions[0] ?? "");
+      const defaults = defaultClashingForPartType(partType, nextBoard);
+      const clashLeft = String(overrides?.clashLeft ?? defaults.left ?? "");
+      const clashRight = String(overrides?.clashRight ?? defaults.right ?? "");
+      return {
+        ...createEmptyCutlistEntry(),
+        partType,
+        board: nextBoard,
+        name: String(overrides?.name ?? cabinetBuilderDraft?.row.name ?? ""),
+        height: String(overrides?.height ?? resolvedProductionBaseCabHeight ?? ""),
+        width: String(overrides?.width ?? ""),
+        depth: String(overrides?.depth ?? ""),
+        quantity: String(overrides?.quantity ?? "1"),
+        clashLeft,
+        clashRight,
+        clashing: joinClashing(clashLeft, clashRight),
+        grain: Boolean(overrides?.grain ?? false),
+        grainValue: String(overrides?.grainValue ?? ""),
+        information: String(overrides?.information ?? ""),
+        fixedShelf: String(overrides?.fixedShelf ?? ""),
+        adjustableShelf: String(overrides?.adjustableShelf ?? ""),
+        fixedShelfDrilling: normalizeDrillingValue(overrides?.fixedShelfDrilling),
+        adjustableShelfDrilling: normalizeDrillingValue(overrides?.adjustableShelfDrilling),
+        hingesUp: normalizeDoorHingeValues(overrides?.hingesUp),
+        hingesDown: normalizeDoorHingeValues(overrides?.hingesDown),
+      };
+    },
+    [cabinetBuilderDraft?.row.board, cabinetBuilderDraft?.row.name, cutlistBoardOptions, resolvedProductionBaseCabHeight],
+  );
+  const getCabinetBuilderSelectedFrontDefaultSideGaps = useCallback(() => {
+    const fullGapNumber = Number.parseFloat(String(projectGapAllowancesDraft.baseVerticalGapDoorsPanels || "").replace(/[^\d.-]/g, "")) || 0;
+    const fullGap = numericDecimalText(String(fullGapNumber));
+    const halfGap = numericDecimalText(String(fullGapNumber / 2));
+    if (!cabinetBuilderDraft) return { left: fullGap, right: fullGap };
+    const selectedWall = getCabinetBuilderSelectedWallPiece(cabinetBuilderDraft);
+    if (!selectedWall) return { left: fullGap, right: fullGap };
+    const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
+    const lanePositions = Array.from(new Set(wallPieces.map((piece) => Number(piece.position)))).sort((a, b) => a - b);
+    const selectedLaneIndex = lanePositions.findIndex((position) => position === Number(selectedWall.position));
+    const classifyLaneGap = (position: number | undefined) => {
+      if (position === undefined) return fullGap;
+      const lanePieces = wallPieces.filter((piece) => Number(piece.position) === position);
+      if (!lanePieces.length) return fullGap;
+      return lanePieces.some((piece) => piece.kind === "panel") ? fullGap : halfGap;
+    };
+    return {
+      left: classifyLaneGap(selectedLaneIndex > 0 ? lanePositions[selectedLaneIndex - 1] : undefined),
+      right: classifyLaneGap(selectedLaneIndex >= 0 && selectedLaneIndex < lanePositions.length - 1 ? lanePositions[selectedLaneIndex + 1] : undefined),
+    };
+  }, [
+    buildCabinetBuilderWallPieces,
+    cabinetBuilderDraft,
+    getCabinetBuilderSelectedWallPiece,
+    projectGapAllowancesDraft.baseVerticalGapDoorsPanels,
+  ]);
+  const createConfiguredCabinetFrontRow = useCallback(
+    (mode: "door" | "drawer", overrides?: Partial<CutlistEntryDraft>): CutlistEntryDraft => {
+      const board = String(overrides?.board ?? cabinetBuilderDraft?.row.board ?? cutlistBoardOptions[0] ?? "");
+      const width = String(overrides?.width ?? cabinetBuilderDraft?.row.width ?? "");
+      const height = String(overrides?.height ?? cabinetBuilderDraft?.row.height ?? resolvedProductionBaseCabHeight ?? "");
+      const cabinetHeightNumber = Number.parseFloat(String(height || "").replace(/[^\d.-]/g, "")) || 0;
+      const baseCabHeightNumber = Number.parseFloat(String(resolvedProductionBaseCabHeight || "").replace(/[^\d.-]/g, "")) || 0;
+      const isBaseHeightCabinet = baseCabHeightNumber > 0 && cabinetHeightNumber <= baseCabHeightNumber + 0.01;
+      const topGap =
+        mode === "door"
+          ? isBaseHeightCabinet
+            ? projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer
+            : productionForm.cabinetry.topScribers
+              ? projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers
+              : projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers
+          : projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer;
+      const betweenGap =
+        mode === "door"
+          ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
+          : productionForm.hardware.wrapOverHandles
+            ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
+            : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
+      const sideGaps = getCabinetBuilderSelectedFrontDefaultSideGaps();
+      const defaults = defaultClashingForPartType(experimentalConfiguredFrontPartType, board);
+      const frontCount = normalizeDoorFrontCountValue(overrides?.doorFrontCount || "1") || "1";
+      const frontCountNumber = Number.parseInt(frontCount, 10) || 1;
+      const rebalancedWidths =
+        mode === "door"
+          ? rebalanceDoorFrontWidths(
+              normalizeDoorFrontWidths(overrides?.doorFrontWidths, frontCountNumber),
+              width,
+              String(overrides?.doorSideLeftGap ?? sideGaps.left),
+              String(overrides?.doorSideRightGap ?? sideGaps.right),
+              numericOnlyText(String(overrides?.doorBetweenGap ?? betweenGap)),
+              normalizeDoorFrontWidthManual(overrides?.doorFrontWidthManual, frontCountNumber),
+            )
+          : { widths: [], manual: [] as boolean[] };
+      const rebalancedHeights =
+        mode === "drawer"
+          ? rebalanceDoorFrontHeights(
+              normalizeDoorFrontHeights(overrides?.doorFrontHeights, frontCountNumber),
+              height,
+              numericOnlyText(String(overrides?.doorTopGap ?? topGap)),
+              numericOnlyText(String(overrides?.doorBetweenGap ?? betweenGap)),
+              normalizeDoorFrontHeightManual(overrides?.doorFrontHeightManual, frontCountNumber),
+            )
+          : { heights: [], manual: [] as boolean[] };
+      const configuredPartType =
+        String(overrides?.partType ?? experimentalConfiguredFrontPartType ?? "").trim() ||
+        experimentalConfiguredFrontPartType;
+      return {
+        ...createEmptyCutlistEntry(),
+        partType: configuredPartType,
+        board,
+        name: String(overrides?.name ?? cabinetBuilderDraft?.row.name ?? ""),
+        height,
+        width,
+        depth: String(overrides?.depth ?? ""),
+        quantity: String(overrides?.quantity ?? "1"),
+        clashLeft: String(overrides?.clashLeft ?? defaults.left ?? ""),
+        clashRight: String(overrides?.clashRight ?? defaults.right ?? ""),
+        clashing: joinClashing(String(overrides?.clashLeft ?? defaults.left ?? ""), String(overrides?.clashRight ?? defaults.right ?? "")),
+        grain: Boolean(overrides?.grain ?? false),
+        grainValue: String(overrides?.grainValue ?? ""),
+        information: String(overrides?.information ?? ""),
+        doorMode: mode,
+        doorFrontCount: frontCount,
+        doorTopGap: numericOnlyText(String(overrides?.doorTopGap ?? topGap)),
+        doorBetweenGap: numericOnlyText(String(overrides?.doorBetweenGap ?? betweenGap)),
+        doorSideLeft: normalizeDoorSideValue(overrides?.doorSideLeft),
+        doorSideRight: normalizeDoorSideValue(overrides?.doorSideRight),
+        doorSideLeftGap: String(overrides?.doorSideLeftGap ?? sideGaps.left),
+        doorSideRightGap: String(overrides?.doorSideRightGap ?? sideGaps.right),
+        doorFrontWidths: rebalancedWidths.widths,
+        doorFrontWidthManual: rebalancedWidths.manual,
+        doorFrontHeights: rebalancedHeights.heights,
+        doorFrontHeightManual: rebalancedHeights.manual,
+        hingesUp: normalizeDoorHingeValues(overrides?.hingesUp),
+        hingesDown: normalizeDoorHingeValues(overrides?.hingesDown),
+      };
+    },
+    [
+      cabinetBuilderDraft?.row.board,
+      cabinetBuilderDraft?.row.height,
+      cabinetBuilderDraft?.row.name,
+      cabinetBuilderDraft?.row.width,
+      cutlistBoardOptions,
+      experimentalConfiguredFrontPartType,
+      productionForm.cabinetry.topScribers,
+      productionForm.hardware.wrapOverHandles,
+      projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer,
+      projectGapAllowancesDraft.baseHorizontalGapNormalHandles,
+      projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles,
+      getCabinetBuilderSelectedFrontDefaultSideGaps,
+      projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers,
+      projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers,
+      projectGapAllowancesDraft.tallVerticalGapDoorsPanels,
+      resolvedProductionBaseCabHeight,
+    ],
+  );
+  const getCabinetBuilderPanelBaseHeight = useCallback(
+    (mode: CabinetBuilderPanelHeightMode) =>
+      getCabinetBuilderPanelBaseHeightModel(
+        mode,
+        String(productionForm.cabinetry.tallCabHeight || ""),
+        String(resolvedProductionBaseCabHeight || ""),
+      ),
+    [productionForm.cabinetry.tallCabHeight, resolvedProductionBaseCabHeight],
+  );
+  const getCabinetBuilderPanelHeightBaseline = useCallback(
+    (
+      heightMode: CabinetBuilderPanelHeightMode,
+      spanMode: CabinetBuilderPanelSpanMode,
+    ) =>
+      getCabinetBuilderPanelHeightBaselineModel(
+        heightMode,
+        spanMode,
+        String(productionForm.cabinetry.tallCabHeight || ""),
+        String(resolvedProductionBaseCabHeight || ""),
+        String(productionForm.cabinetry.footHeight || ""),
+      ),
+    [productionForm.cabinetry.footHeight, productionForm.cabinetry.tallCabHeight, resolvedProductionBaseCabHeight],
+  );
+  const getCabinetBuilderPanelHeightBaselineText = useCallback(
+    (
+      heightMode: CabinetBuilderPanelHeightMode,
+      spanMode: CabinetBuilderPanelSpanMode,
+    ) => numericDimensionText(String(getCabinetBuilderPanelHeightBaseline(heightMode, spanMode))),
+    [getCabinetBuilderPanelHeightBaseline],
+  );
+  const getCabinetBuilderWallPieceVerticalBounds = useCallback(
+    (item: CabinetBuilderWallPiece, rawHeight: number): { top: number; bottom: number } =>
+      getCabinetBuilderWallPieceVerticalBoundsModel({
+        item,
+        rawHeight,
+        wallPieces: cabinetBuilderDraft ? buildCabinetBuilderWallPieces(cabinetBuilderDraft) : [item],
+        tallCabHeight: String(productionForm.cabinetry.tallCabHeight || ""),
+        baseCabHeight: String(resolvedProductionBaseCabHeight || ""),
+        footHeight: String(productionForm.cabinetry.footHeight || ""),
+      }),
+    [buildCabinetBuilderWallPieces, cabinetBuilderDraft, productionForm.cabinetry.footHeight, productionForm.cabinetry.tallCabHeight, resolvedProductionBaseCabHeight],
+  );
+  const buildCabinetBuilderDisplayPieceLayouts = useCallback(
+    (
+      displayWallPieces: CabinetBuilderWallPiece[],
+      viewWidth: number,
+      viewHeight: number,
+      paddingX: number,
+      paddingY: number,
+      draft: CabinetBuilderDraft,
+    ) =>
+      buildCabinetBuilderDisplayPieceLayoutsModel({
+        displayWallPieces,
+        viewWidth,
+        viewHeight,
+        paddingX,
+        paddingY,
+        draft,
+        tallCabHeight: String(productionForm.cabinetry.tallCabHeight || ""),
+        baseCabHeight: String(resolvedProductionBaseCabHeight || ""),
+        footHeight: String(productionForm.cabinetry.footHeight || ""),
+        getRawWidth: getCabinetBuilderWallPieceRawWidth,
+        getLaneRawWidth: getCabinetBuilderLaneRawWidth,
+        getHorizontalTrack: getCabinetBuilderWallPieceHorizontalTrack,
+        getPalette: getCabinetBuilderPiecePalette,
+      }),
+    [
+      getCabinetBuilderLaneRawWidth,
+      getCabinetBuilderPiecePalette,
+      getCabinetBuilderWallPieceHorizontalTrack,
+      getCabinetBuilderWallPieceRawWidth,
+      productionForm.cabinetry.footHeight,
+      productionForm.cabinetry.tallCabHeight,
+      resolvedProductionBaseCabHeight,
+    ],
+  );
+  const cabinetBuilderPendingPanelNeedsExtraHeight =
+    cabinetBuilderPendingPanelSpanMode === "floorToCeiling" || cabinetBuilderPendingPanelSpanMode === "bottomToCeiling";
+  const cabinetBuilderPendingPanelBaselineText = getCabinetBuilderPanelHeightBaselineText(
+    cabinetBuilderPendingPanelHeightMode,
+    cabinetBuilderPendingPanelSpanMode,
+  );
+  const cabinetBuilderSelectedPartsPanel = cabinetBuilderDraft ? renderCabinetBuilderSelectedPartsPanel(cabinetBuilderDraft) : null;
+  const cabinetBuilderHasSelectedPartsPanel = Boolean(cabinetBuilderSelectedPartsPanel);
+  const createCabinetBuilderWall = useCallback(() => {
+    const name = String(cabinetBuilderWallName || "").trim();
+    if (!name) return;
+    setCutlistEntryMode("wallBuilder");
+    setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+    setActiveCabinetBuilderSavedDraftId("");
+    setCabinetBuilderWallName(name);
+    setCabinetBuilderWallCreated(true);
+    setCabinetBuilderDraft(null);
+    setCabinetBuilderSelectedWallId("main");
+    setCabinetBuilderHoveredWallId("");
+    setCabinetBuilderAttachmentMenuSide(null);
+  }, [cabinetBuilderWallName, experimentalCabinetBuilderPartType]);
+  const openCabinetBuilderCreate = useCallback(() => {
+    setCutlistEntryMode("wallBuilder");
+    setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+    setActiveCabinetBuilderSavedDraftId("");
+    setCabinetBuilderPendingNewCabinet(false);
+    setCabinetBuilderPendingPanelHeightMode("base");
+    setCabinetBuilderPendingPanelSpanMode("bottomToTopOfCab");
+    setCabinetBuilderPendingPanelHeightError("");
+    setPendingCabinetBuilderRow(
+      createCabinetBuilderBaseRow(experimentalCabinetBuilderPartType, {
+        name: "",
+        height: String(resolvedProductionBaseCabHeight || ""),
+        width: "",
+        quantity: "1",
+      }),
+    );
+    setCabinetBuilderPendingAttachment(null);
+    setCabinetBuilderSelectedWallId("main");
+    setCabinetBuilderHoveredWallId("");
+    setCabinetBuilderAttachmentMenuSide(null);
+    setCabinetBuilderCreateOpen(true);
+  }, [createCabinetBuilderBaseRow, experimentalCabinetBuilderPartType, resolvedProductionBaseCabHeight]);
+  const openSavedCabinetBuilderDraft = useCallback(
+    (savedDraft: SavedCabinetBuilderDraft) => {
+      setCabinetBuilderDraft(JSON.parse(JSON.stringify(savedDraft.draft)) as CabinetBuilderDraft);
+      setActiveCabinetBuilderSavedDraftId(savedDraft.id);
+      setCabinetBuilderWallName(String(savedDraft.name || "Wall").trim() || "Wall");
+      setCabinetBuilderWallCreated(true);
+      setCutlistEntryMode("wallBuilder");
+      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+      setCutlistEntryRoom(String(savedDraft.room || "Project Cutlist").trim() || "Project Cutlist");
+      setCutlistRoomFilter(String(savedDraft.room || "Project Cutlist").trim() || "Project Cutlist");
+      setCabinetBuilderSelectedWallId("main");
+      setCabinetBuilderHoveredWallId("");
+      setCabinetBuilderAttachmentMenuSide(null);
+      setCabinetBuilderEditOpen(false);
+      setCabinetBuilderCreateOpen(false);
+      setCabinetBuilderDoorsOpen(false);
+      setCabinetBuilderDrawersOpen(false);
+    },
+    [experimentalCabinetBuilderPartType],
+  );
+  const saveCurrentCabinetBuilderDraft = useCallback(async () => {
+    if (!cabinetBuilderDraft || !cabinetBuilderWallCreated) return false;
+    const id = activeCabinetBuilderSavedDraftId || `wall_draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const room = String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist";
+    const name = String(cabinetBuilderWallName || cabinetBuilderDraft.row.name || "Wall").trim() || "Wall";
+    const nextEntry: SavedCabinetBuilderDraft = {
+      id,
+      name,
+      room,
+      updatedAt: new Date().toISOString(),
+      draft: JSON.parse(JSON.stringify(cabinetBuilderDraft)) as CabinetBuilderDraft,
+    };
+    const existingIndex = savedCabinetBuilderDrafts.findIndex((draft) => draft.id === id);
+    const existingDraft = existingIndex >= 0 ? savedCabinetBuilderDrafts[existingIndex] : null;
+    if (
+      existingDraft &&
+      existingDraft.name === nextEntry.name &&
+      existingDraft.room === nextEntry.room &&
+      JSON.stringify(existingDraft.draft) === JSON.stringify(nextEntry.draft)
+    ) {
+      if (!activeCabinetBuilderSavedDraftId) {
+        setActiveCabinetBuilderSavedDraftId(id);
+      }
+      return true;
+    }
+    const nextDrafts =
+      existingIndex >= 0
+        ? savedCabinetBuilderDrafts.map((draft, index) => (index === existingIndex ? nextEntry : draft))
+        : [nextEntry, ...savedCabinetBuilderDrafts];
+    const ok = await persistSavedCabinetBuilderDrafts(nextDrafts);
+    if (!ok) return false;
+    setSavedCabinetBuilderDrafts(nextDrafts);
+    setActiveCabinetBuilderSavedDraftId(id);
+    setCabinetBuilderWallCreated(true);
+    logCutlistActivity(`${name} wall draft saved`, {
+      partType: experimentalCabinetBuilderPartType,
+      dedupeKey: `wall-draft-save:${id}:${nextEntry.updatedAt}`,
+    });
+    return true;
+  }, [
+    activeCabinetBuilderSavedDraftId,
+    cabinetBuilderDraft,
+    cabinetBuilderWallCreated,
+    cabinetBuilderWallName,
+    cutlistEntryRoom,
+    cutlistRoomFilter,
+    experimentalCabinetBuilderPartType,
+    persistSavedCabinetBuilderDrafts,
+    savedCabinetBuilderDrafts,
+  ]);
+  const autosaveCurrentCabinetBuilderDraft = useCallback(async () => {
+    if (!cabinetBuilderDraft || !cabinetBuilderWallCreated) return false;
+    const id = activeCabinetBuilderSavedDraftId || `wall_draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const room = String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist";
+    const name = String(cabinetBuilderWallName || cabinetBuilderDraft.row.name || "Wall").trim() || "Wall";
+    const nextEntry: SavedCabinetBuilderDraft = {
+      id,
+      name,
+      room,
+      updatedAt: new Date().toISOString(),
+      draft: JSON.parse(JSON.stringify(cabinetBuilderDraft)) as CabinetBuilderDraft,
+    };
+    const existingIndex = savedCabinetBuilderDrafts.findIndex((draft) => draft.id === id);
+    const existingDraft = existingIndex >= 0 ? savedCabinetBuilderDrafts[existingIndex] : null;
+    if (
+      existingDraft &&
+      existingDraft.name === nextEntry.name &&
+      existingDraft.room === nextEntry.room &&
+      JSON.stringify(existingDraft.draft) === JSON.stringify(nextEntry.draft)
+    ) {
+      if (!activeCabinetBuilderSavedDraftId) {
+        setActiveCabinetBuilderSavedDraftId(id);
+      }
+      return true;
+    }
+    const nextDrafts =
+      existingIndex >= 0
+        ? savedCabinetBuilderDrafts.map((draft, index) => (index === existingIndex ? nextEntry : draft))
+        : [nextEntry, ...savedCabinetBuilderDrafts];
+    const ok = await persistSavedCabinetBuilderDrafts(nextDrafts);
+    if (!ok) return false;
+    setSavedCabinetBuilderDrafts(nextDrafts);
+    setActiveCabinetBuilderSavedDraftId(id);
+    setCabinetBuilderWallCreated(true);
+    return true;
+  }, [
+    activeCabinetBuilderSavedDraftId,
+    cabinetBuilderDraft,
+    cabinetBuilderWallCreated,
+    cabinetBuilderWallName,
+    cutlistEntryRoom,
+    cutlistRoomFilter,
+    persistSavedCabinetBuilderDrafts,
+    savedCabinetBuilderDrafts,
+  ]);
+  const startNewCabinetBuilderWall = useCallback(async () => {
+    if (cabinetBuilderDraft && cabinetBuilderWallCreated) {
+      const ok = await autosaveCurrentCabinetBuilderDraft();
+      if (!ok) return;
+    }
+    setCabinetBuilderDeleteWallConfirmOpen(false);
+    setCabinetBuilderDraft(null);
+    setActiveCabinetBuilderSavedDraftId("");
+    setCabinetBuilderWallName("");
+    setCabinetBuilderWallCreated(false);
+    setCabinetBuilderSelectedWallId("main");
+    setCabinetBuilderHoveredWallId("");
+    setCabinetBuilderAttachmentMenuSide(null);
+    setCabinetBuilderCreateOpen(false);
+    setCabinetBuilderEditOpen(false);
+    setCabinetBuilderDoorsOpen(false);
+    setCabinetBuilderDrawersOpen(false);
+    setCabinetBuilderMeasureMode(false);
+    setCabinetBuilderMeasurePoints([]);
+    cabinetBuilderAutosaveSnapshotRef.current = "";
+  }, [
+    autosaveCurrentCabinetBuilderDraft,
+    cabinetBuilderDraft,
+    cabinetBuilderWallCreated,
+  ]);
+  const deleteCurrentCabinetBuilderWall = useCallback(async () => {
+    const normalizedId = String(activeCabinetBuilderSavedDraftId || "").trim();
+    if (normalizedId) {
+      const nextDrafts = savedCabinetBuilderDrafts.filter((draft) => draft.id !== normalizedId);
+      const ok = await persistSavedCabinetBuilderDrafts(nextDrafts);
+      if (!ok) return;
+      setSavedCabinetBuilderDrafts(nextDrafts);
+    }
+    setCabinetBuilderDeleteWallConfirmOpen(false);
+    setCabinetBuilderDraft(null);
+    setActiveCabinetBuilderSavedDraftId("");
+    setCabinetBuilderWallName("");
+    setCabinetBuilderWallCreated(false);
+    setCabinetBuilderSelectedWallId("main");
+    setCabinetBuilderHoveredWallId("");
+    setCabinetBuilderAttachmentMenuSide(null);
+    setCabinetBuilderCreateOpen(false);
+    setCabinetBuilderEditOpen(false);
+    setCabinetBuilderDoorsOpen(false);
+    setCabinetBuilderDrawersOpen(false);
+    setCabinetBuilderMeasureMode(false);
+    setCabinetBuilderMeasurePoints([]);
+    cabinetBuilderAutosaveSnapshotRef.current = "";
+  }, [
+    activeCabinetBuilderSavedDraftId,
+    persistSavedCabinetBuilderDrafts,
+    savedCabinetBuilderDrafts,
+  ]);
+  const cabinetBuilderAutosaveSnapshot = useMemo(() => {
+    if (!cabinetBuilderDraft || !cabinetBuilderWallCreated) return "";
+    return JSON.stringify({
+      name: String(cabinetBuilderWallName || "").trim(),
+      room: String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist",
+      draft: cabinetBuilderDraft,
+    });
+  }, [
+    cabinetBuilderDraft,
+    cabinetBuilderWallCreated,
+    cabinetBuilderWallName,
+    cutlistEntryRoom,
+    cutlistRoomFilter,
+  ]);
+  useEffect(() => {
+    if (!cabinetBuilderAutosaveSnapshot) {
+      cabinetBuilderAutosaveSnapshotRef.current = "";
+      return;
+    }
+    if (cabinetBuilderAutosaveSnapshot === cabinetBuilderAutosaveSnapshotRef.current) {
+      return;
+    }
+    const snapshot = cabinetBuilderAutosaveSnapshot;
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        const ok = await autosaveCurrentCabinetBuilderDraft();
+        if (ok) {
+          cabinetBuilderAutosaveSnapshotRef.current = snapshot;
+        }
+      })();
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [autosaveCurrentCabinetBuilderDraft, cabinetBuilderAutosaveSnapshot]);
+  const openCabinetBuilderAttachmentCreate = useCallback(
+    (side: "left" | "right", kind: CabinetBuilderAttachmentKind = "cabinet", align: "top" | "bottom" = "bottom") => {
+      const draft = cabinetBuilderDraft;
+      const wallPieces = draft ? buildCabinetBuilderWallPieces(draft) : [];
+      const selectedWall = wallPieces.find((item) => item.id === cabinetBuilderSelectedWallId) ?? wallPieces.find((item) => item.isMain) ?? null;
+      const inheritedAlign: "top" | "bottom" =
+        kind === "cabinet"
+          ? selectedWall?.kind === "cabinet"
+            ? (selectedWall.verticalAlign ?? "bottom")
+            : align
+          : align;
+      const inheritedName = selectedWall?.row.name || draft?.row.name || "";
+      const partType = kind === "panel" ? experimentalPanelPartType : experimentalCabinetBuilderPartType;
+      const panelHeightMode: "base" | "tall" = selectedWall && Number.parseFloat(String(selectedWall.row.height || "").replace(/[^\d.-]/g, "")) > (Number.parseFloat(String(resolvedProductionBaseCabHeight || "").replace(/[^\d.-]/g, "")) || 0) ? "tall" : "base";
+      const panelSpanMode: "floorToCeiling" | "floorToTopOfCab" | "bottomToCeiling" | "bottomToTopOfCab" = "bottomToTopOfCab";
+      const panelHeightSeed = getCabinetBuilderPanelHeightBaselineText(panelHeightMode, panelSpanMode);
+      const cabinetHeightSeed =
+        kind !== "panel" && selectedWall?.kind === "panel"
+          ? String(resolvedProductionBaseCabHeight || "")
+          : String(selectedWall?.row.height || draft?.row.height || resolvedProductionBaseCabHeight || "");
+      setCabinetBuilderPendingNewCabinet(false);
+      setCabinetBuilderPendingPanelHeightMode(panelHeightMode);
+      setCabinetBuilderPendingPanelSpanMode(panelSpanMode);
+      setCabinetBuilderPendingPanelHeightError("");
+      setPendingCabinetBuilderRow(
+        createCabinetBuilderBaseRow(partType, {
+          name: cabinetBuilderSideName(side, inheritedName),
+          height: kind === "panel" ? panelHeightSeed : cabinetHeightSeed,
+          width: kind === "panel" ? "" : String(selectedWall?.row.width || draft?.row.width || ""),
+          depth: kind === "panel" ? "" : String(selectedWall?.row.depth || draft?.row.depth || ""),
+          quantity: "1",
+          board: String(selectedWall?.row.board || draft?.row.board || cutlistBoardOptions[0] || ""),
+        }),
+      );
+      setCabinetBuilderPendingAttachment({ side, kind, align: inheritedAlign });
+      setCabinetBuilderHoveredWallId("");
+      setCabinetBuilderAttachmentMenuSide(null);
+      setCabinetBuilderAttachmentMenuAlign("bottom");
+      setCabinetBuilderCreateOpen(true);
+    },
+    [
+      buildCabinetBuilderWallPieces,
+      cabinetBuilderDraft,
+      cabinetBuilderSelectedWallId,
+      cabinetBuilderSideName,
+      createCabinetBuilderBaseRow,
+      cutlistBoardOptions,
+      experimentalCabinetBuilderPartType,
+      experimentalPanelPartType,
+      getCabinetBuilderPanelHeightBaselineText,
+      resolvedProductionBaseCabHeight,
+    ],
+  );
+  const openCabinetBuilderEditForSelected = useCallback(
+    (tab: string = "edit") => {
+      setCabinetBuilderDoorsOpen(false);
+      setCabinetBuilderDrawersOpen(false);
+      const selectedWall = cabinetBuilderDraft ? getCabinetBuilderSelectedWallPiece(cabinetBuilderDraft) : null;
+      if (selectedWall && !selectedWall.isMain && selectedWall.kind === "panel") {
+        setCabinetBuilderEditOpen(false);
+        setCabinetBuilderEditTab("edit");
+        setCabinetBuilderEditingAttachmentId(selectedWall.id);
+        return;
+      }
+      setCabinetBuilderEditingAttachmentId("");
+      setCabinetBuilderEditTab(tab);
+      setCabinetBuilderEditOpen(true);
+    },
+    [cabinetBuilderDraft, getCabinetBuilderSelectedWallPiece],
+  );
+  const ensureCabinetBuilderSelectedFronts = useCallback(() => {
+    setCabinetBuilderDraft((prev) =>
+      prev
+        ? ensureCabinetBuilderSelectedFrontsInDraftModel(
+            prev,
+            cabinetBuilderSelectedWallId,
+            createConfiguredCabinetFrontRow,
+          )
+        : prev,
+    );
+    openCabinetBuilderEditForSelected("fronts");
+  }, [
+    cabinetBuilderSelectedWallId,
+    createConfiguredCabinetFrontRow,
+    openCabinetBuilderEditForSelected,
+  ]);
+  const setCabinetBuilderSelectedFrontMode = useCallback(
+    (mode: "manual" | "door" | "drawer") => {
+      setCabinetBuilderDraft((prev) =>
+        prev
+          ? setCabinetBuilderSelectedFrontModeInDraftModel(
+              prev,
+              cabinetBuilderSelectedWallId,
+              mode,
+              normalizeDoorModeValue,
+              createConfiguredCabinetFrontRow,
+            )
+          : prev,
+      );
+    },
+    [
+      cabinetBuilderSelectedWallId,
+      createConfiguredCabinetFrontRow,
+      normalizeDoorModeValue,
+    ],
+  );
+  const deleteSelectedCabinetBuilderCabinet = useCallback(() => {
+    const deleteMeta = cabinetBuilderActiveDeleteMeta;
+    if (!deleteMeta) return;
+    setCabinetBuilderDraft((prev) => (prev ? removeCabinetBuilderWallByDeleteMetaModel(prev, deleteMeta) : prev));
+    setCabinetBuilderDeleteConfirmOpen(false);
+    setCabinetBuilderDeleteTargetOverride(null);
+    setCabinetBuilderEditOpen(false);
+    setCabinetBuilderEditingAttachmentId("");
+    setCabinetBuilderHoveredWallId("");
+    setCabinetBuilderAttachmentMenuSide(null);
+    setCabinetBuilderSelectedWallId(deleteMeta.isMain ? "main" : deleteMeta.nextSelectedWallId);
+  }, [cabinetBuilderActiveDeleteMeta]);
+  const promptDeleteCabinetBuilderWallId = useCallback(
+    (wallId: string) => {
+      if (!cabinetBuilderDraft || productionReadOnly) return;
+      const deleteMeta = buildCabinetBuilderDeleteMeta(cabinetBuilderDraft, wallId);
+      if (!deleteMeta) return;
+      setCabinetBuilderSelectedWallId(deleteMeta.id);
+      setCabinetBuilderDeleteTargetOverride(deleteMeta);
+      if (deleteMeta.requiresConfirm) {
+        setCabinetBuilderDeleteConfirmOpen(true);
+        return;
+      }
+      setCabinetBuilderDeleteConfirmOpen(false);
+      setCabinetBuilderEditingAttachmentId("");
+      setCabinetBuilderEditOpen(false);
+      setCabinetBuilderHoveredWallId("");
+      setCabinetBuilderAttachmentMenuSide(null);
+      setCabinetBuilderDraft((prev) => (prev ? removeCabinetBuilderWallByDeleteMetaModel(prev, deleteMeta) : prev));
+      setCabinetBuilderDeleteTargetOverride(null);
+      setCabinetBuilderSelectedWallId(deleteMeta.isMain ? "main" : deleteMeta.nextSelectedWallId);
+    },
+    [buildCabinetBuilderDeleteMeta, cabinetBuilderDraft, productionReadOnly],
+  );
+  const promptDeleteSelectedCabinetBuilderCabinet = useCallback(() => {
+    const deleteMeta = cabinetBuilderSelectedDeleteMeta;
+    if (!deleteMeta || productionReadOnly) return;
+    setCabinetBuilderDeleteTargetOverride(null);
+    if (deleteMeta.requiresConfirm) {
+      setCabinetBuilderDeleteConfirmOpen(true);
+      return;
+    }
+    deleteSelectedCabinetBuilderCabinet();
+  }, [cabinetBuilderSelectedDeleteMeta, deleteSelectedCabinetBuilderCabinet, productionReadOnly]);
+  const confirmCabinetBuilderCreate = useCallback(() => {
+    const pendingKind = cabinetBuilderPendingAttachment?.kind ?? null;
+    const pendingPartType = pendingKind === "panel" ? experimentalPanelPartType : experimentalCabinetBuilderPartType;
+    const pendingPanelBaseline =
+      pendingKind === "panel"
+        ? getCabinetBuilderPanelHeightBaseline(cabinetBuilderPendingPanelHeightMode, cabinetBuilderPendingPanelSpanMode)
+        : 0;
+    const normalizedPendingRow = createCabinetBuilderBaseRow(pendingPartType, {
+      ...pendingCabinetBuilderRow,
+      name: String(pendingCabinetBuilderRow.name || "").trim(),
+      height: numericDimensionText(String(pendingCabinetBuilderRow.height || resolvedProductionBaseCabHeight || "")),
+      width: numericDimensionText(String(pendingCabinetBuilderRow.width || "")),
+      depth: numericDimensionText(String(pendingCabinetBuilderRow.depth || "")),
+      quantity: numericOnlyText(String(pendingCabinetBuilderRow.quantity || "1")) || "1",
+      clashLeft: String(pendingCabinetBuilderRow.clashLeft || "").trim(),
+      clashRight: String(pendingCabinetBuilderRow.clashRight || "").trim(),
+      clashing: joinClashing(
+        String(pendingCabinetBuilderRow.clashLeft || "").trim(),
+        String(pendingCabinetBuilderRow.clashRight || "").trim(),
+      ),
+      information: String(pendingCabinetBuilderRow.information || ""),
+      grainValue: String(pendingCabinetBuilderRow.grainValue || ""),
+      grain: Boolean(String(pendingCabinetBuilderRow.grainValue || "").trim()),
+    });
+    if (pendingKind === "panel") {
+      const enteredHeight = Number.parseFloat(String(normalizedPendingRow.height || "").replace(/[^\d.-]/g, "")) || 0;
+      const needsExtraHeight =
+        cabinetBuilderPendingPanelSpanMode === "floorToCeiling" || cabinetBuilderPendingPanelSpanMode === "bottomToCeiling";
+      if (needsExtraHeight && enteredHeight <= pendingPanelBaseline) {
+        setCabinetBuilderPendingPanelHeightError(
+          `Increase height above ${numericDimensionText(String(pendingPanelBaseline))} for the selected panel span.`,
+        );
+        return;
+      }
+    }
+    setCabinetBuilderPendingPanelHeightError("");
+    const pendingAttachment = cabinetBuilderPendingAttachment;
+    if (pendingKind && cabinetBuilderDraft && pendingAttachment) {
+      let nextSelectedId = "";
+      setCabinetBuilderDraft((prev) => {
+        if (!prev) return prev;
+        const result = confirmCabinetBuilderPendingAttachmentInDraftModel({
+          draft: prev,
+          selectedWallId: cabinetBuilderSelectedWallId,
+          pendingKind,
+          pendingAttachment,
+          normalizedPendingRow,
+          pendingNewCabinet: cabinetBuilderPendingNewCabinet,
+          pendingPanelHeightMode: cabinetBuilderPendingPanelHeightMode,
+          pendingPanelSpanMode: cabinetBuilderPendingPanelSpanMode,
+        });
+        nextSelectedId = result.selectedId;
+        return result.draft;
+      });
+      if (nextSelectedId) {
+        setCabinetBuilderSelectedWallId(nextSelectedId);
+        setCabinetBuilderHoveredWallId(nextSelectedId);
+      }
+    } else {
+      setCabinetBuilderDraft(
+        createCabinetBuilderRootDraftModel({
+          row: normalizedPendingRow,
+          newCabinet: cabinetBuilderPendingNewCabinet,
+        }),
+      );
+      setCabinetBuilderSelectedWallId("main");
+      setCabinetBuilderHoveredWallId("");
+      setCutlistEntry((prev) => ({ ...prev, partType: experimentalCabinetBuilderPartType }));
+      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+    }
+    setCabinetBuilderPendingAttachment(null);
+    setCabinetBuilderAttachmentMenuSide(null);
+    setCabinetBuilderCreateOpen(false);
+  }, [
+    cabinetBuilderDraft,
+    cabinetBuilderPendingAttachment,
+    cabinetBuilderPendingNewCabinet,
+    cabinetBuilderPendingPanelHeightMode,
+    cabinetBuilderPendingPanelSpanMode,
+    cabinetBuilderSelectedWallId,
+    confirmCabinetBuilderPendingAttachmentInDraftModel,
+    createCabinetBuilderRootDraftModel,
+    createCabinetBuilderBaseRow,
+    experimentalCabinetBuilderPartType,
+    experimentalPanelPartType,
+    getCabinetBuilderPanelHeightBaseline,
+    pendingCabinetBuilderRow.height,
+    pendingCabinetBuilderRow.depth,
+    pendingCabinetBuilderRow.clashLeft,
+    pendingCabinetBuilderRow.clashRight,
+    pendingCabinetBuilderRow.grainValue,
+    pendingCabinetBuilderRow.information,
+    pendingCabinetBuilderRow.name,
+    pendingCabinetBuilderRow.quantity,
+    pendingCabinetBuilderRow.width,
+    resolvedProductionBaseCabHeight,
+  ]);
+  const updateCabinetBuilderRow = useCallback((updater: (prev: CabinetBuilderDraft) => CabinetBuilderDraft) => {
+    setCabinetBuilderDraft((prev) => (prev ? updater(prev) : prev));
+  }, []);
+  const addCabinetBuilderAttachment = useCallback(
+    (side: "left" | "right", kind: CabinetBuilderAttachmentKind) => {
+      let nextSelectedId = "";
+      setCabinetBuilderDraft((prev) => {
+        if (!prev) return prev;
+        const wallPieces = buildCabinetBuilderWallPieces(prev);
+        const selectedWall =
+          wallPieces.find((item) => item.id === cabinetBuilderSelectedWallId) ?? wallPieces.find((item) => item.isMain) ?? null;
+        const inheritedName = selectedWall?.row.name || prev.row.name;
+        const panelThickness = numericDimensionText(String(productionForm.existing.panelThickness || productionForm.existing.carcassThickness || "18"));
+        const nextRow =
+          kind === "panel"
+            ? createCabinetBuilderBaseRow(experimentalPanelPartType, {
+                name: cabinetBuilderSideName(side, inheritedName),
+                height: prev.row.height,
+                width: panelThickness,
+                depth: prev.row.depth,
+              })
+            : createCabinetBuilderBaseRow(experimentalCabinetBuilderPartType, {
+                name: cabinetBuilderSideName(side, inheritedName),
+                height: prev.row.height,
+                width: prev.row.width,
+                depth: prev.row.depth,
+              });
+        const result = addCabinetBuilderAttachmentInDraftModel({
+          draft: prev,
+          selectedWallId: cabinetBuilderSelectedWallId,
+          kind,
+          side,
+          row: nextRow,
+          newCabinet: false,
+          verticalAlign: "bottom",
+        });
+        nextSelectedId = result.selectedId;
+        return result.draft;
+      });
+      setCabinetBuilderAttachmentMenuSide(null);
+      if (nextSelectedId) {
+        setCabinetBuilderSelectedWallId(nextSelectedId);
+        setCabinetBuilderHoveredWallId(nextSelectedId);
+      }
+    },
+    [
+      addCabinetBuilderAttachmentInDraftModel,
+      buildCabinetBuilderWallPieces,
+      cabinetBuilderSideName,
+      cabinetBuilderSelectedWallId,
+      createCabinetBuilderBaseRow,
+      experimentalCabinetBuilderPartType,
+      experimentalPanelPartType,
+      productionForm.existing.carcassThickness,
+      productionForm.existing.panelThickness,
+    ],
+  );
+  const beginCabinetBuilderWallDrag = useCallback(
+    (
+      pieceId: string,
+      viewport: { viewWidth: number; viewHeight: number; paddingX: number; paddingY: number },
+      clientX: number,
+    ) => {
+      if (productionReadOnly) return;
+      setCabinetBuilderSelectedWallId(pieceId);
+      setCabinetBuilderHoveredWallId(pieceId);
+      setCabinetBuilderAttachmentMenuSide(null);
+      setCabinetBuilderDraggingWallId(pieceId);
+      setCabinetBuilderDragActive(false);
+      setCabinetBuilderDragViewport(viewport);
+      const rect = cabinetBuilderDrawingViewportRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) {
+        cabinetBuilderDragStartPointerXRef.current = null;
+        setCabinetBuilderDragActive(false);
+        setCabinetBuilderDragPointerX(null);
+        return;
+      }
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const pointerX = ratio * viewport.viewWidth;
+      cabinetBuilderDragStartPointerXRef.current = pointerX;
+      setCabinetBuilderDragPointerX(pointerX);
+    },
+    [productionReadOnly],
+  );
+  const finishCabinetBuilderWallDrag = useCallback(() => {
+    if (!cabinetBuilderDraggingWallId || !cabinetBuilderDraft || cabinetBuilderDragPointerX === null || !cabinetBuilderDragViewport) {
+      setCabinetBuilderDraggingWallId("");
+      setCabinetBuilderDragActive(false);
+      setCabinetBuilderDragPointerX(null);
+      setCabinetBuilderDragViewport(null);
+      cabinetBuilderDragStartPointerXRef.current = null;
+      return;
+    }
+    const dragStartX = cabinetBuilderDragStartPointerXRef.current;
+    if (!cabinetBuilderDragActive || (dragStartX !== null && Math.abs(cabinetBuilderDragPointerX - dragStartX) < 8)) {
+      setCabinetBuilderDraggingWallId("");
+      setCabinetBuilderDragActive(false);
+      setCabinetBuilderDragPointerX(null);
+      setCabinetBuilderDragViewport(null);
+      cabinetBuilderDragStartPointerXRef.current = null;
+      return;
+    }
+    const previewPieces = buildCabinetBuilderPreviewWallPieces(
+      cabinetBuilderDraft,
+      cabinetBuilderDraggingWallId,
+      cabinetBuilderDragPointerX,
+      cabinetBuilderDragViewport,
+    );
+    setCabinetBuilderDraft((prev) => (prev ? applyCabinetBuilderWallOrder(prev, previewPieces) : prev));
+    setCabinetBuilderDraggingWallId("");
+    setCabinetBuilderDragActive(false);
+    setCabinetBuilderDragPointerX(null);
+    setCabinetBuilderDragViewport(null);
+    cabinetBuilderDragStartPointerXRef.current = null;
+  }, [
+    applyCabinetBuilderWallOrder,
+    buildCabinetBuilderPreviewWallPieces,
+    cabinetBuilderDragActive,
+    cabinetBuilderDraft,
+    cabinetBuilderDragPointerX,
+    cabinetBuilderDragViewport,
+    cabinetBuilderDraggingWallId,
+  ]);
+  useEffect(() => {
+    if (!cabinetBuilderDraggingWallId || !cabinetBuilderDragViewport) return;
+    const handleMouseMove = (event: MouseEvent) => {
+      const rect = cabinetBuilderDrawingViewportRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const nextPointerX = ratio * cabinetBuilderDragViewport.viewWidth;
+      const dragStartX = cabinetBuilderDragStartPointerXRef.current;
+      if (!cabinetBuilderDragActive && dragStartX !== null && Math.abs(nextPointerX - dragStartX) >= 8) {
+        setCabinetBuilderDragActive(true);
+      }
+      setCabinetBuilderDragPointerX(nextPointerX);
+    };
+    const handleMouseUp = () => {
+      finishCabinetBuilderWallDrag();
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [cabinetBuilderDragActive, cabinetBuilderDraggingWallId, cabinetBuilderDragViewport, finishCabinetBuilderWallDrag]);
+  const handleCabinetBuilderDrawingKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!cabinetBuilderDraft) return;
+      const key = event.key;
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(key)) return;
+      const orderedWalls = buildCabinetBuilderWallPieces(cabinetBuilderDraft).sort((a, b) => a.position - b.position);
+      if (!orderedWalls.length) return;
+      event.preventDefault();
+      setCabinetBuilderAttachmentMenuSide(null);
+      const currentIndex = Math.max(
+        0,
+        orderedWalls.findIndex((item) => item.id === cabinetBuilderSelectedWallId),
+      );
+      let nextIndex = currentIndex;
+      if (key === "ArrowLeft" || key === "ArrowUp") {
+        nextIndex = Math.max(0, currentIndex - 1);
+      } else if (key === "ArrowRight" || key === "ArrowDown") {
+        nextIndex = Math.min(orderedWalls.length - 1, currentIndex + 1);
+      } else if (key === "Home") {
+        nextIndex = 0;
+      } else if (key === "End") {
+        nextIndex = orderedWalls.length - 1;
+      }
+      const nextWall = orderedWalls[nextIndex];
+      if (!nextWall) return;
+      setCabinetBuilderSelectedWallId(nextWall.id);
+      setCabinetBuilderHoveredWallId(nextWall.id);
+    },
+    [buildCabinetBuilderWallPieces, cabinetBuilderDraft, cabinetBuilderSelectedWallId],
+  );
+  const toggleCabinetBuilderMeasureMode = useCallback(() => {
+    setCabinetBuilderMeasureMode((prev) => {
+      const next = !prev;
+      if (!next) {
+        setCabinetBuilderMeasurePoints([]);
+      }
+      return next;
+    });
+    setCabinetBuilderAttachmentMenuSide(null);
+  }, []);
+  const resetCabinetBuilderMeasure = useCallback(() => {
+    setCabinetBuilderMeasurePoints([]);
+  }, []);
+  const handleCabinetBuilderMeasureContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!cabinetBuilderMeasureMode) return;
+    event.preventDefault();
+    const now = Date.now();
+    if (now - cabinetBuilderMeasureLastRightClickAtRef.current <= 450) {
+      cabinetBuilderMeasureLastRightClickAtRef.current = 0;
+      setCabinetBuilderMeasureMode(false);
+      setCabinetBuilderMeasurePoints([]);
+      return;
+    }
+    cabinetBuilderMeasureLastRightClickAtRef.current = now;
+    resetCabinetBuilderMeasure();
+  }, [cabinetBuilderMeasureMode, resetCabinetBuilderMeasure]);
+  const zoomCabinetBuilderDrawingAtTarget = useCallback((target: EventTarget | null, deltaY: number) => {
+    const targetIsPiece = target instanceof Element && Boolean(target.closest("[data-cabinet-piece='1']"));
+    if (!cabinetBuilderHoveredWallId && !targetIsPiece) {
+      return false;
+    }
+    const zoomDelta = deltaY < 0 ? 0.12 : -0.12;
+    setCabinetBuilderDrawingZoom((prev) => Math.max(0.55, Math.min(2.4, Number((prev + zoomDelta).toFixed(2)))));
+    return true;
+  }, [cabinetBuilderHoveredWallId]);
+  const handleCabinetBuilderDrawingWheelCapture = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    const target = event.target;
+    const targetIsPiece = target instanceof Element && Boolean(target.closest("[data-cabinet-piece='1']"));
+    if (!cabinetBuilderHoveredWallId && !targetIsPiece) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [cabinetBuilderHoveredWallId]);
+  const getCabinetBuilderSnappedMeasurePoint = useCallback(
+    (
+      rawPoint: { x: number; y: number },
+      pieceLayouts: CabinetBuilderDisplayPieceLayout[],
+      snapThreshold: number,
+      axisLock?: { axis: "horizontal" | "vertical"; anchor: { x: number; y: number } },
+    ): { x: number; y: number } | null => {
+      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+      const candidates = pieceLayouts.flatMap((item) => {
+        const midX = item.x + item.width / 2;
+        const midY = item.y + item.height / 2;
+        if (axisLock?.axis === "horizontal") {
+          const y = axisLock.anchor.y;
+          if (y < item.y || y > item.y + item.height) return [];
+          return [
+            { x: item.x, y },
+            { x: item.x + item.width, y },
+          ];
+        }
+        if (axisLock?.axis === "vertical") {
+          const x = axisLock.anchor.x;
+          if (x < item.x || x > item.x + item.width) return [];
+          return [
+            { x, y: item.y },
+            { x, y: item.y + item.height },
+          ];
+        }
+        return [
+          { x: item.x, y: item.y },
+          { x: item.x + item.width, y: item.y },
+          { x: item.x, y: item.y + item.height },
+          { x: item.x + item.width, y: item.y + item.height },
+          { x: midX, y: item.y },
+          { x: midX, y: item.y + item.height },
+          { x: item.x, y: midY },
+          { x: item.x + item.width, y: midY },
+          { x: clamp(rawPoint.x, item.x, item.x + item.width), y: item.y },
+          { x: clamp(rawPoint.x, item.x, item.x + item.width), y: item.y + item.height },
+          { x: item.x, y: clamp(rawPoint.y, item.y, item.y + item.height) },
+          { x: item.x + item.width, y: clamp(rawPoint.y, item.y, item.y + item.height) },
+        ];
+      });
+      let bestPoint: { x: number; y: number } | null = null;
+      let bestDistance = snapThreshold;
+      candidates.forEach((candidate) => {
+        const distance = Math.hypot(candidate.x - rawPoint.x, candidate.y - rawPoint.y);
+        if (distance <= bestDistance) {
+          bestPoint = candidate;
+          bestDistance = distance;
+        }
+      });
+      return bestPoint;
+    },
+    [],
+  );
+  const recordCabinetBuilderMeasurePoint = useCallback(
+    (
+      clientX: number,
+      clientY: number,
+      viewWidth: number,
+      viewHeight: number,
+      pieceLayouts: CabinetBuilderDisplayPieceLayout[],
+    ) => {
+      const rect = cabinetBuilderDrawingViewportRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      const rawPointBase = {
+        x: Math.max(0, Math.min(viewWidth, ((clientX - rect.left) / rect.width) * viewWidth)),
+        y: Math.max(0, Math.min(viewHeight, ((clientY - rect.top) / rect.height) * viewHeight)),
+      };
+      const viewUnitsPerPixel = ((viewWidth / rect.width) + (viewHeight / rect.height)) / 2;
+      setCabinetBuilderMeasurePoints((prev) => {
+        const firstPoint = prev[0] ?? null;
+        const axisLock =
+          firstPoint && prev.length === 1
+            ? Math.abs(rawPointBase.x - firstPoint.x) >= Math.abs(rawPointBase.y - firstPoint.y)
+              ? { axis: "horizontal" as const, anchor: firstPoint }
+              : { axis: "vertical" as const, anchor: firstPoint }
+            : undefined;
+        const rawPoint = axisLock
+          ? axisLock.axis === "horizontal"
+            ? { x: rawPointBase.x, y: axisLock.anchor.y }
+            : { x: axisLock.anchor.x, y: rawPointBase.y }
+          : rawPointBase;
+        const snappedPoint = getCabinetBuilderSnappedMeasurePoint(rawPoint, pieceLayouts, 14 * viewUnitsPerPixel, axisLock);
+        if (!snappedPoint) return prev;
+        return prev.length >= 2 ? [snappedPoint] : [...prev, snappedPoint];
+      });
+    },
+    [getCabinetBuilderSnappedMeasurePoint],
+  );
+  useEffect(() => {
+    if (cabinetBuilderDraft) return;
+    setCabinetBuilderMeasureMode(false);
+    setCabinetBuilderMeasurePoints([]);
+    setCabinetBuilderDrawingZoom(1);
+  }, [cabinetBuilderDraft]);
+  useEffect(() => {
+    const node = cabinetBuilderDrawingViewportRef.current;
+    if (!node) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!zoomCabinetBuilderDrawingAtTarget(event.target, event.deltaY)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    node.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      node.removeEventListener("wheel", handleWheel);
+    };
+  }, [cabinetBuilderDraft, zoomCabinetBuilderDrawingAtTarget]);
+  const addCabinetBuilderChildRow = useCallback(
+    (partType: string) => {
+      let nextChildId = "";
+      setCabinetBuilderDraft((prev) => {
+        if (!prev) return prev;
+        const result = addCabinetBuilderChildRowInDraftModel({
+          draft: prev,
+          selectedWallId: cabinetBuilderSelectedWallId,
+          partType,
+          carcassThicknessText: String(productionForm.existing.carcassThickness || ""),
+          panelThicknessText: String(productionForm.existing.panelThickness || ""),
+          boardThicknessFor,
+          isDoorPartType,
+          isDrawerPartType,
+          isPanelPartType,
+          createCabinetBuilderBaseRow,
+          createConfiguredCabinetFrontRow,
+          numericDimensionText,
+        });
+        nextChildId = result.childId;
+        return result.draft;
+      });
+      return nextChildId;
+    },
+    [
+      cabinetBuilderSelectedWallId,
+      createCabinetBuilderBaseRow,
+      createConfiguredCabinetFrontRow,
+      boardThicknessFor,
+      isDoorPartType,
+      isDrawerPartType,
+      isPanelPartType,
+      numericDimensionText,
+      productionForm.existing.carcassThickness,
+      productionForm.existing.panelThickness,
+    ],
+  );
+  const addCabinetBuilderChildRowAndOpenTab = useCallback(
+    (partType: string) => {
+      const nextChildId = addCabinetBuilderChildRow(partType);
+      if (!nextChildId) return "";
+      setCabinetBuilderEditingAttachmentId("");
+      setCabinetBuilderEditOpen(true);
+      setCabinetBuilderEditTab(`child:${nextChildId}`);
+      return nextChildId;
+    },
+    [addCabinetBuilderChildRow],
+  );
   const buildEffectiveProductionCutlistRow = (
     source: Partial<CutlistRow>,
     roomFallback: string,
@@ -14642,6 +19690,76 @@ export default function ProjectDetailsPage() {
     () => buildEffectiveProductionCutlistRow(cutlistEntry, cutlistEntryRoom || "Project Cutlist", "single"),
     [buildEffectiveProductionCutlistRow, cutlistEntry, cutlistEntryRoom],
   );
+  const buildCabinetBuilderRowsForAdd = useCallback(() => {
+    if (!cabinetBuilderDraft) {
+      return [] as Array<{
+        ownerId: string;
+        ownerName: string;
+        rows: Array<{ row: CutlistRow; source: CabinetBuilderAttachedDisplayRowSource }>;
+      }>;
+    }
+    const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
+    const cabinetPieces = wallPieces.filter((piece) => piece.isMain || piece.kind === "cabinet");
+    return cabinetPieces
+      .map((piece) => {
+        const ownerName = String(piece.row.name || "").trim() || "Cabinet";
+        const attachmentLike: CabinetBuilderAttachmentDraft = {
+          id: piece.id,
+          side: "left",
+          position: piece.position,
+          parentWallId: piece.parentWallId,
+          kind: piece.isMain ? "cabinet" : (piece.kind as CabinetBuilderAttachmentKind),
+          newCabinet: piece.newCabinet,
+          row: piece.row,
+          doorsRow: piece.doorsRow,
+          drawersRow: piece.drawersRow,
+          childRows: piece.childRows,
+        };
+        const displayRows: CabinetBuilderAttachedDisplayRow[] = [
+          ...getCabinetBuilderAttachmentPartRows(attachmentLike),
+          ...cabinetBuilderDraft.attachments
+            .filter((attachment) => attachment.kind === "panel" && (attachment.parentWallId || "main") === piece.id)
+            .map((panelAttachment) => ({
+              row: { ...panelAttachment.row, name: panelAttachment.row.name || ownerName },
+              source: { kind: "panelSelf", ownerId: panelAttachment.id } as CabinetBuilderAttachedDisplayRowSource,
+            })),
+        ];
+        return {
+          ownerId: piece.id,
+          ownerName,
+          rows: displayRows.map((displayRow) => ({
+            source: displayRow.source,
+            row: buildEffectiveProductionCutlistRow(
+              { ...displayRow.row, parentName: ownerName },
+              cutlistEntryRoom || "Project Cutlist",
+            ),
+          })),
+        };
+      })
+      .filter((group) => group.rows.length > 0);
+  }, [
+    buildCabinetBuilderWallPieces,
+    buildEffectiveProductionCutlistRow,
+    cabinetBuilderDraft,
+    cutlistEntryRoom,
+    getCabinetBuilderAttachmentPartRows,
+  ]);
+  const buildCabinetBuilderRowsForSave = useCallback(() => {
+    if (!cabinetBuilderDraft) return [] as CutlistRow[];
+    return buildCabinetBuilderRowsForAdd().flatMap((group) =>
+      group.rows.map(({ row }) => ({
+        ...row,
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        parentName: String(row.parentName || group.ownerName).trim() || group.ownerName,
+        cabinetBuilderRowKind: undefined,
+        cabinetBuilderContainerId: undefined,
+        cabinetBuilderData: null,
+      })),
+    );
+  }, [
+    buildCabinetBuilderRowsForAdd,
+    cabinetBuilderDraft,
+  ]);
 
   useEffect(() => {
     if (!isDoorPartType(cutlistEntry.partType)) return;
@@ -18429,7 +23547,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         <section className="flex min-h-[calc(100dvh-190px)] flex-col overflow-hidden rounded-[18px] border shadow-[0_10px_24px_rgba(15,23,42,0.08)]" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
           <div className="border-b p-4" style={{ borderBottomColor: projectPalette.border }}>
             <p className="text-[14px] font-semibold tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#0F2A4A" }}>ITEM LIBRARY</p>
-            <p className="mt-1 text-[12px] text-[#667085]">Items from Company Settings → Item Categories.</p>
+            <p className="mt-1 text-[12px] text-[#667085]">Items from Company Settings â†’ Item Categories.</p>
             <div className="mt-3 flex h-11 items-center gap-3 rounded-[12px] border px-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted }}>
               <Search size={15} style={{ color: projectPalette.textMuted }} />
               <input value={salesItemsSearch} onChange={(e) => setSalesItemsSearch(e.currentTarget.value)} placeholder="Search items across all categories" className="h-full w-full bg-transparent text-[13px] outline-none placeholder:text-[#98A2B3]" style={{ color: projectPalette.inputText }} />
@@ -23443,32 +28561,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div className={`space-y-3 px-3 pb-3 pt-3 ${isTabletProjectViewport ? "mx-auto max-w-[1100px]" : ""}`}>
                 {cutlistRoomFilter !== "Project Cutlist" && (
                   <section
-                    className="overflow-visible rounded-[14px] border px-3 py-3"
+                    className="-mt-3 overflow-visible rounded-[14px] border px-3 pb-3 pt-0"
                     style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
                   >
-                    <div className="space-y-3">
-                      <div className="flex flex-wrap items-center gap-2 pb-3">
-                        {partTypeOptions.map((v) => {
-                          const color = partTypeColors[v] ?? "#CBD5E1";
-                          return (
-                            <button
-                              key={`cutlist_fullscreen_mobile_entry_${v}`}
-                              type="button"
-                              disabled={productionReadOnly}
-                              onClick={() => addDraftRowForPartType(v)}
-                              style={{
-                                backgroundColor: color,
-                                borderColor: color,
-                                color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                              }}
-                              className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
-                            >
-                              {v}
-                            </button>
-                          );
-                        })}
-                      </div>
+                    {renderCutlistEntryModeTabs("-mx-3 rounded-b-none border-x-0 border-t-0")}
+                    <div className="space-y-3 pt-3">
+                      {!cabinetBuilderEntryActive ? (
+                        <div className="flex flex-wrap items-center gap-2 pb-3">
+                          {partTypeOptions.map((v) => {
+                            const color = partTypeColors[v] ?? "#CBD5E1";
+                            return (
+                              <button
+                                key={`cutlist_fullscreen_mobile_entry_${v}`}
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={() => addDraftRowForPartType(v)}
+                                style={{
+                                  backgroundColor: color,
+                                  borderColor: color,
+                                  color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                }}
+                                className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                              >
+                                {v}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
 
+                      {cabinetBuilderEntryActive ? (
+                        renderCompactCabinetBuilderEntry()
+                      ) : (
                       <div className="space-y-0 isolate">
                         {visibleCutlistDraftRows.map((draft) => {
                           const draftIndex = cutlistDraftRows.findIndex((row) => row.id === draft.id);
@@ -23482,7 +28606,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const draftIsCabinetry = isCabinetryPartType(draft.partType);
                             const draftIsDoor = isDoorPartType(draft.partType);
                             const draftDoorMode = selectedDoorModeValue(draft.doorMode);
-                            const draftIsConfiguredDoor = draftIsDoor && draftDoorMode !== "" && draftDoorMode !== "manual";
+                            const draftIsConfiguredDoor =
+                              draftIsDoor && !manualCutlistUsesPlainDoorRows && draftDoorMode !== "" && draftDoorMode !== "manual";
                             const draftCompactConfiguredPanel = cutlistCompactConfiguredDraftPanels[draft.id] ?? "fields";
                             const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
                           const draftGrainValue = String(draft.grainValue ?? "").trim();
@@ -23597,7 +28722,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                                       />
                                       ) : null}
-                                      {draftIsDoor
+                                      {draftIsDoor && !manualCutlistUsesPlainDoorRows
                                         ? renderDoorModeConfigurator({
                                             mode: draftDoorMode,
                                             frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
@@ -23610,7 +28735,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             fieldText: draftTextColor,
                                           })
                                         : null}
-                                      {draftIsDoor && !draftIsConfiguredDoor && draftDoorMode !== "" && draftDoorMode !== "manual"
+                                      {draftIsDoor && !manualCutlistUsesPlainDoorRows && !draftIsConfiguredDoor && draftDoorMode !== "" && draftDoorMode !== "manual"
                                         ? renderDoorSetupDesigner({
                                             mode: draftDoorMode === "drawer" ? "drawer" : "door",
                                             frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
@@ -24073,10 +29198,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           );
                         })}
                       </div>
+                      )}
 
                       <button
                         disabled={productionReadOnly}
-                        onClick={() => void addDraftRowsToCutlist()}
+                        onClick={() => void (cutlistEntryMode === "wallBuilder" ? addCutlistRow() : addDraftRowsToCutlist())}
                         className="inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] text-[18px] font-extrabold text-[#14532D] disabled:opacity-55"
                       >
                         Add to Cutlist
@@ -25038,7 +30164,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
           <div className={`grid min-h-0 flex-1 gap-0 ${isProductionNotesPanelOpen ? "xl:grid-cols-[190px_1fr_340px]" : "xl:grid-cols-[190px_1fr]"}`}>
             <aside className="border-r border-[#DCE3EC] bg-white">
-              <div className="p-2">
+              <div className="flex h-full flex-col p-2">
                 <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
                 <div className="space-y-1">
                   {cutlistAddedRoomTabs.map((roomTab) => {
@@ -25102,39 +30228,79 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     Note
                   </button>
                 </div>
+                {savedCabinetBuilderDrafts.length || (cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim()) ? (
+                  <div className="mt-auto pt-3">
+                    <div className="mb-2 h-px bg-[#DCE3EC]" />
+                    <div className="space-y-1">
+                      <p className="px-2 text-[11px] font-bold uppercase tracking-[0.8px] text-[#64748B]">Saved Walls</p>
+                      {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() && !activeCabinetBuilderSavedDraftId ? (
+                        <div className="rounded-[9px] bg-[#E9EFF7] px-1 py-1">
+                          <div className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold text-[#12345B]">
+                            <span className="block truncate">{cabinetBuilderWallName}</span>
+                            <span className="block truncate text-[10px] font-medium text-[#64748B]">{cutlistEntryRoom || "Project Cutlist"}</span>
+                          </div>
+                        </div>
+                      ) : null}
+                      {savedCabinetBuilderDrafts.map((savedDraft) => {
+                        const active = activeCabinetBuilderSavedDraftId === savedDraft.id;
+                        return (
+                          <div
+                            key={savedDraft.id}
+                            className={`rounded-[9px] px-1 py-1 ${active ? "bg-[#E9EFF7]" : ""}`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openSavedCabinetBuilderDraft(savedDraft)}
+                              className={`w-full min-w-0 rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                                active ? "text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                              }`}
+                            >
+                              <span className="block truncate">{savedDraft.name}</span>
+                              <span className="block truncate text-[10px] font-medium text-[#64748B]">{savedDraft.room}</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </aside>
 
             <div className="flex min-h-full flex-col gap-4 overflow-auto p-4">
               {cutlistRoomFilter !== "Project Cutlist" && (
-              <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible">
-                <div className="flex h-[50px] items-center px-1">
+              <section className="relative z-10 -mt-4 -mx-4 w-[calc(100%+2rem)] overflow-visible">
+                {renderCutlistEntryModeTabs("rounded-b-none border-x-0 border-t-0")}
+                <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
                   <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
+                  {cabinetBuilderEntryActive ? renderCabinetBuilderToolbar() : null}
                 </div>
                 <div className="space-y-3 px-0 pb-0">
-                  <div className="flex flex-wrap items-center gap-2 px-1">
-                    {partTypeOptions.map((v) => {
-                      const color = partTypeColors[v] ?? "#CBD5E1";
-                      return (
-                        <button
-                          key={v}
-                          type="button"
-                          disabled={productionReadOnly}
-                          onClick={() => addDraftRowForPartType(v)}
-                          style={{
-                            backgroundColor: color,
-                            borderColor: color,
-                            color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                          }}
-                          className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
-                        >
-                          {v}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {!cabinetBuilderEntryActive ? (
+                    <div className="flex flex-wrap items-center gap-2 px-1">
+                      {partTypeOptions.map((v) => {
+                        const color = partTypeColors[v] ?? "#CBD5E1";
+                        return (
+                          <button
+                            key={v}
+                            type="button"
+                            disabled={productionReadOnly}
+                            onClick={() => addDraftRowForPartType(v)}
+                            style={{
+                              backgroundColor: color,
+                              borderColor: color,
+                              color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                            }}
+                            className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                          >
+                            {v}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
 
-                  {!hideConfiguredDoorDraftHeaderRow ? (
+                  {!hideConfiguredDoorDraftHeaderRow && !cabinetBuilderEntryActive ? (
                     <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: cutlistEntryGridTemplate }}>
                       <p></p>
                       {cutlistEntryColumnDefs.map((col) => (
@@ -25148,6 +30314,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       ))}
                     </div>
                   ) : null}
+                  {cabinetBuilderEntryActive ? (
+                    renderCompactCabinetBuilderEntry()
+                  ) : (
                   <div className="space-y-1">
                       {visibleCutlistDraftRows.map((draft) => {
                         const color = partTypeColors[draft.partType] ?? "#CBD5E1";
@@ -25168,7 +30337,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       const widthWarn = warningForCell(draft.id, "width");
                       const depthWarn = warningForCell(draft.id, "depth");
                       const quantityWarn = warningForCell(draft.id, "quantity");
-                      if (draftIsDoor && draftDoorMode === "") {
+                      if (draftIsDoor && !manualCutlistUsesPlainDoorRows && draftDoorMode === "") {
                         return (
                           <div
                             key={draft.id}
@@ -25185,7 +30354,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <X size={15} className="mx-auto" strokeWidth={2.8} />
                               </button>
                               <div className="space-y-3">
-                                {renderDoorModeConfigurator({
+                                {!manualCutlistUsesPlainDoorRows ? renderDoorModeConfigurator({
                                   mode: draftDoorMode,
                                   frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
                                   onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
@@ -25195,14 +30364,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   borderColor: draftFieldBorder,
                                   fieldBg: draftFieldBg,
                                   fieldText: draftTextColor,
-                                })}
+                                }) : null}
                               </div>
                             </div>
                           </div>
                         );
                       }
 
-                      if (draftIsDoor && draftDoorMode !== "manual") {
+                      if (draftIsDoor && !manualCutlistUsesPlainDoorRows && draftDoorMode !== "manual") {
                         return (
                           <div
                             key={draft.id}
@@ -25219,7 +30388,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 <X size={15} className="mx-auto" strokeWidth={2.8} />
                               </button>
                               <div className="space-y-3">
-                                {renderDoorModeConfigurator({
+                                {!manualCutlistUsesPlainDoorRows ? renderDoorModeConfigurator({
                                   mode: draftDoorMode,
                                   frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
                                   onModeChange: (mode) => onDraftDoorModeChange(draft.id, mode),
@@ -25229,7 +30398,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   borderColor: draftFieldBorder,
                                   fieldBg: draftFieldBg,
                                   fieldText: draftTextColor,
-                                })}
+                                }) : null}
                                 <div className="space-y-1">
                                   <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Board Type</p>
                                   <div className="relative z-[120] pointer-events-auto">
@@ -25376,7 +30545,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 ) : null}
                               </div>
                               <div className="self-stretch">
-                                {renderDoorSetupDesigner({
+                                {!manualCutlistUsesPlainDoorRows ? renderDoorSetupDesigner({
                                   mode: draftDoorMode === "drawer" ? "drawer" : "door",
                                   frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
                                   overallHeight: String(draft.height ?? ""),
@@ -25416,7 +30585,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   borderColor: draftFieldBorder,
                                   fieldBg: draftFieldBg,
                                   fieldText: draftTextColor,
-                                })}
+                                }) : null}
                               </div>
                             </div>
                           </div>
@@ -25465,6 +30634,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
                             />
                             {draftIsDoor
+                              && !manualCutlistUsesPlainDoorRows
                               ? renderDoorModeConfigurator({
                                   mode: draftDoorMode,
                                   frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
@@ -25480,7 +30650,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             {draftIsDoor && draftDoorMode !== "manual"
                               ? (
                                 <div style={cutlistEntryCellStyle("information", 2)}>
-                                  {renderDoorSetupDesigner({
+                                  {!manualCutlistUsesPlainDoorRows ? renderDoorSetupDesigner({
                                     mode: draftDoorMode === "drawer" ? "drawer" : "door",
                                     frontCount: normalizeDoorFrontCountValue(draft.doorFrontCount),
                                     overallHeight: String(draft.height ?? ""),
@@ -25520,7 +30690,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     borderColor: draftFieldBorder,
                                     fieldBg: draftFieldBg,
                                     fieldText: draftTextColor,
-                                  })}
+                                  }) : null}
                                 </div>
                               )
                               : null}
@@ -25724,9 +30894,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       );
                     })}
                   </div>
+                  )}
                   <button
                     disabled={productionReadOnly}
-                    onClick={() => void addDraftRowsToCutlist()}
+                    onClick={() => void (cutlistEntryMode === "wallBuilder" ? addCutlistRow() : addDraftRowsToCutlist())}
                     className="inline-flex h-[50px] w-full items-center justify-center border-y border-[#BFE8CF] bg-[#DDF2E7] text-[24px] font-extrabold text-[#14532D] disabled:opacity-55"
                   >
                     Add to Cutlist
@@ -25874,16 +31045,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 const rowIsCabinetry = isCabinetryPartType(row.partType);
                                 const rowIsDrawer = isDrawerPartType(row.partType);
                                 const rowIsDoor = isDoorPartType(row.partType);
+                                const rowIsCabinetBuilderContainer = isCabinetBuilderContainerRow(row);
                                 const rowIsConfiguredDoor = rowIsDoor && normalizeDoorModeValue(row.doorMode) !== "manual";
                                 const rowPendingDelete = pendingGroupRows.includes(row.id);
                                 const cabinetryOpen = Boolean(expandedCabinetryRows[row.id]);
                                 const drawerOpen = Boolean(expandedDrawerRows[row.id]);
                                 const doorOpen = Boolean(expandedDoorRows[row.id]);
-                                const cabinetryPieces = rowIsCabinetry ? buildCabinetryDerivedPieces(row) : [];
+                                const cabinetryPieces = rowIsCabinetry && !rowIsCabinetBuilderContainer ? buildCabinetryDerivedPieces(row) : [];
                                 const drawerPieces = rowIsDrawer ? buildDrawerDerivedPieces(row) : [];
                                 const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
-                                const spillInfoToSubRows = rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor;
-                                const visibleSubRowCount = rowIsCabinetry
+                                const cabinetBuilderPieces = rowIsCabinetBuilderContainer ? (cabinetBuilderGeneratedRowsByContainerId[row.id] ?? []) : [];
+                                const spillInfoToSubRows = rowIsCabinetBuilderContainer || rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor;
+                                const visibleSubRowCount = rowIsCabinetBuilderContainer
+                                  ? (cabinetryOpen ? cabinetBuilderPieces.length : 0)
+                                  : rowIsCabinetry
                                   ? (cabinetryOpen ? cabinetryPieces.length : 0)
                                   : rowIsDrawer
                                     ? (drawerOpen ? drawerPieces.length : 0)
@@ -25927,9 +31102,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       </button>
                                       <button
                                         type="button"
-                                        disabled={!(rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor)}
+                                        disabled={!(rowIsCabinetBuilderContainer || rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor)}
                                         onClick={() => {
-                                          if (rowIsCabinetry) {
+                                          if (rowIsCabinetBuilderContainer || rowIsCabinetry) {
                                             toggleCabinetryRowExpand(row.id);
                                             return;
                                           }
@@ -25941,17 +31116,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             toggleDoorRowExpand(row.id);
                                           }
                                         }}
-                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor) ? "" : "invisible pointer-events-none"}`}
+                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetBuilderContainer || rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor) ? "" : "invisible pointer-events-none"}`}
                                         style={{
                                           backgroundColor: color,
                                           borderColor: darkenHex(color, 0.18),
                                         }}
-                                        title={(rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "Collapse details" : "Expand details"}
+                                        title={(rowIsCabinetBuilderContainer || rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "Collapse details" : "Expand details"}
                                       >
                                         <img
                                           src="/Arrow.png"
                                           alt="Expand"
-                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
+                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetBuilderContainer || rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
                                           style={{ filter: groupTextColor === "#FFFFFF" ? "invert(1) brightness(2)" : "none" }}
                                         />
                                       </button>
@@ -26532,6 +31707,80 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     );
                                   })}
                                 </tr>
+                                {rowIsCabinetBuilderContainer && cabinetryOpen && groupCabinetBuilderGeneratedRows(cabinetBuilderPieces).flatMap((pieceGroup) => ([
+                                  <tr
+                                    key={`${row.id}_builder_group_${pieceGroup.ownerName}`}
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
+                                    {showRoomColumnInList ? (
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}></td>
+                                    ) : null}
+                                    <td
+                                      className="px-2 py-[3px] align-middle text-[11px] font-bold"
+                                      colSpan={showRoomColumnInList ? cutlistListColumnDefs.length : cutlistListColumnDefs.length}
+                                      style={{ color: groupTextColor }}
+                                    >
+                                      {pieceGroup.ownerName}
+                                    </td>
+                                  </tr>,
+                                  ...pieceGroup.rows.map((piece, pieceIdx) => (
+                                  <tr
+                                    key={`${row.id}_builder_${piece.id}`}
+                                    data-cutlist-subrow-parent={row.id}
+                                    data-cutlist-subrow-key={piece.id}
+                                    className="border-t"
+                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
+                                  >
+                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
+                                    {showRoomColumnInList && (
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                        {piece.room}
+                                      </td>
+                                    )}
+                                    {cutlistListColumnDefs.map((col) => {
+                                      const key = col.key as CutlistEditableField;
+                                      const alignClass = cutlistCellAlignClass(key);
+                                      const infoLineIndex = mainInfoCount + pieceIdx;
+                                      const editingThisInfoCell = col.key === "information" && isEditing(row.id, "information");
+                                      let value = "";
+                                      if (col.key === "partType") value = piece.partType || "";
+                                      if (col.key === "board") value = boardDisplayLabel(piece.board) || "";
+                                      if (col.key === "name") value = piece.name || "";
+                                      if (col.key === "height") value = piece.height || "";
+                                      if (col.key === "width") value = piece.width || "";
+                                      if (col.key === "depth") value = piece.depth || "";
+                                      if (col.key === "quantity") value = piece.quantity || "";
+                                      if (col.key === "clashing") value = joinClashing(piece.clashLeft ?? "", piece.clashRight ?? "") || piece.clashing || "";
+                                      if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
+                                      if (col.key === "grain") value = String(piece.grainValue || (piece.grain ? "Yes" : ""));
+                                      const pieceGrainValue = String(piece.grainValue || "");
+                                      const isPieceGrainMatchedDimension =
+                                        (key === "height" && matchesGrainDimension(pieceGrainValue, piece.height, "height")) ||
+                                        (key === "width" && matchesGrainDimension(pieceGrainValue, piece.width, "width")) ||
+                                        (key === "depth" && matchesGrainDimension(pieceGrainValue, piece.depth, "depth"));
+                                      return (
+                                        <td
+                                          key={`${row.id}_${piece.id}_${col.key}`}
+                                          className={`px-2 py-[3px] align-middle text-[11px] ${alignClass}`}
+                                          onDoubleClick={() => {
+                                            if (col.key !== "information") return;
+                                            startCellEdit(row, "information", infoLineIndex);
+                                          }}
+                                          style={{
+                                            ...cutlistListColumnStyle(key),
+                                            color: groupTextColor,
+                                            ...(isPieceGrainMatchedDimension ? { fontWeight: 700, textDecoration: "underline" } : {}),
+                                          }}
+                                        >
+                                          {editingThisInfoCell ? "" : value}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                  )),
+                                ]))}
                                 {rowIsCabinetry && cabinetryOpen && cabinetryPieces.map((piece, pieceIdx) => (
                                   <tr
                                     key={`${row.id}_cab_${piece.key}`}
@@ -28519,9 +33768,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
                     </div>
                   )}
-                </div>
               </div>
             </div>
+          </div>
           )}
           {nestingTooltip && (
             <div
@@ -29850,8 +35099,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectTabAreaBg }}>
               <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
-                {[
+                {[ 
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
+                  { label: "Drawings", icon: ClipboardList, key: "drawings" as const },
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
@@ -29950,6 +35200,42 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <Quote size={13} />
                             Note
                           </button>
+                          {savedCabinetBuilderDrafts.length || (cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim()) ? (
+                            <>
+                              <div className="my-2 h-px bg-[#DCE3EC]" />
+                              <div className="space-y-1">
+                                <p className="px-2 text-[11px] font-bold uppercase tracking-[0.8px] text-[#64748B]">Saved Walls</p>
+                                {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() && !activeCabinetBuilderSavedDraftId ? (
+                                  <div className="rounded-[9px] bg-[#E9EFF7] px-1 py-1">
+                                    <div className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold text-[#12345B]">
+                                      <span className="block truncate">{cabinetBuilderWallName}</span>
+                                      <span className="block truncate text-[10px] font-medium text-[#64748B]">{cutlistEntryRoom || "Project Cutlist"}</span>
+                                    </div>
+                                  </div>
+                                ) : null}
+                                {savedCabinetBuilderDrafts.map((savedDraft) => {
+                                  const active = activeCabinetBuilderSavedDraftId === savedDraft.id;
+                                  return (
+                                    <div
+                                      key={`saved_wall_sidebar_${savedDraft.id}`}
+                                      className={`rounded-[9px] px-1 py-1 ${active ? "bg-[#E9EFF7]" : ""}`}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => openSavedCabinetBuilderDraft(savedDraft)}
+                                        className={`w-full min-w-0 rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                                          active ? "text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                                        }`}
+                                      >
+                                        <span className="block truncate">{savedDraft.name}</span>
+                                        <span className="block truncate text-[10px] font-medium text-[#64748B]">{savedDraft.room}</span>
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          ) : null}
                         </div>
                         <div className={`grid gap-2 ${isMobileProjectViewport ? "" : "sm:grid-cols-3"}`}>
                           {[
@@ -30040,7 +35326,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                             const rowPalette = groupColorPalette(rowPartColor);
                             const infoLines = informationLinesFromValue(String(row.information ?? ""));
+                            const rowIsCabinetBuilderContainer = isCabinetBuilderContainerRow(row);
                             const rowIsConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
+                            const cabinetBuilderPieces = rowIsCabinetBuilderContainer ? (cabinetBuilderGeneratedRowsByContainerId[row.id] ?? []) : [];
                             const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
                             const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
                             const rowGrainValue = String(row.grainValue ?? "").trim();
@@ -30114,7 +35402,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <p className="font-bold text-[#0F172A]">Board</p>
                                       <p className={`min-w-0 break-words text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{boardDisplayLabel(row.board) || "-"}</p>
 
-                                      {!rowIsConfiguredDoor ? (
+                                      {!rowIsConfiguredDoor && !rowIsCabinetBuilderContainer ? (
                                         <>
                                           <p className="font-bold text-[#0F172A]">Height</p>
                                           <p
@@ -30142,6 +35430,46 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                                           <p className="font-bold text-[#0F172A]">Quantity</p>
                                           <p className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{row.quantity || "1"}</p>
+                                        </>
+                                      ) : rowIsCabinetBuilderContainer ? (
+                                        <>
+                                          <p className="font-bold text-[#0F172A]">Cabinet Parts</p>
+                                          <div className={`min-w-0 space-y-2 ${isMobileProjectViewport ? "text-right" : "text-left"}`}>
+                                            {cabinetBuilderPieces.length ? groupCabinetBuilderGeneratedRows(cabinetBuilderPieces).map((pieceGroup) => (
+                                              <div key={`${row.id}_mobile_builder_group_${pieceGroup.ownerName}`} className="space-y-2">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#334155]">{pieceGroup.ownerName}</p>
+                                                {pieceGroup.rows.map((piece) => (
+                                                  <div key={`${row.id}_mobile_builder_${piece.id}`} className="rounded-[8px] border border-[#D7DEE8] bg-white/60 px-2 py-2">
+                                                    <p className="break-words font-semibold text-[#0F172A]">{piece.name || "-"}</p>
+                                                    <p className="mt-1 break-words text-[#475569]">{piece.partType || "-"} • {boardDisplayLabel(piece.board) || "-"}</p>
+                                                    <p className="mt-1 break-words text-[#475569]">
+                                                      <span
+                                                        style={
+                                                          matchesGrainDimension(String(piece.grainValue ?? ""), piece.height, "height")
+                                                            ? { fontWeight: 700, textDecoration: "underline" }
+                                                            : undefined
+                                                        }
+                                                      >
+                                                        {piece.height || "-"} H
+                                                      </span>
+                                                      {" x "}
+                                                      <span
+                                                        style={
+                                                          matchesGrainDimension(String(piece.grainValue ?? ""), piece.width, "width")
+                                                            ? { fontWeight: 700, textDecoration: "underline" }
+                                                            : undefined
+                                                        }
+                                                      >
+                                                        {piece.width || "-"} W
+                                                      </span>
+                                                      {piece.depth ? ` x ${piece.depth} D` : ""}
+                                                    </p>
+                                                    <p className="mt-1 text-[#475569]">Qty {piece.quantity || "1"}</p>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )) : <p className="text-[#475569]">-</p>}
+                                          </div>
                                         </>
                                       ) : (
                                         <>
@@ -30338,34 +35666,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     <div className="flex min-h-full flex-col gap-4 pl-4">
                       {cutlistRoomFilter !== "Project Cutlist" && (
-                      <section className="relative z-10 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
-                        <div className="flex h-[50px] items-center px-1">
+                      <section className="relative z-10 -mt-4 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
+                        {renderCutlistEntryModeTabs("rounded-b-none border-x-0 border-t-0")}
+                        <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
                           <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
+                          {cabinetBuilderEntryActive ? renderCabinetBuilderToolbar() : null}
                         </div>
                         <div className="space-y-3 px-0 pb-0">
-                          <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
-                            {partTypeOptions.map((v) => {
-                              const color = partTypeColors[v] ?? "#CBD5E1";
-                              return (
-                                <button
-                                  key={v}
-                                  type="button"
-                                  disabled={productionReadOnly}
-                                  onClick={() => onSelectCutlistEntryPartType(v)}
-                                  style={{
-                                    backgroundColor: color,
-                                    borderColor: color,
-                                    color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                                  }}
-                                  className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
-                                >
-                                  {v}
-                                </button>
-                              );
-                            })}
-                          </div>
+                          {!cabinetBuilderEntryActive ? (
+                            <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
+                              {partTypeOptions.map((v) => {
+                                const color = partTypeColors[v] ?? "#CBD5E1";
+                                return (
+                                  <button
+                                    key={v}
+                                    type="button"
+                                    disabled={productionReadOnly}
+                                    onClick={() => onSelectCutlistEntryPartType(v)}
+                                    style={{
+                                      backgroundColor: color,
+                                      borderColor: color,
+                                      color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                    }}
+                                    className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                                  >
+                                    {v}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
 
-                          {!hideConfiguredDoorSingleEntryHeaderRow ? (
+                          {!hideConfiguredDoorSingleEntryHeaderRow && !cabinetBuilderEntryActive ? (
                             <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
                               <p></p>
                               {cutlistEntryColumnDefs.map((col) => (
@@ -30379,7 +35711,1401 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               ))}
                             </div>
                           ) : null}
-                          {isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode === "" ? (
+                          {cabinetBuilderEntryActive ? (
+                            <div className="px-0 py-3" style={{ color: cabinetBuilderShellText }}>
+                              {!cabinetBuilderDraft ? (
+                                <div className="flex min-h-[180px] items-center justify-center">
+                                  {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() ? (
+                                    <div className="flex flex-col items-center gap-3">
+                                      <p className="text-[13px] font-semibold text-[#475467]">{cabinetBuilderWallName}</p>
+                                      <button
+                                        type="button"
+                                        disabled={productionReadOnly}
+                                        onClick={openCabinetBuilderCreate}
+                                        className="rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
+                                        style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg, color: cabinetBuilderShellText }}
+                                      >
+                                        Create Cabinet
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="w-full max-w-[420px] space-y-3">
+                                      <input
+                                        value={cabinetBuilderWallName}
+                                        onChange={(e) => setCabinetBuilderWallName(e.target.value)}
+                                        placeholder="Wall name"
+                                        className="h-11 w-full rounded-[12px] border border-[#D8DEE8] bg-white px-3 text-[13px] text-[#111827]"
+                                      />
+                                      <button
+                                        type="button"
+                                        disabled={productionReadOnly || !String(cabinetBuilderWallName || "").trim()}
+                                        onClick={createCabinetBuilderWall}
+                                        className="w-full rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
+                                        style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg, color: cabinetBuilderShellText }}
+                                      >
+                                        Create Wall
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                  <div className="space-y-4">
+                                    <div className="grid items-start gap-4 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
+                                      {cabinetBuilderSelectedPartsPanel ? (
+                                        <div className="px-1">{cabinetBuilderSelectedPartsPanel}</div>
+                                      ) : null}
+                                      <div className="p-0">
+                                      {(() => {
+                                        const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
+                                        const viewWidth = 1120;
+                                        const viewHeight = 420;
+                                        const paddingX = 42;
+                                        const paddingY = 26;
+                                        const dragViewport = { viewWidth, viewHeight, paddingX, paddingY };
+                                        const displayWallPieces =
+                                          cabinetBuilderDragActive && cabinetBuilderDraggingWallId && cabinetBuilderDragPointerX !== null
+                                            ? buildCabinetBuilderPreviewWallPieces(cabinetBuilderDraft, cabinetBuilderDraggingWallId, cabinetBuilderDragPointerX, dragViewport)
+                                            : wallPieces;
+                                        const pieceLayouts = buildCabinetBuilderDisplayPieceLayouts(
+                                          displayWallPieces,
+                                          viewWidth,
+                                          viewHeight,
+                                          paddingX,
+                                          paddingY,
+                                          cabinetBuilderDraft,
+                                        );
+                                        const scale = pieceLayouts[0]?.scale ?? 1;
+                                        const measureLengthText =
+                                          cabinetBuilderMeasurePoints.length === 2 && scale > 0
+                                            ? numericDimensionText(
+                                                Math.sqrt(
+                                                  Math.pow(cabinetBuilderMeasurePoints[1].x - cabinetBuilderMeasurePoints[0].x, 2) +
+                                                    Math.pow(cabinetBuilderMeasurePoints[1].y - cabinetBuilderMeasurePoints[0].y, 2),
+                                                ) / scale,
+                                              )
+                                            : "";
+                                        const mainPiece = pieceLayouts.find((item) => item.isMain) ?? pieceLayouts[0];
+                                        const selectedPiece = pieceLayouts.find((item) => item.id === cabinetBuilderSelectedWallId) ?? mainPiece;
+                                        const hoveredPiece = pieceLayouts.find((item) => item.id === cabinetBuilderHoveredWallId) ?? null;
+                                        const activeLabelPiece = hoveredPiece ?? selectedPiece ?? null;
+                                        const activeGapBlockedRects =
+                                          (cabinetBuilderSelectedHoverActive || cabinetBuilderAttachmentMenuSide !== null)
+                                            ? getCabinetBuilderAttachmentAnchorExclusionRects(
+                                                selectedPiece,
+                                                viewWidth,
+                                                viewHeight,
+                                                resolvedProductionBaseCabHeight,
+                                              )
+                                            : [];
+                                        const overlayItems = pieceLayouts.flatMap((item) => {
+                                          const overlaySource = item.doorsRow || item.drawersRow;
+                                          if (!overlaySource) return [];
+                                          const overlayMode = normalizeDoorModeValue(overlaySource.doorMode);
+                                          const overlayCount = Number.parseInt(String(overlaySource.doorFrontCount || "1"), 10) || 1;
+                                          const overlayBaseColor = partTypeColors[String(overlaySource.partType || "").trim()] ?? "#CBD5E1";
+                                          const overlayStroke = darkenHex(overlayBaseColor, 0.14);
+                                          const overlayFill = lightenHex(overlayBaseColor, 0.2);
+                                          const overlayText = isLightHex(overlayFill) ? "#1F2937" : "#F8FAFC";
+                                          const overlayTotalHeight = Number.parseFloat(String(overlaySource.height ?? "").replace(/[^\d.-]/g, "")) || 0;
+                                          const overlayTotalWidth = Number.parseFloat(String(overlaySource.width ?? "").replace(/[^\d.-]/g, "")) || 0;
+                                          const overlayTopGapValue = Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0;
+                                          const overlayBetweenGapValue = Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0;
+                                          const overlayLeftGapValue = Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0;
+                                          const overlayRightGapValue = Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0;
+                                          const overlayTopGapPx =
+                                            overlayTotalHeight > 0 ? (overlayTopGapValue / overlayTotalHeight) * item.height : 0;
+                                          const overlayBetweenGapPxForHeight =
+                                            overlayTotalHeight > 0 ? (overlayBetweenGapValue / overlayTotalHeight) * item.height : 0;
+                                          const overlayBetweenGapPxForWidth =
+                                            overlayTotalWidth > 0 ? (overlayBetweenGapValue / overlayTotalWidth) * item.width : 0;
+                                          const overlayLeftGapPx =
+                                            overlayTotalWidth > 0 ? (overlayLeftGapValue / overlayTotalWidth) * item.width : 0;
+                                          const overlayRightGapPx =
+                                            overlayTotalWidth > 0 ? (overlayRightGapValue / overlayTotalWidth) * item.width : 0;
+                                          const overlayClearHeight = Math.max(0, overlayTotalHeight - overlayTopGapValue);
+                                          const overlayClearWidth = Math.max(0, overlayTotalWidth - overlayLeftGapValue - overlayRightGapValue);
+                                          return [
+                                            {
+                                              item,
+                                              ownerId: item.id,
+                                              frontKind: item.doorsRow ? "doorsRow" as const : "drawersRow" as const,
+                                              overlaySource,
+                                              overlayMode,
+                                              overlayStroke,
+                                              overlayFill,
+                                              overlayText,
+                                              overlayTopGapPx,
+                                              overlayBetweenGapPxForHeight,
+                                              overlayBetweenGapPxForWidth,
+                                              overlayLeftGapPx,
+                                              overlayRightGapPx,
+                                              overlayClearHeight,
+                                              overlayClearWidth,
+                                              overlayDrawerHeights:
+                                                overlayMode === "drawer"
+                                                  ? resolveDoorFrontHeightNumbers(
+                                                      normalizeDoorFrontHeights(overlaySource.doorFrontHeights, overlayCount),
+                                                      String(overlaySource.height ?? ""),
+                                                      String(overlaySource.doorTopGap ?? ""),
+                                                      String(overlaySource.doorBetweenGap ?? ""),
+                                                      normalizeDoorFrontHeightManual(overlaySource.doorFrontHeightManual, overlayCount),
+                                                    )
+                                                  : { heights: [], manual: [] as boolean[] },
+                                              overlayDoorWidths:
+                                                overlayMode === "door"
+                                                  ? resolveDoorFrontWidthNumbers(
+                                                      normalizeDoorFrontWidths(overlaySource.doorFrontWidths, overlayCount),
+                                                      String(overlaySource.width ?? ""),
+                                                      String(overlaySource.doorSideLeftGap ?? ""),
+                                                      String(overlaySource.doorSideRightGap ?? ""),
+                                                      String(overlaySource.doorBetweenGap ?? ""),
+                                                      normalizeDoorFrontWidthManual(overlaySource.doorFrontWidthManual, overlayCount),
+                                                    )
+                                                  : { widths: [], manual: [] as boolean[] },
+                                            },
+                                          ];
+                                        });
+                                        const overlayGapPlacementRects: Array<{ left: number; right: number; top: number; bottom: number }> = [];
+                                        const overlayGapGuides = overlayItems.map(
+                                          ({
+                                            item,
+                                            ownerId,
+                                            frontKind,
+                                            overlayMode,
+                                            overlayTopGapPx,
+                                            overlayBetweenGapPxForHeight,
+                                            overlayBetweenGapPxForWidth,
+                                            overlayLeftGapPx,
+                                            overlayRightGapPx,
+                                            overlayDrawerHeights,
+                                            overlayDoorWidths,
+                                            overlaySource,
+                                          }) =>
+                                            renderCabinetBuilderOverlayGapGuides({
+                                              item,
+                                              ownerId,
+                                              frontKind,
+                                              overlayMode,
+                                              overlayTopGapValue: Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0,
+                                              overlayBetweenGapValue: Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0,
+                                              overlayLeftGapValue: Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0,
+                                              overlayRightGapValue: Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0,
+                                              overlayTopGapPx,
+                                              overlayBetweenGapPxForHeight,
+                                              overlayBetweenGapPxForWidth,
+                                              overlayLeftGapPx,
+                                              overlayRightGapPx,
+                                              overlayDoorWidths,
+                                              overlayDrawerHeights,
+                                              scale,
+                                              editingGapPill: cabinetBuilderEditingGapPill,
+                                              onStartEditGap: startCabinetBuilderOverlayGapEdit,
+                                              onChangeEditGapValue: (value) =>
+                                                setCabinetBuilderEditingGapPill((prev) => (prev ? { ...prev, value } : prev)),
+                                              onCommitEditGap: commitCabinetBuilderOverlayGapEdit,
+                                              onCancelEditGap: cancelCabinetBuilderOverlayGapEdit,
+                                              placedLabelRects: overlayGapPlacementRects,
+                                              blockedRects: activeGapBlockedRects,
+                                            }),
+                                        );
+                                        return (
+                                          <div
+                                            ref={cabinetBuilderDrawingViewportRef}
+                                            tabIndex={0}
+                                            onKeyDown={handleCabinetBuilderDrawingKeyDown}
+                                            onWheelCapture={handleCabinetBuilderDrawingWheelCapture}
+                                            onMouseEnter={clearCabinetBuilderHoverClearTimeout}
+                                            onMouseLeave={() => {
+                                              const activeHoverId =
+                                                cabinetBuilderSelectedHoverActive ? selectedPiece?.id || "" : cabinetBuilderHoveredWallId || selectedPiece?.id || "";
+                                              if (activeHoverId) scheduleCabinetBuilderWallHoverClear(activeHoverId);
+                                            }}
+                                            onMouseDownCapture={(event) => {
+                                              event.currentTarget.focus();
+                                            }}
+                                            onContextMenu={handleCabinetBuilderMeasureContextMenu}
+                                            className={`group relative mx-auto w-full max-w-[1120px] overflow-visible outline-none ${cabinetBuilderMeasureMode ? "cursor-crosshair" : ""}`}
+                                          >
+                                            <div
+                                              className="relative w-full"
+                                              style={{
+                                                transform: `scale(${cabinetBuilderDrawingZoom})`,
+                                                transformOrigin: "center top",
+                                              }}
+                                            >
+                                            <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} className="h-auto w-full overflow-visible">
+                                              {cabinetBuilderMeasureMode ? (
+                                                <rect
+                                                  x={0}
+                                                  y={0}
+                                                  width={viewWidth}
+                                                  height={viewHeight}
+                                                  fill="transparent"
+                                                  style={{ cursor: "crosshair" }}
+                                                  onMouseDown={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    recordCabinetBuilderMeasurePoint(event.clientX, event.clientY, viewWidth, viewHeight, pieceLayouts);
+                                                  }}
+                                                />
+                                              ) : null}
+                                              {pieceLayouts.map((item) => (
+                                                <g
+                                                  key={`cab_wall_piece_desktop_${item.id}`}
+                                                  data-cabinet-piece="1"
+                                                  onMouseEnter={() => markCabinetBuilderWallHovered(item.id)}
+                                                  onMouseDown={(event) => {
+                                                    if (cabinetBuilderMeasureMode) return;
+                                                    if (event.button !== 0) return;
+                                                    event.preventDefault();
+                                                    beginCabinetBuilderWallDrag(item.id, dragViewport, event.clientX);
+                                                  }}
+                                                  onClick={() => {
+                                                    if (cabinetBuilderMeasureMode) return;
+                                                      setCabinetBuilderSelectedWallId(item.id);
+                                                      setCabinetBuilderSelectedHoverActive(true);
+                                                      setCabinetBuilderAttachmentMenuSide(null);
+                                                    }}
+                                                  onDoubleClick={() => {
+                                                    if (cabinetBuilderMeasureMode || productionReadOnly) return;
+                                                      setCabinetBuilderSelectedWallId(item.id);
+                                                      setCabinetBuilderSelectedHoverActive(true);
+                                                      setCabinetBuilderAttachmentMenuSide(null);
+                                                      openCabinetBuilderEditForSelected("edit");
+                                                    }}
+                                                  style={{ cursor: cabinetBuilderMeasureMode ? "crosshair" : cabinetBuilderDragActive && cabinetBuilderDraggingWallId === item.id ? "grabbing" : "grab" }}
+                                                >
+                                                  <rect
+                                                    x={item.x}
+                                                    y={item.y}
+                                                    width={item.width}
+                                                    height={item.height}
+                                                    fill={item.palette.fill}
+                                                  />
+                                                  {(() => {
+                                                    const piecePrimaryText = numericDimensionText(item.row.height);
+                                                    const pieceSecondaryText = numericDimensionText(
+                                                      item.kind === "panel"
+                                                        ? String(item.row.depth || "").trim() || String(item.row.width || "").trim()
+                                                        : String(item.row.width || "").trim(),
+                                                    );
+                                                    const canShowInlineLabel = item.width >= 96 && item.height >= 28;
+                                                    const canShowStackedLabel = item.width >= 54 && item.height >= 86;
+                                                    return canShowInlineLabel ? (
+                                                      <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={item.palette.text}>
+                                                        {`${piecePrimaryText} x ${pieceSecondaryText}`}
+                                                      </text>
+                                                    ) : canShowStackedLabel ? (
+                                                      <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" fontSize="11" fill={item.palette.text}>
+                                                        <tspan x={item.x + item.width / 2} dy="-1.1em">{piecePrimaryText}</tspan>
+                                                        <tspan x={item.x + item.width / 2} dy="1.15em">x</tspan>
+                                                        <tspan x={item.x + item.width / 2} dy="1.15em">{pieceSecondaryText}</tspan>
+                                                      </text>
+                                                    ) : (
+                                                      <></>
+                                                    );
+                                                  })()}
+                                                </g>
+                                              ))}
+                                              {pieceLayouts.map((item, index) => {
+                                                const isSelected = item.id === selectedPiece?.id;
+                                                const previousItem = pieceLayouts[index - 1] ?? null;
+                                                const nextItem = pieceLayouts[index + 1] ?? null;
+                                                const topBottomStroke = isSelected ? "#2563EB" : item.palette.stroke;
+                                                const leftStroke = item.palette.stroke;
+                                                const sharedRightStroke = nextItem?.palette.stroke ?? item.palette.stroke;
+                                                const sharesLaneWithPrevious = Boolean(previousItem && previousItem.position === item.position);
+                                                const sharesColumnWithNext = Boolean(
+                                                  nextItem &&
+                                                    nextItem.position === item.position &&
+                                                    Math.abs(nextItem.x - item.x) < 0.5 &&
+                                                    Math.abs(nextItem.width - item.width) < 0.5,
+                                                );
+                                                const leftBoundaryTop = item.y;
+                                                const leftBoundaryBottom = item.y + item.height;
+                                                const rightBoundaryTouchesNext = Boolean(
+                                                  nextItem &&
+                                                    nextItem.position !== item.position &&
+                                                    Math.abs((item.x + item.width) - nextItem.x) < 0.5,
+                                                );
+                                                const sharedBoundaryTop = sharesColumnWithNext
+                                                  ? item.y
+                                                  : rightBoundaryTouchesNext
+                                                    ? Math.min(item.y, nextItem.y)
+                                                    : item.y;
+                                                const sharedBoundaryBottom = sharesColumnWithNext
+                                                  ? item.y + item.height
+                                                  : rightBoundaryTouchesNext
+                                                    ? Math.max(item.y + item.height, nextItem.y + nextItem.height)
+                                                    : item.y + item.height;
+                                                return (
+                                                  <g key={`cab_wall_outline_desktop_${item.id}`} pointerEvents="none">
+                                                    <line x1={item.x} x2={item.x + item.width} y1={item.y} y2={item.y} stroke={topBottomStroke} strokeWidth="1" />
+                                                    <line
+                                                      x1={item.x}
+                                                      x2={item.x + item.width}
+                                                      y1={item.y + item.height}
+                                                      y2={item.y + item.height}
+                                                      stroke={topBottomStroke}
+                                                      strokeWidth="1"
+                                                    />
+                                                    {!previousItem || sharesLaneWithPrevious || Math.abs((previousItem.x + previousItem.width) - item.x) > 0.5 ? (
+                                                      <line x1={item.x} x2={item.x} y1={leftBoundaryTop} y2={leftBoundaryBottom} stroke={leftStroke} strokeWidth="1" />
+                                                    ) : null}
+                                                    <line
+                                                      x1={item.x + item.width}
+                                                      x2={item.x + item.width}
+                                                      y1={sharedBoundaryTop}
+                                                      y2={sharedBoundaryBottom}
+                                                      stroke={sharedRightStroke}
+                                                      strokeWidth="1"
+                                                    />
+                                                  </g>
+                                                );
+                                              })}
+                                              {selectedPiece ? (
+                                                <g key={`cab_wall_selected_outline_desktop_${selectedPiece.id}`} pointerEvents="none">
+                                                  <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y} stroke="#2563EB" strokeWidth="1" />
+                                                  <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y + selectedPiece.height} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
+                                                  <line x1={selectedPiece.x} x2={selectedPiece.x} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
+                                                  <line x1={selectedPiece.x + selectedPiece.width} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
+                                                </g>
+                                              ) : null}
+                                              {overlayItems.map(({ item, overlaySource, overlayMode, overlayStroke, overlayFill, overlayText, overlayTopGapPx, overlayBetweenGapPxForHeight, overlayBetweenGapPxForWidth, overlayLeftGapPx, overlayRightGapPx, overlayClearHeight, overlayClearWidth, overlayDrawerHeights, overlayDoorWidths }) =>
+                                                overlayMode === "drawer"
+                                                  ? (() => {
+                                                      let currentY = item.y + overlayTopGapPx;
+                                                      const innerX = item.x + overlayLeftGapPx;
+                                                      const innerWidth = Math.max(0, item.width - overlayLeftGapPx - overlayRightGapPx);
+                                                      return overlayDrawerHeights.heights.map((pieceHeight, index) => {
+                                                        const pieceScaledHeight = pieceHeight * scale;
+                                                          const y = currentY;
+                                                          currentY += pieceScaledHeight + overlayBetweenGapPxForHeight;
+                                                          return (
+                                                            <g key={`cab_draw_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
+                                                              <rect x={innerX} y={y} width={innerWidth} height={pieceScaledHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
+                                                              <text x={innerX + innerWidth / 2} y={y + pieceScaledHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
+                                                                {`${formatDoorFrontHeightValue(pieceHeight)} x ${formatDoorFrontHeightValue(overlayClearWidth)}`}
+                                                            </text>
+                                                          </g>
+                                                        );
+                                                      });
+                                                    })()
+                                                  : overlayMode === "door"
+                                                    ? (() => {
+                                                        let currentX = item.x + overlayLeftGapPx;
+                                                        const frontY = item.y + overlayTopGapPx;
+                                                        const frontHeight = Math.max(0, item.height - overlayTopGapPx);
+                                                        return overlayDoorWidths.widths.map((pieceWidth, index) => {
+                                                          const pieceScaledWidth = pieceWidth * scale;
+                                                            const x = currentX;
+                                                            currentX += pieceScaledWidth + overlayBetweenGapPxForWidth;
+                                                            return (
+                                                              <g key={`cab_door_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
+                                                                <rect x={x} y={frontY} width={pieceScaledWidth} height={frontHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
+                                                                <text x={x + pieceScaledWidth / 2} y={frontY + frontHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
+                                                                  {`${formatDoorFrontHeightValue(pieceWidth)} x ${formatDoorFrontHeightValue(overlayClearHeight)}`}
+                                                              </text>
+                                                            </g>
+                                                          );
+                                                        });
+                                                      })()
+                                                    : null,
+                                              )}
+                                              {overlayGapGuides.flatMap((guide) => guide.lines)}
+                                              {overlayGapGuides.flatMap((guide) => guide.labels)}
+                                              {cabinetBuilderMeasurePoints.length >= 1 ? (
+                                                <>
+                                                  {cabinetBuilderMeasurePoints.length === 2 ? (
+                                                    <line
+                                                      x1={cabinetBuilderMeasurePoints[0].x}
+                                                      y1={cabinetBuilderMeasurePoints[0].y}
+                                                      x2={cabinetBuilderMeasurePoints[1].x}
+                                                      y2={cabinetBuilderMeasurePoints[1].y}
+                                                      stroke="#16A34A"
+                                                      strokeWidth="2"
+                                                      strokeDasharray="6 4"
+                                                    />
+                                                  ) : null}
+                                                  {cabinetBuilderMeasurePoints.map((point, index) => (
+                                                    <g key={`cab_measure_point_desktop_${index}`} pointerEvents="none">
+                                                      <circle cx={point.x} cy={point.y} r="3.5" fill="#16A34A" stroke="#FFFFFF" strokeWidth="1.5" />
+                                                      <text x={point.x + 10} y={point.y - 10} fontSize="11" fontWeight="700" fill="#14532D">
+                                                        {index === 0 ? "A" : "B"}
+                                                      </text>
+                                                    </g>
+                                                  ))}
+                                                  {cabinetBuilderMeasurePoints.length === 2 && measureLengthText ? (
+                                                    <g pointerEvents="none">
+                                                      <rect
+                                                        x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2 - 34}
+                                                        y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2 - 16}
+                                                        width="68"
+                                                        height="24"
+                                                        rx="8"
+                                                        fill="#FFFFFF"
+                                                        stroke="#16A34A"
+                                                      />
+                                                      <text
+                                                        x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2}
+                                                        y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2}
+                                                        textAnchor="middle"
+                                                        dominantBaseline="middle"
+                                                        fontSize="11"
+                                                        fontWeight="700"
+                                                        fill="#14532D"
+                                                      >
+                                                        {measureLengthText}
+                                                      </text>
+                                                    </g>
+                                                  ) : null}
+                                                </>
+                                              ) : null}
+                                            </svg>
+                                            {activeLabelPiece ? (
+                                              <div
+                                                className="pointer-events-none absolute z-10 rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm"
+                                                style={{
+                                                  left: `${((activeLabelPiece.x + activeLabelPiece.width / 2) / viewWidth) * 100}%`,
+                                                  top: `${(activeLabelPiece.y / viewHeight) * 100}%`,
+                                                  transform: "translate(-50%, calc(-100% - 8px))",
+                                                  borderColor: activeLabelPiece.palette.badgeBorder,
+                                                  backgroundColor: activeLabelPiece.palette.badgeBg,
+                                                  color: activeLabelPiece.palette.badgeText,
+                                                }}
+                                              >
+                                                {activeLabelPiece.row.name || "Cabinet"}
+                                              </div>
+                                            ) : null}
+                                            {selectedPiece ? (() => {
+                                              const canShowInlineLabel = selectedPiece.width >= 96 && selectedPiece.height >= 28;
+                                              const canShowStackedLabel = selectedPiece.width >= 54 && selectedPiece.height >= 86;
+                                              if (canShowInlineLabel || canShowStackedLabel) return null;
+                                              const selectedPrimaryText = numericDimensionText(selectedPiece.row.height);
+                                              const selectedSecondaryText = numericDimensionText(
+                                                selectedPiece.kind === "panel"
+                                                  ? String(selectedPiece.row.depth || "").trim() || String(selectedPiece.row.width || "").trim()
+                                                  : String(selectedPiece.row.width || "").trim(),
+                                              );
+                                              return (
+                                                <div
+                                                  className="pointer-events-none absolute z-20 rounded-[8px] border px-2 py-1 text-[11px] font-bold shadow-sm"
+                                                  style={{
+                                                    left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
+                                                    top: `${((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100}%`,
+                                                    transform: "translate(-50%, -50%)",
+                                                    borderColor: selectedPiece.palette.badgeBorder,
+                                                    backgroundColor: selectedPiece.palette.badgeBg,
+                                                    color: selectedPiece.palette.badgeText,
+                                                  }}
+                                                >
+                                                  <div className="text-center leading-[1.05]">
+                                                    <div>{selectedPrimaryText}</div>
+                                                    <div>x</div>
+                                                    <div>{selectedSecondaryText}</div>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })() : null}
+                                            {!cabinetBuilderMeasureMode ? (
+                                              <div className="pointer-events-none absolute inset-0">
+                                                <div
+                                                  className="pointer-events-auto absolute z-10 flex flex-col gap-2"
+                                                  style={{
+                                                    left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
+                                                    top: `${(((selectedPiece.y + selectedPiece.height + 42 > viewHeight ? selectedPiece.y : selectedPiece.y + selectedPiece.height)) / viewHeight) * 100}%`,
+                                                    transform:
+                                                      selectedPiece.y + selectedPiece.height + 42 > viewHeight
+                                                        ? "translate(-50%, calc(-100% - 8px))"
+                                                        : "translate(-50%, 8px)",
+                                                  }}
+                                                >
+                                                  <button type="button" onClick={() => openCabinetBuilderEditForSelected("edit")} className="rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg, color: cabinetBuilderShellText }}>{`Edit ${selectedPiece?.row.name || "Cabinet"}`}</button>
+                                                </div>
+                                              {(() => {
+                                                const selectedPieceHasDualAttachZones =
+                                                  selectedPiece.kind === "panel" && selectedPiece.panelHeightMode === "tall";
+                                                const attachmentAnchors: Array<{
+                                                  side: "left" | "right";
+                                                  align: "top" | "bottom";
+                                                  leftPercent: number;
+                                                  topPercent: number;
+                                                  transform: string;
+                                                  menuClassName: string;
+                                                }> = selectedPieceHasDualAttachZones
+                                                  ? [
+                                                      {
+                                                        side: "left",
+                                                        align: "top",
+                                                        leftPercent: (selectedPiece.x / viewWidth) * 100,
+                                                        topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
+                                                        transform: "translate(calc(-100% - 10px), -50%)",
+                                                        menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                                      },
+                                                      {
+                                                        side: "left",
+                                                        align: "bottom",
+                                                        leftPercent: (selectedPiece.x / viewWidth) * 100,
+                                                        topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
+                                                        transform: "translate(calc(-100% - 10px), -50%)",
+                                                        menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                                      },
+                                                      {
+                                                        side: "right",
+                                                        align: "top",
+                                                        leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
+                                                        topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
+                                                        transform: "translate(10px, -50%)",
+                                                        menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                                      },
+                                                      {
+                                                        side: "right",
+                                                        align: "bottom",
+                                                        leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
+                                                        topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
+                                                        transform: "translate(10px, -50%)",
+                                                        menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                                      },
+                                                    ]
+                                                  : [
+                                                      {
+                                                        side: "left",
+                                                        align: "bottom",
+                                                        leftPercent: (selectedPiece.x / viewWidth) * 100,
+                                                        topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
+                                                        transform: "translate(calc(-100% - 10px), -50%)",
+                                                        menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                                      },
+                                                      {
+                                                        side: "right",
+                                                        align: "bottom",
+                                                        leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
+                                                        topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
+                                                        transform: "translate(10px, -50%)",
+                                                        menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
+                                                      },
+                                                    ];
+                                                return attachmentAnchors.map((anchor) => {
+                                                  const menuOpen =
+                                                    cabinetBuilderAttachmentMenuSide === anchor.side &&
+                                                    cabinetBuilderAttachmentMenuAlign === anchor.align;
+                                                  const showAnchor = cabinetBuilderSelectedHoverActive || menuOpen;
+                                                  return (
+                                                    <div
+                                                      key={`cab_attach_${anchor.side}_${anchor.align}`}
+                                                      className="absolute transition-opacity duration-150"
+                                                      onMouseEnter={holdCabinetBuilderSelectedHover}
+                                                      onMouseLeave={() => scheduleCabinetBuilderWallHoverClear(selectedPiece.id)}
+                                                      style={{
+                                                        left: `${anchor.leftPercent}%`,
+                                                        top: `${anchor.topPercent}%`,
+                                                        transform: anchor.transform,
+                                                        opacity: showAnchor ? 1 : 0,
+                                                        pointerEvents: showAnchor ? "auto" : "none",
+                                                      }}
+                                                    >
+                                                      <button type="button" onClick={() => {
+                                                        const isOpen =
+                                                          cabinetBuilderAttachmentMenuSide === anchor.side &&
+                                                          cabinetBuilderAttachmentMenuAlign === anchor.align;
+                                                        setCabinetBuilderAttachmentMenuSide(isOpen ? null : anchor.side);
+                                                        setCabinetBuilderAttachmentMenuAlign(anchor.align);
+                                                      }} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] hover:bg-[#CFEBDD]">
+                                                        <img src="/plus.png" alt="" className="block object-contain" style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }} />
+                                                      </button>
+                                                      {menuOpen ? (
+                                                        <div className={anchor.menuClassName} style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg }}>
+                                                          <button type="button" onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "cabinet", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold" style={{ borderColor: cabinetBuilderFieldBorder, color: cabinetBuilderShellText }}>Cabinet</button>
+                                                          <button type="button" onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "panel", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold" style={{ borderColor: cabinetBuilderFieldBorder, color: cabinetBuilderShellText }}>Panel</button>
+                                                        </div>
+                                                      ) : null}
+                                                    </div>
+                                                  );
+                                                });
+                                              })()}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                        );
+                                      })()}
+                                    </div>
+                                    </div>
+                                  {renderCabinetBuilderAttachedPartsList(cabinetBuilderDraft, {
+                                    wrapperBorder: cabinetBuilderFieldBorder,
+                                    wrapperBg: cabinetBuilderFieldBg,
+                                    buttonBorder: cabinetBuilderFieldBorder,
+                                    buttonBg: "rgba(255,255,255,0.72)",
+                                    buttonText: cabinetBuilderShellText,
+                                  }) ?? (
+                                    <div className="rounded-[14px] border p-3" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg }}>
+                                      <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Cabinet Wall Parts</p>
+                                      <p className="mt-3 text-[11px] text-[#64748B]">Use the side + buttons on the drawing to add cabinets or panels.</p>
+                                    </div>
+                                  )}
+                                  {cabinetBuilderCreateOpen && typeof document !== "undefined" ? createPortal(
+                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+                                        <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+                                          {(() => {
+                                            const isPanelAttachment = cabinetBuilderPendingAttachment?.kind === "panel";
+                                            const grainAllowed = productionBoardAllowsGrainForValue(String(pendingCabinetBuilderRow.board || "").trim());
+                                            return (
+                                              <>
+                                                <p className="text-[22px] font-extrabold text-[#12345B]">
+                                                  {isPanelAttachment ? "Add Panel" : cabinetBuilderPendingAttachment ? "Add Cabinet" : "New Cabinet"}
+                                                </p>
+                                                {isPanelAttachment ? (
+                                                  <div className="mt-5 space-y-4">
+                                                    <div className="flex flex-wrap items-center gap-4">
+                                                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={cabinetBuilderPendingPanelHeightMode === "base"}
+                                                          onChange={() => {
+                                                            setCabinetBuilderPendingPanelHeightMode("base");
+                                                            setCabinetBuilderPendingPanelHeightError("");
+                                                            setPendingCabinetBuilderRow((prev) => ({
+                                                              ...prev,
+                                                              height: getCabinetBuilderPanelHeightBaselineText("base", cabinetBuilderPendingPanelSpanMode),
+                                                            }));
+                                                          }}
+                                                        />
+                                                        Base
+                                                      </label>
+                                                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={cabinetBuilderPendingPanelHeightMode === "tall"}
+                                                          onChange={() => {
+                                                            setCabinetBuilderPendingPanelHeightMode("tall");
+                                                            setCabinetBuilderPendingPanelHeightError("");
+                                                            setPendingCabinetBuilderRow((prev) => ({
+                                                              ...prev,
+                                                              height: getCabinetBuilderPanelHeightBaselineText("tall", cabinetBuilderPendingPanelSpanMode),
+                                                            }));
+                                                          }}
+                                                        />
+                                                        Tall
+                                                      </label>
+                                                      <div className="min-w-[220px] flex-1 space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Panel Span</p>
+                                                        <BoardPillDropdown
+                                                          value={cabinetBuilderPendingPanelSpanMode}
+                                                          options={["floorToCeiling", "floorToTopOfCab", "bottomToCeiling", "bottomToTopOfCab"]}
+                                                          disabled={productionReadOnly}
+                                                          bg="#FFFFFF"
+                                                          border="#D8DEE8"
+                                                          text="#0F172A"
+                                                          size="default"
+                                                          getSize={() => ""}
+                                                          getLabel={(value) =>
+                                                            value === "floorToCeiling"
+                                                              ? "Floor to ceiling"
+                                                              : value === "floorToTopOfCab"
+                                                                ? "Floor to top of cab"
+                                                                : value === "bottomToCeiling"
+                                                                  ? "Bottom of cab to ceiling"
+                                                                  : "Bottom of cab to top of cab"
+                                                          }
+                                                          onChange={(value) => {
+                                                            const nextSpanMode =
+                                                              value === "floorToCeiling" || value === "floorToTopOfCab" || value === "bottomToCeiling" || value === "bottomToTopOfCab"
+                                                                ? value
+                                                                : "bottomToTopOfCab";
+                                                            setCabinetBuilderPendingPanelSpanMode(nextSpanMode);
+                                                            setCabinetBuilderPendingPanelHeightError("");
+                                                            setPendingCabinetBuilderRow((prev) => ({
+                                                              ...prev,
+                                                              height: getCabinetBuilderPanelHeightBaselineText(cabinetBuilderPendingPanelHeightMode, nextSpanMode),
+                                                            }));
+                                                          }}
+                                                        />
+                                                      </div>
+                                                    </div>
+                                                    {cabinetBuilderPendingPanelNeedsExtraHeight ? (
+                                                      <p className="text-[12px] font-semibold text-[#B42318]">
+                                                        Add extra height above {cabinetBuilderPendingPanelBaselineText} before creating this panel.
+                                                      </p>
+                                                    ) : null}
+                                                    {cabinetBuilderPendingPanelHeightError ? (
+                                                      <p className="text-[12px] font-semibold text-[#B42318]">{cabinetBuilderPendingPanelHeightError}</p>
+                                                    ) : null}
+                                                    <div className="grid gap-3 md:grid-cols-2">
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                                                        <BoardPillDropdown
+                                                          value={pendingCabinetBuilderRow.board}
+                                                          options={cutlistBoardOptions}
+                                                          disabled={productionReadOnly}
+                                                          bg="#FFFFFF"
+                                                          border="#D8DEE8"
+                                                          text="#0F172A"
+                                                          getSize={boardSizeFor}
+                                                          getLabel={boardDisplayLabel}
+                                                          onChange={(value) => {
+                                                            const defaults = defaultClashingForPartType(experimentalPanelPartType, value);
+                                                            const grainAllowedForBoard = productionBoardAllowsGrainForValue(String(value || "").trim());
+                                                            setPendingCabinetBuilderRow((prev) => ({
+                                                              ...prev,
+                                                              board: value,
+                                                              clashLeft: defaults.left,
+                                                              clashRight: defaults.right,
+                                                              clashing: joinClashing(defaults.left, defaults.right),
+                                                              grain: grainAllowedForBoard ? prev.grain : false,
+                                                              grainValue: grainAllowedForBoard ? prev.grainValue : "",
+                                                            }));
+                                                          }}
+                                                        />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
+                                                        <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                    </div>
+                                                    <div className="grid gap-3 md:grid-cols-4">
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                                        <input value={pendingCabinetBuilderRow.height} onChange={(e) => { setCabinetBuilderPendingPanelHeightError(""); setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) })); }} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                                        <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                                                        <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                                                        <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) || "" }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                    </div>
+                                                    <div className={`grid gap-3 ${grainAllowed ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Long</p>
+                                                        <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashLeft: value, clashing: joinClashing(value, String(prev.clashRight ?? "")) }))} />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Short</p>
+                                                        <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashRight: value, clashing: joinClashing(String(prev.clashLeft ?? ""), value) }))} />
+                                                      </div>
+                                                      {grainAllowed ? (
+                                                        <div className="space-y-1">
+                                                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                                                          <BoardPillDropdown value={String(pendingCabinetBuilderRow.grainValue ?? "")} options={grainDimensionOptionsForRow(pendingCabinetBuilderRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, grainValue: value, grain: Boolean(String(value).trim()) }))} />
+                                                        </div>
+                                                      ) : null}
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                                                      <textarea value={pendingCabinetBuilderRow.information} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, information: e.target.value }))} className="min-h-[86px] w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-2 text-[13px]" />
+                                                    </div>
+                                                  </div>
+                                                ) : (
+                                                  <div className="mt-5 space-y-3">
+                                                    <label className="inline-flex items-center gap-2 text-[13px] font-semibold text-[#334155]">
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={cabinetBuilderPendingNewCabinet}
+                                                        onChange={(e) => setCabinetBuilderPendingNewCabinet(e.target.checked)}
+                                                      />
+                                                      New Cabinet
+                                                    </label>
+                                                    <div className="grid gap-3 sm:grid-cols-3">
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Cabinet Name</p>
+                                                        <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                                        <input value={pendingCabinetBuilderRow.height} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                                        <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      </div>
+                                                    </div>
+                                                    {cabinetBuilderPendingNewCabinet ? (
+                                                      <div className="space-y-4">
+                                                        <div className="grid gap-3 md:grid-cols-2">
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                                                            <BoardPillDropdown
+                                                              value={pendingCabinetBuilderRow.board}
+                                                              options={cutlistBoardOptions}
+                                                              disabled={productionReadOnly}
+                                                              bg="#FFFFFF"
+                                                              border="#D8DEE8"
+                                                              text="#0F172A"
+                                                              getSize={boardSizeFor}
+                                                              getLabel={boardDisplayLabel}
+                                                              onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, board: value }))}
+                                                            />
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                                                            <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                          </div>
+                                                        </div>
+                                                        <div className="grid gap-3 md:grid-cols-4">
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                                                            <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
+                                                            <input value={pendingCabinetBuilderRow.fixedShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
+                                                            <input value={pendingCabinetBuilderRow.adjustableShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                                                            <input value={pendingCabinetBuilderRow.information ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, information: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                          </div>
+                                                        </div>
+                                                        <div className="grid gap-3 md:grid-cols-2">
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Drilling</p>
+                                                            <select value={pendingCabinetBuilderRow.fixedShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
+                                                              <option value="No">No</option>
+                                                              <option value="Yes">Yes</option>
+                                                            </select>
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Drilling</p>
+                                                            <select value={pendingCabinetBuilderRow.adjustableShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
+                                                              <option value="No">No</option>
+                                                              <option value="Yes">Yes</option>
+                                                            </select>
+                                                          </div>
+                                                        </div>
+                                                      </div>
+                                                    ) : null}
+                                                  </div>
+                                                )}
+                                              </>
+                                            );
+                                          })()}
+                                          <div className="mt-5 flex justify-end gap-2">
+                                          <button type="button" onClick={() => { setCabinetBuilderPendingAttachment(null); setCabinetBuilderPendingPanelHeightError(""); setCabinetBuilderCreateOpen(false); }} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
+                                          <button type="button" onClick={confirmCabinetBuilderCreate} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Create</button>
+                                        </div>
+                                        </div>
+                                      </div>,
+                                      document.body,
+                                    ) : null}
+                                  {cabinetBuilderEditOpen && cabinetBuilderDraft && typeof document !== "undefined" ? createPortal(
+                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+                                        <div
+                                          className="flex w-full max-w-[960px] flex-col overflow-hidden rounded-[24px] bg-white px-0 pb-3 pt-0 shadow-2xl"
+                                          style={{ height: "min(86vh, 820px)" }}
+                                        >
+                                        <div className="relative border-b border-[#D8DEE8] bg-[#F8FAFC] px-12 py-3 text-center">
+                                          <button
+                                            type="button"
+                                            disabled={productionReadOnly}
+                                            onClick={promptDeleteSelectedCabinetBuilderCabinet}
+                                            className="absolute left-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] disabled:opacity-55"
+                                          >
+                                            <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
+                                          </button>
+                                          <p className="text-[22px] font-extrabold text-[#12345B]">{getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.name || "Cabinet"}</p>
+                                          <button type="button" onClick={() => setCabinetBuilderEditOpen(false)} className="absolute right-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
+                                        </div>
+                                        <div
+                                          className="mt-0 grid w-full grid-flow-col auto-cols-fr items-end gap-0 border-b border-[#D8DEE8] px-0"
+                                          style={{
+                                            backgroundColor: (() => {
+                                              const desktopTabs = buildCabinetBuilderEditTabs(cabinetBuilderDraft);
+                                              const desktopActiveTab = desktopTabs.find((tab) => tab.id === cabinetBuilderEditTab) ?? desktopTabs[0];
+                                              return desktopActiveTab?.color ? lightenHex(desktopActiveTab.color, 0.28) : "#FFFFFF";
+                                            })(),
+                                          }}
+                                        >
+                                          {buildCabinetBuilderEditTabs(cabinetBuilderDraft).map((tab) => {
+                                            const isActive = cabinetBuilderEditTab === tab.id;
+                                            const bg = tab.color ? (isActive ? tab.color : lightenHex(tab.color, 0.18)) : isActive ? "#DDF2E7" : "#FFFFFF";
+                                            const border = tab.color ? tab.color : isActive ? "#BFE8CF" : "#D8DEE8";
+                                            const text = tab.color ? "#000000" : isActive ? "#14532D" : "#334155";
+                                            const desktopTabs = buildCabinetBuilderEditTabs(cabinetBuilderDraft);
+                                            const isFirst = tab.id === desktopTabs[0]?.id;
+                                            const isLast = tab.id === desktopTabs[desktopTabs.length - 1]?.id;
+                                            return (
+                                              <button
+                                                key={`cab_edit_tab_desktop_${tab.id}`}
+                                                type="button"
+                                                onClick={() => setCabinetBuilderEditTab(tab.id)}
+                                                className="-mb-px -ml-px first:ml-0 w-full rounded-t-none rounded-b-none border px-4 py-2 text-center text-[12px] font-bold"
+                                                style={{
+                                                  borderTopColor: border,
+                                                  borderBottomColor: isActive ? bg : "#D8DEE8",
+                                                  borderLeftColor: border,
+                                                  borderRightColor: border,
+                                                  backgroundColor: bg,
+                                                  color: text,
+                                                  opacity: 1,
+                                                }}
+                                              >
+                                                {tab.label}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                        {(() => {
+                                          const desktopEditTabs = buildCabinetBuilderEditTabs(cabinetBuilderDraft);
+                                          const desktopActiveEditTab = desktopEditTabs.find((tab) => tab.id === cabinetBuilderEditTab) ?? desktopEditTabs[0];
+                                          const desktopEditPanelBg = desktopActiveEditTab?.color ? lightenHex(desktopActiveEditTab.color, 0.28) : "#FFFFFF";
+                                          const desktopEditPanelBorder = desktopActiveEditTab?.color ? darkenHex(desktopActiveEditTab.color, 0.08) : "#D8DEE8";
+                                            return (
+                                              <div
+                                                className="min-h-0 flex-1 overflow-y-auto rounded-b-[16px] border border-t-0 px-3 py-3"
+                                                style={{ borderColor: desktopEditPanelBorder, backgroundColor: desktopEditPanelBg }}
+                                              >
+                                        <label className={`${cabinetBuilderEditTab === "edit" ? "inline-flex" : "hidden"} items-center gap-2 text-[13px] font-semibold text-[#334155]`}>
+                                          <input
+                                            type="checkbox"
+                                            checked={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.newCabinet ?? false}
+                                            onChange={(e) => {
+                                              setCabinetBuilderSelectedNewCabinet(e.target.checked);
+                                              if (e.target.checked) {
+                                                setCabinetBuilderEditTab("cabinet");
+                                              } else if (cabinetBuilderEditTab === "cabinet") {
+                                                setCabinetBuilderEditTab("edit");
+                                              }
+                                            }}
+                                          />
+                                          New Cabinet
+                                        </label>
+                                        <div className={`${cabinetBuilderEditTab === "edit" ? "mt-4 grid gap-3 md:grid-cols-2" : "hidden"}`}>
+                                          <div className="space-y-1">
+                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                            <input
+                                              value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.height ?? ""}
+                                              onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })}
+                                              className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
+                                            />
+                                          </div>
+                                          <div className="space-y-1">
+                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                            <input
+                                              value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.width ?? ""}
+                                              onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })}
+                                              className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
+                                            />
+                                          </div>
+                                        </div>
+                                        <div className={`${cabinetBuilderEditTab === "cabinet" ? "mt-4 grid gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]" : "hidden"}`}>
+                                          <div className="space-y-3">
+                                            <div className="space-y-1">
+                                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                                              <BoardPillDropdown value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.board ?? ""} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderMainRow({ board: value })} />
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-3">
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.name ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.height ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.width ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                            </div>
+                                            <div className="grid grid-cols-4 gap-3">
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.depth ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Qty</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.quantity ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ quantity: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.fixedShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ fixedShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                              <div className="space-y-1">
+                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
+                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.adjustableShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ adjustableShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                              </div>
+                                            </div>
+                                            <div className="space-y-1">
+                                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                                              <textarea value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.information ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ information: e.target.value })} className="min-h-[80px] w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-2 text-[13px]" />
+                                            </div>
+                                          </div>
+                                            <div className="space-y-3">
+                                              <p className="text-[12px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Add Parts Within Cabinet</p>
+                                              <div className="flex flex-wrap gap-2">
+                                                <button key="cab_builder_fronts" type="button" onClick={ensureCabinetBuilderSelectedFronts} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold" style={{ borderColor: "#D8DEE8", backgroundColor: partTypeColors[experimentalConfiguredFrontPartType] ?? "#EEF2F7", color: isLightHex(partTypeColors[experimentalConfiguredFrontPartType] ?? "#EEF2F7") ? "#1F2937" : "#F8FAFC" }}>
+                                                  Fronts
+                                                </button>
+                                                {partTypeOptions
+                                                .filter((partType) => !isExperimentalCabinetBuilderPartType(partType) && partType !== experimentalConfiguredFrontPartType)
+                                                .map((partType) => (
+                                                <button key={`cab_child_btn_${partType}`} type="button" onClick={() => { addCabinetBuilderChildRowAndOpenTab(partType); }} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold" style={{ borderColor: "#D8DEE8", backgroundColor: partTypeColors[partType] ?? "#EEF2F7", color: isLightHex(partTypeColors[partType] ?? "#EEF2F7") ? "#1F2937" : "#F8FAFC" }}>
+                                                    {partType}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                              {!(getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.childRows.length ?? 0) ? (
+                                                <p className="text-[12px] text-[#64748B]">Add child parts here. They’ll each get their own tab.</p>
+                                              ) : null}
+                                          </div>
+                                        </div>
+                                        {cabinetBuilderEditTab.startsWith("child:")
+                                          ? (() => {
+                                              const childId = cabinetBuilderEditTab.slice(6);
+                                              const child = getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.childRows.find((item) => item.id === childId) ?? null;
+                                              if (!child) return null;
+                                              return (
+                                                <div className="mt-4 space-y-3 rounded-[12px] border border-[#D8DEE8] p-3">
+                                                  <div className="flex items-center justify-between">
+                                                    <span
+                                                      className="inline-flex items-center rounded-[8px] border px-3 py-1.5 text-[11px] font-bold"
+                                                      style={{
+                                                        borderColor: partTypeColors[child.row.partType] ?? "#CBD5E1",
+                                                        backgroundColor: lightenHex(partTypeColors[child.row.partType] ?? "#CBD5E1", 0.18),
+                                                        color: "#000000",
+                                                      }}
+                                                    >
+                                                      {child.row.partType}
+                                                    </span>
+                                                    <button type="button" onClick={() => { removeCabinetBuilderChildRow(child.id); setCabinetBuilderEditTab("edit"); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={14} /></button>
+                                                  </div>
+                                                  <div className="grid gap-3 md:grid-cols-[160px_minmax(0,1fr)]">
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                                                      <BoardPillDropdown value={child.row.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderChildRow(child.id, { board: value })} />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
+                                                      <input value={child.row.name} onChange={(e) => updateCabinetBuilderChildRow(child.id, { name: e.target.value })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                    </div>
+                                                  </div>
+                                                  <div className="grid gap-3 md:grid-cols-4">
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                                      {isClassicDrawerRowLike(child.row) ? (
+                                                        <DrawerHeightDropdown
+                                                          value={String(child.row.height || "")}
+                                                          options={drawerHeightLetterOptions}
+                                                          disabled={productionReadOnly}
+                                                          bg="#FFFFFF"
+                                                          border="#D8DEE8"
+                                                          text="#0F172A"
+                                                          onAdd={(token) => addCabinetBuilderChildDrawerHeightToken(child.id, token)}
+                                                          onRemove={(token) => removeCabinetBuilderChildDrawerHeightToken(child.id, token)}
+                                                        />
+                                                      ) : (
+                                                        <input value={child.row.height} onChange={(e) => updateCabinetBuilderChildRow(child.id, { height: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                      )}
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                                      <input value={child.row.width} onChange={(e) => updateCabinetBuilderChildRow(child.id, { width: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
+                                                      <input value={child.row.depth} onChange={(e) => updateCabinetBuilderChildRow(child.id, { depth: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                                                      <input value={child.row.quantity} disabled={isClassicDrawerRowLike(child.row)} onChange={(e) => updateCabinetBuilderChildRow(child.id, { quantity: numericOnlyText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px] disabled:opacity-90" />
+                                                    </div>
+                                                  </div>
+                                                  {!isCabinetryPartType(child.row.partType) ? (
+                                                    <div className={`grid gap-3 ${productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clashing Left</p>
+                                                        <BoardPillDropdown value={String(child.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashLeft: value, clashing: joinClashing(value, String(child.row.clashRight ?? "")) })} />
+                                                      </div>
+                                                      <div className="space-y-1">
+                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clashing Right</p>
+                                                        <BoardPillDropdown value={String(child.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashRight: value, clashing: joinClashing(String(child.row.clashLeft ?? ""), value) })} />
+                                                      </div>
+                                                      {productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? (
+                                                        <div className="space-y-1">
+                                                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                                                          <BoardPillDropdown value={String(child.row.grainValue ?? "")} options={grainDimensionOptionsForRow(child.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderChildRow(child.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
+                                                        </div>
+                                                      ) : null}
+                                                    </div>
+                                                  ) : null}
+                                                  <div className="space-y-1">
+                                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
+                                                    <textarea value={child.row.information} onChange={(e) => updateCabinetBuilderChildRow(child.id, { information: e.target.value })} className="min-h-[72px] w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-2 text-[13px]" />
+                                                  </div>
+                                                </div>
+                                              );
+                                            })()
+                                          : null}
+                                        {cabinetBuilderEditTab === "fronts"
+                                          ? (() => {
+                                              const selectedFrontRow = getCabinetBuilderSelectedFrontRow(cabinetBuilderDraft);
+                                              const frontKind = getCabinetBuilderSelectedFrontKind(cabinetBuilderDraft);
+                                              if (!selectedFrontRow || !frontKind) return null;
+                                              const grainAllowed = productionBoardAllowsGrainForValue(String(selectedFrontRow.board || "").trim());
+                                              return (
+                                                <div className="mt-4 space-y-4">
+                                                  {renderDoorModeConfigurator({
+                                                    mode: normalizeDoorModeValue(selectedFrontRow.doorMode),
+                                                    frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
+                                                    onModeChange: (mode) =>
+                                                      setCabinetBuilderSelectedFrontMode(mode),
+                                                    onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(frontKind, value),
+                                                    disabled: productionReadOnly,
+                                                    textColor: "#0F172A",
+                                                    borderColor: "#D8DEE8",
+                                                    fieldBg: "#FFFFFF",
+                                                    fieldText: "#0F172A",
+                                                    layout: "split-tabs",
+                                                  })}
+                                                  {grainAllowed ? (
+                                                    <div className="mx-auto w-full max-w-[240px] space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                                                      <BoardPillDropdown value={String(selectedFrontRow.grainValue ?? "")} options={grainDimensionOptionsForRow(selectedFrontRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(frontKind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
+                                                    </div>
+                                                  ) : null}
+                                                  <div className="flex justify-center">
+                                                      {renderDoorSetupDesigner({
+                                                        mode: normalizeDoorModeValue(selectedFrontRow.doorMode) === "drawer" ? "drawer" : "door",
+                                                        frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
+                                                        overallHeight: String(selectedFrontRow.height ?? ""),
+                                                        overallWidth: String(selectedFrontRow.width ?? ""),
+                                                        topGap: String(selectedFrontRow.doorTopGap ?? ""),
+                                                        betweenGap: String(selectedFrontRow.doorBetweenGap ?? ""),
+                                                        sideLeft: normalizeDoorSideValue(selectedFrontRow.doorSideLeft),
+                                                        sideRight: normalizeDoorSideValue(selectedFrontRow.doorSideRight),
+                                                        sideLeftGap: String(selectedFrontRow.doorSideLeftGap ?? ""),
+                                                        sideRightGap: String(selectedFrontRow.doorSideRightGap ?? ""),
+                                                        frontWidths: normalizeDoorFrontWidths(selectedFrontRow.doorFrontWidths, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                                                        frontWidthManual: normalizeDoorFrontWidthManual(selectedFrontRow.doorFrontWidthManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                                                        frontHeights: normalizeDoorFrontHeights(selectedFrontRow.doorFrontHeights, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                                                        frontHeightManual: normalizeDoorFrontHeightManual(selectedFrontRow.doorFrontHeightManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
+                                                        onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorTopGap", value),
+                                                        onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorBetweenGap", value),
+                                                        onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(frontKind, key, value),
+                                                        onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(frontKind, key, value),
+                                                        onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
+                                                        onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
+                                                        onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
+                                                        onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
+                                                        disabled: productionReadOnly,
+                                                        textColor: "#0F172A",
+                                                        borderColor: "#D8DEE8",
+                                                        fieldBg: "#FFFFFF",
+                                                        fieldText: "#0F172A",
+                                                        fillAvailableSpace: true,
+                                                      })}
+                                                  </div>
+                                                </div>
+                                              );
+                                            })()
+                                          : null}
+                                            </div>
+                                          );
+                                        })()}
+                                        </div>
+                                      </div>,
+                                      document.body,
+                                    ) : null}
+                                  {cabinetBuilderDeleteConfirmOpen && cabinetBuilderActiveDeleteMeta && typeof document !== "undefined" ? createPortal(
+                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+                                        <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+                                          <p className="text-[22px] font-extrabold text-[#12345B]">Are you sure?</p>
+                                          <p className="mt-3 text-[14px] text-[#475467]">
+                                            {cabinetBuilderActiveDeleteMeta.connectedPartsCount > 0
+                                              ? `Deleting ${cabinetBuilderActiveDeleteMeta.name} will also remove ${cabinetBuilderActiveDeleteMeta.connectedPartsCount} connected part${cabinetBuilderActiveDeleteMeta.connectedPartsCount === 1 ? "" : "s"}.`
+                                              : `Delete ${cabinetBuilderActiveDeleteMeta.name}?`}
+                                          </p>
+                                          <div className="mt-5 flex justify-end gap-2">
+                                            <button
+                                              type="button"
+                                              onClick={() => { setCabinetBuilderDeleteConfirmOpen(false); setCabinetBuilderDeleteTargetOverride(null); }}
+                                              className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
+                                            >
+                                              Cancel
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={deleteSelectedCabinetBuilderCabinet}
+                                              className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
+                                            >
+                                              Confirm
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>,
+                                      document.body,
+                                    ) : null}
+                                  {cabinetBuilderDeleteWallConfirmOpen && typeof document !== "undefined" ? createPortal(
+                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+                                        <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+                                          <p className="text-[22px] font-extrabold text-[#12345B]">Delete Wall</p>
+                                          <p className="mt-3 text-[14px] text-[#475467]">Are you sure you want to delete this wall drawing?</p>
+                                          <div className="mt-5 flex justify-end gap-2">
+                                            <button
+                                              type="button"
+                                              onClick={() => setCabinetBuilderDeleteWallConfirmOpen(false)}
+                                              className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
+                                            >
+                                              Cancel
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => void deleteCurrentCabinetBuilderWall()}
+                                              className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
+                                            >
+                                              Delete Wall
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>,
+                                      document.body,
+                                    ) : null}
+                                  {(cabinetBuilderDoorsOpen || cabinetBuilderDrawersOpen) && cabinetBuilderDraft && typeof document !== "undefined" ? createPortal(
+                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+                                        <div className="w-full max-w-[1100px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
+                                        {(() => {
+                                          const kind = cabinetBuilderDoorsOpen ? "doorsRow" : "drawersRow";
+                                          const currentRow = getCabinetBuilderSelectedConfiguredRow(cabinetBuilderDraft, kind);
+                                          if (!currentRow) return null;
+                                          const close = () => {
+                                            setCabinetBuilderDoorsOpen(false);
+                                            setCabinetBuilderDrawersOpen(false);
+                                          };
+                                          const grainAllowed = productionBoardAllowsGrainForValue(String(currentRow.board || "").trim());
+                                          return (
+                                            <>
+                                              <div className="flex items-center justify-between">
+                                                <p className="text-[22px] font-extrabold text-[#12345B]">{kind === "doorsRow" ? "Doors" : "Drawers"}</p>
+                                                <button type="button" onClick={close} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
+                                              </div>
+                                              <div className="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+                                                <div className="space-y-3">
+                                                  {renderDoorModeConfigurator({
+                                                    mode: normalizeDoorModeValue(currentRow.doorMode),
+                                                    frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
+                                                    onModeChange: (mode) =>
+                                                      updateCabinetBuilderConfiguredRow(kind, (row) =>
+                                                        createConfiguredCabinetFrontRow(mode === "manual" ? "door" : mode, {
+                                                          ...row,
+                                                          board: row.board,
+                                                          name: row.name,
+                                                          height: row.height,
+                                                          width: row.width,
+                                                          clashLeft: row.clashLeft,
+                                                          clashRight: row.clashRight,
+                                                          quantity: row.quantity,
+                                                          grainValue: row.grainValue,
+                                                          information: row.information,
+                                                        }),
+                                                      ),
+                                                    onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(kind, value),
+                                                    disabled: productionReadOnly,
+                                                    textColor: "#0F172A",
+                                                    borderColor: "#D8DEE8",
+                                                    fieldBg: "#FFFFFF",
+                                                    fieldText: "#0F172A",
+                                                  })}
+                                                  <div className="space-y-1">
+                                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
+                                                    <BoardPillDropdown value={currentRow.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, board: value }))} />
+                                                  </div>
+                                                  <div className="grid grid-cols-3 gap-3">
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
+                                                      <input value={currentRow.height} onChange={(e) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
+                                                      <input value={currentRow.width} onChange={(e) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
+                                                      <input value={currentRow.quantity} onChange={(e) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
+                                                    </div>
+                                                  </div>
+                                                  <div className="grid grid-cols-2 gap-3">
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Left</p>
+                                                      <BoardPillDropdown value={currentRow.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, clashLeft: value, clashing: joinClashing(value, String(row.clashRight ?? "")) }))} />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Right</p>
+                                                      <BoardPillDropdown value={currentRow.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, clashRight: value, clashing: joinClashing(String(row.clashLeft ?? ""), value) }))} />
+                                                    </div>
+                                                  </div>
+                                                  {grainAllowed ? (
+                                                    <div className="space-y-1">
+                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
+                                                      <BoardPillDropdown value={String(currentRow.grainValue ?? "")} options={grainDimensionOptionsForRow(currentRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
+                                                    </div>
+                                                  ) : null}
+                                                </div>
+                                                <div>
+                                                  {renderDoorSetupDesigner({
+                                                    mode: normalizeDoorModeValue(currentRow.doorMode) === "drawer" ? "drawer" : "door",
+                                                    frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
+                                                    overallHeight: String(currentRow.height ?? ""),
+                                                    overallWidth: String(currentRow.width ?? ""),
+                                                    topGap: String(currentRow.doorTopGap ?? ""),
+                                                    betweenGap: String(currentRow.doorBetweenGap ?? ""),
+                                                    sideLeft: normalizeDoorSideValue(currentRow.doorSideLeft),
+                                                    sideRight: normalizeDoorSideValue(currentRow.doorSideRight),
+                                                    sideLeftGap: String(currentRow.doorSideLeftGap ?? ""),
+                                                    sideRightGap: String(currentRow.doorSideRightGap ?? ""),
+                                                    frontWidths: normalizeDoorFrontWidths(currentRow.doorFrontWidths, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                                                    frontWidthManual: normalizeDoorFrontWidthManual(currentRow.doorFrontWidthManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                                                    frontHeights: normalizeDoorFrontHeights(currentRow.doorFrontHeights, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                                                    frontHeightManual: normalizeDoorFrontHeightManual(currentRow.doorFrontHeightManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
+                                                    onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(kind, "doorTopGap", value),
+                                                    onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(kind, "doorBetweenGap", value),
+                                                    onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(kind, key, value),
+                                                    onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(kind, key, value),
+                                                    onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(kind, index, value),
+                                                    onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(kind, index, value),
+                                                    onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(kind, index),
+                                                    onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(kind, index),
+                                                    disabled: productionReadOnly,
+                                                    textColor: "#0F172A",
+                                                    borderColor: "#D8DEE8",
+                                                    fieldBg: "#FFFFFF",
+                                                    fieldText: "#0F172A",
+                                                  })}
+                                                </div>
+                                              </div>
+                                              <div className="mt-5 flex justify-end gap-2">
+                                                <button type="button" onClick={close} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
+                                                <button type="button" onClick={close} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Save</button>
+                                              </div>
+                                            </>
+                                          );
+                                        })()}
+                                        </div>
+                                      </div>,
+                                      document.body,
+                                    ) : null}
+                                  {cabinetBuilderEditingAttachmentId && cabinetBuilderDraft && typeof document !== "undefined" ? createPortal(
+                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
+                                        {(() => {
+                                          const attachment = cabinetBuilderDraft.attachments.find((item) => item.id === cabinetBuilderEditingAttachmentId) ?? null;
+                                          if (!attachment) return null;
+                                          return renderCabinetBuilderAttachmentEditPopup(attachment);
+                                        })()}
+                                      </div>,
+                                      document.body,
+                                    ) : null}
+                                  </div>
+                              )}
+                            </div>
+                          ) : !manualCutlistUsesPlainDoorRows && isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode === "" ? (
                             <div className="border-y px-3 py-3" style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                               <div className="max-w-[360px]">
                                 {renderDoorModeConfigurator({
@@ -30395,7 +37121,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     })}
                               </div>
                             </div>
-                          ) : isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode !== "manual" ? (
+                          ) : !manualCutlistUsesPlainDoorRows && isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode !== "manual" ? (
                             <div className="border-y px-3 py-3" style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                               {!isTabletProjectViewport ? (
                                 <div className="mb-3 inline-flex rounded-[10px] border p-[2px]" style={{ borderColor: activeCutlistEntryFieldBorder, backgroundColor: "rgba(255,255,255,0.14)" }}>
@@ -30579,7 +37305,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 ) : null}
                                 {(isTabletProjectViewport || cutlistCompactConfiguredEntryPanel === "drawing") ? (
                                 <div className="self-stretch">
-                                  {renderDoorSetupDesigner({
+                                  {!manualCutlistUsesPlainDoorRows ? renderDoorSetupDesigner({
                                     mode: cutlistEntrySelectedDoorMode === "drawer" ? "drawer" : "door",
                                     frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
                                     overallHeight: String(cutlistEntry.height ?? ""),
@@ -30619,7 +37345,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     borderColor: activeCutlistEntryFieldBorder,
                                     fieldBg: activeCutlistEntryFieldBg,
                                     fieldText: activeCutlistEntryTextColor,
-                                  })}
+                                  }) : null}
                                 </div>
                                 ) : null}
                               </div>
@@ -30655,7 +37381,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell("single", "name")}`}
                                   style={warningStyleForCell("single", "name", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })}
                                 />
-                                {isDoorPartType(cutlistEntry.partType)
+                                {isDoorPartType(cutlistEntry.partType) && !manualCutlistUsesPlainDoorRows
                                   ? renderDoorModeConfigurator({
                                       mode: normalizeDoorModeValue(cutlistEntry.doorMode),
                                       frontCount: normalizeDoorFrontCountValue(cutlistEntry.doorFrontCount),
@@ -30668,7 +37394,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       fieldText: activeCutlistEntryTextColor,
                                     })
                                   : null}
-                                {isDoorPartType(cutlistEntry.partType) && normalizeDoorModeValue(cutlistEntry.doorMode) !== "manual"
+                                {isDoorPartType(cutlistEntry.partType) && !manualCutlistUsesPlainDoorRows && normalizeDoorModeValue(cutlistEntry.doorMode) !== "manual"
                                   ? (
                                     <div style={cutlistEntryCellStyle("information", 2)}>
                                       {renderDoorSetupDesigner({
@@ -31481,6 +38207,161 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   </div>
                   )
+                ) : productionNav === "drawings" ? (
+                  <div className="space-y-4">
+                    <section
+                      className="flex min-h-[52px] flex-col gap-2 rounded-[14px] border px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-0"
+                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
+                    >
+                      <div className="inline-flex min-w-0 items-center gap-2">
+                        <ClipboardList size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
+                        <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Drawings</p>
+                        <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
+                        <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProductionNav("cutlist");
+                            setCutlistEntryMode("wallBuilder");
+                          }}
+                          className="inline-flex h-8 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
+                        >
+                          <Plus size={13} />
+                          New Drawing
+                        </button>
+                      </div>
+                    </section>
+
+                    {(() => {
+                      const drawingDrafts = [
+                        ...(cabinetBuilderDraft &&
+                        cabinetBuilderWallCreated &&
+                        String(cabinetBuilderWallName || "").trim() &&
+                        !activeCabinetBuilderSavedDraftId
+                          ? [
+                              {
+                                id: "__current__",
+                                name: String(cabinetBuilderWallName || "").trim(),
+                                room: String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist",
+                                updatedAt: "",
+                                draft: cabinetBuilderDraft,
+                                isCurrent: true,
+                              },
+                            ]
+                          : []),
+                        ...savedCabinetBuilderDrafts.map((draft) => ({ ...draft, isCurrent: false })),
+                      ];
+
+                      if (!drawingDrafts.length) {
+                        return (
+                          <div className="rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
+                            <p className="text-[13px] font-semibold" style={{ color: projectPalette.textSoft }}>No wall drawings saved yet.</p>
+                            <p className="mt-1 text-[12px]" style={{ color: projectPalette.textMuted }}>Create a wall in Wall Builder and it will appear here.</p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {drawingDrafts.map((savedDraft) => {
+                            const wallPieces = buildCabinetBuilderWallPieces(savedDraft.draft);
+                            const previewLayouts = buildCabinetBuilderDisplayPieceLayouts(
+                              wallPieces,
+                              420,
+                              220,
+                              20,
+                              18,
+                              savedDraft.draft,
+                            );
+                            const updatedLabel =
+                              savedDraft.updatedAt && !Number.isNaN(new Date(savedDraft.updatedAt).getTime())
+                                ? new Date(savedDraft.updatedAt).toLocaleString()
+                                : "";
+                            return (
+                              <div
+                                key={`production_drawing_${savedDraft.id}`}
+                                className="overflow-hidden rounded-[14px] border"
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}
+                              >
+                                <div className="border-b px-4 py-3" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[14px] font-bold" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>{savedDraft.name || "Wall"}</p>
+                                      <p className="truncate text-[11px] font-medium" style={{ color: projectPalette.textMuted }}>{savedDraft.room || "Project Cutlist"}</p>
+                                      {savedDraft.isCurrent ? (
+                                        <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.8px] text-[#1D4ED8]">Current Draft</p>
+                                      ) : updatedLabel ? (
+                                        <p className="mt-1 text-[10px]" style={{ color: projectPalette.textMuted }}>Updated {updatedLabel}</p>
+                                      ) : null}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setProductionNav("cutlist");
+                                        if (savedDraft.isCurrent) {
+                                          setCutlistEntryMode("wallBuilder");
+                                          setActiveCutlistPartType(experimentalCabinetBuilderPartType);
+                                          return;
+                                        }
+                                        openSavedCabinetBuilderDraft({
+                                          id: savedDraft.id,
+                                          name: savedDraft.name,
+                                          room: savedDraft.room,
+                                          updatedAt: savedDraft.updatedAt,
+                                          draft: JSON.parse(JSON.stringify(savedDraft.draft)) as CabinetBuilderDraft,
+                                        });
+                                      }}
+                                      className="inline-flex h-8 shrink-0 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
+                                    >
+                                      <Pencil size={12} />
+                                      Open
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="px-3 py-3">
+                                  <div className="overflow-hidden rounded-[12px] border" style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}>
+                                    <svg viewBox="0 0 420 220" className="block h-auto w-full bg-white">
+                                      {previewLayouts.map((item) => (
+                                        <g key={`drawing_preview_${savedDraft.id}_${item.id}`}>
+                                          <rect
+                                            x={item.x}
+                                            y={item.y}
+                                            width={item.width}
+                                            height={item.height}
+                                            fill={item.palette.fill}
+                                            stroke={item.palette.stroke}
+                                            strokeWidth="1"
+                                          />
+                                          {item.width >= 66 && item.height >= 26 ? (
+                                            <text
+                                              x={item.x + item.width / 2}
+                                              y={item.y + item.height / 2}
+                                              textAnchor="middle"
+                                              dominantBaseline="middle"
+                                              fontSize="10"
+                                              fill={item.palette.text}
+                                            >
+                                              {item.row.name || (item.kind === "panel" ? "Panel" : "Cabinet")}
+                                            </text>
+                                          ) : null}
+                                        </g>
+                                      ))}
+                                    </svg>
+                                  </div>
+                                  <div className="mt-3 flex items-center justify-between text-[11px]" style={{ color: projectPalette.textMuted }}>
+                                    <span>{wallPieces.length} pieces</span>
+                                    <span>{previewLayouts.filter((item) => item.kind === "panel").length} panels</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
                 ) : productionNav === "nesting" && !isNestingFullscreen ? (
                   <div className="grid min-h-0 gap-3 lg:min-h-[calc(100dvh-235px)] lg:grid-cols-[minmax(0,1fr)_340px]">
                     <div className="lg:hidden">
@@ -31742,7 +38623,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   />
                                   <span className="min-w-0 text-[11px] text-[#334155]">
                                     <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
-                                    <span className="block truncate">{row.partType || "Unassigned"} â€¢ {boardDisplayLabel(row.board) || "No board"} â€¢ {row.room || "-"}</span>
+                                    <span className="block truncate">{row.partType || "Unassigned"} Ã¢â‚¬Â¢ {boardDisplayLabel(row.board) || "No board"} Ã¢â‚¬Â¢ {row.room || "-"}</span>
                                   </span>
                                 </label>
                               );
@@ -32692,9 +39573,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   ))}
                 </CardContent>
               </Card>
-            </div>
-              </div>
-            </div>
+                                    </div>
+                                  </div>
+                                </div>
           )}
 
           {openProjectFilePreview && (
@@ -33840,6 +40721,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     </ProtectedRoute>
   );
 }
+
 
 
 

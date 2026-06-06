@@ -52,7 +52,7 @@ type GapAllowancesSettings = {
   tallTopOfDoorToTopNoScribers: string;
   tallVerticalGapDoorsPanels: string;
 };
-type PartTypeCategory = "" | "cabinetry" | "drawer" | "door";
+type PartTypeCategory = "" | "cabinetry" | "drawer" | "door" | "panel" | "extra";
 type PartTypeRow = {
   name: string;
   color: string;
@@ -653,8 +653,8 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
 function normalizePartTypes(raw: unknown): PartTypeRow[] {
   const defaults: PartTypeRow[] = [
     { name: "Front", color: "#F2D57A", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
-    { name: "Panel", color: "#C6E8AE", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
-    { name: "Extra", color: "#B7A4EB", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
+    { name: "Panel", color: "#C6E8AE", category: "panel", autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
+    { name: "Extra", color: "#B7A4EB", category: "extra", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
     { name: "Drawer", color: "#B8D8F8", category: "drawer", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
     { name: "Cabinet", color: "#4B5563", category: "cabinetry", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true },
     { name: "Special Panel", color: "#BF1D1D", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: false },
@@ -667,7 +667,7 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
       const name = toStr(row.name);
       const categoryRaw = toStr(row.category ?? row.kind ?? row.type).trim().toLowerCase();
       const category: PartTypeCategory =
-        categoryRaw === "cabinetry" || categoryRaw === "drawer" || categoryRaw === "door"
+        categoryRaw === "cabinetry" || categoryRaw === "drawer" || categoryRaw === "door" || categoryRaw === "panel" || categoryRaw === "extra"
           ? categoryRaw
           : Boolean(row.cabinetry ?? row.isCabinetry ?? false)
             ? "cabinetry"
@@ -675,6 +675,10 @@ function normalizePartTypes(raw: unknown): PartTypeRow[] {
               ? "drawer"
               : Boolean(row.door ?? row.isDoor ?? false)
                 ? "door"
+                : Boolean(row.panel ?? row.isPanel ?? false)
+                  ? "panel"
+                  : Boolean(row.extra ?? row.isExtra ?? false)
+                    ? "extra"
                 : "";
       return {
         name,
@@ -2432,7 +2436,7 @@ export default function CompanySettingsPage() {
           const name = toStr(row.name);
           if (!name) return null;
           const category: PartTypeCategory =
-            row.category === "cabinetry" || row.category === "drawer" || row.category === "door"
+            row.category === "cabinetry" || row.category === "drawer" || row.category === "door" || row.category === "panel" || row.category === "extra"
               ? row.category
               : "";
             return {
@@ -2443,6 +2447,8 @@ export default function CompanySettingsPage() {
               cabinetry: category === "cabinetry",
               drawer: category === "drawer",
               door: category === "door",
+              panel: category === "panel",
+              extra: category === "extra",
               autoClashLeft: toStr(row.autoClashLeft),
               autoClashRight: toStr(row.autoClashRight),
               initialMeasure: Boolean(row.initialMeasure),
@@ -3619,7 +3625,7 @@ export default function CompanySettingsPage() {
                                       ? {
                                           ...v,
                                           category:
-                                            e.target.value === "cabinetry" || e.target.value === "drawer" || e.target.value === "door"
+                                            e.target.value === "cabinetry" || e.target.value === "drawer" || e.target.value === "door" || e.target.value === "panel" || e.target.value === "extra"
                                               ? e.target.value
                                               : "",
                                         }
@@ -3633,6 +3639,8 @@ export default function CompanySettingsPage() {
                               <option value="cabinetry">Cabinetry</option>
                               <option value="drawer">Drawer</option>
                               <option value="door">Doors</option>
+                              <option value="panel">Panels</option>
+                              <option value="extra">Extras</option>
                             </select>
                             <div className="grid grid-cols-2 gap-1">
                               <select
