@@ -15072,30 +15072,49 @@ export default function ProjectDetailsPage() {
           {groupedRows.length ? (
             groupedRows.map((group) => {
               const rowColor = partTypeColors[group.partType] ?? "#E2E8F0";
+              const headerBg = rowColor;
+              const contentBg = lightenHex(rowColor, 0.2);
+              const contentBorder = darkenHex(rowColor, 0.08);
               const expandKey = `${selectedWall.id}:${group.partType}`;
               const expanded = cabinetBuilderSelectedPartsExpandedKey === expandKey;
               return (
-                <div key={`cab_selected_parts_group_${expandKey}`} className="space-y-2">
+                <div key={`cab_selected_parts_group_${expandKey}`} className="overflow-hidden rounded-[14px]">
                   <button
                     type="button"
                     onClick={() =>
                       setCabinetBuilderSelectedPartsExpandedKey((prev) => (prev === expandKey ? "" : expandKey))
                     }
-                    className="inline-flex w-full items-center justify-between rounded-[999px] px-3 py-2 text-left"
-                    style={{ backgroundColor: lightenHex(rowColor, 0.26), color: "#000000" }}
+                    className="inline-flex w-full items-center justify-between px-3 py-2 text-left"
+                    style={{
+                      backgroundColor: headerBg,
+                      color: "#000000",
+                      borderTopLeftRadius: 14,
+                      borderTopRightRadius: 14,
+                      borderBottomLeftRadius: expanded ? 0 : 14,
+                      borderBottomRightRadius: expanded ? 0 : 14,
+                    }}
                   >
                     <span className="text-[12px] font-medium">{group.partType}</span>
                     <span className="text-[11px] text-[#475569]">{group.rows.length}</span>
                   </button>
                   {expanded ? (
-                    <div className="space-y-2">
+                    <div
+                      className="space-y-2 border px-3 py-2"
+                      style={{
+                        backgroundColor: contentBg,
+                        borderColor: contentBorder,
+                        borderTopWidth: 0,
+                        borderBottomLeftRadius: 14,
+                        borderBottomRightRadius: 14,
+                      }}
+                    >
                       {group.rows.map((displayRow, index) => {
                         const row = displayRow.row;
                         return (
                           <div
                             key={`cab_selected_parts_${expandKey}_${displayRow.source.kind}_${index}`}
                             className="rounded-[10px] border px-3 py-2"
-                            style={{ borderColor: darkenHex(rowColor, 0.12), backgroundColor: lightenHex(rowColor, 0.16) }}
+                            style={{ borderColor: darkenHex(rowColor, 0.12), backgroundColor: lightenHex(rowColor, 0.3) }}
                           >
                             <div className="flex items-start justify-between gap-2">
                               <p className="min-w-0 break-words text-[12px] font-semibold text-[#111827]">{row.name || selectedWall.row.name || "-"}</p>
