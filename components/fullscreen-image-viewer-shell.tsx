@@ -1,7 +1,8 @@
 "use client";
 
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Image as ImageIcon, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 type FullscreenImageViewerShellProps = {
@@ -53,12 +54,71 @@ export function FullscreenImageViewerShell({
   showPrevNext = false,
   onRootClick,
 }: FullscreenImageViewerShellProps) {
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(0);
+
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    const headerElement = headerRef.current;
+    if (!headerElement) return;
+    const updateHeaderHeight = () => {
+      setHeaderHeight(headerElement.getBoundingClientRect().height);
+    };
+    updateHeaderHeight();
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => updateHeaderHeight())
+        : null;
+    resizeObserver?.observe(headerElement);
+    return () => resizeObserver?.disconnect();
+    // commentsSection is intentionally excluded: it's inline JSX from the caller and gets a new
+    // reference every render, which would re-run this effect on every render (including ones
+    // triggered by unrelated state, e.g. image pan) instead of only when the header actually opens
+    // or its collapsed state changes. The ResizeObserver already reacts to any real size change.
+  }, [open, commentsCollapsed]);
+
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    if (!showPrevNext || thumbnailsCollapsed) return;
+    const footerElement = footerRef.current;
+    if (!footerElement) return;
+    const updateFooterHeight = () => {
+      setFooterHeight(footerElement.getBoundingClientRect().height);
+    };
+    updateFooterHeight();
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => updateFooterHeight())
+        : null;
+    resizeObserver?.observe(footerElement);
+    return () => resizeObserver?.disconnect();
+    // thumbnailStrip is intentionally excluded: it's inline JSX from the caller and gets a new
+    // reference every render, which would re-run this effect on every render (including ones
+    // triggered by unrelated state, e.g. image pan) instead of only when the bar actually opens
+    // or its collapsed state changes. The ResizeObserver already reacts to any real size change.
+  }, [open, showPrevNext, thumbnailsCollapsed]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!open) return;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prevHtmlOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+    };
+  }, [open]);
+
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
     <div
       className="fixed inset-0 flex flex-col overflow-hidden"
-      style={{ zIndex, backgroundColor: "#ffffff" }}
+      style={{ zIndex, backgroundColor: "var(--panel-bg)" }}
       onClick={onRootClick}
     >
       <style jsx global>{`
@@ -71,29 +131,30 @@ export function FullscreenImageViewerShell({
         }
       `}</style>
       <div
-        className="relative z-[20] border-b"
-        style={{ borderColor: "#D7DEE8", backgroundColor: "#ffffff" }}
+        ref={headerRef}
+        className="glass-page-header absolute inset-x-0 top-0 z-[20]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="grid h-[56px] grid-cols-[1fr_auto_1fr] items-center px-6">
           <div className="min-w-0 text-left">
             <div className="flex min-w-0 items-center gap-2">
-              <p className="shrink-0 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
+              <ImageIcon size={15} className="shrink-0" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
+              <p className="shrink-0 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 {titleLabel}
               </p>
-              <span className="shrink-0 text-[14px] font-medium" style={{ color: "#6B7280" }}>
+              <span className="shrink-0 text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>
                 |
               </span>
-              <p className="truncate text-[14px] font-medium" style={{ color: "#334155" }}>
+              <p className="truncate text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
                 {subjectName}
               </p>
             </div>
           </div>
           <div className="px-4 text-center">
-            <p className="text-[14px] font-bold" style={{ color: "#0F172A" }}>
+            <p className="text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
               {imageName}
             </p>
-            <p className="mt-[2px] text-[11px] font-semibold" style={{ color: "#64748B" }}>
+            <p className="mt-[2px] text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>
               {`${imageIndex + 1} / ${imageCount}`}
             </p>
           </div>
@@ -101,8 +162,8 @@ export function FullscreenImageViewerShell({
             <button
               type="button"
               onClick={onToggleComments}
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold"
-              style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold transition hover:brightness-95"
+              style={{ borderColor: "var(--glass-border)", color: "var(--text-main)", backgroundColor: "var(--panel-bg)" }}
             >
               <input
                 type="checkbox"
@@ -110,7 +171,7 @@ export function FullscreenImageViewerShell({
                 onClick={(event) => event.stopPropagation()}
                 onChange={(event) => onPinsVisibleChange(event.currentTarget.checked)}
                 className="h-4 w-4 rounded border"
-                style={{ accentColor: "#2F6BFF" }}
+                style={{ accentColor: "var(--brand)" }}
                 aria-label="Show pins"
               />
               Comments
@@ -120,7 +181,7 @@ export function FullscreenImageViewerShell({
                 style={{
                   width: 14,
                   height: 14,
-                  backgroundColor: "#64748B",
+                  backgroundColor: "var(--text-muted)",
                   transform: commentsCollapsed ? "rotate(180deg)" : "rotate(90deg)",
                   transition: "transform 140ms ease",
                   WebkitMaskImage: "url('/angle-right.png')",
@@ -137,25 +198,46 @@ export function FullscreenImageViewerShell({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border"
-              style={{ borderColor: "#D7DEE8", color: "#334155", backgroundColor: "#ffffff" }}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border transition hover:brightness-95"
+              style={{ borderColor: "var(--glass-border)", color: "var(--text-main)", backgroundColor: "var(--panel-bg)" }}
               aria-label="Close image viewer"
             >
               <X size={18} />
             </button>
           </div>
         </div>
-        {!commentsCollapsed ? commentsSection : null}
       </div>
+      {!commentsCollapsed ? (
+        <div
+          className="absolute inset-x-0 z-[19]"
+          style={{ top: headerHeight }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {commentsSection}
+        </div>
+      ) : null}
 
-      <div className="relative z-0 flex min-h-0 flex-1 flex-col overflow-hidden">{stageSection}</div>
+      <div className="relative z-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div aria-hidden="true" style={{ height: headerHeight, flexShrink: 0 }} />
+        {stageSection}
+        <div
+          aria-hidden="true"
+          style={{ height: showPrevNext && !thumbnailsCollapsed ? footerHeight : 0, flexShrink: 0 }}
+        />
+      </div>
 
       {showPrevNext ? (
         <>
           {!thumbnailsCollapsed ? (
             <div
-              className="group/thumb relative z-[20] border-t px-6 py-2"
-              style={{ borderColor: "#D7DEE8", backgroundColor: "#ffffff" }}
+              ref={footerRef}
+              className="group/thumb absolute inset-x-0 bottom-0 z-[20] border-t px-6 py-2"
+              style={{
+                borderColor: "var(--glass-border)",
+                background: "var(--glass-modal-bg)",
+                backdropFilter: "blur(12px) saturate(220%)",
+                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              }}
               onClick={(event) => event.stopPropagation()}
             >
               <button
@@ -163,9 +245,11 @@ export function FullscreenImageViewerShell({
                 onClick={onCollapseThumbnails}
                 className="absolute left-1/2 top-0 z-[6] inline-flex h-9 w-9 -translate-x-1/2 -translate-y-[calc(100%+4px)] items-center justify-center rounded-full border opacity-0 transition-opacity group-hover/thumb:opacity-100"
                 style={{
-                  borderColor: "#D7DEE8",
-                  backgroundColor: "rgba(255,255,255,0.94)",
-                  boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
+                  borderColor: "var(--glass-border)",
+                  backgroundColor: "var(--glass-bg-strong)",
+                  backdropFilter: "blur(12px) saturate(220%)",
+                  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                  boxShadow: "var(--shadow-glass)",
                 }}
                 aria-label="Hide thumbnails"
               >
@@ -175,7 +259,7 @@ export function FullscreenImageViewerShell({
                   style={{
                     width: 14,
                     height: 14,
-                    backgroundColor: "#334155",
+                    backgroundColor: "var(--text-main)",
                     WebkitMaskImage: "url('/angle-down.png')",
                     WebkitMaskRepeat: "no-repeat",
                     WebkitMaskPosition: "center",
@@ -200,9 +284,11 @@ export function FullscreenImageViewerShell({
                 onClick={onExpandThumbnails}
                 className="pointer-events-auto mb-1 inline-flex h-9 w-9 items-center justify-center rounded-full border opacity-0 transition-opacity group-hover/thumb-restore:opacity-100"
                 style={{
-                  borderColor: "#D7DEE8",
-                  backgroundColor: "rgba(255,255,255,0.94)",
-                  boxShadow: "0 4px 10px rgba(15,23,42,0.10)",
+                  borderColor: "var(--glass-border)",
+                  backgroundColor: "var(--glass-bg-strong)",
+                  backdropFilter: "blur(12px) saturate(220%)",
+                  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                  boxShadow: "var(--shadow-glass)",
                 }}
                 aria-label="Show thumbnails"
               >
@@ -212,7 +298,7 @@ export function FullscreenImageViewerShell({
                   style={{
                     width: 14,
                     height: 14,
-                    backgroundColor: "#334155",
+                    backgroundColor: "var(--text-main)",
                     transform: "translate(0px, -1px) rotate(180deg)",
                     WebkitMaskImage: "url('/angle-down.png')",
                     WebkitMaskRepeat: "no-repeat",

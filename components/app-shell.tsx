@@ -24,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useAppTabs } from "@/lib/app-tabs-context";
 import {
   cleanupCompletedReportsForNewVersion,
   fetchAppChangelogHistory,
@@ -38,9 +39,9 @@ import {
   } from "@/lib/firestore-data";
 import { db, hasFirebaseConfig, storage } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import type { ProjectImageItem } from "@/lib/types";
 import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
@@ -49,6 +50,9 @@ import {
   OPEN_NEW_PROJECT_EVENT,
   type NewProjectPrefillPayload,
 } from "@/lib/new-project-bridge";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
+import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
@@ -301,12 +305,26 @@ type PreviewAnimState = {
   from: PreviewRect;
   to: PreviewRect;
 };
-
-export function AppShell({ children, hideSidebar = false }: { children: React.ReactNode; hideSidebar?: boolean }) {
+export function AppShell({
+  children,
+  hideSidebar = false,
+}: {
+  children: React.ReactNode;
+  hideSidebar?: boolean;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
+  const { chromeHidden } = useAppTabs();
+  const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
+  const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
+  const newProjectPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderNewProjectModal = useGlassModalPopOrigin(showNewProject, newProjectOrigin, newProjectPanelRef);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [logoutConfirmOrigin, setLogoutConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const logoutConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderLogoutConfirmModal = useGlassModalPopOrigin(showLogoutConfirm, logoutConfirmOrigin, logoutConfirmPanelRef);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
@@ -338,6 +356,15 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const [projectFormError, setProjectFormError] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [navHighlightRect, setNavHighlightRect] = useState<{ top: number; height: number } | null>(null);
+  const navListRef = useRef<HTMLDivElement | null>(null);
+  const navLinkRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
+  const [isUserSettingsPanelOpen, setIsUserSettingsPanelOpen] = useState(false);
+  const desktopAsideRef = useRef<HTMLElement | null>(null);
+  const bottomRestContentRef = useRef<HTMLDivElement | null>(null);
+  const bottomPanelContentRef = useRef<HTMLDivElement | null>(null);
+  const [restContentHeight, setRestContentHeight] = useState<number | null>(null);
+  const [panelContentHeight, setPanelContentHeight] = useState<number | null>(null);
   const [showUpdateNotice, setShowUpdateNotice] = useState(false);
   const [updateNoticeVersion, setUpdateNoticeVersion] = useState("");
   const [updateNoticeText, setUpdateNoticeText] = useState("");
@@ -367,10 +394,18 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   const newProjectTagInputRef = useRef<HTMLInputElement | null>(null);
   const newProjectScrollRef = useRef<HTMLDivElement | null>(null);
   const assigneeFieldRef = useRef<HTMLDivElement | null>(null);
-
   const userInitials = useMemo(() => initials(user?.displayName || "User"), [user?.displayName]);
   const userEmblemColor = String(user?.userColor || "").trim() || companyThemeColor;
   const isProjectDetailsRoute = useMemo(() => /^\/projects\/[^/]+/.test(String(pathname || "")), [pathname]);
+  const [isDesktopViewport, setIsDesktopViewport] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    setIsDesktopViewport(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setIsDesktopViewport(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
   const normalizedEffectivePermissions = useMemo(
     () => effectiveCompanyPermissions.map((item) => String(item || "").trim().toLowerCase()),
     [effectiveCompanyPermissions],
@@ -432,7 +467,6 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       }),
     [canAccessClients, canAccessCompanySettings, canAccessDashboard, canAccessLeads],
   );
-
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
     setThemeMode(nextMode);
@@ -524,6 +558,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       setAssigneeMenuOpen(false);
       setAssigneeUid(prefilledAssigneeUid);
       setIsNewProjectNotesEditing(false);
+      setNewProjectOrigin(null);
       setShowNewProject(true);
     };
     window.addEventListener(OPEN_NEW_PROJECT_EVENT, onOpenNewProject as EventListener);
@@ -558,6 +593,27 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       window.removeEventListener(ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT, onZapierLeadsVisibilityUpdated as EventListener);
     };
   }, [user?.companyId, user?.uid]);
+
+  // staffOptions (the assignee-picker badges in the New Project modal) is
+  // only populated once from fetchCompanyMembers on load — patch it live so
+  // a staff member's icon color updates here too without a reload, matching
+  // the dashboard/project/company-settings pages.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUserColorUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserColorUpdatedDetail>).detail;
+      const uid = String(detail?.uid || "").trim();
+      const color = String(detail?.color || "").trim();
+      if (!uid) return;
+      setStaffOptions((prev) =>
+        prev.map((option) => (option.uid === uid ? { ...option, color } : option)),
+      );
+    };
+    window.addEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    return () => {
+      window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (typeof window === "undefined") return;
@@ -891,10 +947,12 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
   }, [isZapierLeadsEnabled, user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   useEffect(() => {
-    const openNewProject = () => {
+    const openNewProject = (e: Event) => {
       if (!canCreateProject) {
         return;
       }
+      const origin = (e as CustomEvent<{ origin?: GlassModalOrigin }>).detail?.origin ?? null;
+      setNewProjectOrigin(origin);
       setShowNewProject(true);
     };
     window.addEventListener("cutsmart:new-project", openNewProject as EventListener);
@@ -1031,6 +1089,11 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     setMobileNavOpen(false);
   }, [pathname]);
 
+  // Top tab bar entries are project-only. Project routes self-register their
+  // live tab data directly via useAppTabs() (see app/(app)/projects/[projectId]/page.tsx)
+  // since it depends on page-local state a shared layout can't see; every other
+  // route never registers a tab, so this shell no longer touches the tab context.
+
   useEffect(() => {
     if (typeof document === "undefined") return;
     if (mobileNavOpen) {
@@ -1042,6 +1105,25 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       document.body.style.overflow = "";
     };
   }, [mobileNavOpen]);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const container = navListRef.current;
+      const activeHref = visibleTopNav.find((item) => pathname?.startsWith(item.href))?.href;
+      const el = activeHref ? navLinkRefs.current[activeHref] : null;
+      if (!container || !el) {
+        setNavHighlightRect(null);
+        return;
+      }
+      const containerRect = container.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      setNavHighlightRect({ top: elRect.top - containerRect.top + container.scrollTop, height: elRect.height });
+    };
+    measure();
+    if (typeof window === "undefined") return;
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [pathname, visibleTopNav]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -1357,6 +1439,74 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
     }, 280);
   };
 
+  // Cache the nav list's own resting box height only while the bottom section is
+  // actually at rest (closed), as the baseline for the slack-vs-push calculation
+  // below — its live height changes once the bottom section starts pushing it.
+  const navBoxRestHeightRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (isUserSettingsPanelOpen) return;
+    if (navListRef.current) navBoxRestHeightRef.current = navListRef.current.clientHeight;
+  }, [isUserSettingsPanelOpen]);
+
+  // Natural (unconstrained) height of the nav links themselves, independent of
+  // how tall the scrollable box around them currently is.
+  const [navContentHeight, setNavContentHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (navListRef.current) setNavContentHeight(navListRef.current.scrollHeight);
+  }, [visibleTopNav]);
+
+  // Both the rest content (User Settings button + avatar row) and the panel content
+  // are always mounted (grid-stacked, crossfaded via opacity) so their natural
+  // heights can be measured continuously via ResizeObserver, independent of which
+  // one is currently visible. The wrapper's own height animates between these two
+  // measured values, which is what makes the nav list above it get pushed up.
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    const restEl = bottomRestContentRef.current;
+    const panelEl = bottomPanelContentRef.current;
+    if (!restEl || !panelEl) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = Math.ceil(entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
+        if (entry.target === restEl) setRestContentHeight(height);
+        else if (entry.target === panelEl) setPanelContentHeight(height);
+      }
+    });
+    observer.observe(restEl);
+    observer.observe(panelEl);
+    setRestContentHeight(restEl.getBoundingClientRect().height);
+    setPanelContentHeight(panelEl.getBoundingClientRect().height);
+    return () => observer.disconnect();
+  }, []);
+
+  const openUserSettingsPanel = () => {
+    setIsUserSettingsPanelOpen(true);
+  };
+
+  const closeUserSettingsPanel = () => {
+    setIsUserSettingsPanelOpen(false);
+  };
+
+  useEffect(() => {
+    if (!isUserSettingsPanelOpen || typeof document === "undefined") return;
+    const onPointerDown = (event: MouseEvent) => {
+      const targetNode = event.target as Node;
+      if (desktopAsideRef.current?.contains(targetNode)) return;
+      const popoverEl = targetNode instanceof Element ? targetNode.closest('[data-sidebar-color-popover="true"]') : null;
+      if (popoverEl) return;
+      closeUserSettingsPanel();
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [isUserSettingsPanelOpen]);
+
+  useEffect(() => {
+    if (isUserSettingsPanelOpen) {
+      setIsUserSettingsPanelOpen(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
   const selectedAssignee = useMemo(() => {
     return staffOptions.find((s) => s.uid === assigneeUid) ?? null;
   }, [staffOptions, assigneeUid]);
@@ -1454,6 +1604,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       let uploadedImageUrls: string[] = [];
       const storageClient = storage;
       if (photos.length && storageClient) {
+        let uploadError: unknown = null;
         const uploaded = await Promise.all(
           photos.map(async (p, idx) => {
             try {
@@ -1462,11 +1613,15 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               const ref = storageRef(storageClient, path);
               await uploadBytes(ref, p.file, { contentType: p.file.type || "image/jpeg" });
               return await getDownloadURL(ref);
-            } catch {
+            } catch (error) {
+              if (!uploadError) uploadError = error;
               return "";
             }
           }),
         );
+        if (uploadError) {
+          throw uploadError;
+        }
         uploadedImageUrls = uploaded.filter(Boolean);
       }
       const projectImageUrls = [
@@ -1639,20 +1794,24 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
       resetProjectForm();
       router.push(`/projects/${projectId}`);
     } catch (error) {
-      const message =
-        error && typeof error === "object" && "code" in error
-          ? String((error as { code?: unknown }).code || "create-failed")
-          : String((error as { message?: unknown } | null)?.message || "Could not create project.");
-      setProjectFormError(`Could not create project (${message}).`);
+      if (isFirebaseStorageQuotaExceeded(error)) {
+        setProjectFormError(getFirebaseStorageQuotaExceededMessage("Project images"));
+      } else {
+        const message =
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code?: unknown }).code || "create-failed")
+            : String((error as { message?: unknown } | null)?.message || "Could not create project.");
+        setProjectFormError(`Could not create project (${message}).`);
+      }
     } finally {
       setCreatingProject(false);
     }
   };
 
-  const modalRowClass =
-    "grid items-start gap-2 md:gap-3 [grid-template-columns:minmax(0,1fr)] md:[grid-template-columns:220px_minmax(0,1fr)]";
-  const modalLabelClass = "text-[11px] font-bold text-[#475467]";
-  const modalSectionLabelClass = "pt-1 md:pt-2 text-[11px] font-bold text-[#475467]";
+  const modalRowClass = "flex flex-col gap-1.5";
+  const modalLabelClass = "text-[12px] font-semibold text-[var(--text-muted)]";
+  const modalSectionLabelClass =
+    "mt-1 border-t border-[var(--panel-border)] pt-4 text-[11px] font-bold uppercase tracking-wide text-[var(--text-muted)]";
   const isDarkMode = themeMode === "dark";
   const shellPalette = isDarkMode
     ? {
@@ -1674,21 +1833,42 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         hoverBg: "#F7F8FC",
       };
 
+  // While opening, the settings section first grows into whatever blank slack
+  // exists below the last nav tab (tabs stay put, it just covers empty space).
+  // Only once it would grow far enough to actually cover a tab does the nav list
+  // get pushed up for real — and even then, a clearance gap is kept so the tabs
+  // never sit flush against the settings section.
+  const USER_SETTINGS_CLEARANCE_PX = 20;
+  const bottomSectionTargetHeight = (isUserSettingsPanelOpen ? panelContentHeight : restContentHeight) ?? restContentHeight ?? 0;
+  const bottomSectionRestHeight = restContentHeight ?? 0;
+  const bottomSectionExcess = Math.max(0, bottomSectionTargetHeight - bottomSectionRestHeight);
+  const navSlack =
+    navBoxRestHeightRef.current != null && navContentHeight != null
+      ? Math.max(0, navBoxRestHeightRef.current - navContentHeight)
+      : 0;
+  const navSlackBeforeClearance = Math.max(0, navSlack - USER_SETTINGS_CLEARANCE_PX);
+  const navListMarginBottom = bottomSectionRestHeight + Math.max(0, bottomSectionExcess - navSlackBeforeClearance);
+
+  // The small (rest) row and the full panel are grid-stacked in the same box, so
+  // exactly one of them is shown at a time via a simple opacity crossfade — the
+  // small icon/name fade away on open, the panel (its own icon/name included)
+  // fades in as part of the same reveal as the rest of its content.
+  const showBottomPanelContent = isUserSettingsPanelOpen;
+  const showBottomRestContent = !isUserSettingsPanelOpen;
+
   return (
     <div
-      className={cn(
-        "min-h-screen bg-[var(--bg-app)]",
-        isProjectDetailsRoute ? "lg:h-[100dvh] lg:overflow-hidden" : "",
-      )}
+      className="min-h-screen"
       data-theme-mode={themeMode}
-      style={{ backgroundColor: shellPalette.appBg, color: shellPalette.text }}
+      style={{ color: shellPalette.text }}
     >
+      {!chromeHidden && (
       <header
-        className="fixed inset-x-0 top-0 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden"
+        className="fixed inset-x-0 top-12 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden"
         style={{ backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}
       >
         <div className="flex items-center gap-2">
-          {!hideSidebar && (
+          {!effectiveHideSidebar && (
             <button
               type="button"
               onClick={() => setMobileNavOpen(true)}
@@ -1706,8 +1886,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               {canCreateProject && (
                 <button
                   type="button"
-                  onClick={() => setShowNewProject(true)}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#159947] bg-[#22C55E] text-white hover:bg-[#16A34A]"
+                  onClick={(e) => { setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[image:var(--brand-gradient)] text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
                   aria-label="New project"
                 >
                   <Plus size={20} strokeWidth={2.8} />
@@ -1745,8 +1925,8 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             {canCreateProject && (
               <button
                 type="button"
-                onClick={() => setShowNewProject(true)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#159947] bg-[#22C55E] text-white hover:bg-[#16A34A]"
+                onClick={(e) => { setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[image:var(--brand-gradient)] text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
                 aria-label="New project"
               >
                 <Plus size={20} strokeWidth={2.8} />
@@ -1755,8 +1935,9 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
           </>
         )}
       </header>
+      )}
 
-      {!hideSidebar && mobileNavOpen && (
+      {!effectiveHideSidebar && mobileNavOpen && (
         <div className="fixed inset-0 z-[120] lg:hidden">
           <button
             type="button"
@@ -1764,7 +1945,17 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close menu backdrop"
           />
-          <aside className="relative z-[121] flex h-full w-[260px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white" style={{ backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}>
+          <aside
+            className="relative z-[121] flex h-full w-[260px] flex-col overflow-hidden border-r"
+            style={{
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(24px) saturate(180%)",
+              WebkitBackdropFilter: "blur(24px) saturate(180%)",
+              borderColor: "var(--glass-border)",
+              boxShadow: "var(--shadow-glass)",
+              color: shellPalette.text,
+            }}
+          >
             <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
               <div className="flex min-h-[44px] items-center">
                 {companyLogoPath ? (
@@ -1792,22 +1983,22 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
               </button>
             </div>
 
-            <div className="flex min-h-0 h-full flex-1 flex-col px-3 py-3">
-              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-                {canCreateProject && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowNewProject(true);
-                      setMobileNavOpen(false);
-                    }}
-                    className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold transition"
-                    style={{ color: shellPalette.textMuted }}
-                  >
-                    <PlusCircle size={16} />
-                    New Project
-                  </button>
-                )}
+            <div className="flex min-h-0 h-full flex-1 flex-col px-3 pb-3 pt-3">
+              {canCreateProject && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    setNewProjectOrigin(captureGlassModalOrigin(e));
+                    setShowNewProject(true);
+                    setMobileNavOpen(false);
+                  }}
+                  className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+                >
+                  <PlusCircle size={16} />
+                  New Project
+                </button>
+              )}
+              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
                 {visibleTopNav.map((item) => {
                   const active = pathname?.startsWith(item.href);
                   const Icon = item.icon;
@@ -1816,25 +2007,21 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
-                        active
-                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
-                          : "border-transparent",
+                        "flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition",
+                        active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
                       )}
                       style={{
-                        borderColor: active ? shellPalette.border : "transparent",
-                        backgroundColor: active ? shellPalette.panelMuted : "transparent",
-                        color: shellPalette.textMuted,
+                        color: active ? "var(--brand)" : shellPalette.textMuted,
                       }}
                     >
-                      <Icon size={16} />
+                      <Icon size={17} />
                       {item.label}
                     </Link>
                   );
                 })}
               </div>
 
-              <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3" style={{ borderColor: shellPalette.border }}>
+              <div className="shrink-0 space-y-0.5 border-t border-[var(--panel-border)] pt-3" style={{ borderColor: shellPalette.border }}>
                 {bottomNav.map((item) => {
                   const active = pathname?.startsWith(item.href);
                   const Icon = item.icon;
@@ -1843,40 +2030,41 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
-                        active
-                          ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
-                          : "border-transparent",
+                        "flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition",
+                        active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
                       )}
                       style={{
-                        borderColor: active ? shellPalette.border : "transparent",
-                        backgroundColor: active ? shellPalette.panelMuted : "transparent",
-                        color: shellPalette.textMuted,
+                        color: active ? "var(--brand)" : shellPalette.textMuted,
                       }}
                     >
-                      <Icon size={16} />
+                      <Icon size={17} />
                       {item.label}
                     </Link>
                   );
                 })}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 w-full justify-start text-[13px] font-bold"
-                  style={{ color: shellPalette.textMuted }}
-                  onClick={() => void logout()}
-                >
-                  <LogOut size={14} className="mr-2" />
-                  Log Out
-                </Button>
-                <div className="mt-2 flex items-center gap-2 rounded-[10px] border px-2 py-2" style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelMuted }}>
+                <div className="mt-1 flex items-center gap-2 rounded-[10px] px-2 py-2 transition hover:bg-[var(--panel-muted)]">
                   <div
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
                     style={{ backgroundColor: userEmblemColor }}
                   >
                     {userInitials}
                   </div>
-                  <span className="truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</span>
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</span>
+                    {isDemoMode && (
+                      <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-border)]"
+                    style={{ color: shellPalette.textMuted }}
+                    aria-label="Log out"
+                    title="Log out"
+                  >
+                    <LogOut size={14} />
+                  </button>
                 </div>
               </div>
             </div>
@@ -1884,41 +2072,69 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         </div>
       )}
 
-      {!hideSidebar && (
       <aside
-        className="z-[70] hidden w-[230px] flex-col overflow-hidden border-r border-[var(--panel-border)] bg-white lg:flex"
-        style={{ position: "fixed", left: 0, top: 0, height: "100vh", backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}
+        ref={desktopAsideRef}
+        className="z-[70] hidden w-[240px] flex-col overflow-hidden border-r lg:flex"
+        style={{
+          position: "fixed",
+          left: 0,
+          top: 0,
+          height: "100vh",
+          backgroundColor: "var(--glass-bg)",
+          backdropFilter: "blur(24px) saturate(180%)",
+          WebkitBackdropFilter: "blur(24px) saturate(180%)",
+          borderColor: "var(--glass-border)",
+          boxShadow: "var(--shadow-glass)",
+          color: shellPalette.text,
+          display: effectiveHideSidebar ? "none" : undefined,
+        }}
       >
-        <div className="border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
-          <div className="flex min-h-[44px] items-center">
-            {companyLogoPath ? (
-              <img
-                src={companyLogoPath}
-                alt={`${companyDisplayName} logo`}
-                className="block h-auto w-full object-contain"
-                style={{ maxHeight: 100 }}
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
-            ) : companyDisplayName ? (
-              <p className="text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
-            ) : null}
-          </div>
+        <div className="border-b border-[var(--panel-border)]" style={{ borderColor: shellPalette.border }}>
+          {companyLogoPath ? (
+            <img
+              src={companyLogoPath}
+              alt={`${companyDisplayName} logo`}
+              className="block h-auto w-full"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+          ) : companyDisplayName ? (
+            <p className="truncate px-4 py-3 text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
+          ) : null}
         </div>
 
-        <div className="flex min-h-0 h-full flex-1 flex-col px-3 py-3">
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-            {canCreateProject && (
-              <button
-                type="button"
-                onClick={() => setShowNewProject(true)}
-                className="flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-bold transition"
-                style={{ color: shellPalette.textMuted }}
-              >
-                <PlusCircle size={16} />
-                New Project
-              </button>
+        <div className="relative flex min-h-0 h-full flex-1 flex-col px-3 pb-3 pt-3">
+          {canCreateProject && (
+            <button
+              type="button"
+              onClick={(e) => { setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
+              className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+            >
+              <PlusCircle size={16} />
+              New Project
+            </button>
+          )}
+          <div
+            ref={navListRef}
+            className="relative min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1"
+            style={{
+              marginBottom: navListMarginBottom || undefined,
+              transition: "margin-bottom 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+            }}
+          >
+            {navHighlightRect && (
+              <div
+                aria-hidden="true"
+                className="absolute left-0 right-1 rounded-[10px]"
+                style={{
+                  top: navHighlightRect.top,
+                  height: navHighlightRect.height,
+                  backgroundColor: "var(--brand-soft)",
+                  transition: "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                  zIndex: 0,
+                }}
+              />
             )}
             {visibleTopNav.map((item) => {
               const active = pathname?.startsWith(item.href);
@@ -1927,103 +2143,132 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 <Link
                   key={item.href}
                   href={item.href}
+                  ref={(el) => {
+                    navLinkRefs.current[item.href] = el;
+                  }}
                   className={cn(
-                    "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
-                    active
-                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
-                      : "border-transparent",
+                    "relative z-[1] flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition-colors",
+                    !active && "hover:bg-[var(--panel-muted)]",
                   )}
                   style={{
-                    borderColor: active ? shellPalette.border : "transparent",
-                    backgroundColor: active ? shellPalette.panelMuted : "transparent",
-                    color: shellPalette.textMuted,
+                    color: active ? "var(--brand)" : shellPalette.textMuted,
                   }}
                 >
-                  <Icon size={16} />
+                  <Icon size={17} />
                   {item.label}
                 </Link>
               );
             })}
           </div>
 
-          <div className="shrink-0 space-y-1 border-t border-[var(--panel-border)] pt-3" style={{ borderColor: shellPalette.border }}>
-            {bottomNav.map((item) => {
-              const active = pathname?.startsWith(item.href);
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    "flex items-center gap-2 rounded-[10px] border px-3 py-2 text-[13px] font-bold transition",
-                    active
-                      ? "border-[var(--panel-border)] bg-[var(--panel-muted)]"
-                      : "border-transparent",
-                  )}
-                  style={{
-                    borderColor: active ? shellPalette.border : "transparent",
-                    backgroundColor: active ? shellPalette.panelMuted : "transparent",
-                    color: shellPalette.textMuted,
-                  }}
-                >
-                  <Icon size={16} />
-                  {item.label}
-                </Link>
-              );
-            })}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-full justify-start text-[13px] font-bold"
-              style={{ color: shellPalette.textMuted }}
-              onClick={() => void logout()}
-            >
-              <LogOut size={14} className="mr-2" />
-              Log Out
-            </Button>
-            <div className="mt-2 flex items-center gap-2 rounded-[10px] border px-2 py-2" style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelMuted }}>
+          {/* Bottom section: bottom-anchored overlay whose height animates between
+              the two measured content heights below. The nav list above always
+              reserves restContentHeight of space (its own marginBottom) so it never
+              compresses or scrolls differently — this section just slides its top
+              edge (the divider) further up, over the nav list, to reveal more. */}
+          <div
+            className="absolute inset-x-0 bottom-0 overflow-hidden"
+            style={{
+              height: (isUserSettingsPanelOpen ? panelContentHeight : restContentHeight) ?? undefined,
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(24px) saturate(180%)",
+              WebkitBackdropFilter: "blur(24px) saturate(180%)",
+              transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+            }}
+          >
+            <div className="grid items-start">
               <div
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
-                style={{ backgroundColor: userEmblemColor }}
+                ref={bottomRestContentRef}
+                className="space-y-0.5 border-t pb-3 pt-3"
+                style={{
+                  gridArea: "1 / 1",
+                  borderColor: shellPalette.border,
+                  opacity: showBottomRestContent ? 1 : 0,
+                  pointerEvents: showBottomRestContent ? "auto" : "none",
+                  transition: "opacity 200ms ease",
+                }}
               >
-                {userInitials}
+                <div className="flex items-center gap-2 rounded-[10px] px-2 py-2 transition hover:bg-[var(--panel-muted)]">
+                  <div
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
+                    style={{ backgroundColor: userEmblemColor }}
+                  >
+                    {userInitials}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="m-0 block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
+                    {isDemoMode && (
+                      <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openUserSettingsPanel}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-border)]"
+                    style={{ color: shellPalette.textMuted }}
+                    aria-label="User Settings"
+                    title="User Settings"
+                  >
+                    <Settings size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-border)]"
+                    style={{ color: shellPalette.textMuted }}
+                    aria-label="Log out"
+                    title="Log out"
+                  >
+                    <LogOut size={14} />
+                  </button>
+                </div>
               </div>
-              <span className="truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</span>
+
+              <div
+                ref={bottomPanelContentRef}
+                style={{
+                  gridArea: "1 / 1",
+                  opacity: showBottomPanelContent ? 1 : 0,
+                  pointerEvents: showBottomPanelContent ? "auto" : "none",
+                  transition: "opacity 220ms ease",
+                }}
+              >
+                <SidebarUserSettingsPanel isOpen={isUserSettingsPanelOpen} onRequestClose={closeUserSettingsPanel} />
+              </div>
             </div>
-            {isDemoMode && (
-              <span className="inline-flex rounded-[8px] border border-[#F1D46A] bg-[#FFF7CC] px-2 py-1 text-[11px] font-bold text-[#7A5A00]">
-                Demo data mode
-              </span>
-            )}
           </div>
         </div>
       </aside>
-      )}
 
       <div
-        className={cn(
-          "min-w-0 overflow-x-hidden pt-14 lg:pt-0",
-          isProjectDetailsRoute ? "lg:h-[100dvh] lg:overflow-hidden" : "",
-        )}
-        style={{ width: "100%", paddingLeft: 0 }}
+        className={chromeHidden ? "min-w-0" : "min-w-0 pt-[104px] lg:pt-12"}
+        style={{
+          width: "100%",
+          paddingLeft: 0,
+          overflowX: "visible",
+          overflowY: "visible",
+        }}
       >
         <main
-          className={cn(
-            "min-h-0 h-[calc(100dvh-56px)] min-w-0 overflow-x-clip overflow-y-auto overscroll-y-contain px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4",
-            isProjectDetailsRoute ? "lg:h-[100dvh] lg:box-border lg:overflow-y-auto" : "lg:h-auto lg:overflow-y-visible",
-          )}
+          className={
+            chromeHidden
+              ? "min-h-0 min-w-0 overscroll-y-contain"
+              : "min-h-0 min-w-0 overscroll-y-contain px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4"
+          }
           style={{
-            paddingLeft: "max(12px, env(safe-area-inset-left))",
-            paddingRight: "max(12px, env(safe-area-inset-right))",
-            paddingBottom: "max(12px, env(safe-area-inset-bottom))",
+            height: chromeHidden ? "100dvh" : isDesktopViewport ? "auto" : "calc(100dvh - 104px)",
+            overflowX: isDesktopViewport ? "visible" : "clip",
+            overflowY: isDesktopViewport ? "visible" : "auto",
+            paddingLeft: chromeHidden ? 0 : "max(12px, env(safe-area-inset-left))",
+            paddingRight: chromeHidden ? 0 : "max(12px, env(safe-area-inset-right))",
+            paddingBottom: chromeHidden ? 0 : "max(12px, env(safe-area-inset-bottom))",
             marginLeft: "0",
             WebkitOverflowScrolling: "touch",
           }}
         >
-          <div className={hideSidebar ? "" : "lg:ml-[230px]"}>{children}</div>
+          <div className={effectiveHideSidebar ? "" : "lg:ml-[240px]"}>{children}</div>
         </main>
       </div>
-
       {showUpdateNotice && (
         <div
           className="fixed inset-0 z-[8900] flex items-center justify-center px-4"
@@ -2033,22 +2278,31 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
             WebkitBackdropFilter: "blur(6px)",
           }}
         >
-          <div className="relative flex w-[min(860px,calc(100vw-20px))] max-h-[min(80vh,720px)] flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-xl text-black">
-            <div className="flex h-[50px] shrink-0 items-center justify-between border-b border-[#D7DEE8] bg-[#F8FAFC] px-3">
-              <p className="text-[20px] font-medium uppercase tracking-[1px] text-black">
+          <div
+            className="relative flex w-[min(860px,calc(100vw-20px))] max-h-[min(80vh,720px)] flex-col overflow-hidden rounded-[16px] border text-[var(--text-main)]"
+            style={{
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(28px) saturate(180%)",
+              WebkitBackdropFilter: "blur(28px) saturate(180%)",
+              borderColor: "var(--glass-border)",
+              boxShadow: "var(--shadow-modal)",
+            }}
+          >
+            <div className="flex h-[56px] shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[var(--panel-muted)] px-4">
+              <p className="text-[17px] font-semibold text-[var(--text-main)]">
                 Updated to {updateNoticeVersion || "Unknown Version"}
               </p>
               <button
                 type="button"
                 onClick={dismissUpdateNotice}
-                className="h-8 rounded-[9px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+                className="h-8 rounded-[9px] bg-[image:var(--brand-gradient)] px-3 text-[12px] font-semibold text-white transition hover:brightness-105"
               >
                 OK
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
               <div
-                className="text-[15px] leading-7 text-black"
+                className="text-[15px] leading-7 text-[var(--text-main)]"
                 dangerouslySetInnerHTML={{
                   __html: updateNotesToDisplayHtml(updateNoticeText || "- No update notes provided."),
                 }}
@@ -2058,78 +2312,78 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
         </div>
       )}
 
-      {showNewProject && (
-        <div
-          className="fixed inset-0 z-[9000] flex items-center justify-center px-4"
-          style={{
-            backgroundColor: "rgba(8,12,20,0.52)",
-            backdropFilter: "blur(6px)",
-            WebkitBackdropFilter: "blur(6px)",
-          }}
-        >
+      {shouldRenderNewProjectModal && (
+        <div className="glass-modal-backdrop fixed inset-0 z-[9000] flex items-center justify-center px-4">
           <div
-            className="relative flex flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white p-3 shadow-xl sm:p-4"
-            style={{ width: "min(1000px, calc(100vw - 16px))", height: "min(600px, calc(100vh - 16px))" }}
+            ref={newProjectPanelRef}
+            className="glass-modal-panel relative flex flex-col overflow-hidden"
+            style={{
+              width: "min(920px, calc(100vw - 16px))",
+              height: "min(660px, calc(100vh - 16px))",
+            }}
           >
-            <p className="text-[15px] font-extrabold uppercase tracking-[1px] text-[#12345B]">New Project</p>
-            <div ref={newProjectScrollRef} className="relative mt-3 flex-1 space-y-3 overflow-y-auto pr-0 sm:pr-1">
-              <div className={modalRowClass}>
+            <div className="glass-modal-header px-5 py-4 sm:px-6">
+              <p className="text-[19px] font-semibold text-[var(--text-main)]">New Project</p>
+            </div>
+            <div ref={newProjectScrollRef} className="glass-scroll relative flex-1 space-y-4 overflow-y-auto px-5 py-4 sm:px-6">
+              <div className={cn(modalRowClass, "max-w-[480px]")}>
                 <p className={modalLabelClass}>Project Name</p>
                 <input
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
-                  className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                  className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
                   placeholder="Project name"
                 />
               </div>
-                <div className={modalRowClass}>
-                  <p className={modalLabelClass}>Client Name</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      value={clientFirstName}
-                      onChange={(e) => setClientFirstName(e.target.value)}
-                      className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                      placeholder="First"
-                    />
-                    <input
-                      value={clientLastName}
-                      onChange={(e) => setClientLastName(e.target.value)}
-                      className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                      placeholder="Last"
-                    />
-                  </div>
+              <div className={cn(modalRowClass, "max-w-[480px]")}>
+                <p className={modalLabelClass}>Client Name</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    value={clientFirstName}
+                    onChange={(e) => setClientFirstName(e.target.value)}
+                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                    placeholder="First"
+                  />
+                  <input
+                    value={clientLastName}
+                    onChange={(e) => setClientLastName(e.target.value)}
+                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                    placeholder="Last"
+                  />
                 </div>
-              <div className={modalRowClass}>
-                <p className={modalLabelClass}>Client Phone</p>
-                <input
-                  value={clientPhone}
-                  onChange={(e) => setClientPhone(formatMobileLikeDesktop(e.target.value))}
-                  className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                  placeholder="021 234 5678"
-                />
               </div>
-              <div className={modalRowClass}>
-                <p className={modalLabelClass}>Client Email</p>
-                <input
-                  value={clientEmail}
-                  onChange={(e) => setClientEmail(e.target.value)}
-                  className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                  placeholder="client@email.com"
-                />
+              <div className="grid max-w-[480px] grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className={modalRowClass}>
+                  <p className={modalLabelClass}>Client Phone</p>
+                  <input
+                    value={clientPhone}
+                    onChange={(e) => setClientPhone(formatMobileLikeDesktop(e.target.value))}
+                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                    placeholder="021 234 5678"
+                  />
+                </div>
+                <div className={modalRowClass}>
+                  <p className={modalLabelClass}>Client Email</p>
+                  <input
+                    value={clientEmail}
+                    onChange={(e) => setClientEmail(e.target.value)}
+                    className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
+                    placeholder="client@email.com"
+                  />
+                </div>
               </div>
-              <div className={modalRowClass}>
+              <div className={cn(modalRowClass, "max-w-[480px]")}>
                 <p className={modalLabelClass}>Project Address</p>
                 <input
                   value={projectAddress}
                   onChange={(e) => setProjectAddress(e.target.value)}
-                  className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                  className="h-10 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-3 text-[13px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
                   placeholder="Street, suburb, city"
                 />
               </div>
               {projectAddress.trim().length > 5 && (
-                <div className={modalRowClass}>
-                  <div className="hidden md:block" />
-                  <div className="overflow-hidden rounded-[10px] border border-[#D8DEE8]">
+                <div className={cn(modalRowClass, "max-w-[480px]")}>
+                  <div className="overflow-hidden rounded-[10px] border border-[var(--panel-border)]">
                     <iframe
                       title="Address preview"
                       className="h-[170px] w-full border-0"
@@ -2147,7 +2401,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                         key={tag}
                         type="button"
                         onClick={() => removeTag(tag)}
-                        className="inline-flex items-center gap-1 rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] px-2 py-[2px] text-[12px] font-semibold text-[#7B8798] hover:bg-[#FDECEC] hover:text-[#B42318]"
+                        className="inline-flex items-center gap-1 rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-muted)] px-2 py-[2px] text-[12px] font-semibold text-[var(--text-muted)] transition hover:border-[var(--danger-border)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                         title="Delete tag"
                       >
                         <Tag size={11} />
@@ -2180,11 +2434,11 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                               setIsTagInputOpen(false);
                             }
                           }}
-                          className="h-7 w-[120px] rounded-[8px] border border-[#D6DEE9] bg-white px-2 text-[12px] text-[#334155] outline-none"
+                          className="h-7 w-[120px] rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
                           placeholder="Tag"
                         />
                         {showTagSuggestions && filteredTagSuggestions.length > 0 && (
-                          <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border border-[#D6DEE9] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.14)]">
+                          <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] p-1 shadow-[var(--shadow-md)]">
                             {filteredTagSuggestions.map((tag) => (
                               <button
                                 key={tag}
@@ -2197,7 +2451,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                     window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
                                   }
                                 }}
-                                className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[#334155] hover:bg-[#EEF2F7]"
+                                className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                               >
                                 {tag}
                               </button>
@@ -2222,7 +2476,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                             window.setTimeout(() => newProjectTagInputRef.current?.focus(), 0);
                           }
                         }}
-                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border border-[#D6DEE9] bg-[#EEF2F7] text-[#64748B] hover:bg-[#E2E8F0]"
+                        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-muted)] text-[var(--text-muted)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
                         aria-label="Add tag"
                       >
                         <Plus size={14} />
@@ -2241,7 +2495,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                   />
                 </div>
                 <div className="w-full">
-                  <div className="overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-2">
+                  <div className="overflow-hidden rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2 py-2">
                     <div className="min-h-[88px]">
                       {isNewProjectNotesEditing ? (
                         <QuoteDocumentEditor
@@ -2263,10 +2517,10 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                         <button
                           type="button"
                           onClick={() => setIsNewProjectNotesEditing(true)}
-                          className="block min-h-[88px] w-full bg-transparent text-left text-[12px] text-[#2F3F56] outline-none"
+                          className="block min-h-[88px] w-full bg-transparent text-left text-[12px] text-[var(--text-main)] outline-none"
                         >
                           {notesHtmlIsEmpty(projectNotes) ? (
-                            <span className="text-[#98A2B3]">Project notes...</span>
+                            <span className="text-[var(--text-muted)]">Project notes...</span>
                           ) : (
                             <div className="notes-rich" dangerouslySetInnerHTML={{ __html: notesToDisplayHtml(projectNotes) }} />
                           )}
@@ -2298,7 +2552,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                       >
                         {prefilledImage ? (
                           <div className="flex h-full w-full flex-col gap-1">
-                            <div className="relative flex h-[88px] w-full items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent">
+                            <div className="relative flex h-[88px] w-full items-center justify-center overflow-hidden rounded-[8px] border border-[var(--panel-border)] bg-transparent">
                               <button
                                 type="button"
                                 onClick={() => {
@@ -2342,7 +2596,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                 />
                               </button>
                             </div>
-                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[#D8DEE8] bg-white px-2">
+                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2">
                               {editingProjectPhotoNameKey === `prefilled:${prefilledImage.id}` ? (
                                 <input
                                   autoFocus
@@ -2360,10 +2614,10 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                       setProjectPhotoNameDraft("");
                                     }
                                   }}
-                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[#334155] outline-none"
+                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[var(--text-main)] outline-none"
                                 />
                               ) : String(prefilledImage.name || "").trim() ? (
-                                <span className="truncate text-center text-[11px] font-medium text-[#334155]">
+                                <span className="truncate text-center text-[11px] font-medium text-[var(--text-main)]">
                                   {String(prefilledImage.name || "").trim()}
                                 </span>
                               ) : (
@@ -2389,7 +2643,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                         ) : photo ? (
                           <div className="flex h-full w-full flex-col gap-1">
                             <div
-                              className="relative flex h-[88px] items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-transparent"
+                              className="relative flex h-[88px] items-center justify-center overflow-hidden rounded-[8px] border border-[var(--panel-border)] bg-transparent"
                               onMouseEnter={() => setHoveredPhotoId(photo.id)}
                               style={{
                                 width:
@@ -2443,7 +2697,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                 />
                               </button>
                             </div>
-                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[#D8DEE8] bg-white px-2">
+                            <div className="flex h-5 items-center justify-center overflow-hidden rounded-[6px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2">
                               {editingProjectPhotoNameKey === `local:${photo.id}` ? (
                                 <input
                                   autoFocus
@@ -2461,10 +2715,10 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                       setProjectPhotoNameDraft("");
                                     }
                                   }}
-                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[#334155] outline-none"
+                                  className="h-full w-full bg-transparent text-center text-[11px] font-medium text-[var(--text-main)] outline-none"
                                 />
                               ) : String(photo.name || "").trim() ? (
-                                <span className="truncate text-center text-[11px] font-medium text-[#334155]">
+                                <span className="truncate text-center text-[11px] font-medium text-[var(--text-main)]">
                                   {String(photo.name || "").trim()}
                                 </span>
                               ) : (
@@ -2488,7 +2742,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                             </div>
                           </div>
                         ) : (
-                          <label className="relative flex h-full w-full cursor-pointer items-center justify-center overflow-hidden rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFC] text-[11px] font-bold text-[#64748B]">
+                          <label className="relative flex h-full w-full cursor-pointer items-center justify-center overflow-hidden rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-muted)] text-[11px] font-bold text-[var(--text-muted)]">
                             <span
                               aria-hidden="true"
                               className="pointer-events-none absolute"
@@ -2530,22 +2784,22 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                     <button
                       type="button"
                       onClick={() => setAssigneeMenuOpen((v) => !v)}
-                      className="flex h-9 w-full items-center justify-between rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-left text-[12px]"
+                      className="flex h-9 w-full items-center justify-between rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-2.5 text-left text-[12px] text-[var(--text-main)]"
                     >
                       <span className="flex min-w-0 items-center gap-2">
                         {selectedAssignee ? renderStaffOptionBadge(selectedAssignee, 20) : null}
                         <span className="truncate">{selectedAssignee?.name || "Select staff member"}</span>
                       </span>
-                      <span className="text-[#64748B]">&#9662;</span>
+                      <span className="text-[var(--text-muted)]">&#9662;</span>
                     </button>
                     {assigneeMenuOpen && (
-                      <div className="absolute z-20 mt-1 w-full rounded-[8px] border border-[#D8DEE8] bg-white shadow-lg">
-                        <div className="relative border-b border-[#E2E8F0] px-2 py-2">
-                          <Search size={13} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
+                      <div className="absolute z-20 mt-1 w-full rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] shadow-[var(--shadow-md)]">
+                        <div className="relative border-b border-[var(--panel-border)] px-2 py-2">
+                          <Search size={13} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
                           <input
                             value={assigneeSearch}
                             onChange={(e) => setAssigneeSearch(e.target.value)}
-                            className="h-8 w-full rounded-[7px] border border-[#D8DEE8] bg-white pl-7 pr-2 text-[12px]"
+                            className="h-8 w-full rounded-[8px] border border-[var(--panel-border)] bg-[var(--panel-bg)] pl-7 pr-2 text-[12px] text-[var(--text-main)] outline-none transition focus:border-[var(--brand)]"
                             placeholder="Search staff..."
                           />
                         </div>
@@ -2558,19 +2812,19 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                                 setAssigneeUid(s.uid);
                                 setAssigneeMenuOpen(false);
                               }}
-                              className="block w-full px-2 py-2 text-left text-[12px] hover:bg-[#F1F5F9]"
+                              className="block w-full px-2 py-2 text-left text-[12px] hover:bg-[var(--panel-muted)]"
                             >
                               <div className="flex items-start gap-2">
                                 {renderStaffOptionBadge(s, 20)}
                                 <div className="min-w-0">
-                                  <p className="truncate font-semibold text-[#0F172A]">{s.name}</p>
-                                  <p className="truncate text-[11px] text-[#64748B]">{s.email}</p>
+                                  <p className="truncate font-semibold text-[var(--text-main)]">{s.name}</p>
+                                  <p className="truncate text-[11px] text-[var(--text-muted)]">{s.email}</p>
                                 </div>
                               </div>
                             </button>
                           ))}
                           {!filteredStaffOptions.length && (
-                            <div className="px-2 py-2 text-[12px] text-[#64748B]">No staff found.</div>
+                            <div className="px-2 py-2 text-[12px] text-[var(--text-muted)]">No staff found.</div>
                           )}
                         </div>
                       </div>
@@ -2579,7 +2833,7 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 </div>
               )}
               {!!projectFormError && (
-                <p className="text-[12px] font-semibold text-[#B42318]">{projectFormError}</p>
+                <p className="text-[12px] font-semibold text-[var(--danger)]">{projectFormError}</p>
               )}
             </div>
             {previewPhoto && (
@@ -2662,14 +2916,14 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 />
               </button>
             )}
-            <div className="mt-4 flex flex-col-reverse items-stretch justify-end gap-2 sm:flex-row sm:items-center">
+            <div className="flex flex-col-reverse items-stretch justify-end gap-2 border-t border-[var(--panel-border)] px-5 pb-5 pt-4 sm:flex-row sm:items-center sm:px-6 sm:pb-6">
               <button
                 type="button"
                 onClick={() => {
                   setShowNewProject(false);
                   resetProjectForm();
                 }}
-                className="h-9 rounded-[9px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] sm:w-auto"
+                className="h-10 rounded-[10px] border border-[var(--panel-border)] bg-[var(--panel-bg)] px-4 text-[13px] font-semibold text-[var(--text-main)] transition hover:bg-[var(--panel-muted)] sm:w-auto"
               >
                 Cancel
               </button>
@@ -2677,10 +2931,51 @@ export function AppShell({ children, hideSidebar = false }: { children: React.Re
                 type="button"
                 disabled={creatingProject}
                 onClick={() => void onCreateProject()}
-                className="h-9 rounded-[9px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] disabled:opacity-55 sm:w-auto"
+                className="h-10 rounded-[10px] bg-[image:var(--brand-gradient)] px-5 text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105 disabled:opacity-55 sm:w-auto"
               >
                 {creatingProject ? "Creating..." : "Create Project"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {shouldRenderLogoutConfirmModal && (
+        <div className="fixed inset-0 z-[9100] flex items-center justify-center px-4">
+          <button
+            type="button"
+            aria-label="Close dialog backdrop"
+            onClick={() => setShowLogoutConfirm(false)}
+            className="glass-modal-backdrop absolute inset-0"
+          />
+          <div ref={logoutConfirmPanelRef} className="glass-modal-panel relative w-full max-w-[380px] overflow-hidden">
+            <div className="glass-modal-header px-5 py-4">
+              <h3 className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>Log out?</h3>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
+                You&apos;ll need to sign back in to access your account.
+              </p>
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutConfirm(false)}
+                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold hover:brightness-95"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLogoutConfirm(false);
+                    void logout();
+                  }}
+                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                >
+                  Log Out
+                </button>
+              </div>
             </div>
           </div>
         </div>

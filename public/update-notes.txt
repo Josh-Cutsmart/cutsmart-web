@@ -1,14 +1,8 @@
-Version: v0.3.0
+Version: v0.3.1
 
 whatsNew: [
-<u><b>Project Details "Production":</u></b>
-- Can now select Entry Modes for Door / Drawer Part Types:
-- - Editable SVG Drawing for drawer banks, multiple door / drawer entries at once, rather than separate.
-- - Door / Drawer Part types now show as sub robs with actual sizes within the sub row.
+<u><b>Application:</u></b>
+- Complete overhaul with new UI. Glass look to most pages.
+- More UI updates coming soon.
 
-<u><b>Project Details "Settings":</u></b>
-- Added settings for gap allowances, used for the "Doors / Drawer" Part tyes.
-
-<u><b>Company Settings:</u></b>
-- Added settings for gap allowances, used for the "Doors / Drawer" Part tyes.
 ]

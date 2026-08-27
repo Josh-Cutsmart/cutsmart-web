@@ -1632,11 +1632,14 @@ export async function updateProjectPatch(
       await updateDoc(topLevelRef, nextPatch);
       return true;
     }
-  } catch {
-    // continue into nested company/jobs fallback
+  } catch (error) {
+    // continue into nested company/jobs fallback, but log in case the fallback also fails —
+    // otherwise a genuine top-level write failure looks identical to "not stored top-level".
+    console.warn("[updateProjectPatch] top-level projects/{id} write failed, trying jobs fallback:", error);
   }
 
   if (!project.companyId) {
+    console.warn("[updateProjectPatch] no project.companyId, cannot fall back to companies/{id}/jobs.");
     return false;
   }
 
@@ -1648,13 +1651,39 @@ export async function updateProjectPatch(
     );
     const jobsSnap = await getDocs(jobsQ);
     if (jobsSnap.empty) {
+      console.warn("[updateProjectPatch] companies/{id}/jobs query returned no matching doc for project", project.id);
       return false;
     }
 
     await updateDoc(jobsSnap.docs[0].ref, nextPatch);
     return true;
-  } catch {
+  } catch (error) {
+    console.warn("[updateProjectPatch] companies/{id}/jobs write failed:", error);
     return false;
+  }
+}
+
+export async function fetchProjectUpdatedAtMarker(project: Project): Promise<string | null> {
+  if (!db || !project) return null;
+  try {
+    const topLevelSnap = await getDoc(doc(db, "projects", project.id));
+    if (topLevelSnap.exists()) {
+      const data = topLevelSnap.data() as Record<string, unknown>;
+      return String(data.updatedAtIso ?? data.updatedAt ?? "").trim() || null;
+    }
+  } catch {
+    // continue into nested company/jobs fallback
+  }
+  if (!project.companyId) return null;
+  try {
+    const jobsSnap = await getDocs(
+      query(collection(db, "companies", project.companyId, "jobs"), where("id", "==", project.id), limit(1)),
+    );
+    if (jobsSnap.empty) return null;
+    const data = jobsSnap.docs[0].data() as Record<string, unknown>;
+    return String(data.updatedAtIso ?? data.updatedAt ?? "").trim() || null;
+  } catch {
+    return null;
   }
 }
 
@@ -3299,7 +3328,13 @@ export async function saveUserProfilePatchDetailed(
     updatedAt: serverTimestamp(),
     updatedAtIso: new Date().toISOString(),
   });
-  const fullPatch = withMeta({ ...patch });
+  // fetchUserColorMapByUids() reads a membership doc's badgeColor BEFORE its
+  // userColor (legacy field-name priority) — so fullPatch (the primary write,
+  // used for both the users/{uid} doc and the membership doc's first-attempt
+  // write) must always keep badgeColor in sync with userColor here, or a stale
+  // badgeColor from an earlier write silently wins on every subsequent read,
+  // even though userColor itself was updated correctly.
+  const fullPatch = withMeta({ ...patch, ...(hasUserColor ? { badgeColor: userColorValue } : {}) });
   const colorPatch = withMeta(
     hasUserColor
       ? {
@@ -3469,11 +3504,18 @@ export async function saveUserProfilePatchDetailed(
         : String((error as { message?: unknown } | null)?.message ?? "membership-docid-query-failed");
   }
 
-  if (hasUserColor) {
-    if (membershipWriteOk) {
-      return { ok: true };
-    }
-    return { ok: false, error: lastError || "company-membership-color-sync-failed" };
+  if (hasUserColor && !membershipWriteOk && userWriteOk) {
+    // The personal users/{uid} profile doc — the authoritative fallback every
+    // page's color lookup falls back to when no company-membership record has
+    // a color set — saved fine even though every company-membership sync
+    // attempt failed (most likely a rules/permission quirk on that specific
+    // membership doc). Surface this as a real, separate condition instead of
+    // silently reporting outright failure: the color WILL still show up
+    // correctly wherever the membership doc has no stale color of its own,
+    // but flag it so a genuinely out-of-sync membership record is visible.
+    console.warn(
+      `[saveUserProfilePatchDetailed] users/${userId} color saved, but company-membership sync failed for every attempted company: ${lastError}`,
+    );
   }
 
   if (membershipWriteOk || userWriteOk) {

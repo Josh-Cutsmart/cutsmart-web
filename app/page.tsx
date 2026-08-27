@@ -7,6 +7,7 @@ import { auth, hasFirebaseConfig } from "@/lib/firebase";
 import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
+import { useTabBarReady } from "@/lib/app-tabs-context";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
@@ -254,6 +255,11 @@ export default function HomePage() {
   const shouldHoldLoginScreen =
     hasFirebaseConfig &&
     (isLoading || Boolean(user?.uid));
+
+  // While holding the splash (checking a saved session, or about to redirect to the dashboard
+  // once one is found), the global tab bar must stay hidden — otherwise tabs restored from a
+  // previous session flash in over this loading state before the real workspace is ready.
+  useTabBarReady(!shouldHoldLoginScreen);
 
   if (shouldHoldLoginScreen) {
     return (

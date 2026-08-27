@@ -337,11 +337,86 @@ export function buildCabinetBuilderDeleteMeta(
   };
 }
 
+function laneItemsCanSharePosition(
+  items: Array<Pick<CabinetBuilderAttachmentDraft, "kind" | "verticalAlign">>,
+  candidate: Pick<CabinetBuilderAttachmentDraft, "kind" | "verticalAlign">,
+) {
+  return items.every(
+    (item) =>
+      item.kind !== "panel" &&
+      candidate.kind !== "panel" &&
+      (item.verticalAlign ?? "bottom") !== (candidate.verticalAlign ?? "bottom"),
+  );
+}
+
+function normalizeCabinetBuilderAttachmentPositions(
+  attachments: CabinetBuilderAttachmentDraft[],
+): CabinetBuilderAttachmentDraft[] {
+  if (!attachments.length) return attachments;
+  const sorted = [...attachments].sort((a, b) => {
+    const aPos = Number(a.position ?? 0);
+    const bPos = Number(b.position ?? 0);
+    if (aPos !== bPos) return aPos - bPos;
+    return String(a.id).localeCompare(String(b.id));
+  });
+  const epsilon = 0.000001;
+  const clusters: Array<{
+    sourcePosition: number;
+    items: CabinetBuilderAttachmentDraft[];
+  }> = [];
+
+  sorted.forEach((attachment) => {
+    const position = Number(attachment.position ?? 0);
+    const lastCluster = clusters[clusters.length - 1] ?? null;
+    if (
+      lastCluster &&
+      Math.abs(lastCluster.sourcePosition - position) <= epsilon &&
+      laneItemsCanSharePosition(lastCluster.items, attachment)
+    ) {
+      lastCluster.items.push(attachment);
+      return;
+    }
+    clusters.push({
+      sourcePosition: position,
+      items: [attachment],
+    });
+  });
+
+  const negativeClusters = clusters.filter((cluster) => cluster.sourcePosition < -epsilon);
+  const zeroClusters = clusters.filter((cluster) => Math.abs(cluster.sourcePosition) <= epsilon);
+  const positiveClusters = clusters.filter((cluster) => cluster.sourcePosition > epsilon);
+  const zeroLeftClusters = zeroClusters.filter(
+    (cluster) => (cluster.items[0]?.side ?? "right") === "left",
+  );
+  const zeroRightClusters = zeroClusters.filter(
+    (cluster) => (cluster.items[0]?.side ?? "right") !== "left",
+  );
+  const nextPositionById = new Map<string, number>();
+
+  const resolvedNegativeClusters = [...negativeClusters, ...zeroLeftClusters];
+  const resolvedPositiveClusters = [...zeroRightClusters, ...positiveClusters];
+
+  resolvedNegativeClusters.forEach((cluster, index) => {
+    const nextPosition = index - resolvedNegativeClusters.length;
+    cluster.items.forEach((item) => nextPositionById.set(item.id, nextPosition));
+  });
+  resolvedPositiveClusters.forEach((cluster, index) => {
+    const nextPosition = index + 1;
+    cluster.items.forEach((item) => nextPositionById.set(item.id, nextPosition));
+  });
+
+  return attachments.map((attachment) => ({
+    ...attachment,
+    position: nextPositionById.get(attachment.id) ?? Number(attachment.position ?? 0),
+  }));
+}
+
 export function removeCabinetBuilderWallByDeleteMeta(
   draft: CabinetBuilderDraft,
   deleteMeta: CabinetBuilderDeleteMeta,
 ): CabinetBuilderDraft | null {
   const removeIds = new Set<string>([deleteMeta.id, ...deleteMeta.descendantIds]);
+  const deletedAttachment = draft.attachments.find((attachment) => attachment.id === deleteMeta.id) ?? null;
   const survivingAttachments = draft.attachments.filter((attachment) => !removeIds.has(attachment.id));
   if (deleteMeta.isMain) {
     const replacementAttachment =
@@ -368,7 +443,21 @@ export function removeCabinetBuilderWallByDeleteMeta(
   }
   return {
     ...draft,
-    attachments: survivingAttachments,
+    attachments: normalizeCabinetBuilderAttachmentPositions(survivingAttachments.map((attachment) => {
+      const wasAttachedToDeleted = removeIds.has(attachment.parentWallId || "");
+      if (!wasAttachedToDeleted) return attachment;
+      if (deletedAttachment?.kind === "panel") {
+        return {
+          ...attachment,
+          parentWallId: deletedAttachment.parentWallId || "main",
+          side: deletedAttachment.side || attachment.side,
+        };
+      }
+      return {
+        ...attachment,
+        parentWallId: "main",
+      };
+    })),
   };
 }
 
@@ -476,17 +565,14 @@ export function buildCabinetBuilderPreviewWallPieces(args: {
       : null;
 
   const targetPanelEntry =
-    (overlappingLayout
+    overlappingLayout
       ? panelLayouts.find((entry) => entry.layout.lane.position === overlappingLayout.lane.position) ?? null
-      : null) ??
-    (panelLayouts.length
-      ? [...panelLayouts].sort((a, b) => Math.abs(a.layout.center - pointerX) - Math.abs(b.layout.center - pointerX))[0]
-      : null);
+      : null;
 
   const targetAnchorPanel =
     draggingPiece.kind === "panel"
       ? targetPanelEntry?.panelPiece ?? resolveNearestPanelForPosition(Number(draggingPiece.position))
-      : targetPanelEntry?.panelPiece ?? resolveNearestPanelForPosition(Number(draggingPiece.position));
+      : targetPanelEntry?.panelPiece ?? null;
 
   const anchorPanelLayout =
     targetAnchorPanel
@@ -610,8 +696,15 @@ export function buildCabinetBuilderPreviewWallPieces(args: {
 
 export function applyCabinetBuilderWallOrder(draft: CabinetBuilderDraft, previewPieces: CabinetBuilderWallPiece[]) {
   if (!previewPieces.length) return draft;
-  const previewMap = new Map(previewPieces.filter((piece) => !piece.isMain).map((piece) => [piece.id, piece]));
-  const previewPanels = previewPieces.filter((piece) => piece.kind === "panel");
+  const previewMain = previewPieces.find((piece) => piece.isMain) ?? null;
+  const mainOffset = previewMain ? Number(previewMain.position) : 0;
+  const rebasedPreviewPieces = previewPieces.map((piece) =>
+    piece.isMain
+      ? { ...piece, position: 0 }
+      : { ...piece, position: Number(piece.position) - mainOffset },
+  );
+  const previewMap = new Map(rebasedPreviewPieces.filter((piece) => !piece.isMain).map((piece) => [piece.id, piece]));
+  const previewPanels = rebasedPreviewPieces.filter((piece) => piece.kind === "panel");
 
   const resolveNearestPreviewPanel = (piece: CabinetBuilderWallPiece | null | undefined) => {
     if (!piece || piece.kind === "panel") return null;
@@ -648,12 +741,16 @@ export function applyCabinetBuilderWallOrder(draft: CabinetBuilderDraft, preview
       ...attachment,
       side: nextSide,
       position: nextPosition,
+      parentWallId:
+        attachment.kind === "panel"
+          ? attachment.parentWallId
+          : parentPanel?.id || "main",
     });
   });
 
   return {
     ...draft,
-    attachments: reorderedAttachments,
+    attachments: normalizeCabinetBuilderAttachmentPositions(reorderedAttachments),
   };
 }
 
@@ -861,78 +958,13 @@ export function buildCabinetBuilderDisplayPieceLayouts<TPalette>(args: {
     };
   });
 
-  const defaultPieceLayoutMap = new Map(defaultPieceLayouts.map((layout) => [layout.metric.item.id, layout]));
-
-  const nearestPanelIdForLayout = (item: CabinetBuilderWallPiece) => {
-    if (item.kind === "panel") return item.id;
-    const panelLayouts = defaultPieceLayouts.filter((layout) => layout.metric.item.kind === "panel");
-    if (!panelLayouts.length) return "";
-    return (
-      [...panelLayouts].sort(
-        (a, b) =>
-          Math.abs(Number(a.metric.item.position) - Number(item.position)) -
-          Math.abs(Number(b.metric.item.position) - Number(item.position)),
-      )[0]?.metric.item.id ?? ""
-    );
-  };
-
-  const resolveDisplayAnchorPanelId = (item: CabinetBuilderWallPiece) => {
-    let current: CabinetBuilderWallPiece | null = item;
-    const visited = new Set<string>();
-    while (current && current.parentWallId && !visited.has(current.parentWallId)) {
-      visited.add(current.parentWallId);
-      const parentLayout = defaultPieceLayoutMap.get(current.parentWallId);
-      const parentItem = parentLayout?.metric.item ?? null;
-      if (!parentItem) break;
-      if (parentItem.kind === "panel") return parentItem.id;
-      current = parentItem;
-    }
-    return nearestPanelIdForLayout(item);
-  };
-
-  const panelAnchoredXOverrides = new Map<string, number>();
-  const panelAnchoredGroups = new Map<string, Array<(typeof defaultPieceLayouts)[number]>>();
-  defaultPieceLayouts.forEach((layout) => {
-    if (layout.metric.item.kind === "panel") return;
-    const anchorPanelId = resolveDisplayAnchorPanelId(layout.metric.item);
-    if (!anchorPanelId || !layout.metric.item.side) return;
-    const parentLayout = defaultPieceLayoutMap.get(anchorPanelId);
-    if (!parentLayout || parentLayout.metric.item.kind !== "panel") return;
-    const groupKey = `${anchorPanelId}__${layout.metric.item.side}__${layout.horizontalTrack}`;
-    const group = panelAnchoredGroups.get(groupKey) ?? [];
-    group.push(layout);
-    panelAnchoredGroups.set(groupKey, group);
-  });
-
-  panelAnchoredGroups.forEach((groupLayouts, groupKey) => {
-    const [parentWallId, side] = groupKey.split("__");
-    const parentLayout = defaultPieceLayoutMap.get(parentWallId);
-    if (!parentLayout) return;
-    const parentLeft = parentLayout.resolvedX;
-    const parentRight = parentLeft + parentLayout.scaledPieceWidth;
-    const orderedLayouts =
-      side === "left"
-        ? [...groupLayouts].sort((a, b) => b.metric.item.position - a.metric.item.position)
-        : [...groupLayouts].sort((a, b) => a.metric.item.position - b.metric.item.position);
-    let offset = 0;
-    orderedLayouts.forEach((layout) => {
-      const nextX =
-        side === "left"
-          ? parentLeft - offset - layout.scaledPieceWidth
-          : parentRight + offset;
-      panelAnchoredXOverrides.set(layout.metric.item.id, nextX);
-      offset += layout.scaledPieceWidth;
-    });
-  });
-
   return defaultPieceLayouts.map((layout) => {
     const metric = layout.metric;
-    const resolvedX = panelAnchoredXOverrides.get(metric.item.id) ?? layout.resolvedX;
     return {
       ...metric.item,
       rawWidth: metric.rawWidth,
       rawHeight: metric.rawHeight,
-      x: resolvedX,
+      x: layout.resolvedX,
       y: originY + (metric.rawTop - globalTop) * scale,
       width: layout.scaledPieceWidth,
       height: (metric.rawBottom - metric.rawTop) * scale,

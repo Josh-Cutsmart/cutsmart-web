@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { AuthProvider } from "@/lib/auth-context";
+import { AppTabsProvider } from "@/lib/app-tabs-context";
+import { GlobalAppTabsBar } from "@/components/global-app-tabs-bar";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -46,7 +48,12 @@ export default function RootLayout({
         />
       </head>
       <body className="cs-app" suppressHydrationWarning>
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <AppTabsProvider>
+            <GlobalAppTabsBar />
+            {children}
+          </AppTabsProvider>
+        </AuthProvider>
       </body>
     </html>
   );

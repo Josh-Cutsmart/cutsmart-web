@@ -12,6 +12,7 @@ type QuoteDocumentEditorProps = {
   toolbarPlacement?: "sheet-side" | "inline";
   toolbarHost?: HTMLElement | null;
   embeddedChrome?: "card" | "flat";
+  embeddedCardSquare?: boolean;
   embeddedMinHeight?: number;
   embeddedEditableMinHeight?: number;
   autoFocus?: boolean;
@@ -29,6 +30,7 @@ export function QuoteDocumentEditor({
   toolbarPlacement = "sheet-side",
   toolbarHost = null,
   embeddedChrome = "card",
+  embeddedCardSquare = false,
   embeddedMinHeight = 48,
   embeddedEditableMinHeight = 18,
   autoFocus = false,
@@ -47,6 +49,7 @@ export function QuoteDocumentEditor({
   const embeddedToolbarTopRef = useRef<number | null>(null);
   const [embeddedToolbarStyle, setEmbeddedToolbarStyle] = useState<CSSProperties | undefined>(undefined);
   const [isEmbeddedToolbarReady, setIsEmbeddedToolbarReady] = useState(mode !== "embedded");
+  const [isToolbarElementReady, setIsToolbarElementReady] = useState(false);
 
   useEffect(() => {
     let isDisposed = false;
@@ -108,6 +111,7 @@ export function QuoteDocumentEditor({
       onEditorReady?.(editor);
       if (editor.ui.view.toolbar.element) {
         toolbarNode.replaceChildren(editor.ui.view.toolbar.element);
+        setIsToolbarElementReady(true);
       }
       const editableElement = editor.ui.getEditableElement();
       if (!editableElement) {
@@ -266,7 +270,7 @@ export function QuoteDocumentEditor({
       window.cancelAnimationFrame(frameId);
       window.removeEventListener("resize", scheduleUpdate);
     };
-  }, [mode, toolbarPlacement, readOnly, autoFocus]);
+  }, [mode, toolbarPlacement, readOnly, autoFocus, isToolbarElementReady]);
 
   return (
     <div
@@ -285,7 +289,9 @@ export function QuoteDocumentEditor({
         mode === "embedded"
           ? embeddedChrome === "flat"
             ? "border-0 bg-transparent shadow-none"
-            : "rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
+            : embeddedCardSquare
+              ? "rounded-none border border-[#D7DEE8] bg-white"
+              : "rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
           : "rounded-[18px] border border-[#D7DEE8] bg-[#EEF3FA] shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
       }
     >
@@ -331,6 +337,10 @@ export function QuoteDocumentEditor({
           font-size: 12px;
           line-height: 1.5;
           overflow: hidden !important;
+        }
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-card-square="true"] .ck.ck-content.ck-editor__editable,
+        .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-card-square="true"] .cutsmart-quote-document-editable {
+          padding: 4px 0 !important;
         }
         .cutsmart-quote-document-shell[data-mode="embedded"] .ck.ck-content.ck-editor__editable > *:first-child,
         .cutsmart-quote-document-shell[data-mode="embedded"] .cutsmart-quote-document-editable > *:first-child {
@@ -467,6 +477,7 @@ export function QuoteDocumentEditor({
         data-mode={mode}
         data-toolbar-placement={toolbarPlacement}
         data-embedded-chrome={embeddedChrome}
+        data-embedded-card-square={embeddedCardSquare ? "true" : undefined}
         data-toolbar-density={toolbarDensity}
         style={
           mode === "embedded"

@@ -5,26 +5,86 @@
   --brand: #007aff;
   --brand-strong: #0064d6;
   --brand-soft: #d9ebff;
+  --brand-gradient: linear-gradient(135deg, #2b9cff 0%, #0064d6 100%);
+  --accent-purple: #7c6cf0;
+  --accent-teal: #17b3a3;
+  --accent-amber: #e8a838;
   --ink: #111111;
-  --bg-app: #f5f5f7;
+  --bg-app: #eef1f8;
+  --bg-wash-1: rgba(0, 122, 255, 0.06);
+  --bg-wash-2: rgba(124, 108, 240, 0.05);
+  --bg-wash-3: rgba(23, 179, 163, 0.04);
   --panel-bg: #ffffff;
   --panel-border: #e5e5ea;
   --panel-muted: #fbfbfd;
   --text-main: #111111;
   --text-muted: #6e6e73;
+  --danger: #dc2626;
+  --danger-strong: #b42318;
+  --danger-border: #fca5a5;
+  --danger-soft: #fef2f2;
+  --danger-gradient: linear-gradient(135deg, #f87171 0%, #dc2626 100%);
+  --danger-tint: rgba(180, 35, 24, 0.07);
+  --danger-ring: rgba(180, 35, 24, 0.22);
+  --danger-glass-bg: rgba(220, 38, 38, 0.55);
+  --danger-glass-border: rgba(180, 35, 24, 0.65);
+  --success: #16a34a;
+  --success-strong: #15803d;
+  --success-border: #86efac;
+  --success-soft: #f0fdf4;
+  --success-gradient: linear-gradient(135deg, #34d399 0%, #16a34a 100%);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.1);
+  --shadow-modal: 0 24px 60px rgba(15, 23, 42, 0.18);
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-bg-strong: rgba(255, 255, 255, 0.78);
+  --glass-modal-bg: rgba(238, 241, 248, 0.4);
+  --glass-border: rgba(15, 23, 42, 0.07);
+  --glass-highlight: rgba(255, 255, 255, 0.5);
+  --shadow-glass: 0 8px 32px rgba(31, 41, 55, 0.10), 0 1px 1px rgba(31, 41, 55, 0.05);
 }
 
 :root[data-theme="dark"] {
   --brand: #3ea6ff;
   --brand-strong: #65b8ff;
   --brand-soft: #233447;
+  --brand-gradient: linear-gradient(135deg, #59b4ff 0%, #2e7fd6 100%);
+  --accent-purple: #9a8bff;
+  --accent-teal: #2ed3bf;
+  --accent-amber: #f0b955;
   --ink: #f1f1f1;
-  --bg-app: #0f0f0f;
+  --bg-app: #0b0d12;
+  --bg-wash-1: rgba(62, 166, 255, 0.07);
+  --bg-wash-2: rgba(124, 108, 240, 0.06);
+  --bg-wash-3: rgba(23, 179, 163, 0.04);
   --panel-bg: #212121;
   --panel-border: #3f3f46;
   --panel-muted: #272727;
   --text-main: #f1f1f1;
   --text-muted: #aaaaaa;
+  --danger: #f87171;
+  --danger-strong: #fca5a5;
+  --danger-border: #7f1d1d;
+  --danger-soft: #3a1a1a;
+  --danger-gradient: linear-gradient(135deg, #fca5a5 0%, #dc2626 100%);
+  --danger-tint: rgba(252, 165, 165, 0.1);
+  --danger-ring: rgba(252, 165, 165, 0.28);
+  --danger-glass-bg: rgba(153, 27, 27, 0.55);
+  --danger-glass-border: rgba(252, 165, 165, 0.45);
+  --success: #4ade80;
+  --success-strong: #86efac;
+  --success-border: #166534;
+  --success-soft: #14291b;
+  --success-gradient: linear-gradient(135deg, #4ade80 0%, #16a34a 100%);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --glass-bg: rgba(28, 28, 32, 0.6);
+  --glass-bg-strong: rgba(28, 28, 32, 0.82);
+  --glass-modal-bg: rgba(10, 10, 12, 0.4);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight: rgba(255, 255, 255, 0.05);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.5), 0 1px 1px rgba(0, 0, 0, 0.3);
 }
 
 * {
@@ -33,9 +93,16 @@
 
 body {
   margin: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(1600px circle at 10% 25%, var(--bg-wash-1), transparent 65%),
+    radial-gradient(1400px circle at 95% 15%, var(--bg-wash-2), transparent 60%),
+    radial-gradient(1500px circle at 25% 100%, var(--bg-wash-3), transparent 60%),
+    var(--bg-app);
+  background-attachment: fixed;
   font-family: "SF Pro Text", "SF Pro Display", "Segoe UI", "Trebuchet MS", "Tahoma", sans-serif;
   color: var(--text-main);
-  background: var(--bg-app);
   min-height: 100vh;
 }
 
@@ -168,7 +235,6 @@ body.new-project-open .project-image-nav-arrow {
 }
 
 body[data-theme="dark"] {
-  background: var(--bg-app);
   color: var(--text-main);
 }
 
@@ -269,4 +335,258 @@ body[data-theme="dark"] .cs-app .notes-rich ul,
 body[data-theme="dark"] .cs-app .notes-rich ol,
 body[data-theme="dark"] .cs-app .notes-rich li {
   color: var(--text-main);
+}
+
+@keyframes project-tab-slide-from-right {
+  from {
+    transform: translateX(64px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes project-tab-slide-from-left {
+  from {
+    transform: translateX(-64px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/*
+ * Shared "liquid glass" modal preset — apply to any pop-up dialog so new and
+ * existing modals stay visually consistent without hand-tuning each one.
+ * Usage: backdrop div gets .glass-modal-backdrop, the dialog box gets
+ * .glass-modal-panel, and its header row (if any) gets .glass-modal-header.
+ */
+.glass-modal-backdrop {
+  background: rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: glass-modal-fade-in 200ms ease-out;
+}
+
+@keyframes glass-modal-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Small "bubble" pop-in for transient confirmation pills (e.g. an "Added" badge) */
+@keyframes glass-bubble-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.glass-bubble-pop {
+  animation: glass-bubble-pop-in 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: center;
+}
+
+/* Quick fade-and-shrink dismissal for a validation-error speech bubble anchored to a cell/field. */
+@keyframes cutlist-warning-bubble-out-frames {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+.cutlist-warning-bubble-out {
+  animation: cutlist-warning-bubble-out-frames 180ms ease-in forwards;
+  transform-origin: bottom center;
+}
+
+/* Floating "drop in and settle" entrance for individual comment bubbles —
+ * slides down from slightly above rest, overshoots a touch past rest, then
+ * springs back up to settle, like it's floating down into place. */
+@keyframes glass-comment-drop-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reverse of glass-comment-drop-in — dips down slightly then floats back up
+ * and fades out, for closing the comment strip the same way it opened. */
+@keyframes glass-comment-drop-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  45% {
+    opacity: 1;
+    transform: translateY(4px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+
+.cutlist-cell-flash-red {
+  background-color: var(--danger-soft);
+  box-shadow: 0 0 0 2px var(--danger-border) inset;
+}
+
+.glass-modal-panel {
+  border-radius: 20px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-modal-bg);
+  backdrop-filter: blur(12px) saturate(220%);
+  -webkit-backdrop-filter: blur(12px) saturate(220%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass), 0 24px 60px rgba(15, 23, 42, 0.25);
+  color: var(--text-main);
+}
+
+body[data-theme="dark"] .glass-modal-panel {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass), 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.glass-modal-header {
+  border-bottom: 1px solid var(--glass-border);
+  background: rgba(15, 23, 42, 0.025);
+}
+
+body[data-theme="dark"] .glass-modal-header {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Shared "top bar" treatment for a page's own sticky/non-sticky title bar —
+ * same recipe as the global tab strip (GlobalAppTabsBar), so any page's
+ * header can visually match it by just adding this class.
+ * Usage: put this class + a border-bottom color on the header row div. */
+.glass-page-header {
+  background: var(--glass-modal-bg);
+  backdrop-filter: blur(12px) saturate(220%);
+  -webkit-backdrop-filter: blur(12px) saturate(220%);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+/* Floating circular "glass" control — e.g. the prev/next arrows over a
+ * fullscreen image viewer. Same frosted-panel recipe as .glass-modal-panel
+ * (translucent fill + blur + a light top-edge sheen), just without the
+ * modal's rounded-rect radius/pop-in animation. */
+.glass-nav-arrow {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-modal-bg);
+  backdrop-filter: blur(12px) saturate(220%);
+  -webkit-backdrop-filter: blur(12px) saturate(220%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass);
+  color: var(--text-main);
+}
+
+body[data-theme="dark"] .glass-nav-arrow {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-glass);
+}
+
+/* Thin, translucent overlay-style scrollbar for scrollable areas inside a
+   glass modal/card, so the browser's default chunky scrollbar doesn't break
+   the glass look. */
+.glass-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+}
+
+.glass-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.glass-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.glass-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(15, 23, 42, 0.22);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.glass-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(15, 23, 42, 0.38);
+}
+
+body[data-theme="dark"] .glass-scroll {
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+
+body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.38);
+}
+
+/*
+ * Highlights an entire row with a crisp, translucent "liquid glass" tint —
+ * a thin tinted border + soft fill, matching the app's glass-card language,
+ * rather than a diffuse glow — wired up via a row's delete "X" button.
+ * Usage: the row gets .row-glow-anchor (needs position:relative, which this
+ * class provides), a first-child div gets .row-glow, and its opacity is
+ * driven by inline style (data-active) from the button's onMouseEnter /
+ * onMouseLeave — not CSS :has(:hover), which some environments don't
+ * reliably recompute for hover-driven descendant style changes.
+ */
+.row-glow-anchor {
+  position: relative;
+  z-index: 0;
+}
+
+.row-glow {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  left: -6px;
+  right: -6px;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  border-radius: 10px;
+  background: var(--row-glow-color, rgba(220, 38, 38, 0.08));
+  border: 1px solid var(--row-glow-border, rgba(220, 38, 38, 0.22));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: opacity 200ms ease;
+}
+
+.row-glow[data-active="true"] {
+  opacity: 1;
+}
+
+body[data-theme="dark"] .row-glow {
+  --row-glow-color: rgba(248, 113, 113, 0.1);
+  --row-glow-border: rgba(248, 113, 113, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }

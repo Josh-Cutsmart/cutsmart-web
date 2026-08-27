@@ -305,6 +305,7 @@ export function addCabinetBuilderChildRowInDraft(args: {
   carcassThicknessText: string;
   panelThicknessText: string;
   boardThicknessFor: (board: string) => number;
+  isExtraPartType: (partType: string) => boolean;
   isDoorPartType: (partType: string) => boolean;
   isDrawerPartType: (partType: string) => boolean;
   isPanelPartType: (partType: string) => boolean;
@@ -319,6 +320,7 @@ export function addCabinetBuilderChildRowInDraft(args: {
     carcassThicknessText,
     panelThicknessText,
     boardThicknessFor,
+    isExtraPartType,
     isDoorPartType,
     isDrawerPartType,
     isPanelPartType,
@@ -343,7 +345,21 @@ export function addCabinetBuilderChildRowInDraft(args: {
       ? numericDimensionText(String(Math.max(0, cabinetDepth - selectedBoardThickness)))
       : "";
   const baseRow =
-    isDrawerPartType(partType) && !isDoorPartType(partType)
+    isExtraPartType(partType)
+      ? createCabinetBuilderBaseRow(partType, {
+          board: "",
+          name: "",
+          height: "",
+          width: "",
+          depth: "",
+          quantity: "",
+          clashLeft: "",
+          clashRight: "",
+          grain: false,
+          grainValue: "",
+          information: "",
+        } as Partial<CutlistEntryDraft>)
+      : isDrawerPartType(partType) && !isDoorPartType(partType)
       ? createCabinetBuilderBaseRow(partType, {
           name: targetRow.name,
           width: drawerWidth || targetRow.width,
@@ -861,7 +877,7 @@ export function addCabinetBuilderAttachmentInDraft(args: {
           id: nextId,
           side: effectiveSide,
           position: nextPosition,
-          parentWallId: anchorPanel ? anchorPanel.id : selectedWall?.id || "main",
+          parentWallId: kind === "panel" ? selectedWall?.id || "main" : anchorPanel?.id || "main",
           kind,
           verticalAlign,
           newCabinet,
@@ -932,16 +948,9 @@ export function confirmCabinetBuilderPendingAttachmentInDraft(args: {
   const laneAnchor = shouldSharePanelLane ? anchorPanel : selectedWall ?? anchorPanel;
   const selectedPosition = laneAnchor?.position ?? 0;
   const parentWallId =
-    pendingKind === "cabinet" &&
-    selectedWall?.kind === "cabinet" &&
-    anchorPanel &&
-    effectiveAlign === (selectedWall.verticalAlign ?? "bottom")
-      ? selectedWall.id
-      : pendingKind === "panel" && selectedWall?.kind === "cabinet"
-        ? selectedWall.id
-        : anchorPanel
-          ? anchorPanel.id
-          : selectedWall?.id || "main";
+    pendingKind === "panel"
+      ? selectedWall?.id || "main"
+      : anchorPanel?.id || "main";
   const effectiveSide = shouldSharePanelLane
     ? selectedWall?.side ?? pendingAttachment.side
     : selectedWall?.kind === "panel"
