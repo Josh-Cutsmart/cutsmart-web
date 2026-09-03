@@ -2,10 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, Building2, CircleDollarSign, CircleHelp, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, Settings, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, Bell, Building2, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
-import { useTabBarReady } from "@/lib/app-tabs-context";
 import {
   createCompanyInviteDetailed,
   fetchCompanyDoc,
@@ -27,6 +26,8 @@ import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded 
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
+import SpecsGridEditor from "@/components/specs-grid-editor";
+import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs-grid-types";
 
 type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
@@ -1171,11 +1172,24 @@ export default function CompanySettingsPage() {
   const [boardFinishes, setBoardFinishes] = useState<string[]>(["Satin"]);
   const [sheetSizes, setSheetSizes] = useState<SheetSizeRow[]>([{ h: "2440", w: "1220", isDefault: true }]);
   const [partTypes, setPartTypes] = useState<PartTypeRow[]>([]);
+  const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [roleDragIndex, setRoleDragIndex] = useState<number | null>(null);
   const [roleDragOverIndex, setRoleDragOverIndex] = useState<number | null>(null);
   const [activeRoleModalIndex, setActiveRoleModalIndex] = useState<number | null>(null);
   const [itemCategories, setItemCategories] = useState<ItemCategoryRow[]>([]);
+  const [isSpecsLayoutModalOpen, setIsSpecsLayoutModalOpen] = useState(false);
+  const [isSpecsTemplateResetConfirmOpen, setIsSpecsTemplateResetConfirmOpen] = useState(false);
+  // Surfaces the isolated specs-template write's real failure reason — previously it was fired via
+  // `void saveCompanyDocPatchDetailed(...)` with the result thrown away, so a failed write (e.g. a
+  // Firestore document-too-large error once the template grows, or a permission error) had zero
+  // visible symptom beyond "my edits don't survive a refresh."
+  const [specsTemplateSaveError, setSpecsTemplateSaveError] = useState("");
+  // Bumped on every reset to force <SpecsGridEditor> to unmount/remount — its own internal
+  // selection/drag state isn't derived from `value`, so a plain prop change wouldn't reset it.
+  const [specsTemplateEditorKey, setSpecsTemplateEditorKey] = useState(0);
+  const [specsTemplateGrid, setSpecsTemplateGrid] = useState<SpecsGrid | null>(null);
+  const specsTemplateSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [itemCategoryExpanded, setItemCategoryExpanded] = useState<Record<number, boolean>>({});
   const [itemCategoryDragIndex, setItemCategoryDragIndex] = useState<number | null>(null);
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
@@ -1269,7 +1283,6 @@ export default function CompanySettingsPage() {
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
-  useTabBarReady(companyAccessResolved);
   const openStaffRoleMenuRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState({
     name: "",
@@ -1390,8 +1403,10 @@ export default function CompanySettingsPage() {
         setBoardFinishes(normalizeStringList(doc.boardFinishes, ["Satin"]));
         setSheetSizes(normalizeSheetSizes(doc.sheetSizes));
         setPartTypes(normalizePartTypes(doc.partTypes));
+        setContractors(normalizeStringList(doc.contractors, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
+        setSpecsTemplateGrid(normalizeSpecsGrid(doc.specsTemplateGrid));
         setJobTypes(normalizeJobTypes(doc.salesJobTypes));
         setQuoteExtras(normalizeQuoteExtras(doc.quoteExtras));
         setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
@@ -2077,6 +2092,7 @@ export default function CompanySettingsPage() {
     );
   };
 
+
   const toggleJobTypeExpanded = (index: number) => {
     setJobTypeExpanded((prev) => ({ ...prev, [index]: !prev[index] }));
   };
@@ -2214,6 +2230,7 @@ export default function CompanySettingsPage() {
         sheetSizes,
         roles,
         itemCategories,
+        specsTemplateGrid,
         salesJobTypes: jobTypes,
         quoteExtras,
         salesQuoteHelpers: quoteHelpers,
@@ -2462,6 +2479,7 @@ export default function CompanySettingsPage() {
       // through its own dedicated fetch-then-patch call instead.
       boardThicknesses: boardThicknesses.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0),
       boardFinishes: boardFinishes.map((v) => toStr(v)).filter(Boolean),
+      contractors: contractors.map((v) => toStr(v)).filter(Boolean),
       sheetSizes: sheetSizes
         .map((r) => ({ h: Number(r.h), w: Number(r.w), isDefault: r.isDefault }))
         .filter((r) => Number.isFinite(r.h) && Number.isFinite(r.w) && r.h > 0 && r.w > 0),
@@ -2568,6 +2586,9 @@ export default function CompanySettingsPage() {
           return { name, color: toStr(row.color, "#7D99B3"), subcategories, items };
         })
         .filter(Boolean),
+      // specsTemplateGrid is deliberately excluded here — it has its own small, isolated,
+      // independently-debounced write (onSpecsTemplateChange) so a continuously-edited template
+      // doesn't force this whole (large) combined settings save to re-fire on every edit.
       salesJobTypes: jobTypes
         .map((row) => {
           const name = toStr(row.name);
@@ -2669,6 +2690,7 @@ export default function CompanySettingsPage() {
         projectTagUsage: { tags: projectTagUsage },
         boardThicknesses,
         boardFinishes,
+        contractors,
         sheetSizes,
         partTypes,
         nestingSettings: nesting,
@@ -2687,6 +2709,7 @@ export default function CompanySettingsPage() {
         productionUnlockDurationHours: unlockHours,
         roles,
         itemCategories,
+        specsTemplateGrid,
         salesJobTypes: jobTypes,
         quoteExtras,
           salesQuoteHelpers: quoteHelpers,
@@ -2764,6 +2787,47 @@ export default function CompanySettingsPage() {
     triggerBlurAutoSave();
   };
 
+  // The Specs Layout template gets its own small, isolated, independently-debounced write instead of
+  // going through the page's big combined save() — that function re-uploads every settings field
+  // (item categories, quote helpers, board finishes, all of it) on every debounced save, which for a
+  // continuously-edited spreadsheet meant repeatedly re-sending the whole settings document and
+  // exhausting Firestore's write queue. Writing only this one field, on a longer 2s debounce, keeps
+  // each write small and infrequent regardless of how fast someone types.
+  const onSpecsTemplateChange = (data: SpecsGrid) => {
+    setSpecsTemplateGrid(data);
+    if (specsTemplateSaveTimeoutRef.current) clearTimeout(specsTemplateSaveTimeoutRef.current);
+    specsTemplateSaveTimeoutRef.current = setTimeout(() => {
+      if (!activeCompanyId) return;
+      void saveCompanyDocPatchDetailed(activeCompanyId, { specsTemplateGrid: data }).then((result) => {
+        if (!result.ok) {
+          console.error("Specs template save failed:", result.error);
+          setSpecsTemplateSaveError(result.error || "unknown-save-error");
+        } else {
+          setSpecsTemplateSaveError("");
+        }
+      });
+    }, 2000);
+  };
+
+  // Explicit, deliberate reset (confirmed via its own popup) — saves immediately rather than on the
+  // usual 2s debounce, since there's no reason to delay persisting a state the user just confirmed.
+  const resetSpecsTemplate = () => {
+    if (specsTemplateSaveTimeoutRef.current) clearTimeout(specsTemplateSaveTimeoutRef.current);
+    setSpecsTemplateGrid(null);
+    setSpecsTemplateEditorKey((prev) => prev + 1);
+    setIsSpecsTemplateResetConfirmOpen(false);
+    if (activeCompanyId) {
+      void saveCompanyDocPatchDetailed(activeCompanyId, { specsTemplateGrid: null }).then((result) => {
+        if (!result.ok) {
+          console.error("Specs template reset failed:", result.error);
+          setSpecsTemplateSaveError(result.error || "unknown-save-error");
+        } else {
+          setSpecsTemplateSaveError("");
+        }
+      });
+    }
+  };
+
   useEffect(() => {
     if (!isHydrated || isLoading || !activeCompanyId) return;
     const nextSignature = JSON.stringify({
@@ -2814,6 +2878,7 @@ export default function CompanySettingsPage() {
     projectTagUsage,
     boardThicknesses,
     boardFinishes,
+    contractors,
     sheetSizes,
     partTypes,
     roles,
@@ -2898,6 +2963,13 @@ export default function CompanySettingsPage() {
               onInputCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
+                // The Specs Layout modal's own cell color-popover renders real <input> elements
+                // (hex text field, native color input) — since React's blur/input event delegation
+                // catches events regardless of the modal's fixed positioning, every keystroke/commit
+                // in there would otherwise also trigger this page-wide combined-save trigger, on top
+                // of (and completely bypassing) the template's own small, isolated,
+                // independently-debounced save path.
+                if (el?.closest('[data-specs-layout-modal="true"]')) return;
                 if (tag === "input" || tag === "textarea" || tag === "select") {
                   hasPendingBlurSaveRef.current = true;
                 }
@@ -2905,6 +2977,7 @@ export default function CompanySettingsPage() {
               onChangeCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
+                if (el?.closest('[data-specs-layout-modal="true"]')) return;
                 if (tag === "input" || tag === "textarea" || tag === "select") {
                   hasPendingBlurSaveRef.current = true;
                 }
@@ -2912,6 +2985,7 @@ export default function CompanySettingsPage() {
               onBlurCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
+                if (el?.closest('[data-specs-layout-modal="true"]')) return;
                 if (tag === "input" || tag === "textarea" || tag === "select") {
                   triggerBlurAutoSave();
                 }
@@ -3495,6 +3569,37 @@ export default function CompanySettingsPage() {
                       <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
                       <p className="font-bold text-[#334155]">Unlock Duration (hours)</p>
                       <input value={unlockHours} onChange={(e) => setUnlockHours(e.target.value)} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                    </div>
+                  </Panel>
+                  <Panel title="Contractors">
+                    <div className="space-y-2 text-[12px]">
+                      {contractors.map((value, idx) => (
+                        <div key={`contractor_${idx}`} className="grid grid-cols-[26px_1fr] items-center gap-2">
+                          <button
+                            onClick={() => {
+                              setContractors((prev) => prev.filter((_, i) => i !== idx));
+                              triggerAutosaveAfterRowDrop();
+                            }}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                          >
+                            <X size={15} strokeWidth={2.8} />
+                          </button>
+                          <input
+                            value={value}
+                            onChange={(e) =>
+                              setContractors((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))
+                            }
+                            placeholder="e.g. Electrician"
+                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          />
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => setContractors((prev) => [...prev, ""])}
+                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                      >
+                        + Add
+                      </button>
                     </div>
                   </Panel>
                   <div className="xl:col-span-2 grid gap-3 xl:grid-cols-2">
@@ -4911,6 +5016,126 @@ export default function CompanySettingsPage() {
                       <button onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Category</button>
                     </div>
                   </Panel>
+                  <Panel title="Specs Layout">
+                    <div className="space-y-2 text-[12px]">
+                      <p className="text-[11px] text-[#667085]">
+                        Design the specifications template as a real spreadsheet — any cells, rows, columns, or formatting you like. Whatever you type into a cell becomes that cell&apos;s starting content on every new project&apos;s specifications sheet.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setIsSpecsLayoutModalOpen(true)}
+                        className="rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-1.5 text-[11px] font-bold text-[#344054] hover:bg-[#EEF2F7]"
+                      >
+                        Open Specs Layout Builder
+                      </button>
+                    </div>
+                  </Panel>
+                  {isSpecsLayoutModalOpen ? (
+                    <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
+                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
+                        <div className="inline-flex items-center gap-3">
+                          <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            <ClipboardList size={14} />
+                            <span>Specs Layout Builder</span>
+                          </div>
+                          {specsTemplateSaveError ? (
+                            <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
+                              Save failed ({specsTemplateSaveError}) — your last edit may not have saved
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsSpecsTemplateResetConfirmOpen(true)}
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                          >
+                            <RotateCcw size={14} />
+                            Reset
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsSpecsLayoutModalOpen(false)}
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                          >
+                            <ArrowLeft size={14} />
+                            Back
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
+                          <div className="min-h-0 overflow-hidden rounded-[10px] border border-[#D8DEE8]">
+                            {companyAccessResolved ? (
+                              <SpecsGridEditor
+                                key={specsTemplateEditorKey}
+                                value={specsTemplateGrid ?? createEmptyGrid()}
+                                onChange={onSpecsTemplateChange}
+                                className="flex h-full w-full flex-col"
+                                showPageSizeSelector
+                                companyLogoUrl={form.logoPath || undefined}
+                                companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
+                              />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-[12px] text-[#98A2B3]">Loading template…</div>
+                            )}
+                          </div>
+                          <div className="overflow-y-auto rounded-[14px] border border-[#D7DEE8] bg-white p-3 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+                            <p className="text-[13px] font-semibold text-[#12345B]">Placeholders</p>
+                            <p className="mt-1 text-[11px] text-[#667085]">
+                              Type these tokens into a cell. They&apos;ll be replaced with that project&apos;s real data the first time its specifications sheet is created from this template.
+                            </p>
+                            <div className="mt-3 space-y-2">
+                              {QUOTE_TEMPLATE_PLACEHOLDERS.map((item) => (
+                                <div key={item.token} className="rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2">
+                                  <p className="text-[11px] font-semibold text-[#344054]">{item.label}</p>
+                                  <p className="mt-1 break-all font-mono text-[11px] text-[#667085]">{item.token}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                    </div>
+                  ) : null}
+                  {isSpecsTemplateResetConfirmOpen ? (
+                    <div className="fixed inset-0 z-[1010] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close reset confirmation backdrop"
+                        onClick={() => setIsSpecsTemplateResetConfirmOpen(false)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
+                        <div className="glass-modal-header px-5 py-4">
+                          <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset Template</p>
+                        </div>
+                        <div className="space-y-4 px-5 py-4">
+                          <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                            This will permanently clear the entire specs template — every cell, row, column, and formatting choice. This can&apos;t be undone.
+                          </p>
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setIsSpecsTemplateResetConfirmOpen(false)}
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={resetSpecsTemplate}
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                              style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                            >
+                              Reset Template
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                   <Panel title="Product">
                     <div className="space-y-2 text-[12px]">
                       <div className="grid grid-cols-[26px_26px_26px_1fr_120px_70px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">

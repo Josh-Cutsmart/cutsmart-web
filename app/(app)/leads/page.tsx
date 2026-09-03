@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { useAuth } from "@/lib/auth-context";
-import { useTabBarReady } from "@/lib/app-tabs-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
@@ -132,6 +131,14 @@ function lightenLeadStatusHex(hex: string, amount: number): string {
   const ng = clamp(g + (255 - g) * ratio);
   const nb = clamp(b + (255 - b) * ratio);
   return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
+function leadStatusHexToRgba(hex: string, alpha: number): string {
+  const safe = normalizeLeadStatusHex(hex) ?? "#64748B";
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function sampleLeadsStorageKey(companyId: string) {
@@ -581,7 +588,6 @@ export default function LeadsPage() {
   const currentUserUid = String(user?.uid || "").trim();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
-  useTabBarReady(companyAccessResolved);
   const [canAccessLeads, setCanAccessLeads] = useState(false);
   const [canViewOtherLeads, setCanViewOtherLeads] = useState(false);
   const [activeCompanyId, setActiveCompanyId] = useState("");
@@ -3120,33 +3126,27 @@ export default function LeadsPage() {
               >
                 <div className="overflow-hidden">
                   <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <div
-                      className="relative inline-flex h-9 w-20 shrink-0 items-center rounded-full border p-1"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={leadsViewMode === "grid"}
+                      onClick={() => setLeadsViewMode((prev) => (prev === "board" ? "grid" : "board"))}
+                      className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "#FFFFFF" }}
+                      title="Toggle lead view"
+                      aria-label="Toggle lead view"
                     >
                       <div
                         className="absolute top-1 h-7 w-9 rounded-full transition-all duration-200"
                         style={{ left: leadsViewMode === "board" ? 4 : 40, backgroundImage: "var(--brand-gradient)" }}
                       />
-                      <button
-                        type="button"
-                        onClick={() => setLeadsViewMode("board")}
-                        className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full"
-                        title="Board view"
-                        aria-label="Board view"
-                      >
+                      <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
                         <Kanban size={15} style={{ color: leadsViewMode === "board" ? "#fff" : "var(--text-muted)" }} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setLeadsViewMode("grid")}
-                        className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full"
-                        title="Grid view"
-                        aria-label="Grid view"
-                      >
+                      </span>
+                      <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
                         <LayoutGrid size={15} style={{ color: leadsViewMode === "grid" ? "#fff" : "var(--text-muted)" }} />
-                      </button>
-                    </div>
+                      </span>
+                    </button>
                     {leadsViewMode === "board" && (
                       <button
                         type="button"
@@ -3275,7 +3275,16 @@ export default function LeadsPage() {
                     },
                     onDrop: (e: ReactDragEvent<HTMLElement>) => onLeadBoardColumnDrop(e, column.name),
                   };
-                  const softColumnBg = lightenLeadStatusHex(column.color, 0.55);
+                  const glassColumnBg = leadStatusHexToRgba(column.color, 0.85);
+                  const glassColumnBorder = "rgba(255,255,255,0.3)";
+                  const glassColumnSurface: React.CSSProperties = {
+                    backgroundColor: glassColumnBg,
+                    backdropFilter: "blur(20px) saturate(180%)",
+                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                  };
+                  const glassColumnShadow = isDragOver
+                    ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
+                    : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
                   if (isCollapsed) {
                     return (
                       <button
@@ -3286,9 +3295,9 @@ export default function LeadsPage() {
                         className="flex w-[52px] shrink-0 flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
                         style={{
                           height: boardColumnHeight ?? "calc(100dvh - 260px)",
-                          borderColor: column.color,
-                          boxShadow: isDragOver ? "0 0 0 3px rgba(255,255,255,0.85)" : "var(--shadow-glass)",
-                          backgroundColor: softColumnBg,
+                          borderColor: glassColumnBorder,
+                          boxShadow: glassColumnShadow,
+                          ...glassColumnSurface,
                         }}
                         title={`Expand ${column.name}`}
                         aria-label={`Expand ${column.name}`}
@@ -3316,9 +3325,9 @@ export default function LeadsPage() {
                       className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-[16px] border transition"
                       style={{
                         height: boardColumnHeight ?? "calc(100dvh - 260px)",
-                        borderColor: column.color,
-                        boxShadow: isDragOver ? "0 0 0 3px rgba(255,255,255,0.85)" : "var(--shadow-glass)",
-                        backgroundColor: softColumnBg,
+                        borderColor: glassColumnBorder,
+                        boxShadow: glassColumnShadow,
+                        ...glassColumnSurface,
                       }}
                     >
                       <div

@@ -3,7 +3,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { useTabBarReady } from "@/lib/app-tabs-context";
 import { fetchCompanyAccess } from "@/lib/membership";
 import {
   fetchCompanyDoc,
@@ -342,7 +341,6 @@ export default function RecentlyDeletedPage() {
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [companyName, setCompanyName] = useState("Company");
   const [isLoading, setIsLoading] = useState(true);
-  useTabBarReady(!isLoading);
   const [restoringId, setRestoringId] = useState("");
   const [deletingId, setDeletingId] = useState("");
   const [confirmRestoreId, setConfirmRestoreId] = useState("");

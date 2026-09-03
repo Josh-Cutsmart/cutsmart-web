@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, FolderKanban, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { useAppTabs, useTabBarReady } from "@/lib/app-tabs-context";
+import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
+import { useAppTabs } from "@/lib/app-tabs-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import {
   fetchCompanyDoc,
@@ -47,6 +48,34 @@ function isCompletedStatus(status: string) {
     .toLowerCase()
     .replace(/[^a-z]/g, "");
   return token === "done" || token.startsWith("complete");
+}
+
+function lightenHexColor(hex: string, amount: number): string {
+  const value = String(hex || "").trim();
+  const safe = /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#64748B";
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const ratio = Math.max(0, Math.min(1, amount));
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  const nr = clamp(r + (255 - r) * ratio);
+  const ng = clamp(g + (255 - g) * ratio);
+  const nb = clamp(b + (255 - b) * ratio);
+  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const value = String(hex || "").trim();
+  const safe = /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#64748B";
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha))})`;
+}
+
+const DASHBOARD_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_dashboard_board_prefs:";
+function dashboardBoardPrefsStorageKey(uid: string) {
+  return `${DASHBOARD_BOARD_PREFS_STORAGE_PREFIX}${String(uid || "").trim()}`;
 }
 
 function statusPillColors(status: string) {
@@ -267,7 +296,7 @@ function assignedDisplayName(project: Project) {
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
-  const { tabs: globalAppTabs, registerScopeTabs } = useAppTabs();
+  const { tabs: globalAppTabs, registerScopeTabs, setFillMainViewport } = useAppTabs();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [search, setSearch] = useState("");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
@@ -278,6 +307,27 @@ export default function DashboardPage() {
   const [statusMenuProjectId, setStatusMenuProjectId] = useState("");
   const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [statusUpdatingProjectId, setStatusUpdatingProjectId] = useState("");
+  // Board view — a drag-to-change-status kanban alternative to the default list, mirroring the
+  // one on the Leads page (same shared drag-ghost helper, same interaction language). View mode
+  // and per-column collapse state are remembered per-user (localStorage keyed by uid), so two
+  // people sharing a browser profile each keep their own preference.
+  const [dashboardViewMode, setDashboardViewMode] = useState<"list" | "board">("list");
+  const [draggingProjectId, setDraggingProjectId] = useState("");
+  const [dragOverProjectStatusColumn, setDragOverProjectStatusColumn] = useState("");
+  const [collapsedProjectStatusColumns, setCollapsedProjectStatusColumns] = useState<Record<string, boolean>>({});
+  const [boardPrefsHydrated, setBoardPrefsHydrated] = useState(false);
+  // The board columns fill exactly to the bottom of the window via a pure CSS
+  // flex chain (AppShell's <main> gets a real viewport-relative height while
+  // this flag is on, and everything from the dashboard's own root down to the
+  // column row is a flex column with the row itself as the flex:1 child) —
+  // see the JSX below. This replaced an earlier JS-measured pixel-height
+  // approach that raced against async data loading and DPI/sub-pixel
+  // rounding, producing either a gap or a scrollbar depending on timing.
+  useEffect(() => {
+    setFillMainViewport(dashboardViewMode === "board");
+    return () => setFillMainViewport(false);
+  }, [dashboardViewMode, setFillMainViewport]);
+  const projectBoardDragGhost = useDragGhost();
   const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
   const [dashboardLegendRows, setDashboardLegendRows] = useState<DashboardLegendRow[]>([]);
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
@@ -311,7 +361,31 @@ export default function DashboardPage() {
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
-  useTabBarReady(companyAccessResolved);
+  useEffect(() => {
+    if (typeof window === "undefined" || !user?.uid) return;
+    try {
+      const raw = window.localStorage.getItem(dashboardBoardPrefsStorageKey(user.uid));
+      if (raw) {
+        const parsed = JSON.parse(raw) as { viewMode?: unknown; collapsedColumns?: unknown };
+        if (parsed.viewMode === "board" || parsed.viewMode === "list") setDashboardViewMode(parsed.viewMode);
+        if (parsed.collapsedColumns && typeof parsed.collapsedColumns === "object") {
+          setCollapsedProjectStatusColumns(parsed.collapsedColumns as Record<string, boolean>);
+        }
+      }
+    } catch {
+      // Ignore malformed/corrupt stored prefs — just fall back to defaults.
+    }
+    setBoardPrefsHydrated(true);
+  }, [user?.uid]);
+  useEffect(() => {
+    // Don't write until hydration has actually run — otherwise the very first render's default
+    // values would overwrite whatever was already saved for this user before it's even been read.
+    if (typeof window === "undefined" || !user?.uid || !boardPrefsHydrated) return;
+    window.localStorage.setItem(
+      dashboardBoardPrefsStorageKey(user.uid),
+      JSON.stringify({ viewMode: dashboardViewMode, collapsedColumns: collapsedProjectStatusColumns }),
+    );
+  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns]);
   const isDarkMode = themeMode === "dark";
   const dashboardPalette = isDarkMode
     ? {
@@ -779,6 +853,121 @@ export default function DashboardPage() {
   }, [search, quickFilter, pageSize]);
 
   const visibleProjects = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
+
+  // Board view groups the same `filtered` set (search + Active/Completed already applied) into
+  // one column per configured project status — unpaginated, since a kanban board is meant to show
+  // everything at once rather than a page at a time.
+  const dashboardStatusBoardColumns = useMemo(() => {
+    const columns = statusRows.map((row) => ({ name: row.name, color: row.color, projects: [] as Project[] }));
+    const byKey = new Map(columns.map((col) => [col.name.trim().toLowerCase(), col]));
+    const otherProjects: Project[] = [];
+    for (const project of filtered) {
+      const col = byKey.get(String(project.statusLabel || "New").trim().toLowerCase());
+      if (col) col.projects.push(project);
+      else otherProjects.push(project);
+    }
+    return { columns, otherProjects };
+  }, [filtered, statusRows]);
+
+  const onProjectBoardCardDragStart = (event: ReactDragEvent<HTMLDivElement>, project: Project) => {
+    if (!canEditProjectFromDashboard(project)) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData("text/plain", project.id);
+    event.dataTransfer.effectAllowed = "move";
+    setDraggingProjectId(project.id);
+    if (projectBoardDragGhost.transparentImageRef.current) {
+      event.dataTransfer.setDragImage(projectBoardDragGhost.transparentImageRef.current, 0, 0);
+    }
+    const color = String(projectStatusPillStyle(project.statusLabel || "New").backgroundColor || "");
+    projectBoardDragGhost.spawn(event, `project-board-name-${project.id}`, { label: project.name, color });
+  };
+
+  const onProjectBoardCardDragEnd = () => {
+    setDraggingProjectId("");
+    setDragOverProjectStatusColumn("");
+    projectBoardDragGhost.end();
+  };
+
+  const onProjectBoardColumnDrop = (event: ReactDragEvent<HTMLElement>, statusName: string) => {
+    event.preventDefault();
+    setDragOverProjectStatusColumn("");
+    const projectId = event.dataTransfer.getData("text/plain") || draggingProjectId;
+    setDraggingProjectId("");
+    // Dismiss the ghost here too, not just on the source card's onDragEnd — a successful drop can
+    // move the project into a different column (a different DOM parent), and if that happens
+    // before the browser dispatches `dragend` on the now-detached original element, the native
+    // event never fires and the ghost is left stuck on screen.
+    projectBoardDragGhost.end();
+    const project = allProjects.find((row) => row.id === projectId);
+    if (!project) return;
+    if (String(project.statusLabel || "New").trim().toLowerCase() === statusName.trim().toLowerCase()) return;
+    void onSelectProjectStatus(project, statusName);
+  };
+
+  const renderProjectBoardCard = (project: Project, accentColor: string) => {
+    const canEdit = canEditProjectFromDashboard(project);
+    const displayAssigned = assignedDisplayName(project);
+    const cardBg = lightenHexColor(accentColor, 0.82);
+    const cardBorder = lightenHexColor(accentColor, 0.5);
+    return (
+      <div
+        key={project.id}
+        id={`project-board-name-${project.id}`}
+        draggable={canEdit}
+        onDragStart={(e) => onProjectBoardCardDragStart(e, project)}
+        onDragEnd={onProjectBoardCardDragEnd}
+        onClick={(e) => onProjectRowActivate(project, e.currentTarget)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onProjectRowActivate(project, e.currentTarget);
+          }
+        }}
+        className="flex flex-col gap-2 rounded-[12px] border p-2.5 text-left transition hover:brightness-105"
+        style={{
+          borderColor: cardBorder,
+          backgroundColor: cardBg,
+          opacity: draggingProjectId === project.id ? 0.4 : 1,
+          cursor: canEdit ? "grab" : "pointer",
+        }}
+      >
+        <p className="truncate text-[12.5px] font-bold" style={{ color: "#000000" }}>{project.name}</p>
+        {project.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {project.tags.slice(0, 3).map((tag) => (
+              <span
+                key={tag}
+                className="rounded-[6px] px-1.5 py-[1px] text-[10px] font-bold"
+                style={{ backgroundColor: "rgba(255,255,255,0.55)", color: "#000000" }}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          {displayAssigned ? (
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                style={{ backgroundColor: creatorColorByUid[String(project.assignedToUid || "").trim()] || companyThemeColor }}
+              >
+                {initials(displayAssigned)}
+              </span>
+              <span className="truncate text-[11px] font-semibold" style={{ color: "#000000" }}>{displayAssigned}</span>
+            </div>
+          ) : <span />}
+          <span className="shrink-0 text-[10px] font-semibold" style={{ color: "#000000", opacity: 0.65 }}>
+            {dashboardDate(project.updatedAt)}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   // Reveals exactly one more page-size batch when the user scrolls near the
   // bottom. If the current batch doesn't produce a scrollbar at all (nothing
@@ -1633,7 +1822,10 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          <div className="space-y-0">
+          <div
+            className="space-y-0"
+            style={dashboardViewMode === "board" ? { height: "100%", display: "flex", flexDirection: "column" } : undefined}
+          >
 
           <div
             className="relative z-0"
@@ -1642,6 +1834,7 @@ export default function DashboardPage() {
               marginLeft: -12,
               marginRight: -12,
               padding: 16,
+              flexShrink: dashboardViewMode === "board" ? 0 : undefined,
             }}
           >
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -1725,10 +1918,40 @@ export default function DashboardPage() {
               boxShadow: "var(--shadow-glass)",
               marginLeft: -12,
               marginRight: -12,
+              ...(dashboardViewMode === "board"
+                ? { flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" as const, overflow: "hidden" }
+                : null),
             }}
           >
-          <div className="px-[10px] pb-3 pt-[19px]" style={{ backgroundColor: dashboardPalette.panelMuted }}>
+          <div
+            className="px-[10px] pb-3 pt-[19px]"
+            style={{
+              backgroundColor: dashboardPalette.panelMuted,
+              flexShrink: dashboardViewMode === "board" ? 0 : undefined,
+            }}
+          >
               <div className="flex flex-wrap items-center gap-2 pl-0 sm:pl-[10px]">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={dashboardViewMode === "board"}
+                  onClick={() => setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"))}
+                  className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1"
+                  style={{ borderColor: dashboardPalette.border, backgroundColor: "#FFFFFF" }}
+                  title="Toggle project view"
+                  aria-label="Toggle project view"
+                >
+                  <div
+                    className="absolute top-1 h-7 w-9 rounded-full transition-all duration-200"
+                    style={{ left: dashboardViewMode === "list" ? 4 : 40, backgroundImage: "var(--brand-gradient)" }}
+                  />
+                  <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
+                    <Rows3 size={15} style={{ color: dashboardViewMode === "list" ? "#fff" : dashboardPalette.textMuted }} />
+                  </span>
+                  <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
+                    <Kanban size={15} style={{ color: dashboardViewMode === "board" ? "#fff" : dashboardPalette.textMuted }} />
+                  </span>
+                </button>
                 <div className="relative w-full min-w-0 sm:w-auto sm:min-w-[260px] sm:max-w-[360px]">
                   <Search
                     size={14}
@@ -1769,30 +1992,33 @@ export default function DashboardPage() {
                     </button>
                   ))}
                 </div>
-                <div className="ml-auto flex items-center gap-1.5">
-                  <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Show</span>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value))}
-                    className="h-9 rounded-[10px] border px-2 text-[12px] font-bold outline-none"
-                    style={{
-                      borderColor: dashboardPalette.border,
-                      backgroundColor: dashboardPalette.panelBg,
-                      color: dashboardPalette.text,
-                    }}
-                  >
-                    {[10, 20, 30, 40, 50].map((size) => (
-                      <option key={size} value={size}>{size}</option>
-                    ))}
-                  </select>
-                  <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
-                    per page
-                  </span>
-                </div>
+                {dashboardViewMode === "list" && (
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Show</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => setPageSize(Number(e.target.value))}
+                      className="h-9 rounded-[10px] border px-2 text-[12px] font-bold outline-none"
+                      style={{
+                        borderColor: dashboardPalette.border,
+                        backgroundColor: dashboardPalette.panelBg,
+                        color: dashboardPalette.text,
+                      }}
+                    >
+                      {[10, 20, 30, 40, 50].map((size) => (
+                        <option key={size} value={size}>{size}</option>
+                      ))}
+                    </select>
+                    <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+                      per page
+                    </span>
+                  </div>
+                )}
               </div>
 
           </div>
 
+          {dashboardViewMode === "list" && (
           <div className="lg:hidden">
                 {showProjectsLoadingState && (
                   <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
@@ -1925,7 +2151,161 @@ export default function DashboardPage() {
                   </div>
                 )}
               </div>
+          )}
 
+          {dashboardViewMode === "board" && (
+          <div
+            className="glass-scroll flex items-stretch gap-4 overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-3"
+            style={{ flex: "1 1 auto", minHeight: 0 }}
+          >
+            {showProjectsLoadingState && (
+              <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
+            )}
+            {!showProjectsLoadingState && filtered.length === 0 && (
+              <div className="flex flex-col items-center gap-3 px-4 py-10">
+                <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
+                <button
+                  type="button"
+                  onClick={openNewProjectModal}
+                  className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+                >
+                  Create First Project
+                </button>
+              </div>
+            )}
+            {!showProjectsLoadingState && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
+              const isDragOver = dragOverProjectStatusColumn === column.name;
+              const isCollapsed = Boolean(collapsedProjectStatusColumns[column.name]);
+              const dragHandlers = {
+                onDragOver: (e: ReactDragEvent<HTMLElement>) => {
+                  e.preventDefault();
+                  if (dragOverProjectStatusColumn !== column.name) setDragOverProjectStatusColumn(column.name);
+                },
+                onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
+                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                  setDragOverProjectStatusColumn((prev) => (prev === column.name ? "" : prev));
+                },
+                onDrop: (e: ReactDragEvent<HTMLElement>) => onProjectBoardColumnDrop(e, column.name),
+              };
+              const glassColumnBg = hexToRgba(column.color, 0.85);
+              const glassColumnBorder = "rgba(255,255,255,0.3)";
+              const glassColumnSurface: React.CSSProperties = {
+                backgroundColor: glassColumnBg,
+                backdropFilter: "blur(20px) saturate(180%)",
+                WebkitBackdropFilter: "blur(20px) saturate(180%)",
+              };
+              const glassColumnShadow = isDragOver
+                ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
+                : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
+              if (isCollapsed) {
+                return (
+                  <button
+                    key={column.name}
+                    type="button"
+                    {...dragHandlers}
+                    onClick={() => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: false }))}
+                    className="flex w-[52px] shrink-0 flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
+                    style={{
+                      height: "100%",
+                      borderColor: glassColumnBorder,
+                      boxShadow: glassColumnShadow,
+                      ...glassColumnSurface,
+                    }}
+                    title={`Expand ${column.name}`}
+                    aria-label={`Expand ${column.name}`}
+                  >
+                    <span
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+                      style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                    >
+                      <ChevronsLeftRight size={13} />
+                    </span>
+                    <span
+                      className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
+                      style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                    >
+                      {column.projects.length}
+                    </span>
+                    <span
+                      className="shrink-0 whitespace-nowrap text-[14px] font-normal"
+                      style={{ writingMode: "vertical-rl", color: "#000000", letterSpacing: "0.12em" }}
+                    >
+                      {column.name}
+                    </span>
+                  </button>
+                );
+              }
+              return (
+                <div
+                  key={column.name}
+                  {...dragHandlers}
+                  className="flex w-[280px] shrink-0 flex-col overflow-hidden rounded-[16px] border transition"
+                  style={{
+                    height: "100%",
+                    borderColor: glassColumnBorder,
+                    boxShadow: glassColumnShadow,
+                    ...glassColumnSurface,
+                  }}
+                >
+                  <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
+                    <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <span
+                        className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
+                        style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                      >
+                        {column.projects.length}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: true }))}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
+                        style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                        title={`Collapse ${column.name}`}
+                        aria-label={`Collapse ${column.name}`}
+                      >
+                        <ChevronsRightLeft size={13} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="glass-scroll flex-1 space-y-2.5 overflow-y-auto p-2.5">
+                    {column.projects.length === 0 ? (
+                      <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>No projects.</p>
+                    ) : (
+                      column.projects.map((project) => renderProjectBoardCard(project, column.color))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {!showProjectsLoadingState && dashboardStatusBoardColumns.otherProjects.length > 0 && (
+              <div
+                className="flex w-[280px] shrink-0 flex-col overflow-hidden rounded-[16px] border"
+                style={{
+                  height: "100%",
+                  borderColor: "rgba(255,255,255,0.3)",
+                  backgroundImage: "linear-gradient(135deg, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.06) 35%, rgba(255,255,255,0) 62%)",
+                  backgroundColor: "var(--glass-bg-strong)",
+                  backdropFilter: "blur(20px) saturate(180%)",
+                  WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.25), var(--shadow-glass)",
+                }}
+              >
+                <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
+                  <p className="truncate text-[13px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
+                  <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white" style={{ backgroundColor: dashboardPalette.textMuted }}>
+                    {dashboardStatusBoardColumns.otherProjects.length}
+                  </span>
+                </div>
+                <div className="glass-scroll flex-1 space-y-2.5 overflow-y-auto p-2.5">
+                  {dashboardStatusBoardColumns.otherProjects.map((project) => renderProjectBoardCard(project, "#64748B"))}
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+
+          {dashboardViewMode === "list" && (
           <div className="hidden lg:block">
                 <table className="w-full min-w-[980px] table-fixed text-[12px]">
                   <colgroup>
@@ -2125,6 +2505,7 @@ export default function DashboardPage() {
                   </tbody>
                 </table>
               </div>
+          )}
           </div>
 
               {statusMenuProject &&
@@ -2172,6 +2553,7 @@ export default function DashboardPage() {
             {completedProjectsModal}
             {staffModal}
             {openingProjectOverlay}
+            <DragGhostLayer controller={projectBoardDragGhost} />
           </>
           )}
     </>

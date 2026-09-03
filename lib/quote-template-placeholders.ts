@@ -4,9 +4,19 @@ export type QuoteTemplatePlaceholderOption = {
   token: string;
 };
 
+export function interpolateQuoteTemplateText(value: string, replacements: Record<string, string>): string {
+  return String(value || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key: string) => {
+    const lookup = replacements[key];
+    return lookup == null ? "" : String(lookup);
+  });
+}
+
 export const QUOTE_TEMPLATE_PLACEHOLDERS: QuoteTemplatePlaceholderOption[] = [
   { key: "date_generated", label: "Date Generated", token: "{{date_generated}}" },
+  { key: "project_name", label: "Project Name", token: "{{project_name}}" },
   { key: "client_name", label: "Client Name", token: "{{client_name}}" },
+  { key: "client_phone", label: "Client Phone", token: "{{client_phone}}" },
+  { key: "client_email", label: "Client Email", token: "{{client_email}}" },
   { key: "client_address", label: "Client Address", token: "{{client_address}}" },
   { key: "client_region", label: "Client Region", token: "{{client_region}}" },
   { key: "client_first_name", label: "Client First Name", token: "{{client_first_name}}" },

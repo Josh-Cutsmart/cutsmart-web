@@ -5,8 +5,9 @@ import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronDown, LayoutDashboard, X } from "lucide-react";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { isTabBarReadinessGatedRoute, useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
+import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import { useAuth } from "@/lib/auth-context";
 
 let pendingActiveAppTabKeyMemory = "";
 const CLOSING_SCOPE_PREFIX = "scope::";
@@ -54,7 +55,8 @@ function splitProjectSubTabLabel(label: string) {
 export function GlobalAppTabsBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden, readyPathname } = useAppTabs();
+  const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden } = useAppTabs();
+  const { user } = useAuth();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isAppTabsMenuOpen, setIsAppTabsMenuOpen] = useState("");
   const [appTabsMenuPos, setAppTabsMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
@@ -135,15 +137,21 @@ export function GlobalAppTabsBar() {
   // Dashboard is synthesized purely for rendering (see groupedGlobalTabs below) —
   // it never actually exists in visibleGlobalAppTabs, so currentScopeActiveTabKey
   // can never resolve to it. Without this, being on /dashboard with no real tab
-  // registered for it fell straight through to activeGlobalTabKey — whatever tab
-  // (e.g. a stale project tab restored from localStorage) happened to have
-  // `active: true` — highlighting the wrong tab on reload instead of Dashboard.
+  // registered for it fell straight through to whatever tab (e.g. a stale project
+  // tab restored from localStorage) happened to have `active: true` — highlighting
+  // the wrong tab on reload instead of Dashboard.
   const isOnDashboardRoute = (String(pathname || "").trim() || "/") === "/dashboard";
+  // Deliberately NO further fallback to "whatever tab is marked active" once the
+  // above two don't resolve — a route with no tabs registered for its own scope
+  // (Company Settings, Calendar, Recently Deleted, User Settings, etc.) must show
+  // NO tab highlighted at all, not whatever unrelated tab was last active before
+  // navigating here. That fallback used to exist and is exactly what caused a
+  // previously-visited project's tab to stay lit up while sitting on a page that
+  // never activates any tab of its own.
   const displayActiveAppTabKey =
     pendingActiveAppTabKey ||
     currentScopeActiveTabKey ||
-    (isOnDashboardRoute ? "route:/dashboard" : "") ||
-    activeGlobalTabKey;
+    (isOnDashboardRoute ? "route:/dashboard" : "");
   const groupedGlobalTabs = useMemo(() => {
     const groups: Array<{
       groupKey: string;
@@ -262,6 +270,18 @@ export function GlobalAppTabsBar() {
       setPendingActiveAppTabKey("");
     }
   }, [activeGlobalTabKey, currentScopeActiveTabKey, pendingActiveAppTabKey]);
+
+  // The optimistic "tab I just clicked" highlight (pendingActiveAppTabKey, set in selectAppTab) only
+  // ever gets CONFIRMED-cleared above — if navigation instead lands somewhere that never matches it
+  // (e.g. clicking a project tab, then navigating to Company Settings, a route with no tabs of its
+  // own at all), that match never happens and the stale key stays set forever, highlighting a tab
+  // that isn't actually open anywhere. Once the pathname has genuinely changed, the brief optimistic
+  // window this exists for is over regardless of whether it matched — the real computed active-tab
+  // value should always take over from there, so drop it unconditionally on every real navigation.
+  useEffect(() => {
+    pendingActiveAppTabKeyMemory = "";
+    setPendingActiveAppTabKey("");
+  }, [pathname]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -584,8 +604,17 @@ export function GlobalAppTabsBar() {
     setAppTabsMenuPos(null);
   };
 
-  const isCurrentRoutePending = isTabBarReadinessGatedRoute(pathname || "") && readyPathname !== pathname;
-  if (!groupedGlobalTabs.length || chromeHidden || isCurrentRoutePending) {
+  // Deliberately no "hide while this page's data is still loading" gate here anymore — that used to
+  // hide-then-reshow the bar on almost every navigation (any route with a real data fetch), which
+  // read as a visible flash/reload despite never actually remounting. The sidebar (app-shell.tsx)
+  // never does this — it just stays mounted and visible continuously — so the bar now matches that:
+  // always rendered whenever there's an authenticated user with tabs to show, full stop.
+  //
+  // Without the `!user` check specifically, tabs rehydrated from localStorage (lib/app-tabs-context's
+  // own persistence) would survive a logout/session-expiry and render right over the login screen —
+  // this component has no other way to know whether the app underneath it is actually open versus
+  // just showing the login form.
+  if (!user || !groupedGlobalTabs.length || chromeHidden) {
     return null;
   }
 

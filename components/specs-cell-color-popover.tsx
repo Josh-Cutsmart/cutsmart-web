@@ -2,36 +2,27 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { PRESET_SWATCHES } from "@/components/sidebar-color-picker-popover";
 
-export const PRESET_SWATCHES = [
-  "#000000",
-  "#2F6BFF",
-  "#7C3AED",
-  "#DB2777",
-  "#DC2626",
-  "#EA580C",
-  "#D97706",
-  "#65A30D",
-  "#059669",
-  "#0891B2",
-  "#334155",
-];
+export type SpecsColorPopoverAnchorRect = { left: number; top: number; width: number; height: number };
 
-export type ColorPickerAnchorRect = { left: number; top: number; width: number; height: number };
-
-export function SidebarColorPickerPopover({
+// Modeled directly on components/sidebar-color-picker-popover.tsx (swatch grid + native color input
+// + hex text field, outside-click closes it) — that component's "Use Company Default" button is
+// specific to its own use case, so this is a separate, smaller component rather than a modification
+// of it. Used for both the cell background-color and border-color toolbar buttons.
+export function SpecsCellColorPopover({
   isOpen,
   anchorRect,
   currentColor,
+  companyColor,
   onSelect,
-  onUseCompanyDefault,
   onClose,
 }: {
   isOpen: boolean;
-  anchorRect: ColorPickerAnchorRect | null;
+  anchorRect: SpecsColorPopoverAnchorRect | null;
   currentColor: string;
+  companyColor?: string;
   onSelect: (hex: string) => void;
-  onUseCompanyDefault: () => void;
   onClose: () => void;
 }) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -55,11 +46,11 @@ export function SidebarColorPickerPopover({
 
   if (!isOpen || !anchorRect || typeof document === "undefined") return null;
 
-  const width = 232;
+  const width = 220;
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
   const left = Math.min(Math.max(8, anchorRect.left), Math.max(8, viewportWidth - width - 8));
-  const estimatedHeight = 220;
+  const estimatedHeight = 190;
   const openUp = anchorRect.top + anchorRect.height + estimatedHeight + 8 > viewportHeight;
   const top = openUp ? Math.max(8, anchorRect.top - estimatedHeight - 8) : anchorRect.top + anchorRect.height + 8;
 
@@ -73,8 +64,13 @@ export function SidebarColorPickerPopover({
   return createPortal(
     <div
       ref={popoverRef}
-      data-sidebar-color-popover="true"
-      className="fixed z-[220] overflow-hidden rounded-[12px] border p-3"
+      data-specs-color-popover="true"
+      // Also tagged as part of the specs layout modal even though it's portaled to document.body
+      // (outside that modal's DOM subtree) — the host page's autosave-exclusion check on
+      // company-settings uses DOM `closest()`, which only sees the real DOM tree, not React's
+      // portal-aware tree, so this popover's own hex-color <input> needs the same marker directly.
+      data-specs-layout-modal="true"
+      className="fixed z-[2000] overflow-hidden rounded-[12px] border p-3"
       style={{
         left,
         top,
@@ -86,17 +82,32 @@ export function SidebarColorPickerPopover({
         boxShadow: "var(--shadow-glass)",
       }}
     >
-      <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>
-        Emblem Color
-      </p>
       <div className="grid grid-cols-5 gap-2">
+        {companyColor && /^#[0-9A-Fa-f]{6}$/.test(companyColor) ? (
+          <button
+            type="button"
+            onClick={() => onSelect(companyColor)}
+            aria-label="Use company color"
+            title="Company color"
+            className="relative inline-flex h-7 w-7 items-center justify-center rounded-full border transition hover:scale-105"
+            style={{
+              backgroundColor: companyColor,
+              borderColor: companyColor.toLowerCase() === currentColor.toLowerCase() ? "var(--text-main)" : "var(--glass-border)",
+            }}
+          >
+            <span
+              className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border"
+              style={{ backgroundColor: "var(--brand-strong)", borderColor: "var(--glass-bg-strong)" }}
+            />
+          </button>
+        ) : null}
         {PRESET_SWATCHES.map((hex) => (
           <button
             key={hex}
             type="button"
             onClick={() => onSelect(hex)}
             aria-label={`Use color ${hex}`}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full border transition hover:scale-105"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full border transition hover:scale-105"
             style={{
               backgroundColor: hex,
               borderColor: hex.toLowerCase() === currentColor.toLowerCase() ? "var(--text-main)" : "var(--glass-border)",
@@ -108,7 +119,7 @@ export function SidebarColorPickerPopover({
       <div className="mt-3 flex items-center gap-2">
         <input
           type="color"
-          value={/^#[0-9A-Fa-f]{6}$/.test(currentColor) ? currentColor : "#2F6BFF"}
+          value={/^#[0-9A-Fa-f]{6}$/.test(currentColor) ? currentColor : "#FFFFFF"}
           onChange={(e) => onSelect(e.target.value)}
           className="h-9 w-11 shrink-0 cursor-pointer rounded-[8px] border p-1"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
@@ -124,20 +135,11 @@ export function SidebarColorPickerPopover({
               (e.target as HTMLInputElement).blur();
             }
           }}
-          placeholder="#2F6BFF"
+          placeholder="#FFFFFF"
           className="h-9 w-full min-w-0 rounded-[8px] border px-2 text-[12px] outline-none"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
         />
       </div>
-
-      <button
-        type="button"
-        onClick={onUseCompanyDefault}
-        className="mt-3 h-9 w-full rounded-[8px] border text-[12px] font-bold transition hover:brightness-95"
-        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-      >
-        Use Company Default
-      </button>
     </div>,
     document.body,
   );

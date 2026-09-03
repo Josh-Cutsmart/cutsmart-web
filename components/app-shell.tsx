@@ -315,7 +315,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
-  const { chromeHidden } = useAppTabs();
+  const { chromeHidden, fillMainViewport } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -2256,17 +2256,28 @@ export function AppShell({
               : "min-h-0 min-w-0 overscroll-y-contain px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4"
           }
           style={{
-            height: chromeHidden ? "100dvh" : isDesktopViewport ? "auto" : "calc(100dvh - 104px)",
+            height: chromeHidden
+              ? "100dvh"
+              : isDesktopViewport
+                ? fillMainViewport
+                  ? "calc(100dvh - 48px)" // matches this wrapper's own lg:pt-12
+                  : "auto"
+                : "calc(100dvh - 104px)",
             overflowX: isDesktopViewport ? "visible" : "clip",
             overflowY: isDesktopViewport ? "visible" : "auto",
             paddingLeft: chromeHidden ? 0 : "max(12px, env(safe-area-inset-left))",
             paddingRight: chromeHidden ? 0 : "max(12px, env(safe-area-inset-right))",
-            paddingBottom: chromeHidden ? 0 : "max(12px, env(safe-area-inset-bottom))",
+            paddingBottom: chromeHidden || isDesktopViewport ? 0 : "max(12px, env(safe-area-inset-bottom))",
             marginLeft: "0",
             WebkitOverflowScrolling: "touch",
           }}
         >
-          <div className={effectiveHideSidebar ? "" : "lg:ml-[240px]"}>{children}</div>
+          {/* height:100% is a no-op unless <main> itself has a definite height
+              (fillMainViewport, or mobile's own dvh calc above) — safe to apply
+              unconditionally so a page can opt into filling <main> exactly by
+              making its own root height:100% + a flex column, without needing
+              any page-specific plumbing here beyond the fillMainViewport flag. */}
+          <div className={effectiveHideSidebar ? "" : "lg:ml-[240px]"} style={{ height: "100%" }}>{children}</div>
         </main>
       </div>
       {showUpdateNotice && (

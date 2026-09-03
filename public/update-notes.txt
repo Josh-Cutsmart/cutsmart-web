@@ -1,8 +1,15 @@
-Version: v0.3.1
+Version: v0.3.2
 
 whatsNew: [
 <u><b>Application:</u></b>
-- Complete overhaul with new UI. Glass look to most pages.
+- Added Specifications in "Sales" Tab.
+- Added Specifications template builder to "Company Settings".
+
+- Reconfigured Production cutlist.
+- - Removed Wall Builder.
+- - Users can now add "Sub Parts" to rows which inherits sizing / name off the main part row.
+- - "Fronts" part type now links as a bank, unlinkable on click.
+
 - More UI updates coming soon.
 
 ]

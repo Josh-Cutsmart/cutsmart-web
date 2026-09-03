@@ -4,7 +4,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Building2, Mail, Palette, ShieldCheck, Smartphone, UserCog } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { useTabBarReady } from "@/lib/app-tabs-context";
 import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
@@ -27,7 +26,6 @@ export default function UserSettingsPage() {
   const [companyName, setCompanyName] = useState("");
   const [companyRoleLabel, setCompanyRoleLabel] = useState("");
   const [companyRoleColor, setCompanyRoleColor] = useState("");
-  const [companyLookupResolved, setCompanyLookupResolved] = useState(false);
   const [themeSource, setThemeSource] = useState("unknown");
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const autoSaveTimerRef = useRef<number | null>(null);
@@ -171,12 +169,9 @@ export default function UserSettingsPage() {
           // ignore role lookup errors, falls back to the account-level role
         }
       }
-      setCompanyLookupResolved(true);
     };
     void load();
   }, [user?.companyId, user?.role, user?.uid]);
-
-  useTabBarReady(companyLookupResolved);
 
   const effectiveColor = useMemo(() => String(userColor || "").trim() || companyColor, [userColor, companyColor]);
 

@@ -19,7 +19,6 @@ import {
   updateNotesToDisplayHtml,
 } from "@/lib/update-notes-utils";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { useTabBarReady } from "@/lib/app-tabs-context";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -71,8 +70,6 @@ export default function ChangelogPage() {
   const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
   const { user } = useAuth();
   const [entries, setEntries] = useState<UpdateChangelogEntry[]>([]);
-  const [entriesReady, setEntriesReady] = useState(false);
-  useTabBarReady(entriesReady);
   const [activeVersion, setActiveVersion] = useState("");
   const [entriesPerPage, setEntriesPerPage] = useState<number>(10);
   const [visibleEntryCount, setVisibleEntryCount] = useState<number>(10);
@@ -114,7 +111,6 @@ export default function ChangelogPage() {
     if (!uid) {
       setEntries([]);
       setActiveVersion("");
-      setEntriesReady(true);
       return;
     }
     let cancelled = false;
@@ -122,7 +118,6 @@ export default function ChangelogPage() {
       const appRows = await fetchAppChangelogHistory();
       if (cancelled) return;
       const rows = normalizeChangelogHistory(appRows);
-      setEntriesReady(true);
       setEntries(rows);
       setActiveVersion(rows[0]?.version || "");
       setVisibleEntryCount((current) => {

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight, Search, Users } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { useTabBarReady } from "@/lib/app-tabs-context";
 import { fetchCompanyClientById, fetchCompanyClients, fetchCompanyDoc, type CompanyClientRow } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
@@ -90,7 +89,6 @@ export default function ClientsPage() {
   const [detailLoadingClientId, setDetailLoadingClientId] = useState("");
   const [permissionKeys, setPermissionKeys] = useState<string[]>([]);
   const [accessResolved, setAccessResolved] = useState(false);
-  useTabBarReady(accessResolved);
   const [canViewAllClients, setCanViewAllClients] = useState(false);
 
   const isDarkMode = themeMode === "dark";

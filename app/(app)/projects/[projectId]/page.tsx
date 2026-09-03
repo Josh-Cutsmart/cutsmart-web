@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, Check, ChevronDown, ClipboardList, Copy, Cpu, Download, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, Image as ImageIcon, Info, ListChecks, Lock, Mail, MapPin, Minus, Pencil, Phone, Plus, Printer, Quote, Ruler, Scissors, Search, ShoppingCart, Tag, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ClipboardList, Copy, Cpu, Download, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RotateCcw, Ruler, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -15,11 +15,13 @@ import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer
 import { ProtectedRoute } from "@/components/protected-route";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useAppTabs, useTabBarReady } from "@/lib/app-tabs-context";
+import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
+import SpecsGridEditor from "@/components/specs-grid-editor";
+import { type SpecsGrid, type SpecsCellStyle, normalizeSpecsGrid, resolveSpecsGridTokens, pruneEmptySpecsRows, getCellSpan, getExpandedRowGroups, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
 import {
   fetchCompanyDoc,
   fetchCompanyMembers,
@@ -44,74 +46,10 @@ import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
-import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
+import { QUOTE_TEMPLATE_PLACEHOLDERS, interpolateQuoteTemplateText } from "@/lib/quote-template-placeholders";
 import type { Cutlist, Project, ProjectChange, ProjectImageAnnotation, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { storage } from "@/lib/firebase";
-import {
-  addCabinetBuilderChildDrawerHeightTokenInDraft as addCabinetBuilderChildDrawerHeightTokenInDraftModel,
-  addCabinetBuilderAttachmentInDraft as addCabinetBuilderAttachmentInDraftModel,
-  addCabinetBuilderChildRowInDraft as addCabinetBuilderChildRowInDraftModel,
-  blurCabinetBuilderConfiguredFrontValueRow as blurCabinetBuilderConfiguredFrontValueRowModel,
-  confirmCabinetBuilderPendingAttachmentInDraft as confirmCabinetBuilderPendingAttachmentInDraftModel,
-  createCabinetBuilderRootDraft as createCabinetBuilderRootDraftModel,
-  ensureCabinetBuilderSelectedFrontsInDraft as ensureCabinetBuilderSelectedFrontsInDraftModel,
-  removeCabinetBuilderChildDrawerHeightTokenInDraft as removeCabinetBuilderChildDrawerHeightTokenInDraftModel,
-  removeCabinetBuilderChildRowInDraft as removeCabinetBuilderChildRowInDraftModel,
-  setCabinetBuilderSelectedFrontModeInDraft as setCabinetBuilderSelectedFrontModeInDraftModel,
-  setCabinetBuilderSelectedNewCabinetInDraft as setCabinetBuilderSelectedNewCabinetInDraftModel,
-  updateCabinetBuilderAttachmentMetaInDraft as updateCabinetBuilderAttachmentMetaInDraftModel,
-  updateCabinetBuilderAttachmentRowInDraft as updateCabinetBuilderAttachmentRowInDraftModel,
-  updateCabinetBuilderChildRowByOwnerInDraft as updateCabinetBuilderChildRowByOwnerInDraftModel,
-  updateCabinetBuilderChildDrawerHeightTokensInDraft as updateCabinetBuilderChildDrawerHeightTokensInDraftModel,
-  updateCabinetBuilderChildRowInDraft as updateCabinetBuilderChildRowInDraftModel,
-  updateCabinetBuilderConfiguredFrontCountRow as updateCabinetBuilderConfiguredFrontCountRowModel,
-  updateCabinetBuilderConfiguredFrontIndexesRow as updateCabinetBuilderConfiguredFrontIndexesRowModel,
-  updateCabinetBuilderConfiguredFrontValueRow as updateCabinetBuilderConfiguredFrontValueRowModel,
-  updateCabinetBuilderConfiguredGapRow as updateCabinetBuilderConfiguredGapRowModel,
-  updateCabinetBuilderConfiguredRowByOwnerInDraft as updateCabinetBuilderConfiguredRowByOwnerInDraftModel,
-  updateCabinetBuilderConfiguredRowInDraft as updateCabinetBuilderConfiguredRowInDraftModel,
-  updateCabinetBuilderConfiguredSideGapRow as updateCabinetBuilderConfiguredSideGapRowModel,
-  updateCabinetBuilderConfiguredSideRow as updateCabinetBuilderConfiguredSideRowModel,
-} from "@/lib/wall-builder/actions";
-import {
-  applyCabinetBuilderWallOrder as applyCabinetBuilderWallOrderModel,
-  buildCabinetBuilderDeleteMeta as buildCabinetBuilderDeleteMetaModel,
-  buildCabinetBuilderDisplayPieceLayouts as buildCabinetBuilderDisplayPieceLayoutsModel,
-  buildCabinetBuilderPreviewWallPieces as buildCabinetBuilderPreviewWallPiecesModel,
-  buildCabinetBuilderWallPieces as buildCabinetBuilderWallPiecesModel,
-  getCabinetBuilderDeleteDescendantIds as getCabinetBuilderDeleteDescendantIdsModel,
-  getCabinetBuilderPanelBaseHeight as getCabinetBuilderPanelBaseHeightModel,
-  getCabinetBuilderPanelHeightBaseline as getCabinetBuilderPanelHeightBaselineModel,
-  getCabinetBuilderLaneRawWidth as getCabinetBuilderLaneRawWidthModel,
-  getCabinetBuilderSelectedConfiguredRow as getCabinetBuilderSelectedConfiguredRowModel,
-  getCabinetBuilderSelectedEditableCabinet as getCabinetBuilderSelectedEditableCabinetModel,
-  getCabinetBuilderSelectedFrontKind as getCabinetBuilderSelectedFrontKindModel,
-  getCabinetBuilderSelectedFrontRow as getCabinetBuilderSelectedFrontRowModel,
-  getCabinetBuilderSelectedWallPiece as getCabinetBuilderSelectedWallPieceModel,
-  getCabinetBuilderWallPieceHorizontalTrack as getCabinetBuilderWallPieceHorizontalTrackModel,
-  getCabinetBuilderWallPieceRawWidth as getCabinetBuilderWallPieceRawWidthModel,
-  getCabinetBuilderWallPieceVerticalBounds as getCabinetBuilderWallPieceVerticalBoundsModel,
-  removeCabinetBuilderWallByDeleteMeta as removeCabinetBuilderWallByDeleteMetaModel,
-} from "@/lib/wall-builder/model";
-import type {
-  CabinetBuilderAttachedDisplayRow,
-  CabinetBuilderAttachedDisplayRowSource,
-  CabinetBuilderAttachmentDraft,
-  CabinetBuilderAttachmentKind,
-  CabinetBuilderChildDraft,
-  CabinetBuilderDeleteMeta,
-  CabinetBuilderDisplayPieceLayout,
-  CabinetBuilderDraft,
-  CabinetBuilderEditableCabinetSelection,
-  CabinetBuilderPanelHeightMode,
-  CabinetBuilderPanelSpanMode,
-  CabinetBuilderRowKind,
-  CabinetBuilderWallPiece,
-  CutlistDraftRow,
-  CutlistEntryDraft,
-  CutlistRow,
-  DoorModeValue,
-} from "@/lib/wall-builder/model";
+import type { CutlistDraftRow, CutlistEntryDraft, CutlistRow, DoorModeValue } from "@/lib/cutlist-types";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const QUOTE_SNAPSHOT_RENDERER_VERSION = "html-v1";
@@ -1083,10 +1021,9 @@ type ProductionFormState = {
 type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: boolean };
 type OrderHingeRow = { id: string; name: string; qty: string };
 
-type ProductionNav = "overview" | "cutlist" | "drawings" | "nesting" | "cnc" | "order" | "unlock" | "print";
-type SalesNav = "initial" | "items" | "quote" | "specifications" | "summary";
+type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock" | "print";
+type SalesNav = "initial" | "items" | "quote" | "specifications" | "summary" | "overview";
 type ProjectMainTab = "general" | "sales" | "production" | "settings";
-type CutlistEntryMode = "manual" | "wallBuilder";
 type ProjectLiveTabStateSnapshot = {
   resolvedTab: ProjectMainTab;
   salesNav: SalesNav;
@@ -1096,15 +1033,10 @@ type ProjectLiveTabStateSnapshot = {
   cutlistPartTypeFilter: string;
   cutlistSearch: string;
   cutlistEntryRoom: string;
-  cutlistEntryMode: CutlistEntryMode;
   activeCutlistPartType: string;
   cutlistEntry: Omit<CutlistRow, "id" | "room">;
   cutlistDraftRows: CutlistDraftRow[];
-  cabinetBuilderDraft: CabinetBuilderDraft | null;
-  activeCabinetBuilderSavedDraftId: string;
-  cabinetBuilderWallName: string;
-  cabinetBuilderWallCreated: boolean;
-  cabinetBuilderSelectedWallId: string;
+  subPartDraftRowIds: string[];
   initialCutlistRoomFilter: string;
   initialCutlistPartTypeFilter: string;
   initialCutlistSearch: string;
@@ -1117,7 +1049,6 @@ type ProjectLiveTabStateSnapshot = {
   nestingCollapsedGroups: Record<string, boolean>;
   cncCollapsedGroups: Record<string, boolean>;
   collapsedCutlistGroups: Record<string, boolean>;
-  collapsedCabinetBuilderAttachedGroups: Record<string, boolean>;
   expandedCabinetryRows: Record<string, boolean>;
   expandedDrawerRows: Record<string, boolean>;
   expandedDoorRows: Record<string, boolean>;
@@ -1815,6 +1746,54 @@ function normalizeDoorFrontWidthManual(raw: unknown, count = 0): boolean[] {
   return Array.from({ length: count }, (_, index) => normalized[index] ?? false);
 }
 
+function normalizeDoorFrontBoards(raw: unknown, count = 0): string[] {
+  const input = Array.isArray(raw) ? raw : [];
+  const normalized = input.map((value) => String(value ?? "").trim());
+  if (count <= 0) return normalized;
+  return Array.from({ length: count }, (_, index) => normalized[index] ?? "");
+}
+
+function normalizeDoorFrontBoardManual(raw: unknown, count = 0): boolean[] {
+  const input = Array.isArray(raw) ? raw : [];
+  const normalized = input.map((value) => Boolean(value));
+  if (count <= 0) return normalized;
+  return Array.from({ length: count }, (_, index) => normalized[index] ?? false);
+}
+
+// Generic versions of the same pattern above, reused for every remaining
+// per-front field (Depth, Clashing Left/Right, Information) so each doesn't
+// need its own near-identical normalize function.
+function normalizeDoorFrontTextArray(raw: unknown, count = 0): string[] {
+  // No .trim() here — this runs on every render (including the value read
+  // straight back into a controlled <input>), so trimming here would strip
+  // a trailing space the instant it's typed, making it impossible to type
+  // a space into a per-front Name field. Trimming (if wanted) belongs at
+  // final commit/submit time, same as every other free-text field already.
+  const input = Array.isArray(raw) ? raw : [];
+  const normalized = input.map((value) => String(value ?? ""));
+  if (count <= 0) return normalized;
+  return Array.from({ length: count }, (_, index) => normalized[index] ?? "");
+}
+
+function normalizeDoorFrontManualArray(raw: unknown, count = 0): boolean[] {
+  const input = Array.isArray(raw) ? raw : [];
+  const normalized = input.map((value) => Boolean(value));
+  if (count <= 0) return normalized;
+  return Array.from({ length: count }, (_, index) => normalized[index] ?? false);
+}
+
+// Shared visual style for every dropdown's open options panel across the app (BoardPillDropdown,
+// CompactPlainDropdown, PartNameSuggestionInput's suggestion list, DrawerHeightDropdown, etc.) —
+// glass-themed with a slight white tint, not a centered modal, just the panel's own look. Spread
+// this into each panel's own `style` alongside its own positioning (left/top/width/zIndex).
+const GLASS_DROPDOWN_MENU_STYLE: React.CSSProperties = {
+  borderColor: "var(--glass-border)",
+  backgroundColor: "var(--glass-modal-bg)",
+  backdropFilter: "blur(12px) saturate(220%)",
+  WebkitBackdropFilter: "blur(12px) saturate(220%)",
+  boxShadow: "inset 0 0 0 999px rgba(255,255,255,0.22), var(--shadow-glass)",
+};
+
 function formatDoorFrontHeightValue(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "";
   const rounded = Math.floor(value * 10) / 10;
@@ -1915,6 +1894,101 @@ function rebalanceDoorFrontHeights(
     heights: resolved.heights.map((value) => formatDoorFrontHeightValue(value)),
     manual: resolved.manual,
   };
+}
+
+// Same algorithm as resolveDoorFrontHeightNumbers/rebalanceDoorFrontHeights
+// above, except the between-fronts gap can differ at every seam (one entry
+// per gap, not one shared value) — used by the drawer-front-bank feature so
+// editing a single gap only ever affects that one seam, not every seam.
+function resolveDrawerBankFrontHeights(
+  heights: string[],
+  totalHeight: string,
+  topGap: string,
+  betweenGaps: string[],
+  manualRaw?: boolean[],
+): { heights: number[]; manual: boolean[] } {
+  const count = heights.length;
+  const manual = normalizeDoorFrontHeightManual(manualRaw, count);
+  const next = [...heights];
+  if (count <= 0) return { heights: [], manual };
+  const total = Number.parseFloat(String(totalHeight || "").replace(/[^\d.-]/g, "")) || 0;
+  const top = Number.parseFloat(String(topGap || "").replace(/[^\d.-]/g, "")) || 0;
+  const betweenSum = betweenGaps
+    .slice(0, Math.max(0, count - 1))
+    .reduce((sum, g) => sum + (Number.parseFloat(String(g || "").replace(/[^\d.-]/g, "")) || 0), 0);
+  if (total <= 0) {
+    return {
+      heights: next.map((value) => {
+        const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+        return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+      }),
+      manual,
+    };
+  }
+
+  const usableTotal = Math.max(0, total - top - betweenSum);
+  const numericHeights = next.map((value) => {
+    const parsed = Number.parseFloat(String(value || "").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : NaN;
+  });
+  const autoIndexes = manual.map((isManual, index) => (!isManual ? index : -1)).filter((index) => index >= 0);
+
+  if (!manual.some(Boolean)) {
+    const even = count > 0 ? usableTotal / count : 0;
+    const resolved = Array.from({ length: count }, (_v, index) =>
+      index === count - 1 ? Math.max(0, usableTotal - even * Math.max(0, count - 1)) : even,
+    );
+    return { heights: resolved, manual };
+  }
+
+  if (!autoIndexes.length) {
+    return {
+      heights: numericHeights.map((value) => (Number.isFinite(value) ? Math.max(0, value) : 0)),
+      manual,
+    };
+  }
+
+  const manualSum = numericHeights.reduce((sum, value, index) => {
+    if (!manual[index] || !Number.isFinite(value)) return sum;
+    return sum + Math.max(0, value);
+  }, 0);
+  const remaining = Math.max(0, usableTotal - manualSum);
+  const even = remaining / autoIndexes.length;
+  let assigned = 0;
+  const resolved = numericHeights.map((value, index) =>
+    manual[index] && Number.isFinite(value) ? Math.max(0, value) : 0,
+  );
+  autoIndexes.forEach((index, autoIndex) => {
+    const nextValue = autoIndex === autoIndexes.length - 1 ? Math.max(0, remaining - assigned) : even;
+    resolved[index] = nextValue;
+    assigned += nextValue;
+  });
+  return { heights: resolved, manual };
+}
+
+function rebalanceDrawerBankFrontHeights(
+  heights: string[],
+  totalHeight: string,
+  topGap: string,
+  betweenGaps: string[],
+  manualRaw?: boolean[],
+): { heights: string[]; manual: boolean[] } {
+  const resolved = resolveDrawerBankFrontHeights(heights, totalHeight, topGap, betweenGaps, manualRaw);
+  return {
+    heights: resolved.heights.map((value) => formatDoorFrontHeightValue(value)),
+    manual: resolved.manual,
+  };
+}
+
+// Normalizes a per-seam between-gap array to exactly `seamCount` entries,
+// seeding from the row's own legacy single doorBetweenGap value the first
+// time (before any seam has ever been edited independently) so existing
+// rows keep their current split instead of jumping to 0 gaps.
+function resolveDrawerBankBetweenGaps(row: { doorBetweenGaps?: string[]; doorBetweenGap?: string }, seamCount: number): string[] {
+  const existing = Array.isArray(row.doorBetweenGaps) ? row.doorBetweenGaps : [];
+  if (existing.length > 0) return normalizeDoorFrontTextArray(existing, seamCount);
+  const legacy = String(row.doorBetweenGap ?? "");
+  return Array.from({ length: seamCount }, () => legacy);
 }
 
 function resolveDoorFrontWidthNumbers(
@@ -2218,13 +2292,6 @@ function stripHtmlToPlainText(value: unknown): string {
     .replace(/<[^>]+>/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function interpolateQuoteTemplateText(value: string, replacements: Record<string, string>): string {
-  return String(value || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key: string) => {
-    const lookup = replacements[key];
-    return lookup == null ? "" : String(lookup);
-  });
 }
 
 function cabinetPreviewRatioFromDims(widthMm: number, heightMm: number, depthMm: number): number {
@@ -3549,22 +3616,41 @@ function DrawerHeightDropdown({
   const [open, setOpen] = useState(false);
   const [hoverExpand, setHoverExpand] = useState(false);
   const [hoverRect, setHoverRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const labelRef = useRef<HTMLSpanElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshMenuRect = () => {
+    if (!buttonRef.current) return;
+    const r = buttonRef.current.getBoundingClientRect();
+    setMenuRect({ left: r.left, top: r.bottom + 2, width: r.width });
+  };
 
   useEffect(() => {
     if (!open) return;
+    refreshMenuRect();
     const onDocDown = (e: MouseEvent) => {
-      if (!hostRef.current) return;
-      if (!hostRef.current.contains(e.target as Node)) {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inHost = Boolean(hostRef.current?.contains(target));
+      const inMenu = Boolean(menuRef.current?.contains(target));
+      if (!inHost && !inMenu) {
         setOpen(false);
         onOpenChange?.(false);
       }
     };
+    const onWin = () => refreshMenuRect();
     document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
   }, [open, onOpenChange]);
 
   const counts = useMemo(() => {
@@ -3631,7 +3717,7 @@ function DrawerHeightDropdown({
           onOpenChange?.(next);
         }}
         title={title}
-        className={`${heightCls} inline-flex w-full items-center justify-between rounded-[8px] border px-2 text-left transition-all duration-150 disabled:opacity-70 ${className ?? ""}`}
+        className={`${heightCls} flex w-full items-center justify-between rounded-[8px] border px-2 text-left transition-all duration-150 disabled:opacity-70 ${className ?? ""}`}
         style={{
           backgroundColor: bg,
           borderColor: border,
@@ -3661,39 +3747,53 @@ function DrawerHeightDropdown({
           <ChevronDown size={compact ? 13 : 14} className="ml-2 shrink-0 self-center" />
         </div>
       )}
-      {open && !disabled && (
-        <div className="absolute left-0 top-[calc(100%+2px)] z-[2147483647] min-w-[220px] rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]">
+      {open && !disabled && menuRect && typeof document !== "undefined" && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[2147483647] rounded-[8px] border p-1"
+          style={{
+            left: menuRect.left,
+            top: menuRect.top,
+            width: "max-content",
+            ...GLASS_DROPDOWN_MENU_STYLE,
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
           {options.length === 0 ? (
-            <p className="px-2 py-1 text-[11px] text-[#64748B]">No heights configured</p>
+            <p className="px-2 py-1 text-[11px]" style={{ color: "var(--text-muted)" }}>No heights configured</p>
           ) : (
-            <div className="space-y-[2px]">
+            <div className="grid items-center gap-x-2 gap-y-1 px-1 py-1" style={{ gridTemplateColumns: "minmax(0,max-content) 24px minmax(14px,max-content) 24px" }}>
               {options.map((opt) => {
                 const count = counts.get(opt.toLowerCase()) ?? 0;
                 return (
-                  <div key={opt} className="grid grid-cols-[30px_minmax(96px,1fr)_24px_24px] items-center gap-1 rounded-[6px] px-1 py-[2px] hover:bg-[#F8FAFC]">
-                    <span className="text-center text-[10px] font-bold text-[#475569]">{count}</span>
-                    <span className="truncate text-[11px] font-semibold text-[#0F172A]">{opt}</span>
-                    <button
-                      type="button"
-                      onClick={() => onAdd(opt)}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border border-[#A9DDBF] bg-[#EAF8F0] text-[12px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7]"
-                    >
-                      +
-                    </button>
+                  <Fragment key={opt}>
+                    <span className="truncate text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>{opt}</span>
                     <button
                       type="button"
                       disabled={count <= 0}
                       onClick={() => onRemove(opt)}
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-45"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border text-white hover:brightness-95 disabled:opacity-45"
+                      style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                     >
-                      <X size={11} strokeWidth={2.8} />
+                      <Minus size={11} strokeWidth={2.8} />
                     </button>
-                  </div>
+                    <span className="flex items-center justify-center text-[10px] font-bold" style={{ color: "#000000" }}>{count}</span>
+                    <button
+                      type="button"
+                      onClick={() => onAdd(opt)}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] border font-bold leading-none text-white hover:brightness-95"
+                      style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                    >
+                      <Plus size={12} strokeWidth={2.8} />
+                    </button>
+                  </Fragment>
                 );
               })}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -3767,6 +3867,7 @@ type BoardPillDropdownProps = {
   className?: string;
   title?: string;
   matchDrawerArrow?: boolean;
+  reserveRightIcon?: boolean;
   getSize: (value: string) => string;
   getLabel: (value: string) => string;
   onChange: (value: string) => void;
@@ -3905,8 +4006,8 @@ function CompactPlainDropdown({
           <div
             ref={menuRef}
             data-cutlist-clash-dropdown="1"
-            className="pointer-events-auto fixed max-h-[220px] overflow-auto rounded-[8px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
-            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+            className="pointer-events-auto fixed max-h-[220px] overflow-auto rounded-[8px] border p-1"
+            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647, ...GLASS_DROPDOWN_MENU_STYLE }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
@@ -3928,7 +4029,7 @@ function CompactPlainDropdown({
                   buttonRef.current?.focus();
                 }, 0);
               }}
-              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[#64748B] hover:bg-[#F8FAFC]"
+              className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-muted)] hover:bg-[var(--panel-muted)]"
             >
               <span className="truncate"></span>
             </button>
@@ -3952,7 +4053,7 @@ function CompactPlainDropdown({
                     buttonRef.current?.focus();
                   }, 0);
                 }}
-                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[#0F172A] hover:bg-[#F8FAFC]"
+                className="flex h-6 w-full items-center rounded-[5px] px-1 text-left text-[11px] text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
               >
                 <span className="truncate">{opt}</span>
               </button>
@@ -4013,6 +4114,7 @@ function BoardPillDropdown({
   className,
   title,
   matchDrawerArrow = false,
+  reserveRightIcon = false,
   getSize,
   getLabel,
   onChange,
@@ -4078,7 +4180,7 @@ function BoardPillDropdown({
   };
 
   return (
-    <div ref={hostRef} className="relative z-[60] pointer-events-auto">
+    <div ref={hostRef} className="relative z-[60] w-full pointer-events-auto" style={{ width: "100%" }}>
       <button
         ref={buttonRef}
         type="button"
@@ -4124,12 +4226,12 @@ function BoardPillDropdown({
             onCancel?.();
           }
         }}
-        className={`pointer-events-auto relative w-full border text-left disabled:opacity-70 ${compact ? "h-6 rounded-[4px] px-1 text-[11px]" : "h-8 rounded-[8px] px-2 text-[12px]"} ${className ?? ""}`}
-        style={{ backgroundColor: bg, borderColor: border, color: text }}
+        className={`pointer-events-auto relative flex w-full items-center border text-left disabled:opacity-70 rounded-[8px] ${compact ? "h-6 px-1 text-[11px]" : "h-8 px-2 text-[12px]"} ${className ?? ""}`}
+        style={{ backgroundColor: bg, borderColor: border, color: text, width: "100%" }}
       >
         {compact ? (
           <>
-            <span className={`inline-flex w-full min-w-0 items-center ${matchDrawerArrow ? "" : "pr-4"}`}>
+            <span className={`inline-flex w-full min-w-0 items-center ${matchDrawerArrow ? "" : reserveRightIcon ? "pr-11" : "pr-4"}`}>
               <span className="inline-flex min-w-0 items-center gap-2">
                 {!!selectedSize && (
                   <span
@@ -4144,7 +4246,7 @@ function BoardPillDropdown({
             </span>
             <ChevronDown
               size={12}
-              className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2"
+              className={`pointer-events-none absolute top-1/2 -translate-y-1/2 ${reserveRightIcon ? "right-8" : "right-1"}`}
             />
           </>
         ) : (
@@ -4168,8 +4270,8 @@ function BoardPillDropdown({
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
           <div
             ref={menuRef}
-            className={`pointer-events-auto fixed overflow-auto border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)] ${compact ? "max-h-[240px] rounded-[8px]" : "max-h-[280px] rounded-[8px]"}`}
-            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+            className={`pointer-events-auto fixed overflow-auto border p-1 ${compact ? "max-h-[240px] rounded-[8px]" : "max-h-[280px] rounded-[8px]"}`}
+            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647, ...GLASS_DROPDOWN_MENU_STYLE }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
@@ -4185,7 +4287,7 @@ function BoardPillDropdown({
                 setOpen(false);
                 focusTriggerAfterSelection();
               }}
-              className={`flex w-full items-center text-left text-[#64748B] hover:bg-[#F8FAFC] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
+              className={`flex w-full items-center text-left text-[var(--text-muted)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
             >
               <span className="truncate"></span>
             </button>
@@ -4210,11 +4312,11 @@ function BoardPillDropdown({
                       setOpen(false);
                       focusTriggerAfterSelection();
                     }}
-                   className={`flex w-full items-center text-left text-[#0F172A] hover:bg-[#F8FAFC] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
+                   className={`flex w-full items-center text-left text-[var(--text-main)] hover:bg-[var(--panel-muted)] ${compact ? "h-6 rounded-[5px] px-1 text-[11px]" : "h-8 rounded-[6px] px-2 text-[12px]"}`}
                 >
                   <span className="inline-flex min-w-0 items-center gap-2">
                   {!!sz && (
-                    <span className={`inline-flex items-center justify-center rounded-[999px] bg-[#B6C3D4] font-bold text-[#0F172A] ${compact ? "h-4 min-w-[24px] px-1.5 text-[9px]" : "h-5 min-w-[28px] px-2 text-[10px]"}`}>
+                    <span className={`inline-flex items-center justify-center rounded-[999px] font-bold text-[var(--text-main)] bg-[var(--panel-muted)] ${compact ? "h-4 min-w-[24px] px-1.5 text-[9px]" : "h-5 min-w-[28px] px-2 text-[10px]"}`}>
                       {sz}
                     </span>
                   )}
@@ -4231,12 +4333,98 @@ function BoardPillDropdown({
   );
 }
 
+type GlassSelectDropdownProps = {
+  value: string;
+  options: readonly string[];
+  onChange: (value: string) => void;
+  className?: string;
+  disabled?: boolean;
+};
+
+// A plain single-select dropdown (no search, no per-option colors) styled with the same glass
+// panel as every other custom dropdown in the app (GLASS_DROPDOWN_MENU_STYLE) — used in place of
+// a native <select>, whose own OS-drawn option list can't be restyled with CSS at all.
+function GlassSelectDropdown({ value, options, onChange, className, disabled }: GlassSelectDropdownProps) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshRect = () => {
+    if (!buttonRef.current) return;
+    const r = buttonRef.current.getBoundingClientRect();
+    setRect({ left: r.left, top: r.bottom + 2, width: r.width });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    refreshRect();
+    const onDocDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inHost = Boolean(hostRef.current?.contains(target));
+      const inMenu = Boolean(menuRef.current?.contains(target));
+      if (!inHost && !inMenu) setOpen(false);
+    };
+    const onWin = () => refreshRect();
+    document.addEventListener("mousedown", onDocDown);
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [open]);
+
+  return (
+    <div ref={hostRef} className="relative inline-block">
+      <button
+        ref={buttonRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex items-center justify-between ${className ?? ""}`}
+      >
+        <span className="truncate">{value}</span>
+        <ChevronDown size={13} className="ml-1 shrink-0" />
+      </button>
+      {open && rect && !disabled && typeof document !== "undefined" && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[2147483647] max-h-[260px] overflow-auto rounded-[8px] border p-1"
+          style={{ left: rect.left, top: rect.top, minWidth: rect.width, width: "max-content", ...GLASS_DROPDOWN_MENU_STYLE }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => {
+                onChange(opt);
+                setOpen(false);
+              }}
+              className="flex h-7 w-full items-center rounded-[6px] px-2 text-left text-[12px] hover:bg-[var(--panel-muted)]"
+              style={{ color: "var(--text-main)" }}
+            >
+              <span className="truncate">{opt}</span>
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 type PartNameSuggestionInputProps = {
   value: string;
   options: readonly PartNameSuggestionOption[];
   disabled?: boolean;
   autoFocus?: boolean;
   title?: string;
+  placeholder?: string;
   containerStyle?: React.CSSProperties;
   className?: string;
   style?: React.CSSProperties;
@@ -4252,6 +4440,7 @@ function PartNameSuggestionInput({
   disabled,
   autoFocus,
   title,
+  placeholder,
   containerStyle,
   className,
   style,
@@ -4330,6 +4519,7 @@ function PartNameSuggestionInput({
         disabled={disabled}
         autoFocus={autoFocus}
         title={title}
+        placeholder={placeholder}
         value={value}
         onFocus={() => {
           if (blurTimeoutRef.current != null) {
@@ -4363,15 +4553,15 @@ function PartNameSuggestionInput({
             onCancel?.();
           }
         }}
-        className={`w-full min-w-0 ${className ?? ""}`}
+        className={`block w-full min-w-0 ${className ?? ""}`}
         style={style}
       />
       {open && filteredOptions.length > 0 && rect && !disabled && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 pointer-events-auto" style={{ zIndex: 2147483647 }}>
           <div
             ref={menuRef}
-            className="pointer-events-auto fixed max-h-[240px] overflow-auto rounded-[10px] border border-[#D9DEE8] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.12)]"
-            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647 }}
+            className="pointer-events-auto fixed max-h-[240px] overflow-auto rounded-[10px] border p-1"
+            style={{ left: rect.left, top: rect.top, width: rect.width, zIndex: 2147483647, ...GLASS_DROPDOWN_MENU_STYLE }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
@@ -4620,9 +4810,6 @@ function serializeCutlistRowsForStorage(
         Grain: String(row.grainValue || (row.grain ? "Yes" : "")),
         includeInNesting: row.includeInNesting !== false,
         parentName: String(row.parentName ?? ""),
-        cabinetBuilderRowKind: row.cabinetBuilderRowKind ?? "",
-        cabinetBuilderContainerId: String(row.cabinetBuilderContainerId ?? ""),
-        cabinetBuilderData: row.cabinetBuilderData ?? null,
       };
   });
 }
@@ -4665,57 +4852,8 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         grainValue: String(row.grainValue ?? ""),
         includeInNesting: row.includeInNesting !== false,
         parentName: String(row.parentName ?? ""),
-        cabinetBuilderRowKind: String(row.cabinetBuilderRowKind ?? ""),
-        cabinetBuilderContainerId: String(row.cabinetBuilderContainerId ?? ""),
-        cabinetBuilderData: row.cabinetBuilderData ?? null,
       })),
   );
-}
-
-type SavedCabinetBuilderDraft = {
-  id: string;
-  name: string;
-  room: string;
-  updatedAt: string;
-  draft: CabinetBuilderDraft;
-};
-
-type CabinetBuilderDrawingViewerState = {
-  id: string;
-  name: string;
-  room: string;
-  updatedAt: string;
-  draft: CabinetBuilderDraft;
-  isCurrent?: boolean;
-};
-
-function normalizeSavedCabinetBuilderDrafts(raw: unknown): SavedCabinetBuilderDraft[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item, index) => {
-      const row = item as Record<string, unknown>;
-      const draft = row.draft && typeof row.draft === "object" ? (row.draft as CabinetBuilderDraft) : null;
-      if (!draft) return null;
-      return {
-        id: String(row.id ?? `wall_draft_${index + 1}`).trim() || `wall_draft_${index + 1}`,
-        name: String(row.name ?? draft.row?.name ?? "Wall").trim() || "Wall",
-        room: String(row.room ?? "Project Cutlist").trim() || "Project Cutlist",
-        updatedAt: String(row.updatedAt ?? "").trim() || new Date().toISOString(),
-        draft,
-      };
-    })
-    .filter(Boolean) as SavedCabinetBuilderDraft[];
-}
-
-function serializeSavedCabinetBuilderDraftsForStorage(drafts: SavedCabinetBuilderDraft[]) {
-  return drafts.map((draft) => ({
-    id: draft.id,
-    name: draft.name,
-    room: draft.room,
-    updatedAt: draft.updatedAt,
-    draft: JSON.parse(JSON.stringify(draft.draft)) as CabinetBuilderDraft,
-  }));
 }
 
 function normalizeCompanySalesProducts(raw: unknown): string[] {
@@ -4812,6 +4950,17 @@ export default function ProjectDetailsPage() {
   const [isGeneratingQuotePdf, setIsGeneratingQuotePdf] = useState(false);
   const [isGeneratingSalesSummaryPdf, setIsGeneratingSalesSummaryPdf] = useState(false);
   const salesSummaryContentRef = useRef<HTMLDivElement | null>(null);
+  const specsSheetInitStartedRef = useRef(false);
+  const [specsSheetGrid, setSpecsSheetGrid] = useState<SpecsGrid | null>(null);
+  // Surfaces a failed specs-sheet write — persistSalesPatch previously had its result thrown away
+  // here (`void persistSalesPatch(...)`), so a rejected write (permission-denied, doc-too-large, etc.)
+  // had zero visible symptom beyond edits silently not surviving a refresh/reprint.
+  const [specsSheetSaveError, setSpecsSheetSaveError] = useState("");
+  const [isSpecsSheetResetConfirmOpen, setIsSpecsSheetResetConfirmOpen] = useState(false);
+  // Bumped whenever this project's sheet is force-reset to a fresh company-template clone, so
+  // <SpecsGridEditor> (whose internal selection/drag state isn't derived from its `value` prop)
+  // remounts instead of silently keeping stale internal state.
+  const [specsSheetEditorKey, setSpecsSheetEditorKey] = useState(0);
   const [isPartTypeBreakdownModalOpen, setIsPartTypeBreakdownModalOpen] = useState(false);
   const [partTypeBreakdownModalOrigin, setPartTypeBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
   const partTypeBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -4909,6 +5058,70 @@ export default function ProjectDetailsPage() {
   const [isEditingNotes, setIsEditingNotes] = useState(false);
   const [isEditingProductionNotes, setIsEditingProductionNotes] = useState(false);
   const [isProductionNotesPanelOpen, setIsProductionNotesPanelOpen] = useState(false);
+  const [isContractorsPanelOpen, setIsContractorsPanelOpen] = useState(false);
+  const [activeContractorTab, setActiveContractorTab] = useState("");
+  const [contractorNotesEditorInitialValue, setContractorNotesEditorInitialValue] = useState("");
+  const contractorNotesEditorDraftRef = useRef("");
+  const [contractorsToolbarHost, setContractorsToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [productionNotesModalOrigin, setProductionNotesModalOrigin] = useState<GlassModalOrigin>(null);
+  const productionNotesModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderProductionNotesModal = useGlassModalPopOrigin(
+    isProductionNotesPanelOpen,
+    productionNotesModalOrigin,
+    productionNotesModalPanelRef,
+  );
+  const [contractorsModalOrigin, setContractorsModalOrigin] = useState<GlassModalOrigin>(null);
+  const contractorsModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderContractorsModal = useGlassModalPopOrigin(
+    isContractorsPanelOpen,
+    contractorsModalOrigin,
+    contractorsModalPanelRef,
+  );
+  // Ids of draft rows created via "Add sub part" — purely a UI marker so the
+  // Cutlist Entry list can show them indented/tagged under their main row;
+  // stale entries left behind after a row is submitted/removed are harmless
+  // since draft ids are never reused.
+  const [subPartDraftRowIds, setSubPartDraftRowIds] = useState<Set<string>>(new Set());
+  const [subPartTypePickerMainRowId, setSubPartTypePickerMainRowId] = useState("");
+  const [subPartTypePickerOrigin, setSubPartTypePickerOrigin] = useState<GlassModalOrigin>(null);
+  const subPartTypePickerPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderSubPartTypePickerModal = useGlassModalPopOrigin(
+    Boolean(subPartTypePickerMainRowId),
+    subPartTypePickerOrigin,
+    subPartTypePickerPanelRef,
+    { duration: 220 },
+  );
+  // "Doors or Drawers?" picker shown when a door-category quick-add pill is
+  // clicked. Both choices ask for a front count and create ONE row with that
+  // many fronts (via the existing doorFrontCount/doorFrontHeights array
+  // fields, doorMode "door"/"drawer") — see addDoorFrontsDraftRow/
+  // addDrawerFrontsDraftRow below. Doors additionally ask Tall vs Base, since
+  // that decides which cabinetry/gap-allowance settings the row's starting
+  // height is derived from.
+  const [doorDrawerPickerPartType, setDoorDrawerPickerPartType] = useState("");
+  // Non-empty when this popup was opened from a Cabinetry row's "Add sub part" picker (instead
+  // of the top-level quick-add toolbar) — the confirm/blank-row actions below target this row's
+  // sub-part list instead of appending a new top-level draft row.
+  const [doorDrawerPickerMainRowId, setDoorDrawerPickerMainRowId] = useState("");
+  // When opened from a sub-part picker and the cabinet's name matched "N Door" (not "N Drawer",
+  // which jumps straight to the count step instead), highlights the "Doors" choice below so the
+  // detected match is visible — the user still has to click it, nothing auto-fires.
+  const [doorDrawerPickerSuggestedMode, setDoorDrawerPickerSuggestedMode] = useState<"door" | "">("");
+  const [doorDrawerPickerStep, setDoorDrawerPickerStep] = useState<"choose" | "drawerCount" | "doorCount">("choose");
+  const [doorDrawerPickerOrigin, setDoorDrawerPickerOrigin] = useState<GlassModalOrigin>(null);
+  const doorDrawerPickerPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderDoorDrawerPickerModal = useGlassModalPopOrigin(
+    Boolean(doorDrawerPickerPartType),
+    doorDrawerPickerOrigin,
+    doorDrawerPickerPanelRef,
+    { duration: 220 },
+  );
+  const [drawerBankCountDraft, setDrawerBankCountDraft] = useState("3");
+  // Which single gap bubble (top or a specific between-gap seam) is currently
+  // expanded into its editable pill — "" means every bubble is resting as a
+  // plain circle. Keyed so multiple bubbles across rows/seams never fight
+  // over the same open state.
+  const [expandedGapBubbleKey, setExpandedGapBubbleKey] = useState("");
   const [isSavingGeneralDetails, setIsSavingGeneralDetails] = useState(false);
   const [notesEditorInitialValue, setNotesEditorInitialValue] = useState("");
   const [productionNotesEditorInitialValue, setProductionNotesEditorInitialValue] = useState("");
@@ -4930,7 +5143,6 @@ export default function ProjectDetailsPage() {
     tallVerticalGapDoorsPanels: "",
   });
   const [isLoading, setIsLoading] = useState(true);
-  useTabBarReady(!isLoading && Boolean(project));
   const [isSavingStatus, setIsSavingStatus] = useState(false);
   const [projectStatusMenuPos, setProjectStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [projectTags, setProjectTags] = useState<string[]>([]);
@@ -5118,7 +5330,7 @@ export default function ProjectDetailsPage() {
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, [projectPermissionSearch, draggingProjectPermissionUid, savingProjectPermissionUid, companyMembers.length, project?.projectSettings]);
-  const [salesNav, setSalesNav] = useState<SalesNav>("specifications");
+  const [salesNav, setSalesNav] = useState<SalesNav>("overview");
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [projectLiveTabs, setProjectLiveTabs] = useState<ProjectLiveTabRecord[]>([]);
   const [activeProjectLiveTabId, setActiveProjectLiveTabId] = useState("");
@@ -5173,6 +5385,9 @@ export default function ProjectDetailsPage() {
   const [cutlistSearch, setCutlistSearch] = useState("");
   const [cutlistPartTypeFilter, setCutlistPartTypeFilter] = useState("All Part Types");
   const [cutlistRoomFilter, setCutlistRoomFilter] = useState("Project Cutlist");
+  const [cutlistRoomHighlightRect, setCutlistRoomHighlightRect] = useState<{ top: number; height: number } | null>(null);
+  const cutlistRoomListRef = useRef<HTMLDivElement | null>(null);
+  const cutlistRoomButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [cutlistCompactExpandedRows, setCutlistCompactExpandedRows] = useState<Record<string, boolean>>({});
   const [cutlistCompactDoorHingeEnabledRows, setCutlistCompactDoorHingeEnabledRows] = useState<Record<string, boolean>>({});
   const [cutlistCompactConfiguredEntryPanel, setCutlistCompactConfiguredEntryPanel] = useState<"fields" | "drawing">("fields");
@@ -5247,59 +5462,7 @@ export default function ProjectDetailsPage() {
   const [nestingCollapsedGroups, setNestingCollapsedGroups] = useState<Record<string, boolean>>({});
   const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
   const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>(createEmptyCutlistEntry());
-  const [cabinetBuilderDraft, setCabinetBuilderDraft] = useState<CabinetBuilderDraft | null>(null);
-  const [savedCabinetBuilderDrafts, setSavedCabinetBuilderDrafts] = useState<SavedCabinetBuilderDraft[]>([]);
-  const [cabinetBuilderDrawingViewer, setCabinetBuilderDrawingViewer] = useState<CabinetBuilderDrawingViewerState | null>(null);
-  const [activeCabinetBuilderSavedDraftId, setActiveCabinetBuilderSavedDraftId] = useState("");
-  const [cabinetBuilderWallName, setCabinetBuilderWallName] = useState("");
-  const [cabinetBuilderWallCreated, setCabinetBuilderWallCreated] = useState(false);
-  const [cabinetBuilderCreateOpen, setCabinetBuilderCreateOpen] = useState(false);
-  const [cabinetBuilderEditOpen, setCabinetBuilderEditOpen] = useState(false);
-  const [cabinetBuilderEditTab, setCabinetBuilderEditTab] = useState("edit");
-  const [cabinetBuilderDoorsOpen, setCabinetBuilderDoorsOpen] = useState(false);
-  const [cabinetBuilderDrawersOpen, setCabinetBuilderDrawersOpen] = useState(false);
-  const [cabinetBuilderDeleteWallConfirmOpen, setCabinetBuilderDeleteWallConfirmOpen] = useState(false);
-  const [cabinetBuilderDeleteConfirmOpen, setCabinetBuilderDeleteConfirmOpen] = useState(false);
-  const [cabinetBuilderDeleteTargetOverride, setCabinetBuilderDeleteTargetOverride] = useState<CabinetBuilderDeleteMeta | null>(null);
-  const [cabinetBuilderAttachmentMenuSide, setCabinetBuilderAttachmentMenuSide] = useState<"left" | "right" | null>(null);
-  const [cabinetBuilderAttachmentMenuAlign, setCabinetBuilderAttachmentMenuAlign] = useState<"top" | "bottom">("bottom");
-  const [cabinetBuilderPendingAttachment, setCabinetBuilderPendingAttachment] = useState<{ side: "left" | "right"; kind: CabinetBuilderAttachmentKind; align: "top" | "bottom" } | null>(null);
-  const [cabinetBuilderPendingNewCabinet, setCabinetBuilderPendingNewCabinet] = useState(false);
-  const [cabinetBuilderPendingPanelHeightMode, setCabinetBuilderPendingPanelHeightMode] = useState<"base" | "tall">("base");
-  const [cabinetBuilderPendingPanelSpanMode, setCabinetBuilderPendingPanelSpanMode] = useState<"floorToCeiling" | "floorToTopOfCab" | "bottomToCeiling" | "bottomToTopOfCab">("bottomToTopOfCab");
-  const [cabinetBuilderPendingPanelHeightError, setCabinetBuilderPendingPanelHeightError] = useState("");
-  const [cabinetBuilderSelectedWallId, setCabinetBuilderSelectedWallId] = useState("main");
-  const [cabinetBuilderHoveredWallId, setCabinetBuilderHoveredWallId] = useState("");
-  const [cabinetBuilderSelectedHoverActive, setCabinetBuilderSelectedHoverActive] = useState(false);
-  const [cabinetBuilderEditingAttachmentId, setCabinetBuilderEditingAttachmentId] = useState("");
-  const [cabinetBuilderDraggingWallId, setCabinetBuilderDraggingWallId] = useState("");
-  const [cabinetBuilderDragActive, setCabinetBuilderDragActive] = useState(false);
-  const [cabinetBuilderMeasureMode, setCabinetBuilderMeasureMode] = useState(false);
-  const [cabinetBuilderMeasurePoints, setCabinetBuilderMeasurePoints] = useState<Array<{ x: number; y: number }>>([]);
-  const [cabinetBuilderDrawingZoom, setCabinetBuilderDrawingZoom] = useState(1);
-  const [cabinetBuilderEditingGapPill, setCabinetBuilderEditingGapPill] = useState<null | {
-    pillId: string;
-    ownerId: string;
-    kind: "doorsRow" | "drawersRow";
-    key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap";
-    value: string;
-  }>(null);
-  const [cabinetBuilderSelectedPartsExpandedKey, setCabinetBuilderSelectedPartsExpandedKey] = useState("");
-  const [cabinetBuilderDragPointerX, setCabinetBuilderDragPointerX] = useState<number | null>(null);
-  const [cabinetBuilderDragViewport, setCabinetBuilderDragViewport] = useState<{
-    viewWidth: number;
-    viewHeight: number;
-    paddingX: number;
-    paddingY: number;
-  } | null>(null);
-  const cabinetBuilderAutosaveSnapshotRef = useRef("");
-  const cabinetBuilderDrawingViewportRef = useRef<HTMLDivElement | null>(null);
-  const cabinetBuilderDragStartPointerXRef = useRef<number | null>(null);
-  const cabinetBuilderHoverClearTimeoutRef = useRef<number | null>(null);
-  const cabinetBuilderMeasureLastRightClickAtRef = useRef(0);
-  const [pendingCabinetBuilderRow, setPendingCabinetBuilderRow] = useState<CutlistEntryDraft>(createEmptyCutlistEntry());
   const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
-  const [cutlistEntryMode, setCutlistEntryMode] = useState<"manual" | "wallBuilder">("manual");
   const [cutlistDraftRows, setCutlistDraftRows] = useState<CutlistDraftRow[]>([]);
   const [cutlistDraftInitialized, setCutlistDraftInitialized] = useState(false);
   const [cutlistCellWarnings, setCutlistCellWarnings] = useState<Record<string, Record<string, string>>>({});
@@ -5354,7 +5517,6 @@ export default function ProjectDetailsPage() {
   const cutlistActivityHydratedProjectIdRef = useRef("");
   const lastPersistedCutlistActivityJsonRef = useRef("");
     const [collapsedCutlistGroups, setCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
-    const [collapsedCabinetBuilderAttachedGroups, setCollapsedCabinetBuilderAttachedGroups] = useState<Record<string, boolean>>({});
     const [initialCollapsedCutlistGroups, setInitialCollapsedCutlistGroups] = useState<Record<string, boolean>>({});
     const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
     const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
@@ -6864,6 +7026,10 @@ export default function ProjectDetailsPage() {
       .filter(Boolean);
     return parsed.length ? parsed : ["Cabinet", "Drawer", "Panel", "Front"];
   }, [companyDoc?.partTypes]);
+  const contractorOptions = useMemo(() => {
+    const raw = Array.isArray(companyDoc?.contractors) ? companyDoc.contractors : [];
+    return raw.map((v) => toStr(v)).filter(Boolean);
+  }, [companyDoc?.contractors]);
   const initialMeasurePartTypeOptions = useMemo(() => {
     const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc?.partTypes : [];
     const parsed = raw
@@ -6890,11 +7056,11 @@ export default function ProjectDetailsPage() {
     quote: "Sales Quote",
     specifications: "Sales Specifications",
     summary: "Sales Summary",
+    overview: "Sales",
   };
   const productionViewLabels: Record<Exclude<ProductionNav, "unlock" | "print">, string> = {
     overview: "Production Overview",
     cutlist: "Production Cutlist",
-    drawings: "Production Drawings",
     nesting: "Production Nesting",
     cnc: "Production CNC Cutlist",
     order: "Production Order",
@@ -6937,15 +7103,10 @@ export default function ProjectDetailsPage() {
       cutlistPartTypeFilter,
       cutlistSearch,
       cutlistEntryRoom,
-      cutlistEntryMode,
       activeCutlistPartType,
       cutlistEntry,
       cutlistDraftRows,
-      cabinetBuilderDraft,
-      activeCabinetBuilderSavedDraftId,
-      cabinetBuilderWallName,
-      cabinetBuilderWallCreated,
-      cabinetBuilderSelectedWallId,
+      subPartDraftRowIds: Array.from(subPartDraftRowIds),
       initialCutlistRoomFilter,
       initialCutlistPartTypeFilter,
       initialCutlistSearch,
@@ -6958,24 +7119,17 @@ export default function ProjectDetailsPage() {
       nestingCollapsedGroups,
       cncCollapsedGroups,
       collapsedCutlistGroups,
-      collapsedCabinetBuilderAttachedGroups,
       expandedCabinetryRows,
       expandedDrawerRows,
       expandedDoorRows,
     }),
     [
-      activeCabinetBuilderSavedDraftId,
       activeCutlistPartType,
-      cabinetBuilderDraft,
-      cabinetBuilderSelectedWallId,
-      cabinetBuilderWallCreated,
-      cabinetBuilderWallName,
       cncCollapsedGroups,
-      collapsedCabinetBuilderAttachedGroups,
       collapsedCutlistGroups,
       cutlistDraftRows,
+      subPartDraftRowIds,
       cutlistEntry,
-      cutlistEntryMode,
       cutlistEntryRoom,
       cutlistPartTypeFilter,
       cutlistRoomFilter,
@@ -7071,7 +7225,8 @@ export default function ProjectDetailsPage() {
         snapshot.salesNav === "items" ||
         snapshot.salesNav === "quote" ||
         snapshot.salesNav === "specifications" ||
-        snapshot.salesNav === "summary"
+        snapshot.salesNav === "summary" ||
+        snapshot.salesNav === "overview"
       ) {
         setSalesNav(snapshot.salesNav);
       }
@@ -7093,9 +7248,6 @@ export default function ProjectDetailsPage() {
     }
     if (typeof snapshot.cutlistEntryRoom === "string" && snapshot.cutlistEntryRoom.trim()) {
       setCutlistEntryRoom(snapshot.cutlistEntryRoom);
-    }
-    if (snapshot.cutlistEntryMode === "manual" || snapshot.cutlistEntryMode === "wallBuilder") {
-      setCutlistEntryMode(snapshot.cutlistEntryMode);
     }
     if (typeof snapshot.activeCutlistPartType === "string") {
       setActiveCutlistPartType(snapshot.activeCutlistPartType);
@@ -7153,20 +7305,8 @@ export default function ProjectDetailsPage() {
       setCutlistDraftRows(snapshot.cutlistDraftRows);
       setCutlistDraftInitialized(true);
     }
-    if (snapshot.cabinetBuilderDraft && typeof snapshot.cabinetBuilderDraft === "object") {
-      setCabinetBuilderDraft(snapshot.cabinetBuilderDraft);
-    }
-    if (typeof snapshot.activeCabinetBuilderSavedDraftId === "string") {
-      setActiveCabinetBuilderSavedDraftId(snapshot.activeCabinetBuilderSavedDraftId);
-    }
-    if (typeof snapshot.cabinetBuilderWallName === "string") {
-      setCabinetBuilderWallName(snapshot.cabinetBuilderWallName);
-    }
-    if (typeof snapshot.cabinetBuilderWallCreated === "boolean") {
-      setCabinetBuilderWallCreated(snapshot.cabinetBuilderWallCreated);
-    }
-    if (typeof snapshot.cabinetBuilderSelectedWallId === "string") {
-      setCabinetBuilderSelectedWallId(snapshot.cabinetBuilderSelectedWallId);
+    if (Array.isArray(snapshot.subPartDraftRowIds)) {
+      setSubPartDraftRowIds(new Set(snapshot.subPartDraftRowIds.map((id) => String(id))));
     }
     if (typeof snapshot.initialCutlistRoomFilter === "string" && snapshot.initialCutlistRoomFilter.trim()) {
       setInitialCutlistRoomFilter(snapshot.initialCutlistRoomFilter);
@@ -7248,12 +7388,6 @@ export default function ProjectDetailsPage() {
     }
     if (snapshot.collapsedCutlistGroups && typeof snapshot.collapsedCutlistGroups === "object") {
       setCollapsedCutlistGroups(snapshot.collapsedCutlistGroups);
-    }
-    if (
-      snapshot.collapsedCabinetBuilderAttachedGroups &&
-      typeof snapshot.collapsedCabinetBuilderAttachedGroups === "object"
-    ) {
-      setCollapsedCabinetBuilderAttachedGroups(snapshot.collapsedCabinetBuilderAttachedGroups);
     }
     if (snapshot.expandedCabinetryRows && typeof snapshot.expandedCabinetryRows === "object") {
       setExpandedCabinetryRows(snapshot.expandedCabinetryRows);
@@ -7830,48 +7964,6 @@ export default function ProjectDetailsPage() {
       window.removeEventListener("pointercancel", onPointerUpWindow);
     };
   }, []);
-  useEffect(
-    () => () => {
-      if (cabinetBuilderHoverClearTimeoutRef.current != null) {
-        window.clearTimeout(cabinetBuilderHoverClearTimeoutRef.current);
-        cabinetBuilderHoverClearTimeoutRef.current = null;
-      }
-    },
-    [],
-  );
-  const clearCabinetBuilderHoverClearTimeout = useCallback(() => {
-    if (cabinetBuilderHoverClearTimeoutRef.current != null) {
-      window.clearTimeout(cabinetBuilderHoverClearTimeoutRef.current);
-      cabinetBuilderHoverClearTimeoutRef.current = null;
-    }
-  }, []);
-  const markCabinetBuilderWallHovered = useCallback(
-    (wallId: string) => {
-      clearCabinetBuilderHoverClearTimeout();
-      setCabinetBuilderHoveredWallId(wallId);
-      if (wallId === cabinetBuilderSelectedWallId) {
-        setCabinetBuilderSelectedHoverActive(true);
-      }
-    },
-    [cabinetBuilderSelectedWallId, clearCabinetBuilderHoverClearTimeout],
-  );
-  const scheduleCabinetBuilderWallHoverClear = useCallback(
-    (wallId: string) => {
-      clearCabinetBuilderHoverClearTimeout();
-      cabinetBuilderHoverClearTimeoutRef.current = window.setTimeout(() => {
-        setCabinetBuilderHoveredWallId((prev) => (prev === wallId ? "" : prev));
-        if (wallId === cabinetBuilderSelectedWallId) {
-          setCabinetBuilderSelectedHoverActive(false);
-        }
-        cabinetBuilderHoverClearTimeoutRef.current = null;
-      }, 3000);
-    },
-    [cabinetBuilderSelectedWallId, clearCabinetBuilderHoverClearTimeout],
-  );
-  const holdCabinetBuilderSelectedHover = useCallback(() => {
-    clearCabinetBuilderHoverClearTimeout();
-    setCabinetBuilderSelectedHoverActive(true);
-  }, [clearCabinetBuilderHoverClearTimeout]);
   const scrollCutlistActivityToLatest = () => {
     recalcCutlistActivityBounds(true);
   };
@@ -8261,7 +8353,7 @@ export default function ProjectDetailsPage() {
       setLockMessage("Could not save the room item selection.");
       return;
     }
-    setSalesNav("specifications");
+    setSalesNav("overview");
   };
 
   const onSalesItemsLibraryDragStart = (
@@ -8608,6 +8700,29 @@ export default function ProjectDetailsPage() {
     () => cutlistRoomTabs.filter((tab) => tab.filter !== "Project Cutlist"),
     [cutlistRoomTabs],
   );
+  useLayoutEffect(() => {
+    const measure = () => {
+      const container = cutlistRoomListRef.current;
+      const el = cutlistRoomButtonRefs.current[cutlistRoomFilter];
+      if (!container || !el) {
+        setCutlistRoomHighlightRect(null);
+        return;
+      }
+      const containerRect = container.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      setCutlistRoomHighlightRect({ top: elRect.top - containerRect.top + container.scrollTop, height: elRect.height });
+    };
+    measure();
+    if (typeof window === "undefined") return;
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+    // `resolvedTab`/`productionAccess.view`/`productionNav` mirror `isCutlistFullscreen`'s
+    // own condition (declared later in this component, so it can't be referenced
+    // here directly) — needed so this re-measures the moment the Cutlist section
+    // actually mounts, not just when the room filter itself changes; otherwise
+    // `cutlistRoomListRef.current` is still null on the first render after
+    // switching into this tab and the highlight never appears until a click.
+  }, [cutlistRoomFilter, cutlistRoomTabs, resolvedTab, productionAccess.view, productionNav]);
 
   const cutlistEntryRoomOptions = useMemo(
     () => Array.from(new Set(cutlistRoomTabs.map((tab) => tab.filter))),
@@ -10153,7 +10268,7 @@ export default function ProjectDetailsPage() {
         nestingFullscreen?: boolean;
       },
     ) => {
-      const nextSalesNav = options?.salesNav ?? (mainTab === "sales" ? salesNav : "specifications");
+      const nextSalesNav = options?.salesNav ?? (mainTab === "sales" ? salesNav : "overview");
       const nextProductionNav = options?.productionNav ?? (mainTab === "production" ? productionNav : "overview");
       const nextViewKey = buildProjectLiveViewKey(mainTab, nextSalesNav, nextProductionNav);
       const fallbackSnapshot: ProjectLiveTabStateSnapshot = {
@@ -10231,7 +10346,7 @@ export default function ProjectDetailsPage() {
         const fallbackSnapshot: ProjectLiveTabStateSnapshot = {
           ...projectLiveTabStateSnapshot,
           resolvedTab: "general",
-          salesNav: "specifications",
+          salesNav: "overview",
           productionNav: "overview",
           nestingFullscreen: false,
         };
@@ -10721,7 +10836,7 @@ export default function ProjectDetailsPage() {
       return;
     }
     if (value === "sales") {
-      openProjectLiveView("sales", { salesNav: "specifications" });
+      openProjectLiveView("sales", { salesNav: "overview" });
       return;
     }
     if (value === "production") {
@@ -12577,12 +12692,10 @@ export default function ProjectDetailsPage() {
       if (!project?.id) {
         setProductionCutlist(null);
         setCutlistRows([]);
-        setSavedCabinetBuilderDrafts([]);
         return;
       }
       const projectRecord = project as unknown as Record<string, unknown>;
       const cutlistRecord = (projectRecord.cutlist ?? null) as Record<string, unknown> | null;
-      setSavedCabinetBuilderDrafts(normalizeSavedCabinetBuilderDrafts(cutlistRecord?.wallBuilderDrafts));
       const directRowsRaw = Array.isArray(cutlistRecord?.rows) ? (cutlistRecord?.rows as unknown[]) : [];
       if (directRowsRaw.length) {
         const mapped = directRowsRaw.map((row, idx) => {
@@ -12640,15 +12753,6 @@ export default function ProjectDetailsPage() {
               grainValue: grainParsed.grainValue,
               includeInNesting,
               parentName: String(item.parentName ?? "").trim() || undefined,
-              cabinetBuilderRowKind:
-                item.cabinetBuilderRowKind === "container" || item.cabinetBuilderRowKind === "generated"
-                  ? (item.cabinetBuilderRowKind as CabinetBuilderRowKind)
-                  : undefined,
-              cabinetBuilderContainerId: String(item.cabinetBuilderContainerId ?? "").trim() || undefined,
-              cabinetBuilderData:
-                item.cabinetBuilderData && typeof item.cabinetBuilderData === "object"
-                  ? (item.cabinetBuilderData as CabinetBuilderDraft)
-                  : null,
           };
         });
         const mappedJson = serializeCutlistRowsSnapshot(mapped);
@@ -12714,15 +12818,6 @@ export default function ProjectDetailsPage() {
           grainValue: grainParsed.grainValue,
           includeInNesting: true,
           parentName: String(legacy.parentName ?? "").trim() || undefined,
-          cabinetBuilderRowKind:
-            legacy.cabinetBuilderRowKind === "container" || legacy.cabinetBuilderRowKind === "generated"
-              ? (legacy.cabinetBuilderRowKind as CabinetBuilderRowKind)
-              : undefined,
-          cabinetBuilderContainerId: String(legacy.cabinetBuilderContainerId ?? "").trim() || undefined,
-          cabinetBuilderData:
-            legacy.cabinetBuilderData && typeof legacy.cabinetBuilderData === "object"
-              ? (legacy.cabinetBuilderData as CabinetBuilderDraft)
-              : null,
         };
       });
       const mappedJson = serializeCutlistRowsSnapshot(mapped);
@@ -12764,15 +12859,10 @@ export default function ProjectDetailsPage() {
           cutlistPartTypeFilter?: string;
           cutlistSearch?: string;
           cutlistEntryRoom?: string;
-          cutlistEntryMode?: "manual" | "wallBuilder";
           activeCutlistPartType?: string;
           cutlistEntry?: Partial<Omit<CutlistRow, "id" | "room">>;
           cutlistDraftRows?: Array<Partial<CutlistDraftRow>>;
-          cabinetBuilderDraft?: CabinetBuilderDraft | null;
-          activeCabinetBuilderSavedDraftId?: string;
-          cabinetBuilderWallName?: string;
-          cabinetBuilderWallCreated?: boolean;
-          cabinetBuilderSelectedWallId?: string;
+          subPartDraftRowIds?: string[];
           initialCutlistRoomFilter?: string;
           initialCutlistPartTypeFilter?: string;
           initialCutlistSearch?: string;
@@ -12785,7 +12875,6 @@ export default function ProjectDetailsPage() {
           nestingCollapsedGroups?: Record<string, boolean>;
           cncCollapsedGroups?: Record<string, boolean>;
           collapsedCutlistGroups?: Record<string, boolean>;
-          collapsedCabinetBuilderAttachedGroups?: Record<string, boolean>;
           expandedCabinetryRows?: Record<string, boolean>;
           expandedDrawerRows?: Record<string, boolean>;
           expandedDoorRows?: Record<string, boolean>;
@@ -12799,7 +12888,8 @@ export default function ProjectDetailsPage() {
           parsed.salesNav === "items" ||
           parsed.salesNav === "quote" ||
           parsed.salesNav === "specifications" ||
-          parsed.salesNav === "summary"
+          parsed.salesNav === "summary" ||
+          parsed.salesNav === "overview"
         ) {
           setSalesNav(parsed.salesNav);
         }
@@ -12820,11 +12910,6 @@ export default function ProjectDetailsPage() {
         }
         if (typeof parsed.cutlistEntryRoom === "string" && parsed.cutlistEntryRoom.trim()) {
           setCutlistEntryRoom(parsed.cutlistEntryRoom);
-        }
-        if (parsed.cutlistEntryMode === "manual" || parsed.cutlistEntryMode === "wallBuilder") {
-          setCutlistEntryMode(parsed.cutlistEntryMode);
-        } else if (parsed.cabinetBuilderDraft) {
-          setCutlistEntryMode("wallBuilder");
         }
         if (typeof parsed.activeCutlistPartType === "string") {
           setActiveCutlistPartType(parsed.activeCutlistPartType);
@@ -12896,20 +12981,8 @@ export default function ProjectDetailsPage() {
           setCutlistDraftRows(restoredDrafts);
           setCutlistDraftInitialized(true);
         }
-        if (parsed.cabinetBuilderDraft && typeof parsed.cabinetBuilderDraft === "object") {
-          setCabinetBuilderDraft(parsed.cabinetBuilderDraft);
-        }
-        if (typeof parsed.activeCabinetBuilderSavedDraftId === "string") {
-          setActiveCabinetBuilderSavedDraftId(parsed.activeCabinetBuilderSavedDraftId);
-        }
-        if (typeof parsed.cabinetBuilderWallName === "string") {
-          setCabinetBuilderWallName(parsed.cabinetBuilderWallName);
-        }
-        if (typeof parsed.cabinetBuilderWallCreated === "boolean") {
-          setCabinetBuilderWallCreated(parsed.cabinetBuilderWallCreated);
-        }
-        if (typeof parsed.cabinetBuilderSelectedWallId === "string" && parsed.cabinetBuilderSelectedWallId.trim()) {
-          setCabinetBuilderSelectedWallId(parsed.cabinetBuilderSelectedWallId);
+        if (Array.isArray(parsed.subPartDraftRowIds)) {
+          setSubPartDraftRowIds(new Set(parsed.subPartDraftRowIds.map((id) => String(id))));
         }
         if (typeof parsed.initialCutlistRoomFilter === "string" && parsed.initialCutlistRoomFilter.trim()) {
           setInitialCutlistRoomFilter(parsed.initialCutlistRoomFilter);
@@ -13006,9 +13079,6 @@ export default function ProjectDetailsPage() {
         if (parsed.collapsedCutlistGroups && typeof parsed.collapsedCutlistGroups === "object") {
           setCollapsedCutlistGroups(parsed.collapsedCutlistGroups);
         }
-        if (parsed.collapsedCabinetBuilderAttachedGroups && typeof parsed.collapsedCabinetBuilderAttachedGroups === "object") {
-          setCollapsedCabinetBuilderAttachedGroups(parsed.collapsedCabinetBuilderAttachedGroups);
-        }
         if (parsed.expandedCabinetryRows && typeof parsed.expandedCabinetryRows === "object") {
           setExpandedCabinetryRows(parsed.expandedCabinetryRows);
         }
@@ -13059,15 +13129,10 @@ export default function ProjectDetailsPage() {
       cutlistPartTypeFilter,
       cutlistSearch,
       cutlistEntryRoom,
-      cutlistEntryMode,
       activeCutlistPartType,
       cutlistEntry,
       cutlistDraftRows,
-      cabinetBuilderDraft,
-      activeCabinetBuilderSavedDraftId,
-      cabinetBuilderWallName,
-      cabinetBuilderWallCreated,
-      cabinetBuilderSelectedWallId,
+      subPartDraftRowIds: Array.from(subPartDraftRowIds),
       initialCutlistRoomFilter,
       initialCutlistPartTypeFilter,
       initialCutlistSearch,
@@ -13080,7 +13145,6 @@ export default function ProjectDetailsPage() {
       nestingCollapsedGroups,
       cncCollapsedGroups,
       collapsedCutlistGroups,
-      collapsedCabinetBuilderAttachedGroups,
       expandedCabinetryRows,
       expandedDrawerRows,
       expandedDoorRows,
@@ -13100,15 +13164,10 @@ export default function ProjectDetailsPage() {
     cutlistPartTypeFilter,
     cutlistSearch,
     cutlistEntryRoom,
-    cutlistEntryMode,
     activeCutlistPartType,
     cutlistEntry,
     cutlistDraftRows,
-    cabinetBuilderDraft,
-    activeCabinetBuilderSavedDraftId,
-    cabinetBuilderWallName,
-    cabinetBuilderWallCreated,
-    cabinetBuilderSelectedWallId,
+    subPartDraftRowIds,
     initialCutlistRoomFilter,
     initialCutlistPartTypeFilter,
     initialCutlistSearch,
@@ -13121,7 +13180,6 @@ export default function ProjectDetailsPage() {
     nestingCollapsedGroups,
     cncCollapsedGroups,
     collapsedCutlistGroups,
-    collapsedCabinetBuilderAttachedGroups,
     expandedCabinetryRows,
     expandedDrawerRows,
     expandedDoorRows,
@@ -13574,6 +13632,41 @@ export default function ProjectDetailsPage() {
     }
     setIsEditingProductionNotes(false);
     setIsProductionNotesPanelOpen(false);
+  };
+
+  const commitContractorNoteForTab = async (contractorName: string, value: string) => {
+    if (!project || productionReadOnly || !contractorName) return;
+    if (String(project.contractorNotes?.[contractorName] ?? "") === value) return;
+    await saveGeneralDetailsPatch({
+      contractorNotes: { ...(project.contractorNotes || {}), [contractorName]: value },
+    });
+  };
+
+  const loadContractorTabIntoEditor = (contractorName: string) => {
+    const nextValue = notesToDisplayHtml(project?.contractorNotes?.[contractorName] || "");
+    contractorNotesEditorDraftRef.current = nextValue;
+    setContractorNotesEditorInitialValue(nextValue);
+  };
+
+  const openContractorsPanel = () => {
+    const nextTab = activeContractorTab && contractorOptions.includes(activeContractorTab)
+      ? activeContractorTab
+      : contractorOptions[0] || "";
+    setActiveContractorTab(nextTab);
+    loadContractorTabIntoEditor(nextTab);
+    setIsContractorsPanelOpen(true);
+  };
+
+  const selectContractorTab = async (name: string) => {
+    if (name === activeContractorTab) return;
+    await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
+    setActiveContractorTab(name);
+    loadContractorTabIntoEditor(name);
+  };
+
+  const closeContractorsPanel = async () => {
+    await commitContractorNoteForTab(activeContractorTab, contractorNotesEditorDraftRef.current);
+    setIsContractorsPanelOpen(false);
   };
 
   useEffect(() => {
@@ -14493,15 +14586,6 @@ export default function ProjectDetailsPage() {
     }
     return out;
   };
-  const cabinetBuilderWarningKeyForSource = (source: CabinetBuilderAttachedDisplayRowSource) => {
-    if (source.kind === "configuredFront") {
-      return `cab_builder:${source.ownerId}:${source.frontKind}:${source.indexes.join(",") || "all"}`;
-    }
-    if (source.kind === "child") {
-      return `cab_builder:${source.ownerId}:child:${source.childId}`;
-    }
-    return `cab_builder:${source.ownerId}:${source.kind}`;
-  };
   const sanitizeConfiguredDoorIssues = (
     row: Partial<CutlistRow>,
     issues: CutlistValidationIssue[],
@@ -14861,13 +14945,9 @@ export default function ProjectDetailsPage() {
     });
   };
 
-  const persistCutlistContainer = async (
-    nextRows: CutlistRow[],
-    nextSavedWallBuilderDrafts: SavedCabinetBuilderDraft[] = savedCabinetBuilderDrafts,
-  ) => {
+  const persistCutlistContainer = async (nextRows: CutlistRow[]) => {
     if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
-    const wallBuilderDrafts = serializeSavedCabinetBuilderDraftsForStorage(nextSavedWallBuilderDrafts);
     const currentCutlist =
       project.cutlist && typeof project.cutlist === "object"
         ? ({ ...(project.cutlist as Record<string, unknown>) } as Record<string, unknown>)
@@ -14875,7 +14955,6 @@ export default function ProjectDetailsPage() {
     const nextCutlist = {
       ...currentCutlist,
       rows,
-      wallBuilderDrafts,
     };
     pendingCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
     isPersistingCutlistRowsRef.current = true;
@@ -14899,8 +14978,6 @@ export default function ProjectDetailsPage() {
     }
   };
   const persistCutlistRows = async (nextRows: CutlistRow[]) => persistCutlistContainer(nextRows);
-  const persistSavedCabinetBuilderDrafts = async (nextDrafts: SavedCabinetBuilderDraft[]) =>
-    persistCutlistContainer(cutlistRows, nextDrafts);
   const persistInitialCutlistRows = (nextRows: CutlistRow[]): Promise<boolean> => {
     const run = async (): Promise<boolean> => {
       if (!project) return false;
@@ -14950,67 +15027,6 @@ export default function ProjectDetailsPage() {
   };
 
   const addCutlistRow = async () => {
-    if (cutlistEntryMode === "wallBuilder") {
-      if (!cabinetBuilderDraft) {
-        const warnings = { single: { partType: "Cabinet builder: Create a cabinet drawing first." } };
-        setCutlistCellWarnings(warnings);
-        flashCutlistWarningCells(warnings);
-        return;
-      }
-      const generatedGroups = buildCabinetBuilderRowsForAdd();
-      const generatedRows = generatedGroups.flatMap((group) => group.rows.map((entry) => entry.row));
-      if (!generatedRows.length) {
-        const warnings = { single: { partType: "Cabinet builder: Add a cabinet, fronts, panels, or child parts first." } };
-        setCutlistCellWarnings(warnings);
-        flashCutlistWarningCells(warnings);
-        return;
-      }
-      const nextWarnings: Record<string, Record<string, string>> = {};
-      const generatedIssues = generatedGroups.flatMap((group) =>
-        group.rows.flatMap(({ row, source }) => {
-          const issues = sanitizeConfiguredDoorIssues(
-            row,
-            validateCutlistRowInput(row, String(row.partType || "").trim(), cutlistRowLabelFor(row, group.ownerName)),
-          );
-          if (issues.length) {
-            nextWarnings[cabinetBuilderWarningKeyForSource(source)] = makeWarningMapForRow(issues);
-          }
-          return issues;
-        }),
-      );
-      if (generatedIssues.length) {
-        setCutlistCellWarnings(nextWarnings);
-        flashCutlistWarningCells(nextWarnings);
-        const firstOwnerId = generatedGroups.find((group) =>
-          group.rows.some(({ source }) => nextWarnings[cabinetBuilderWarningKeyForSource(source)]),
-        )?.ownerId;
-        if (firstOwnerId) setCabinetBuilderSelectedWallId(firstOwnerId);
-        logCutlistValidationIssues(generatedIssues, cutlistEntry.partType);
-      }
-      setCutlistCellWarnings({});
-      const savedRows = generatedGroups.flatMap((group) =>
-        group.rows.map(({ row }) => ({
-          ...row,
-          id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          parentName: String(row.parentName || group.ownerName).trim() || group.ownerName,
-          cabinetBuilderRowKind: undefined,
-          cabinetBuilderContainerId: undefined,
-          cabinetBuilderData: null,
-        })),
-      );
-      const nextRows = [...cutlistRows, ...savedRows];
-      setCutlistRows(nextRows);
-      logCutlistActivity(`${cabinetBuilderDraft.row.name || "Cabinet"} builder added to ${cutlistEntryRoom || "Project Cutlist"}`, {
-        partType: experimentalCabinetBuilderPartType,
-      });
-      setCabinetBuilderDraft(null);
-      setActiveCabinetBuilderSavedDraftId("");
-      setCabinetBuilderWallName("");
-      setCabinetBuilderWallCreated(false);
-      setCutlistEntry(createEmptyCutlistEntry());
-      await persistCutlistRows(nextRows);
-      return;
-    }
     const row = buildEffectiveProductionCutlistRow(
       cutlistEntry,
       cutlistEntryRoom || "Project Cutlist",
@@ -15022,10 +15038,12 @@ export default function ProjectDetailsPage() {
       cutlistRowLabelFor(row, "Entry"),
     ));
     if (singleErrors.length) {
+      // Same as Initial Measure: surface this as glass bubbles anchored to the offending cell
+      // (flashCutlistWarningCells) only — no separate top-feed entry, so a validation error
+      // doesn't also flood the activity feed with a duplicate message.
       const warnings = { single: makeWarningMapForRow(singleErrors) };
       setCutlistCellWarnings(warnings);
       flashCutlistWarningCells(warnings);
-      logCutlistValidationIssues(singleErrors, cutlistEntry.partType);
       return;
     }
     setCutlistCellWarnings({});
@@ -15039,13 +15057,6 @@ export default function ProjectDetailsPage() {
   };
 
   const addDraftRowForPartType = (partType: string) => {
-    const normalizedPartType = String(partType || "").trim().toLowerCase();
-    if (cutlistEntryMode === "wallBuilder" && (normalizedPartType === "cabinet" || isExperimentalCabinetBuilderPartType(partType))) {
-      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
-      setCutlistEntry((prev) => ({ ...prev, partType: experimentalCabinetBuilderPartType }));
-      openCabinetBuilderCreate();
-      return;
-    }
     setActiveCutlistPartType(partType);
     setCutlistDraftRows((prev) => {
       const currentRoom = cutlistEntryRoom || defaultCutlistRoom;
@@ -15058,19 +15069,620 @@ export default function ProjectDetailsPage() {
         ...prev,
         createDraftCutlistRow(partType, currentRoom, {
           ...seed,
-          doorMode: cutlistEntryMode === "manual" && isDoorPartType(partType) ? "manual" : undefined,
+          doorMode: isDoorPartType(partType) ? "manual" : undefined,
         }),
       ];
     });
   };
 
-  const onSelectCutlistEntryPartType = (partType: string) => {
-    const normalizedPartType = String(partType || "").trim().toLowerCase();
-    if (cutlistEntryMode === "wallBuilder" && (normalizedPartType === "cabinet" || isExperimentalCabinetBuilderPartType(partType))) {
-      openCabinetBuilderCreate();
-    } else {
-      setCabinetBuilderCreateOpen(false);
+  // Adds a new draft row right after an existing ("main") draft row, sharing
+  // its Name so the two end up linked by name once both are added to the
+  // cutlist — they're still two fully separate cutlist rows, not merged.
+  // For a door/drawer ("Front") part type, this represents another physical
+  // front in the same bank/cabinet: doors in a bank share the same overall
+  // Height (each door gets its own Width), drawers stacked in a bank share
+  // the same Width (each drawer gets its own Height) — mirroring how the
+  // old multi-front drawing split widths for doors and heights for drawers.
+  // Board/Room carry over either way so the fronts stay grain-matched.
+  const addSubPartDraftRow = (mainRowId: string, subPartType: string) => {
+    if (subPartDraftRowIds.has(mainRowId)) return; // sub parts can't have their own sub parts
+    setCutlistDraftRows((prev) => {
+      const mainIndex = prev.findIndex((row) => row.id === mainRowId);
+      if (mainIndex < 0) return prev;
+      const mainRow = prev[mainIndex];
+      const subIsDoor = isDoorPartType(subPartType);
+      const subIsDrawer = isDrawerPartType(subPartType);
+      const isCabinetDrawerSub = isCabinetryPartType(mainRow.partType) && subIsDrawer;
+      const isCabinetDoorSub = isCabinetryPartType(mainRow.partType) && subIsDoor;
+      let subPart: CutlistDraftRow;
+      if (isCabinetDrawerSub) {
+        subPart = createDraftCutlistRow(subPartType, mainRow.room, {
+          name: String(mainRow.name || "").trim() ? `${mainRow.name} - Drawers` : "",
+          board: "",
+          height: "",
+          width: formatMm(toNum(mainRow.width) - 2 * boardThicknessFor(String(mainRow.board || "").trim())),
+          depth: formatMm(toNum(mainRow.depth) - boardThicknessFor(String(mainRow.board || "").trim())),
+        });
+        subPart = { ...subPart, clashLeft: "", clashRight: "", clashing: "" };
+      } else if (isCabinetDoorSub) {
+        // A plain single "Fronts" row — used when the cabinet's name doesn't look like a drawer
+        // bank (see addCabinetDrawerBankSubPartDraftRow below for that case, which the "Add sub
+        // part" picker routes to instead via the Doors/Drawers popup).
+        subPart = createDraftCutlistRow(subPartType, mainRow.room, {
+          name: String(mainRow.name || "").trim() ? `${mainRow.name} - Fronts` : "",
+          board: "",
+          height: mainRow.height,
+          width: "",
+          quantity: "1",
+          doorMode: "manual",
+        });
+      } else {
+        subPart = createDraftCutlistRow(subPartType, mainRow.room, {
+          name: mainRow.name,
+          board: mainRow.board,
+          doorMode: subIsDoor ? "manual" : undefined,
+          height: subIsDoor ? mainRow.height : "",
+          width: subIsDrawer ? mainRow.width : "",
+        });
+      }
+      setSubPartDraftRowIds((prevIds) => {
+        const nextIds = new Set(prevIds);
+        nextIds.add(subPart.id);
+        return nextIds;
+      });
+      setCutlistCompactDraftDeckIndex(mainIndex + 1);
+      const next = [...prev];
+      next.splice(mainIndex + 1, 0, subPart);
+      return next;
+    });
+  };
+
+  // Resolves the real top/between gaps for a drawer bank from Gap Allowances
+  // + the Standard/Wrap Over handle toggle (Production → Hardware → Handles),
+  // mirroring the exact same resolution already used by
+  // buildConfiguredDoorDerivedPieces/onCutlistEntryDoorModeChange elsewhere in
+  // this file. Called once at row-creation time so the resolved values get
+  // baked into the row's own doorTopGap/doorBetweenGap fields — from that
+  // point on the row carries its own concrete gaps and won't silently shift
+  // if the handle toggle changes later ("locked" per the confirmed behavior).
+  const resolveDrawerBankGaps = () => ({
+    topGap: numericOnlyText(projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer),
+    betweenGap: numericOnlyText(
+      productionForm.hardware.wrapOverHandles
+        ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
+        : projectGapAllowancesDraft.baseHorizontalGapNormalHandles,
+    ),
+  });
+
+  // Creates ONE new draft row representing `count` drawer fronts stacked in
+  // the same cabinet — using the existing doorFrontCount/doorFrontHeights
+  // array fields (doorMode "drawer"), not separate rows. The row's own
+  // Height is the cabinet's Base Cab Height (the total the fronts split
+  // across); each front's own height comes from the existing per-front
+  // rebalance helpers (resolveDoorFrontHeightNumbers/rebalanceDoorFrontHeights),
+  // starting as an even split (after the top gap and the N-1 between-gaps are
+  // subtracted) since nothing is pinned yet. Width and Board are per-front
+  // too (doorFrontWidths/doorFrontBoards), starting "linked" (manual=false)
+  // so editing one mirrors to the rest until individually unticked — see
+  // onDraftFrontWidthChange/onDraftFrontBoardChange below.
+  const addDrawerFrontsDraftRow = (partType: string, count: number) => {
+    const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
+    setActiveCutlistPartType(partType);
+    setCutlistDraftRows((prev) => {
+      const currentRoom = cutlistEntryRoom || defaultCutlistRoom;
+      const last = [...prev].reverse().find((row) => String(row.room || "") === String(currentRoom)) ?? prev[prev.length - 1];
+      const board = last?.board ?? cutlistBoardOptions[0] ?? "";
+      const baseHeight = resolvedProductionBaseCabHeight;
+      const { topGap, betweenGap } = resolveDrawerBankGaps();
+      const seamCount = Math.max(0, n - 1);
+      const betweenGaps = Array.from({ length: seamCount }, () => betweenGap);
+      const initialHeights = normalizeDoorFrontHeights([], n);
+      const initialManual = normalizeDoorFrontHeightManual([], n);
+      const rebalanced = baseHeight
+        ? rebalanceDrawerBankFrontHeights(initialHeights, baseHeight, topGap, betweenGaps, initialManual)
+        : { heights: initialHeights, manual: initialManual };
+      const newRow: CutlistDraftRow = {
+        ...createDraftCutlistRow(partType, currentRoom, {
+          board,
+          doorMode: "drawer",
+          doorFrontCount: String(n),
+          height: baseHeight || "",
+          doorTopGap: topGap,
+          doorBetweenGap: betweenGap,
+          doorFrontHeights: rebalanced.heights,
+          doorFrontHeightManual: rebalanced.manual,
+          doorFrontWidths: Array.from({ length: n }, () => ""),
+          doorFrontWidthManual: Array.from({ length: n }, () => false),
+        }),
+        doorBetweenGaps: betweenGaps,
+        doorFrontBoards: Array.from({ length: n }, () => board),
+        doorFrontBoardManual: Array.from({ length: n }, () => false),
+        doorFrontNames: Array.from({ length: n }, () => ""),
+        doorFrontNameManual: Array.from({ length: n }, () => false),
+        doorFrontQuantities: Array.from({ length: n }, () => "1"),
+        // Unlinked by default — quantity usually differs front to front — but
+        // the chain icon is still there so they can be linked if wanted.
+        doorFrontQuantityManual: Array.from({ length: n }, () => true),
+      };
+      setCutlistCompactDraftDeckIndex(prev.length);
+      return [...prev, newRow];
+    });
+  };
+
+  // Same drawer-bank front setup as addDrawerFrontsDraftRow above, but spliced in as a sub-part
+  // directly under a Cabinetry main row (via the "Add sub part" picker's Doors/Drawers popup)
+  // instead of appended as a new top-level row. Board starts blank (per the Cabinetry sub-part
+  // auto-fill rules), but Height comes from the main Cabinetry row's own real Height — not the
+  // "Base Cab Height" Settings default addDrawerFrontsDraftRow uses — since the actual cabinet's
+  // height is already known here. Gaps still come from Settings (resolveDrawerBankGaps), same as
+  // the main-row flow.
+  const addCabinetDrawerBankSubPartDraftRow = (mainRowId: string, subPartType: string, count: number) => {
+    if (subPartDraftRowIds.has(mainRowId)) return;
+    const n = Math.max(1, Math.min(20, Math.floor(count) || 1));
+    setCutlistDraftRows((prev) => {
+      const mainIndex = prev.findIndex((row) => row.id === mainRowId);
+      if (mainIndex < 0) return prev;
+      const mainRow = prev[mainIndex];
+      const baseHeight = String(mainRow.height || "").trim();
+      const { topGap, betweenGap } = resolveDrawerBankGaps();
+      const seamCount = Math.max(0, n - 1);
+      const betweenGaps = Array.from({ length: seamCount }, () => betweenGap);
+      const initialHeights = normalizeDoorFrontHeights([], n);
+      const initialManual = normalizeDoorFrontHeightManual([], n);
+      const rebalanced = baseHeight
+        ? rebalanceDrawerBankFrontHeights(initialHeights, baseHeight, topGap, betweenGaps, initialManual)
+        : { heights: initialHeights, manual: initialManual };
+      const subPart: CutlistDraftRow = {
+        ...createDraftCutlistRow(subPartType, mainRow.room, {
+          name: String(mainRow.name || "").trim() ? `${mainRow.name} - Fronts` : "",
+          board: "",
+          doorMode: "drawer",
+          doorFrontCount: String(n),
+          height: baseHeight,
+          doorTopGap: topGap,
+          doorBetweenGap: betweenGap,
+          doorFrontHeights: rebalanced.heights,
+          doorFrontHeightManual: rebalanced.manual,
+          doorFrontWidths: Array.from({ length: n }, () => ""),
+          doorFrontWidthManual: Array.from({ length: n }, () => false),
+        }),
+        doorBetweenGaps: betweenGaps,
+        doorFrontBoards: Array.from({ length: n }, () => ""),
+        doorFrontBoardManual: Array.from({ length: n }, () => false),
+        doorFrontNames: Array.from({ length: n }, () => ""),
+        doorFrontNameManual: Array.from({ length: n }, () => false),
+        doorFrontQuantities: Array.from({ length: n }, () => "1"),
+        doorFrontQuantityManual: Array.from({ length: n }, () => true),
+      };
+      setSubPartDraftRowIds((prevIds) => {
+        const nextIds = new Set(prevIds);
+        nextIds.add(subPart.id);
+        return nextIds;
+      });
+      setCutlistCompactDraftDeckIndex(mainIndex + 1);
+      const next = [...prev];
+      next.splice(mainIndex + 1, 0, subPart);
+      return next;
+    });
+  };
+
+  // Front Width: like height, but "linked" fronts (manual=false) simply
+  // mirror whatever value is typed into any other linked front, rather than
+  // splitting a total — a stack of drawers is usually the same width, with
+  // the option to override an individual one via its own tickbox.
+  const onDraftFrontWidthChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
+    const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
+    const nextValue = numericDimensionText(value);
+    nextWidths[index] = nextValue;
+    const broadcast = !nextManual[index];
+    if (broadcast) {
+      for (let i = 0; i < count; i += 1) {
+        if (i !== index && !nextManual[i]) nextWidths[i] = nextValue;
+      }
     }
+    updateDraftCutlistRow(id, {
+      doorFrontWidths: nextWidths,
+      doorFrontWidthManual: nextManual,
+      width: broadcast ? nextValue : existing.width,
+    });
+  };
+
+  const onDraftFrontWidthLinkToggle = (id: string, index: number, linked: boolean) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
+    const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
+    nextManual[index] = !linked;
+    // Re-linking always rejoins the group's current value; unlinking freezes
+    // whatever value this front was displaying (its own slot if it already had
+    // one, else the shared/mirrored value) into its own slot so it doesn't go
+    // blank the instant it stops falling back to the shared value.
+    if (linked || !nextWidths[index]) nextWidths[index] = String(existing.width ?? "");
+    updateDraftCutlistRow(id, { doorFrontWidths: nextWidths, doorFrontWidthManual: nextManual });
+  };
+
+  // Front Height for DOOR-mode banks: doors sit side by side, so unlike
+  // drawers (where height is auto-split across stacked fronts), every door
+  // shares the SAME height — this is the mirror/broadcast model, identical
+  // in shape to onDraftFrontWidthChange/LinkToggle above, just targeting
+  // doorFrontHeights/height instead of doorFrontWidths/width.
+  const onDraftFrontHeightChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextHeights = normalizeDoorFrontHeights(existing.doorFrontHeights, count);
+    const nextManual = normalizeDoorFrontHeightManual(existing.doorFrontHeightManual, count);
+    const nextValue = numericDimensionText(value);
+    nextHeights[index] = nextValue;
+    const broadcast = !nextManual[index];
+    if (broadcast) {
+      for (let i = 0; i < count; i += 1) {
+        if (i !== index && !nextManual[i]) nextHeights[i] = nextValue;
+      }
+    }
+    updateDraftCutlistRow(id, {
+      doorFrontHeights: nextHeights,
+      doorFrontHeightManual: nextManual,
+      height: broadcast ? nextValue : existing.height,
+    });
+  };
+
+  const onDraftFrontHeightLinkToggle = (id: string, index: number, linked: boolean) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextHeights = normalizeDoorFrontHeights(existing.doorFrontHeights, count);
+    const nextManual = normalizeDoorFrontHeightManual(existing.doorFrontHeightManual, count);
+    nextManual[index] = !linked;
+    if (linked || !nextHeights[index]) nextHeights[index] = String(existing.height ?? "");
+    updateDraftCutlistRow(id, { doorFrontHeights: nextHeights, doorFrontHeightManual: nextManual });
+  };
+
+  // Front Width for DOOR-mode banks: the auto-split-with-pinnable-fronts
+  // model (mirrors onDraftDoorFrontHeightChange/Blur, the drawer-mode height
+  // split, but targets doorFrontWidths/width and is kept as a separate,
+  // newly-named pair since onDraftDoorFrontWidthChange/Blur already exist
+  // for the older single-scalar-gap door width designer and use a different
+  // gap model). Typing a value pins that front; updateDraftCutlistRow's own
+  // door-mode branch does the actual array-aware rebalance afterward.
+  const onDraftFrontWidthSplitChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
+    const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
+    const nextValue = numericDimensionText(value);
+    nextWidths[index] = nextValue;
+    // Always pin on ANY edit (typing OR clearing) — even a front that started
+    // out "auto" with a real baked-in value (from the initial even split)
+    // must be pinned the instant it's touched, or updateDraftCutlistRow's
+    // unconditional auto-split re-run would treat "still unpinned, now
+    // empty" as "unanimous auto, do a fresh even split" and instantly refill
+    // it with a computed value — never letting it stay blank while editing.
+    // Un-pinning (rejoining the auto group) is deferred entirely to blur.
+    nextManual[index] = true;
+    updateDraftCutlistRow(id, { doorFrontWidths: nextWidths, doorFrontWidthManual: nextManual });
+  };
+
+  const onDraftFrontWidthSplitBlur = (id: string, index: number) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextWidths = normalizeDoorFrontWidths(existing.doorFrontWidths, count);
+    const nextManual = normalizeDoorFrontWidthManual(existing.doorFrontWidthManual, count);
+    if (String(nextWidths[index] ?? "").trim().length > 0) return;
+    // Still empty on blur — now actually rejoin the auto-split group.
+    nextManual[index] = false;
+    updateDraftCutlistRow(id, { doorFrontWidths: nextWidths, doorFrontWidthManual: nextManual });
+  };
+
+  // Front Board: same mirror-unless-unticked behavior as width.
+  const onDraftFrontBoardChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextBoards = normalizeDoorFrontBoards(existing.doorFrontBoards, count);
+    const nextManual = normalizeDoorFrontBoardManual(existing.doorFrontBoardManual, count);
+    nextBoards[index] = value;
+    const broadcast = !nextManual[index];
+    if (broadcast) {
+      for (let i = 0; i < count; i += 1) {
+        if (i !== index && !nextManual[i]) nextBoards[i] = value;
+      }
+    }
+    updateDraftCutlistRow(id, {
+      doorFrontBoards: nextBoards,
+      doorFrontBoardManual: nextManual,
+      board: broadcast ? value : existing.board,
+    });
+  };
+
+  const onDraftFrontBoardLinkToggle = (id: string, index: number, linked: boolean) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextBoards = normalizeDoorFrontBoards(existing.doorFrontBoards, count);
+    const nextManual = normalizeDoorFrontBoardManual(existing.doorFrontBoardManual, count);
+    nextManual[index] = !linked;
+    if (linked || !nextBoards[index]) nextBoards[index] = String(existing.board ?? "");
+    updateDraftCutlistRow(id, { doorFrontBoards: nextBoards, doorFrontBoardManual: nextManual });
+  };
+
+
+  // Front Name: same mirror-unless-unticked behavior as the others.
+  const onDraftFrontNameChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextValues = normalizeDoorFrontTextArray(existing.doorFrontNames, count);
+    const nextManual = normalizeDoorFrontManualArray(existing.doorFrontNameManual, count);
+    nextValues[index] = value;
+    const broadcast = !nextManual[index];
+    if (broadcast) {
+      for (let i = 0; i < count; i += 1) {
+        if (i !== index && !nextManual[i]) nextValues[i] = value;
+      }
+    }
+    updateDraftCutlistRow(id, {
+      doorFrontNames: nextValues,
+      doorFrontNameManual: nextManual,
+      name: broadcast ? value : existing.name,
+    });
+  };
+
+  const onDraftFrontNameLinkToggle = (id: string, index: number, linked: boolean) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextValues = normalizeDoorFrontTextArray(existing.doorFrontNames, count);
+    const nextManual = normalizeDoorFrontManualArray(existing.doorFrontNameManual, count);
+    nextManual[index] = !linked;
+    if (linked || !nextValues[index]) nextValues[index] = String(existing.name ?? "");
+    updateDraftCutlistRow(id, { doorFrontNames: nextValues, doorFrontNameManual: nextManual });
+  };
+
+  // Front Quantity: same mirror-unless-unticked behavior as the others.
+  const onDraftFrontQuantityChange = (id: string, index: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextValues = normalizeDoorFrontTextArray(existing.doorFrontQuantities, count);
+    const nextManual = normalizeDoorFrontManualArray(existing.doorFrontQuantityManual, count);
+    const nextValue = numericOnlyText(value);
+    nextValues[index] = nextValue;
+    const broadcast = !nextManual[index];
+    if (broadcast) {
+      for (let i = 0; i < count; i += 1) {
+        if (i !== index && !nextManual[i]) nextValues[i] = nextValue;
+      }
+    }
+    updateDraftCutlistRow(id, {
+      doorFrontQuantities: nextValues,
+      doorFrontQuantityManual: nextManual,
+      quantity: broadcast ? nextValue : existing.quantity,
+    });
+  };
+
+  const onDraftFrontQuantityLinkToggle = (id: string, index: number, linked: boolean) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const nextValues = normalizeDoorFrontTextArray(existing.doorFrontQuantities, count);
+    const nextManual = normalizeDoorFrontManualArray(existing.doorFrontQuantityManual, count);
+    nextManual[index] = !linked;
+    if (linked || !nextValues[index]) nextValues[index] = String(existing.quantity ?? "");
+    updateDraftCutlistRow(id, { doorFrontQuantities: nextValues, doorFrontQuantityManual: nextManual });
+  };
+
+  // Shared layout for a per-front field column (Width/Board/Depth): one field
+  // per front, each with a small chain-icon toggle instead of a checkbox —
+  // a plain link icon while linked (mirrors any other still-linked front),
+  // switching to a red broken-link icon once clicked to make that front
+  // independent. No gap-driven spacers here — gaps are shown as small
+  // overlay badges on the Height column itself instead of extra rows, so
+  // every column keeps a plain, constant row height regardless of gaps.
+  // A small connector slot sits between every pair of fronts — a fixed-size
+  // gap either way, so nothing shifts when toggling, but it only draws a
+  // green line when BOTH neighboring fronts are still linked, visually
+  // showing the unbroken chain and disappearing right where it's cut.
+  const renderFrontFieldStack = (
+    count: number,
+    manual: boolean[],
+    linkTitle: string,
+    onLinkToggle: (index: number, linked: boolean) => void,
+    renderField: (index: number) => React.ReactNode,
+    // BoardPillDropdown renders its own portal-anchored wrapper at a very
+    // high z-index (needed so its open menu isn't clipped by other cells),
+    // which otherwise paints straight over an overlaid chain icon and hides
+    // it. Passing true lays the icon out as a normal flex item *beside* the
+    // dropdown instead of stacking on top of it — no z-index fight, and it
+    // never sits over the dropdown's own clickable area.
+    iconBesideField?: boolean,
+    // Sub-part rows render these fields at h-6 instead of h-8, which moves the chain icon's own
+    // center closer to the field's edge (12px in, vs 16px for h-8) — without this, the connector
+    // line's fixed reach (calibrated for h-8) would end up almost touching the icon instead of
+    // stopping the same small gap short of it. reach/height below are solved to keep that gap
+    // (icon-center-to-line-end) at the same 6px in both sizes.
+    compact?: boolean,
+  ) => {
+    const linkButton = (index: number, extraClassName: string) => (
+      <button
+        type="button"
+        title={linkTitle}
+        onClick={() => onLinkToggle(index, manual[index])}
+        className={`z-[65] inline-flex h-6 w-6 items-center justify-center ${extraClassName}`}
+      >
+        {manual[index] ? <Unlink2 size={16} color="#DC2626" /> : <Link2 size={16} style={{ color: "var(--success-strong)" }} />}
+      </button>
+    );
+    const connectorReach = compact ? 6 : 10;
+    const connectorStyle: React.CSSProperties = iconBesideField
+      ? { left: 11, top: -connectorReach, height: 6 + connectorReach * 2, zIndex: 64, backgroundColor: "var(--success-strong)" }
+      : { right: 15, top: -connectorReach, height: 6 + connectorReach * 2, zIndex: 64, backgroundColor: "var(--success-strong)" };
+    return (
+      <div className="flex w-full flex-col" style={{ width: "100%" }}>
+        {Array.from({ length: count }, (_, index) => (
+          <Fragment key={index}>
+            {iconBesideField ? (
+              <div className="flex w-full items-center" style={{ width: "100%" }}>
+                {linkButton(index, "relative shrink-0")}
+                <div className="min-w-0 flex-1">{renderField(index)}</div>
+              </div>
+            ) : (
+              <div className="relative w-full" style={{ width: "100%" }}>
+                {renderField(index)}
+                {linkButton(index, "absolute right-1 top-1/2 -translate-y-1/2")}
+              </div>
+            )}
+            {index < count - 1 ? (
+              <div className="relative w-full shrink-0" style={{ height: 6, width: "100%" }}>
+                {!manual[index] && !manual[index + 1] ? (
+                  // Runs from just below the chain icon above to just above the
+                  // chain icon below (icon-to-icon, not textbox-edge-to-edge) —
+                  // it deliberately overlaps into both neighboring textboxes,
+                  // stopping a small gap short of each icon rather than touching it.
+                  <div className="absolute w-[2px] rounded-full" style={connectorStyle} />
+                ) : null}
+              </div>
+            ) : null}
+          </Fragment>
+        ))}
+      </div>
+    );
+  };
+
+  // A gap value (top gap / between gap) rests as a small round bubble
+  // showing just the number. Clicking it expands that one bubble into an
+  // editable pill (autofocused); clicking away commits whatever was typed
+  // (already live via onChangeValue, same as every other field) and
+  // collapses it back down to a plain circle.
+  const gapBubbleStyle: React.CSSProperties = {
+    backgroundColor: "var(--panel-bg)",
+    border: "1px solid var(--glass-border)",
+    color: "#000000",
+  };
+  const renderGapBubble = (
+    bubbleKey: string,
+    value: string,
+    onChangeValue: (nextValue: string) => void,
+    title: string,
+    positionClassName: string,
+  ) => {
+    const displayValue = value.trim().length > 0 ? value : "0";
+    if (expandedGapBubbleKey === bubbleKey) {
+      return (
+        <input
+          autoFocus
+          disabled={productionReadOnly}
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => onChangeValue(e.target.value)}
+          onBlur={() => setExpandedGapBubbleKey("")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          title={title}
+          className={`${positionClassName} glass-bubble-pop flex h-9 w-9 items-center justify-center rounded-full px-0 text-center text-[11px] font-bold leading-tight`}
+          style={gapBubbleStyle}
+        />
+      );
+    }
+    return (
+      <button
+        type="button"
+        disabled={productionReadOnly}
+        onClick={() => setExpandedGapBubbleKey(bubbleKey)}
+        title={title}
+        className={`${positionClassName} flex h-5 w-5 items-center justify-center rounded-full text-[8px] font-bold leading-none hover:brightness-95`}
+        style={gapBubbleStyle}
+      >
+        {displayValue}
+      </button>
+    );
+  };
+
+  // Shared "auto-split across N fronts, with gap bubbles between each" column
+  // renderer — used by Height for drawer-mode banks (stacked fronts, split by
+  // height) and by Width for door-mode banks (side-by-side fronts, split by
+  // width). Pinning one front (typing a value) takes it out of the auto-split
+  // group; clearing it back to empty (on blur) rejoins the group. Field-name
+  // agnostic — callers pass in which values/handlers/gap labels apply.
+  const renderFrontSplitStack = (params: {
+    count: number;
+    values: string[];
+    resolvedValues: number[];
+    topGapValue: string;
+    betweenGaps: string[];
+    hasTopGapLabel: boolean;
+    hasBetweenGapLabel: boolean;
+    onValueChange: (index: number, value: string) => void;
+    onValueBlur: (index: number) => void;
+    onTopGapChange: (value: string) => void;
+    onBetweenGapChange: (index: number, value: string) => void;
+    topGapTitle: string;
+    betweenGapTitle: string;
+    fieldLabel: string;
+    fieldBg: string;
+    fieldBorder: string;
+    fieldText: string;
+    gapKey: string;
+    compact?: boolean;
+  }) => {
+    const {
+      count, values, topGapValue, betweenGaps, hasTopGapLabel, hasBetweenGapLabel,
+      onValueChange, onValueBlur, onTopGapChange, onBetweenGapChange, topGapTitle, betweenGapTitle,
+      fieldLabel, fieldBg, fieldBorder, fieldText, gapKey, compact,
+    } = params;
+    return (
+      <div className="flex flex-col">
+        {values.map((value, index) => (
+          <Fragment key={index}>
+            <div className="relative">
+              {index === 0 && hasTopGapLabel
+                ? renderGapBubble(
+                    `${gapKey}:top`,
+                    topGapValue,
+                    onTopGapChange,
+                    topGapTitle,
+                    "absolute -top-2.5 left-1/2 z-20 -translate-x-1/2",
+                  )
+                : null}
+              <input
+                disabled={productionReadOnly}
+                inputMode="decimal"
+                title={`Front ${index + 1} ${fieldLabel}`}
+                value={value}
+                onChange={(e) => onValueChange(index, e.target.value)}
+                onBlur={() => onValueBlur(index)}
+                className={`${compact ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 text-center cs-frontbank-ghost`}
+                style={{ backgroundColor: fieldBg, borderColor: fieldBorder, color: fieldText }}
+              />
+            </div>
+            {index < values.length - 1 ? (
+              <div className="relative flex shrink-0 items-center justify-center" style={{ height: 6 }}>
+                {hasBetweenGapLabel
+                  ? renderGapBubble(
+                      `${gapKey}:between:${index}`,
+                      betweenGaps[index] ?? "",
+                      (next) => onBetweenGapChange(index, next),
+                      betweenGapTitle,
+                      "absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2",
+                    )
+                  : null}
+              </div>
+            ) : null}
+          </Fragment>
+        ))}
+      </div>
+    );
+  };
+
+  const onSelectCutlistEntryPartType = (partType: string) => {
     setCutlistEntry((prev) => {
       const defaults = defaultClashingForPartType(partType, prev.board);
       const clashLeft = defaults.left;
@@ -15079,7 +15691,7 @@ export default function ProjectDetailsPage() {
       return {
         ...prev,
         partType,
-        doorMode: isDoor && cutlistEntryMode === "manual" ? "manual" : "",
+        doorMode: isDoor ? "manual" : "",
         doorFrontCount: "",
         doorTopGap: "",
         doorBetweenGap: "",
@@ -15241,37 +15853,50 @@ export default function ProjectDetailsPage() {
 
   const onDraftDoorFrontCountChange = (id: string, count: string) => {
     const normalizedCount = normalizeDoorFrontCountValue(count);
+    const nextCountNumber = Number.parseInt(normalizedCount, 10) || 0;
     const existing = cutlistDraftRows.find((row) => row.id === id);
+    // Quantity isn't part of the auto-split system (each front just gets its own plain "1" to
+    // start), so growing the front count needs its own padding here instead of the generic
+    // normalizeDoorFrontTextArray helper, which pads new slots with "" — right for Name, wrong
+    // for Quantity.
+    const existingQuantities = Array.isArray(existing?.doorFrontQuantities) ? existing.doorFrontQuantities : [];
+    const nextQuantities = Array.from({ length: nextCountNumber }, (_, index) => existingQuantities[index] ?? "1");
+    const existingQuantityManual = normalizeDoorFrontManualArray(existing?.doorFrontQuantityManual, nextCountNumber);
     updateDraftCutlistRow(id, {
+      doorFrontQuantities: nextQuantities,
+      doorFrontQuantityManual: existingQuantityManual,
       doorFrontCount: normalizedCount,
+      // Resize, then rebalance — growing/shrinking the front count changes how many ways the
+      // total splits, so every still-unpinned front needs to reflect that; pinned fronts (a real
+      // typed value) are left untouched by the rebalance itself.
       doorFrontWidths:
         normalizeDoorModeValue(existing?.doorMode) === "door"
           ? rebalanceDoorFrontWidths(
-              normalizeDoorFrontWidths(existing?.doorFrontWidths, Number.parseInt(normalizedCount, 10) || 0),
+              normalizeDoorFrontWidths(existing?.doorFrontWidths, nextCountNumber),
               String(existing?.width ?? ""),
               String(existing?.doorSideLeftGap ?? ""),
               String(existing?.doorSideRightGap ?? ""),
               String(existing?.doorBetweenGap ?? ""),
-              normalizeDoorFrontWidthManual(existing?.doorFrontWidthManual, Number.parseInt(normalizedCount, 10) || 0),
+              normalizeDoorFrontWidthManual(existing?.doorFrontWidthManual, nextCountNumber),
             ).widths
           : [],
       doorFrontWidthManual:
         normalizeDoorModeValue(existing?.doorMode) === "door"
-          ? normalizeDoorFrontWidthManual(existing?.doorFrontWidthManual, Number.parseInt(normalizedCount, 10) || 0)
+          ? normalizeDoorFrontWidthManual(existing?.doorFrontWidthManual, nextCountNumber)
           : [],
       doorFrontHeights:
-        normalizeDoorModeValue(existing?.doorMode) === "drawer"
+        normalizeDoorModeValue(existing?.doorMode) === "drawer" && existing
           ? rebalanceDoorFrontHeights(
-              normalizeDoorFrontHeights(existing?.doorFrontHeights, Number.parseInt(normalizedCount, 10) || 0),
-              String(existing?.height ?? ""),
-              String(existing?.doorTopGap ?? ""),
-              String(existing?.doorBetweenGap ?? ""),
-              normalizeDoorFrontHeightManual(existing?.doorFrontHeightManual, Number.parseInt(normalizedCount, 10) || 0),
+              normalizeDoorFrontHeights(existing.doorFrontHeights, nextCountNumber),
+              resolveFrontBankHeightSource(existing),
+              String(existing.doorTopGap ?? ""),
+              String(existing.doorBetweenGap ?? ""),
+              normalizeDoorFrontHeightManual(existing.doorFrontHeightManual, nextCountNumber),
             ).heights
           : [],
       doorFrontHeightManual:
         normalizeDoorModeValue(existing?.doorMode) === "drawer"
-          ? normalizeDoorFrontHeightManual(existing?.doorFrontHeightManual, Number.parseInt(normalizedCount, 10) || 0)
+          ? normalizeDoorFrontHeightManual(existing?.doorFrontHeightManual, nextCountNumber)
           : [],
     });
   };
@@ -15447,18 +16072,31 @@ export default function ProjectDetailsPage() {
       nextPatch.doorFrontWidths = rebalancedWidths.widths;
       nextPatch.doorFrontWidthManual = rebalancedWidths.manual;
     }
-    if (normalizeDoorModeValue(existing?.doorMode) === "drawer") {
+    if (normalizeDoorModeValue(existing?.doorMode) === "drawer" && existing) {
       const rebalanced = rebalanceDoorFrontHeights(
-        normalizeDoorFrontHeights(existing?.doorFrontHeights, Number.parseInt(existing?.doorFrontCount || "", 10) || 0),
-        String(existing?.height ?? ""),
-        String(key === "doorTopGap" ? nextValue : existing?.doorTopGap ?? ""),
-        String(key === "doorBetweenGap" ? nextValue : existing?.doorBetweenGap ?? ""),
-        existing?.doorFrontHeightManual,
+        normalizeDoorFrontHeights(existing.doorFrontHeights, Number.parseInt(existing.doorFrontCount || "", 10) || 0),
+        resolveFrontBankHeightSource(existing),
+        String(key === "doorTopGap" ? nextValue : existing.doorTopGap ?? ""),
+        String(key === "doorBetweenGap" ? nextValue : existing.doorBetweenGap ?? ""),
+        existing.doorFrontHeightManual,
       );
       nextPatch.doorFrontHeights = rebalanced.heights;
       nextPatch.doorFrontHeightManual = rebalanced.manual;
     }
     updateDraftCutlistRow(id, nextPatch);
+  };
+
+  // Changes a single between-fronts gap (one specific seam in a drawer bank)
+  // without touching any other seam's own gap value — updateDraftCutlistRow
+  // then reflows the front heights using the full per-seam array.
+  const onDraftFrontBetweenGapChange = (id: string, seamIndex: number, value: string) => {
+    const existing = cutlistDraftRows.find((row) => row.id === id);
+    if (!existing) return;
+    const count = Math.max(1, Number.parseInt(existing.doorFrontCount || "1", 10) || 1);
+    const seamCount = Math.max(0, count - 1);
+    const nextGaps = resolveDrawerBankBetweenGaps(existing, seamCount);
+    nextGaps[seamIndex] = numericOnlyText(value);
+    updateDraftCutlistRow(id, { doorBetweenGaps: nextGaps });
   };
 
   const onDraftDoorSideChange = (id: string, key: "doorSideLeft" | "doorSideRight", value: "front" | "panel") => {
@@ -15633,6 +16271,18 @@ export default function ProjectDetailsPage() {
     });
   };
 
+  // A sub-part front bank's own "Height" field is never directly shown/edited (the front-bank UI
+  // replaces that whole column), so its split math must always track its main row's real, live
+  // Height — not a one-time copy taken when the sub was created — otherwise entering/changing the
+  // main row's Height after the sub already exists would never reach these fronts.
+  const resolveFrontBankHeightSource = (row: CutlistDraftRow): string => {
+    if (!subPartDraftRowIds.has(row.id)) return String(row.height ?? "");
+    const idx = cutlistDraftRows.findIndex((r) => r.id === row.id);
+    let i = idx - 1;
+    while (i >= 0 && subPartDraftRowIds.has(cutlistDraftRows[i].id)) i -= 1;
+    return i >= 0 ? String(cutlistDraftRows[i].height ?? "") : String(row.height ?? "");
+  };
+
   const onDraftDoorFrontHeightChange = (id: string, index: number, value: string) => {
     const existing = cutlistDraftRows.find((row) => row.id === id);
     if (!existing) return;
@@ -15646,7 +16296,14 @@ export default function ProjectDetailsPage() {
       Number.parseInt(existing.doorFrontCount || "", 10) || 0,
     );
     nextHeights[index] = nextValue;
-    nextManual[index] = String(nextValue).trim().length > 0;
+    // Always pin on ANY edit (typing OR clearing) — even a front that started
+    // out "auto" with a real baked-in value (from the initial even split)
+    // must be pinned the instant it's touched, or the rebalance below would
+    // treat "still unpinned, now empty" as "unanimous auto, do a fresh even
+    // split" and instantly refill it with a computed value while the user is
+    // still actively clearing it. Un-pinning (rejoining the auto group) is
+    // deferred entirely to blur, once we know they're actually done editing.
+    nextManual[index] = true;
     if (String(nextValue).trim().length === 0) {
       updateDraftCutlistRow(id, {
         doorFrontHeights: nextHeights,
@@ -15656,7 +16313,7 @@ export default function ProjectDetailsPage() {
     }
     const rebalanced = rebalanceDoorFrontHeights(
       nextHeights,
-      String(existing.height ?? ""),
+      resolveFrontBankHeightSource(existing),
       String(existing.doorTopGap ?? ""),
       String(existing.doorBetweenGap ?? ""),
       nextManual,
@@ -15674,9 +16331,13 @@ export default function ProjectDetailsPage() {
     const nextHeights = normalizeDoorFrontHeights(existing.doorFrontHeights, count);
     const nextManual = normalizeDoorFrontHeightManual(existing.doorFrontHeightManual, count);
     if (String(nextHeights[index] ?? "").trim().length > 0) return;
+    // Still empty on blur — now actually rejoin the auto-split group, so it (and every other
+    // still-unpinned front) shows the live even-split of whatever space is left over from any
+    // pinned fronts.
+    nextManual[index] = false;
     const rebalanced = rebalanceDoorFrontHeights(
       nextHeights,
-      String(existing.height ?? ""),
+      resolveFrontBankHeightSource(existing),
       String(existing.doorTopGap ?? ""),
       String(existing.doorBetweenGap ?? ""),
       nextManual,
@@ -16755,27 +17416,37 @@ export default function ProjectDetailsPage() {
             next.doorSideRight = normalizeDoorSideValue(next.doorSideRight);
             next.doorSideLeftGap = numericDecimalText(String(next.doorSideLeftGap ?? ""));
             next.doorSideRightGap = numericDecimalText(String(next.doorSideRightGap ?? ""));
-            next.doorFrontHeights = normalizeDoorFrontHeights(
-              next.doorFrontHeights,
-              Number.parseInt(nextCount, 10) || 0,
-            );
-            next.doorFrontHeightManual = normalizeDoorFrontHeightManual(
-              next.doorFrontHeightManual,
-              Number.parseInt(nextCount, 10) || 0,
-            );
+            const n = Number.parseInt(nextCount, 10) || 0;
+            next.doorFrontHeights = normalizeDoorFrontHeights(next.doorFrontHeights, n);
+            next.doorFrontHeightManual = normalizeDoorFrontHeightManual(next.doorFrontHeightManual, n);
+            next.doorFrontWidths = normalizeDoorFrontWidths(next.doorFrontWidths, n);
+            next.doorFrontWidthManual = normalizeDoorFrontWidthManual(next.doorFrontWidthManual, n);
             if (nextMode === "drawer") {
-              const rebalanced = rebalanceDoorFrontHeights(
-                next.doorFrontHeights,
-                String(next.height ?? ""),
-                String(next.doorTopGap ?? ""),
-                String(next.doorBetweenGap ?? ""),
-                next.doorFrontHeightManual,
-              );
-              next.doorFrontHeights = rebalanced.heights;
-              next.doorFrontHeightManual = rebalanced.manual;
+              // Drawers stack vertically — HEIGHT is the auto-split axis (gap
+              // bubbles between stacked fronts); WIDTH stays a plain mirror
+              // field managed directly by onDraftFrontWidthChange/LinkToggle.
+              // Deliberately NOT rebalancing doorFrontHeights here (unlike the
+              // dedicated height/gap/count handlers, which each rebalance and
+              // pass the result in via patch already) — this generic patcher
+              // runs on every field edit on the row, so rebalancing here would
+              // silently re-fill any front the user had just cleared blank the
+              // moment they touched any other field (Board, Name, etc). The
+              // render-time resolvedFrontHeights already covers the "what
+              // would this front be" preview via its placeholder.
+              const seamCount = Math.max(0, n - 1);
+              next.doorBetweenGaps = resolveDrawerBankBetweenGaps(next, seamCount);
+            } else if (nextMode === "door") {
+              // Doors sit side by side — WIDTH is the auto-split axis; HEIGHT
+              // stays a plain mirror field managed by onDraftFrontHeightChange/
+              // LinkToggle (every door shares the same height by default).
+              // Same reasoning as the drawer branch above — no rebalance here.
+              const seamCount = Math.max(0, n - 1);
+              next.doorBetweenGaps = resolveDrawerBankBetweenGaps(next, seamCount);
             } else {
               next.doorFrontHeights = [];
               next.doorFrontHeightManual = [];
+              next.doorFrontWidths = [];
+              next.doorFrontWidthManual = [];
             }
           } else if (isClassicDrawerRowLike(next)) {
             const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
@@ -16795,7 +17466,7 @@ export default function ProjectDetailsPage() {
           ? {
               ...row,
               height: formatted,
-              quantity: String(Math.max(1, parseDrawerHeightTokens(formatted).length)),
+              quantity: parseDrawerHeightTokens(formatted).length ? String(parseDrawerHeightTokens(formatted).length) : "",
             }
           : row,
       ),
@@ -16824,7 +17495,7 @@ export default function ProjectDetailsPage() {
     setCutlistEntry((prev) => ({
       ...prev,
       height: formatted,
-      quantity: String(Math.max(1, parseDrawerHeightTokens(formatted).length)),
+      quantity: parseDrawerHeightTokens(formatted).length ? String(parseDrawerHeightTokens(formatted).length) : "",
     }));
   };
 
@@ -16890,8 +17561,64 @@ export default function ProjectDetailsPage() {
     setDraftInformationLines(id, next.length ? next : [""]);
   };
 
-  const removeDraftCutlistRow = (id: string) => {
-    setCutlistDraftRows((prev) => prev.filter((row) => row.id !== id));
+  // Safeguard: never let a row (main or sub) vanish silently once someone has actually typed
+  // real data into it — Part Name/Height/Width/Depth/Quantity are the fields most likely to hold
+  // work someone would be upset to lose. A main row is additionally blocked if any of its own sub
+  // rows still hold any of that same data, since deleting the main row would take the subs with it.
+  const draftRowGuardedFields = (row: {
+    name?: string;
+    height?: string;
+    width?: string;
+    depth?: string;
+    quantity?: string;
+  }): Record<string, string> => {
+    const filled: Record<string, string> = {};
+    if (String(row.name || "").trim()) filled.name = "This row has a Part Name — clear it before deleting.";
+    if (String(row.height || "").trim()) filled.height = "This row has a Height — clear it before deleting.";
+    if (String(row.width || "").trim()) filled.width = "This row has a Width — clear it before deleting.";
+    if (String(row.depth || "").trim()) filled.depth = "This row has a Depth — clear it before deleting.";
+    if (String(row.quantity || "").trim()) filled.quantity = "This row has a Quantity — clear it before deleting.";
+    return filled;
+  };
+
+  // `force` bypasses every check below — wired to a double-click on the row's own X button, for
+  // when someone genuinely wants a filled-in row gone without clearing each field first.
+  const removeDraftCutlistRow = (id: string, force = false) => {
+    const row = cutlistDraftRows.find((r) => r.id === id);
+    if (!row) return;
+
+    if (!force) {
+      const ownWarnings = draftRowGuardedFields(row);
+      if (Object.keys(ownWarnings).length > 0) {
+        flashCutlistWarningCells({ [id]: ownWarnings });
+        return;
+      }
+
+      if (!subPartDraftRowIds.has(id)) {
+        const mainIndex = cutlistDraftRows.findIndex((r) => r.id === id);
+        const subWarnings: Record<string, Record<string, string>> = {};
+        let j = mainIndex + 1;
+        while (j < cutlistDraftRows.length && subPartDraftRowIds.has(cutlistDraftRows[j].id)) {
+          const subFilled = draftRowGuardedFields(cutlistDraftRows[j]);
+          if (Object.keys(subFilled).length > 0) {
+            subWarnings[cutlistDraftRows[j].id] = subFilled;
+          }
+          j += 1;
+        }
+        if (Object.keys(subWarnings).length > 0) {
+          flashCutlistWarningCells(subWarnings);
+          return;
+        }
+      }
+    }
+
+    setCutlistDraftRows((prev) => prev.filter((r) => r.id !== id));
+    setSubPartDraftRowIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   const addDraftRowsToCutlist = async () => {
@@ -16933,9 +17660,11 @@ export default function ProjectDetailsPage() {
           };
         const rowErrors = validateCutlistRowInput(normalizedRow, partType, cutlistRowLabelFor(normalizedRow, `Row ${idx + 1}`));
         if (rowErrors.length) {
+          // Same as Initial Measure: rely solely on the cell-anchored glass bubbles
+          // (flashCutlistWarningCells, called once below for the whole batch) — no per-row
+          // top-feed entry, so rejecting several rows at once doesn't flood the activity feed.
           rejectedIds.add(row.id);
           nextWarnings[row.id] = makeWarningMapForRow(rowErrors);
-          logCutlistValidationIssues(rowErrors, partType);
           return null;
         }
         return normalizedRow;
@@ -16961,4562 +17690,24 @@ export default function ProjectDetailsPage() {
     await persistCutlistRows(nextRows);
   };
 
-  const expandCabinetBuilderLinkedRowIds = useCallback(
-    (rowIds: string[], rows: CutlistRow[]) => {
-      const expanded = new Set(rowIds.map((id) => String(id || "").trim()).filter(Boolean));
-      const containerIds = new Set<string>();
-      for (const row of rows) {
-        const rowId = String(row.id || "").trim();
-        if (!expanded.has(rowId)) continue;
-        if (row.cabinetBuilderRowKind === "container") {
-          containerIds.add(rowId);
-        }
-        if (row.cabinetBuilderRowKind === "generated") {
-          const linkedContainerId = String(row.cabinetBuilderContainerId || "").trim();
-          if (linkedContainerId) containerIds.add(linkedContainerId);
-        }
-      }
-      for (const row of rows) {
-        const rowId = String(row.id || "").trim();
-        const linkedContainerId = String(row.cabinetBuilderContainerId || "").trim();
-        if (containerIds.has(rowId) || (linkedContainerId && containerIds.has(linkedContainerId))) {
-          expanded.add(rowId);
-        }
-      }
-      return expanded;
-    },
-    [],
-  );
-
-  const removeCutlistRow = async (id: string) => {
-    const removeIds = expandCabinetBuilderLinkedRowIds([id], cutlistRows);
+  // `force` bypasses the guard below — wired to a double-click on the row's own X button, same as
+  // the draft-row equivalent, for when someone genuinely wants a filled-in row gone.
+  const removeCutlistRow = async (id: string, force = false) => {
     const removed = cutlistRows.find((row) => row.id === id);
-    const next = cutlistRows.filter((row) => !removeIds.has(String(row.id || "").trim()));
+    if (!removed) return;
+    if (!force) {
+      const warnings = draftRowGuardedFields(removed);
+      if (Object.keys(warnings).length > 0) {
+        flashCutlistWarningCells({ [id]: warnings });
+        return;
+      }
+    }
+    const next = cutlistRows.filter((row) => String(row.id || "").trim() !== String(id || "").trim());
     setCutlistRows(next);
-    if (removed) {
-      logCutlistActivity(`${removed.name || "Part"} removed`, {
-        partType: removed.partType,
-      });
-    }
+    logCutlistActivity(`${removed.name || "Part"} removed`, {
+      partType: removed.partType,
+    });
     await persistCutlistRows(next);
-  };
-
-  const openCabinetBuilderDoors = () => {
-    setCabinetBuilderDraft((prev) => {
-      if (!prev) return prev;
-      const selectedWall = getCabinetBuilderSelectedWallPiece(prev);
-      if (!selectedWall) return prev;
-      const createRow = () =>
-        createConfiguredCabinetFrontRow("door", {
-          name: selectedWall.row.name,
-          height: selectedWall.row.height,
-          width: selectedWall.row.width,
-          board: selectedWall.row.board,
-        });
-      if (selectedWall.isMain) {
-        return {
-          ...prev,
-          drawersRow: null,
-          doorsRow: prev.doorsRow ? prev.doorsRow : createRow(),
-        };
-      }
-      return {
-        ...prev,
-        attachments: prev.attachments.map((attachment) =>
-          attachment.id === selectedWall.id
-            ? {
-                ...attachment,
-                drawersRow: null,
-                doorsRow: attachment.doorsRow ? attachment.doorsRow : createRow(),
-              }
-            : attachment,
-        ),
-      };
-    });
-    setCabinetBuilderDoorsOpen(true);
-    setCabinetBuilderDrawersOpen(false);
-  };
-
-  const openCabinetBuilderDrawers = () => {
-    setCabinetBuilderDraft((prev) => {
-      if (!prev) return prev;
-      const selectedWall = getCabinetBuilderSelectedWallPiece(prev);
-      if (!selectedWall) return prev;
-      const createRow = () =>
-        createConfiguredCabinetFrontRow("drawer", {
-          name: selectedWall.row.name,
-          height: selectedWall.row.height,
-          width: selectedWall.row.width,
-          board: selectedWall.row.board,
-        });
-      if (selectedWall.isMain) {
-        return {
-          ...prev,
-          doorsRow: null,
-          drawersRow: prev.drawersRow ? prev.drawersRow : createRow(),
-        };
-      }
-      return {
-        ...prev,
-        attachments: prev.attachments.map((attachment) =>
-          attachment.id === selectedWall.id
-            ? {
-                ...attachment,
-                doorsRow: null,
-                drawersRow: attachment.drawersRow ? attachment.drawersRow : createRow(),
-              }
-            : attachment,
-        ),
-      };
-    });
-    setCabinetBuilderDrawersOpen(true);
-    setCabinetBuilderDoorsOpen(false);
-  };
-
-  const updateCabinetBuilderMainRow = (patch: Partial<CutlistEntryDraft>) => {
-    setCabinetBuilderDraft((prev) => {
-      if (!prev) return prev;
-      const selectedWall = getCabinetBuilderSelectedWallPiece(prev);
-      if (!selectedWall || (!selectedWall.isMain && selectedWall.kind !== "cabinet")) return prev;
-      const applyPatch = (target: {
-        row: CutlistEntryDraft;
-        doorsRow?: CutlistEntryDraft | null;
-        drawersRow?: CutlistEntryDraft | null;
-        childRows?: CabinetBuilderChildDraft[];
-      }) => {
-        const nextRow = { ...target.row, ...patch };
-        const inheritedName = String(nextRow.name || "").trim();
-        const parseDimensionNumber = (value: unknown) =>
-          Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, "")) || 0;
-        const carcassThickness =
-          Number.parseFloat(String(productionForm.existing.carcassThickness || "").replace(/[^\d.-]/g, "")) || 0;
-        const nextBoardThickness = boardThicknessFor(String(nextRow.board || "").trim()) || carcassThickness;
-        const drawerWidthThickness = selectedWall.newCabinet ? nextBoardThickness : carcassThickness;
-        const nextCabinetWidth = parseDimensionNumber(nextRow.width);
-        const nextCabinetDepth = parseDimensionNumber(nextRow.depth);
-        const nextDoors =
-          target.doorsRow
-            ? {
-                ...target.doorsRow,
-                name: inheritedName,
-                height: String(patch.height ?? target.doorsRow.height ?? ""),
-                width: String(patch.width ?? target.doorsRow.width ?? ""),
-                board: String(patch.board ?? target.doorsRow.board ?? ""),
-              }
-            : null;
-        const nextDrawers =
-          target.drawersRow
-            ? {
-                ...target.drawersRow,
-                name: inheritedName,
-                height: String(patch.height ?? target.drawersRow.height ?? ""),
-                width: String(patch.width ?? target.drawersRow.width ?? ""),
-                board: String(patch.board ?? target.drawersRow.board ?? ""),
-              }
-            : null;
-        const nextChildren = (target.childRows ?? []).map((child) => ({
-          ...child,
-          row: (() => {
-            const nextChildRow = { ...child.row, name: inheritedName || child.row.name };
-            if (isDrawerPartType(String(child.row.partType || "")) && !isDoorPartType(String(child.row.partType || ""))) {
-              return {
-                ...nextChildRow,
-                width:
-                  nextCabinetWidth > 0
-                    ? numericDimensionText(String(Math.max(0, nextCabinetWidth - drawerWidthThickness * 2)))
-                    : nextChildRow.width,
-                depth:
-                  selectedWall.newCabinet && nextCabinetDepth > 0
-                    ? numericDimensionText(String(Math.max(0, nextCabinetDepth - nextBoardThickness)))
-                    : nextChildRow.depth,
-              };
-            }
-            return nextChildRow;
-          })(),
-        }));
-        return { nextRow, nextDoors, nextDrawers, nextChildren };
-      };
-      if (selectedWall.isMain) {
-        const { nextRow, nextDoors, nextDrawers, nextChildren } = applyPatch(prev);
-        return {
-          ...prev,
-          row: nextRow,
-          doorsRow: nextDoors,
-          drawersRow: nextDrawers,
-          childRows: nextChildren,
-          attachments: prev.attachments.map((attachment) => ({
-            ...attachment,
-            row: { ...attachment.row, name: cabinetBuilderSideName(attachment.side, String(nextRow.name || "").trim()) },
-          })),
-        };
-      }
-      return {
-        ...prev,
-        attachments: prev.attachments.map((attachment) => {
-          if (attachment.id !== selectedWall.id) return attachment;
-          const { nextRow, nextDoors, nextDrawers, nextChildren } = applyPatch(attachment);
-          return {
-            ...attachment,
-            row: nextRow,
-            doorsRow: nextDoors,
-            drawersRow: nextDrawers,
-            childRows: nextChildren,
-          };
-        }),
-      };
-    });
-  };
-
-  const setCabinetBuilderSelectedNewCabinet = (value: boolean) => {
-    setCabinetBuilderDraft((prev) =>
-      prev ? setCabinetBuilderSelectedNewCabinetInDraftModel(prev, cabinetBuilderSelectedWallId, value) : prev,
-    );
-  };
-
-  const clearCabinetBuilderSelectedFronts = () => {
-    setCabinetBuilderDraft((prev) => {
-      if (!prev) return prev;
-      const selectedWall = getCabinetBuilderSelectedWallPieceModel(prev, cabinetBuilderSelectedWallId);
-      if (!selectedWall) return prev;
-      if (selectedWall.isMain) {
-        return {
-          ...prev,
-          doorsRow: null,
-          drawersRow: null,
-        };
-      }
-      return {
-        ...prev,
-        attachments: prev.attachments.map((attachment) =>
-          attachment.id === selectedWall.id
-            ? {
-                ...attachment,
-                doorsRow: null,
-                drawersRow: null,
-              }
-            : attachment,
-        ),
-      };
-    });
-  };
-
-  const renderCabinetBuilderPartTabHeader = (
-    partType: string,
-    onRemove?: (() => void) | null,
-    onAddPiece?: (() => void) | null,
-  ) => (
-    <div className="flex w-full items-start justify-between gap-3">
-      <span
-        className="inline-flex shrink-0 items-center rounded-[8px] border px-3 py-1.5 text-[11px] font-bold"
-        style={{
-          borderColor: partTypeColors[partType] ?? "#CBD5E1",
-          backgroundColor: lightenHex(partTypeColors[partType] ?? "#CBD5E1", 0.18),
-          color: "#000000",
-        }}
-      >
-        {partType}
-      </span>
-      <div className="flex shrink-0 items-start gap-2">
-        {onAddPiece ? (
-          <button
-            type="button"
-            disabled={productionReadOnly}
-            onClick={onAddPiece}
-            className="inline-flex h-8 items-center justify-center self-start rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-3 text-[11px] font-bold text-[#14532D] disabled:opacity-55"
-          >
-            Add Piece
-          </button>
-        ) : null}
-        {onRemove ? (
-          <button
-            type="button"
-            disabled={productionReadOnly}
-            onClick={onRemove}
-            className="inline-flex h-8 w-8 items-center justify-center self-start rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
-          >
-            <X size={15} />
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-  const normalizeCabinetBuilderChildTabPartType = (partType: string) => String(partType || "").trim() || "Part";
-  const buildCabinetBuilderChildTabId = (partType: string) =>
-    `childtype:${encodeURIComponent(normalizeCabinetBuilderChildTabPartType(partType))}`;
-  const parseCabinetBuilderChildTabPartType = (tabId: string) => {
-    if (tabId.startsWith("childtype:")) {
-      try {
-        return decodeURIComponent(tabId.slice(10));
-      } catch {
-        return tabId.slice(10);
-      }
-    }
-    return "";
-  };
-
-  const updateCabinetBuilderConfiguredRow = (
-    kind: "doorsRow" | "drawersRow",
-    updater: (row: CutlistEntryDraft) => CutlistEntryDraft,
-  ) => {
-    setCabinetBuilderDraft((prev) =>
-      prev ? updateCabinetBuilderConfiguredRowInDraftModel(prev, cabinetBuilderSelectedWallId, kind, updater) : prev,
-    );
-  };
-
-  const updateCabinetBuilderConfiguredFrontCount = (kind: "doorsRow" | "drawersRow", value: string) => {
-    updateCabinetBuilderConfiguredRow(kind, (row) =>
-      updateCabinetBuilderConfiguredFrontCountRowModel(row, value, {
-        normalizeDoorModeValue,
-        normalizeDoorFrontCountValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        rebalanceDoorFrontWidths,
-        rebalanceDoorFrontHeights,
-      }),
-    );
-  };
-
-  const updateCabinetBuilderConfiguredGap = (
-    kind: "doorsRow" | "drawersRow",
-    key: "doorTopGap" | "doorBetweenGap",
-    value: string,
-  ) => {
-    updateCabinetBuilderConfiguredRow(kind, (row) =>
-      updateCabinetBuilderConfiguredGapRowModel(row, key, value, {
-        numericDecimalText,
-        normalizeDoorModeValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        rebalanceDoorFrontWidths,
-        rebalanceDoorFrontHeights,
-      }),
-    );
-  };
-
-  const updateCabinetBuilderConfiguredFrontValue = (
-    kind: "doorsRow" | "drawersRow",
-    index: number,
-    value: string,
-  ) => {
-    updateCabinetBuilderConfiguredRow(kind, (row) =>
-      updateCabinetBuilderConfiguredFrontValueRowModel(row, index, value, {
-        normalizeDoorModeValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        numericDimensionText,
-      }),
-    );
-  };
-
-  const blurCabinetBuilderConfiguredFrontValue = (kind: "doorsRow" | "drawersRow", index: number) => {
-    void index;
-    updateCabinetBuilderConfiguredRow(kind, (row) =>
-      blurCabinetBuilderConfiguredFrontValueRowModel(row, {
-        normalizeDoorModeValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        rebalanceDoorFrontWidths,
-        rebalanceDoorFrontHeights,
-      }),
-    );
-  };
-
-  const updateCabinetBuilderConfiguredSide = (
-    kind: "doorsRow" | "drawersRow",
-    key: "doorSideLeft" | "doorSideRight",
-    value: "front" | "panel",
-  ) => {
-    updateCabinetBuilderConfiguredRow(kind, (row) =>
-      updateCabinetBuilderConfiguredSideRowModel(row, key, value),
-    );
-  };
-
-  const updateCabinetBuilderConfiguredSideGap = (
-    kind: "doorsRow" | "drawersRow",
-    key: "doorSideLeftGap" | "doorSideRightGap",
-    value: string,
-  ) => {
-    updateCabinetBuilderConfiguredRow(kind, (row) =>
-      updateCabinetBuilderConfiguredSideGapRowModel(row, key, value, {
-        numericDecimalText,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        rebalanceDoorFrontWidths,
-      }),
-    );
-  };
-  const updateCabinetBuilderConfiguredGapByOwner = (
-    ownerId: string,
-    kind: "doorsRow" | "drawersRow",
-    key: "doorTopGap" | "doorBetweenGap",
-    value: string,
-  ) => {
-    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
-      updateCabinetBuilderConfiguredGapRowModel(row, key, value, {
-        numericDecimalText,
-        normalizeDoorModeValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        rebalanceDoorFrontWidths,
-        rebalanceDoorFrontHeights,
-      }),
-    );
-  };
-  const updateCabinetBuilderConfiguredSideGapByOwner = (
-    ownerId: string,
-    kind: "doorsRow" | "drawersRow",
-    key: "doorSideLeftGap" | "doorSideRightGap",
-    value: string,
-  ) => {
-    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
-      updateCabinetBuilderConfiguredSideGapRowModel(row, key, value, {
-        numericDecimalText,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        rebalanceDoorFrontWidths,
-      }),
-    );
-  };
-  const startCabinetBuilderOverlayGapEdit = useCallback(
-    (
-      pillId: string,
-      ownerId: string,
-      kind: "doorsRow" | "drawersRow",
-      key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap",
-      currentValue: number,
-    ) => {
-      if (productionReadOnly) return;
-      setCabinetBuilderSelectedWallId(ownerId);
-      setCabinetBuilderSelectedHoverActive(true);
-      setCabinetBuilderEditingGapPill({
-        pillId,
-        ownerId,
-        kind,
-        key,
-        value: formatDoorFrontHeightValue(currentValue),
-      });
-    },
-    [
-      productionReadOnly,
-    ],
-  );
-  const commitCabinetBuilderOverlayGapEdit = useCallback(() => {
-    if (!cabinetBuilderEditingGapPill) return;
-    const nextValue = numericDecimalText(cabinetBuilderEditingGapPill.value);
-    if (
-      cabinetBuilderEditingGapPill.key === "doorTopGap" ||
-      cabinetBuilderEditingGapPill.key === "doorBetweenGap"
-    ) {
-      updateCabinetBuilderConfiguredGapByOwner(
-        cabinetBuilderEditingGapPill.ownerId,
-        cabinetBuilderEditingGapPill.kind,
-        cabinetBuilderEditingGapPill.key,
-        nextValue,
-      );
-    } else {
-      updateCabinetBuilderConfiguredSideGapByOwner(
-        cabinetBuilderEditingGapPill.ownerId,
-        cabinetBuilderEditingGapPill.kind,
-        cabinetBuilderEditingGapPill.key,
-        nextValue,
-      );
-    }
-    setCabinetBuilderEditingGapPill(null);
-  }, [
-    cabinetBuilderEditingGapPill,
-    numericDecimalText,
-    updateCabinetBuilderConfiguredGapByOwner,
-    updateCabinetBuilderConfiguredSideGapByOwner,
-  ]);
-  const cancelCabinetBuilderOverlayGapEdit = useCallback(() => {
-    setCabinetBuilderEditingGapPill(null);
-  }, []);
-
-  const updateCabinetBuilderChildRow = (childId: string, patch: Partial<CutlistEntryDraft>) => {
-    setCabinetBuilderDraft((prev) => {
-      if (!prev) return prev;
-      const applyPatchToRow = (row: CutlistEntryDraft) => {
-        const next = { ...row, ...patch };
-        if (isClassicDrawerRowLike(next)) {
-          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
-          next.height = formatDrawerHeightTokens(tokens);
-          next.quantity = String(Math.max(1, tokens.length));
-        }
-        return next;
-      };
-      return updateCabinetBuilderChildRowInDraftModel(prev, cabinetBuilderSelectedWallId, childId, applyPatchToRow);
-    });
-  };
-
-  const removeCabinetBuilderChildRow = (childId: string) => {
-    setCabinetBuilderDraft((prev) =>
-      prev ? removeCabinetBuilderChildRowInDraftModel(prev, cabinetBuilderSelectedWallId, childId) : prev,
-    );
-  };
-
-  const updateCabinetBuilderAttachmentRow = (attachmentId: string, patch: Partial<CutlistEntryDraft>) => {
-    setCabinetBuilderDraft((prev) =>
-      prev ? updateCabinetBuilderAttachmentRowInDraftModel(prev, attachmentId, patch) : prev,
-    );
-  };
-  const updateCabinetBuilderAttachmentMeta = (
-    attachmentId: string,
-    patch: Partial<Pick<CabinetBuilderAttachmentDraft, "panelHeightMode" | "panelSpanMode">>,
-  ) => {
-    setCabinetBuilderDraft((prev) =>
-      prev ? updateCabinetBuilderAttachmentMetaInDraftModel(prev, attachmentId, patch) : prev,
-    );
-  };
-  const updateCabinetBuilderWallPieceRowById = (ownerId: string, patch: Partial<CutlistEntryDraft>) => {
-    if (ownerId === "main") {
-      setCabinetBuilderSelectedWallId("main");
-      updateCabinetBuilderMainRow(patch);
-      return;
-    }
-    updateCabinetBuilderAttachmentRow(ownerId, patch);
-  };
-  const updateCabinetBuilderChildRowByOwner = (ownerId: string, childId: string, patch: Partial<CutlistEntryDraft>) => {
-    setCabinetBuilderDraft((prev) => {
-      if (!prev) return prev;
-      const applyPatchToRow = (row: CutlistEntryDraft) => {
-        const next = { ...row, ...patch };
-        if (isClassicDrawerRowLike(next)) {
-          const tokens = parseDrawerHeightTokens(String(next.height ?? ""));
-          next.height = formatDrawerHeightTokens(tokens);
-          next.quantity = String(Math.max(1, tokens.length));
-        }
-        return next;
-      };
-      return updateCabinetBuilderChildRowByOwnerInDraftModel(prev, ownerId, childId, applyPatchToRow);
-    });
-  };
-  const updateCabinetBuilderChildDrawerHeightTokens = (childId: string, tokens: string[]) => {
-    setCabinetBuilderDraft((prev) =>
-      prev
-        ? updateCabinetBuilderChildDrawerHeightTokensInDraftModel(prev, cabinetBuilderSelectedWallId, childId, tokens, {
-            formatDrawerHeightTokens,
-            parseDrawerHeightTokens,
-          })
-        : prev,
-    );
-  };
-  const addCabinetBuilderChildDrawerHeightToken = (childId: string, token: string) => {
-    setCabinetBuilderDraft((prev) =>
-      prev
-        ? addCabinetBuilderChildDrawerHeightTokenInDraftModel(prev, cabinetBuilderSelectedWallId, childId, token, {
-            formatDrawerHeightTokens,
-            parseDrawerHeightTokens,
-          })
-        : prev,
-    );
-  };
-  const removeCabinetBuilderChildDrawerHeightToken = (childId: string, token: string) => {
-    setCabinetBuilderDraft((prev) =>
-      prev
-        ? removeCabinetBuilderChildDrawerHeightTokenInDraftModel(prev, cabinetBuilderSelectedWallId, childId, token, {
-            formatDrawerHeightTokens,
-            parseDrawerHeightTokens,
-          })
-        : prev,
-    );
-  };
-  const updateCabinetBuilderConfiguredRowByOwner = (
-    ownerId: string,
-    kind: "doorsRow" | "drawersRow",
-    updater: (row: CutlistEntryDraft) => CutlistEntryDraft,
-  ) => {
-    setCabinetBuilderDraft((prev) =>
-      prev ? updateCabinetBuilderConfiguredRowByOwnerInDraftModel(prev, ownerId, kind, updater) : prev,
-    );
-  };
-  const updateCabinetBuilderConfiguredFrontIndexesByOwner = (
-    ownerId: string,
-    kind: "doorsRow" | "drawersRow",
-    indexes: number[],
-    value: string,
-  ) => {
-    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
-      updateCabinetBuilderConfiguredFrontIndexesRowModel(row, indexes, value, {
-        normalizeDoorModeValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        numericDimensionText,
-      }),
-    );
-  };
-  const blurCabinetBuilderConfiguredFrontIndexesByOwner = (
-    ownerId: string,
-    kind: "doorsRow" | "drawersRow",
-  ) => {
-    updateCabinetBuilderConfiguredRowByOwner(ownerId, kind, (row) =>
-      blurCabinetBuilderConfiguredFrontValueRowModel(row, {
-        normalizeDoorModeValue,
-        normalizeDoorFrontWidths,
-        normalizeDoorFrontWidthManual,
-        normalizeDoorFrontHeights,
-        normalizeDoorFrontHeightManual,
-        rebalanceDoorFrontWidths,
-        rebalanceDoorFrontHeights,
-      }),
-    );
-  };
-  const getCabinetBuilderListedAttachments = useCallback((draft: CabinetBuilderDraft) => {
-    const listedAttachments = draft.attachments.filter(
-      (attachment) =>
-        attachment.kind === "panel" ||
-        Boolean(attachment.newCabinet) ||
-        Boolean(attachment.doorsRow || attachment.drawersRow || (attachment.childRows?.length ?? 0) > 0),
-    );
-    const mainHasPartRows = Boolean(draft.doorsRow || draft.drawersRow || (draft.childRows?.length ?? 0) > 0);
-    if (!mainHasPartRows) {
-      return listedAttachments;
-    }
-    const mainAttachmentLike: CabinetBuilderAttachmentDraft = {
-      id: "main",
-      side: "left",
-      position: 0,
-      kind: "cabinet",
-      newCabinet: draft.newCabinet,
-      row: draft.row,
-      doorsRow: draft.doorsRow,
-      drawersRow: draft.drawersRow,
-      childRows: draft.childRows,
-    };
-    return [mainAttachmentLike, ...listedAttachments];
-  }, []);
-  const getCabinetBuilderAttachmentPartRows = useCallback((attachment: CabinetBuilderAttachmentDraft): CabinetBuilderAttachedDisplayRow[] => {
-    const rows: CabinetBuilderAttachedDisplayRow[] = [];
-    if (attachment.newCabinet) {
-      rows.push({
-        row: { ...attachment.row, name: attachment.row.name || "Cabinet" },
-        source: attachment.kind === "panel"
-          ? { kind: "panelSelf", ownerId: attachment.id }
-          : { kind: "cabinetSelf", ownerId: attachment.id },
-      });
-    } else if (attachment.kind === "panel") {
-      rows.push({
-        row: { ...attachment.row, name: attachment.row.name || "Panel" },
-        source: { kind: "panelSelf", ownerId: attachment.id },
-      });
-    }
-    if (attachment.doorsRow) {
-      const sourceRow = { ...attachment.doorsRow, name: attachment.row.name } as CutlistRow;
-      const derivedPieces = buildConfiguredDoorListSubrows(sourceRow);
-      if (derivedPieces.length) {
-        for (const piece of derivedPieces) {
-          rows.push({
-            row: {
-              ...createEmptyCutlistEntry(),
-              partType: attachment.doorsRow.partType,
-              board: attachment.doorsRow.board,
-              name: piece.partName,
-              height: piece.height,
-              width: piece.width,
-              depth: piece.depth,
-              quantity: piece.quantity,
-              clashLeft: piece.clashLeft,
-              clashRight: piece.clashRight,
-              clashing: joinClashing(piece.clashLeft, piece.clashRight),
-              grainValue: String(piece.grainValue || ""),
-              grain: Boolean(String(piece.grainValue || "").trim()),
-              information: attachment.doorsRow.information ?? "",
-            },
-            source: {
-              kind: "configuredFront",
-              ownerId: attachment.id,
-              frontKind: "doorsRow",
-              indexes: parseConfiguredFrontIndexesFromName(piece.partName),
-            },
-          });
-        }
-      } else {
-        rows.push({
-          row: { ...attachment.doorsRow, name: attachment.row.name },
-          source: { kind: "configuredFront", ownerId: attachment.id, frontKind: "doorsRow", indexes: [] },
-        });
-      }
-    }
-    if (attachment.drawersRow) {
-      const sourceRow = { ...attachment.drawersRow, name: attachment.row.name } as CutlistRow;
-      const derivedPieces = buildConfiguredDoorListSubrows(sourceRow);
-      if (derivedPieces.length) {
-        for (const piece of derivedPieces) {
-          rows.push({
-            row: {
-              ...createEmptyCutlistEntry(),
-              partType: attachment.drawersRow.partType,
-              board: attachment.drawersRow.board,
-              name: piece.partName,
-              height: piece.height,
-              width: piece.width,
-              depth: piece.depth,
-              quantity: piece.quantity,
-              clashLeft: piece.clashLeft,
-              clashRight: piece.clashRight,
-              clashing: joinClashing(piece.clashLeft, piece.clashRight),
-              grainValue: String(piece.grainValue || ""),
-              grain: Boolean(String(piece.grainValue || "").trim()),
-              information: attachment.drawersRow.information ?? "",
-            },
-            source: {
-              kind: "configuredFront",
-              ownerId: attachment.id,
-              frontKind: "drawersRow",
-              indexes: parseConfiguredFrontIndexesFromName(piece.partName),
-            },
-          });
-        }
-      } else {
-        rows.push({
-          row: { ...attachment.drawersRow, name: attachment.row.name },
-          source: { kind: "configuredFront", ownerId: attachment.id, frontKind: "drawersRow", indexes: [] },
-        });
-      }
-    }
-    for (const child of attachment.childRows ?? []) {
-      rows.push({
-        row: { ...child.row, name: child.row.name || attachment.row.name },
-        source: { kind: "child", ownerId: attachment.id, childId: child.id },
-      });
-    }
-    return rows;
-  }, [buildConfiguredDoorListSubrows]);
-  const cabinetBuilderShellBg = "#FFFDF8";
-  const cabinetBuilderShellBorder = "#D8DEE8";
-  const cabinetBuilderShellText = "#1F2937";
-  const cabinetBuilderFieldBg = "#FFFFFF";
-  const cabinetBuilderFieldBorder = "#D8DEE8";
-  const renderCabinetBuilderToolbar = () => (
-    <div className="flex flex-wrap items-center gap-2 px-0">
-      <button
-        type="button"
-        disabled={productionReadOnly || (!cabinetBuilderWallCreated && !cabinetBuilderDraft)}
-        onClick={() => void startNewCabinetBuilderWall()}
-        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-50"
-        style={{
-          borderColor: cabinetBuilderFieldBorder,
-          backgroundColor: cabinetBuilderFieldBg,
-          color: cabinetBuilderShellText,
-        }}
-      >
-        <Plus size={14} />
-        <span>New Wall</span>
-      </button>
-      <button
-        type="button"
-        disabled={productionReadOnly || (!cabinetBuilderWallCreated && !cabinetBuilderDraft)}
-        onClick={() => setCabinetBuilderDeleteWallConfirmOpen(true)}
-        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-50"
-        style={{
-          borderColor: "#F4B5B5",
-          backgroundColor: "#FCEAEA",
-          color: "#C62828",
-        }}
-      >
-        <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
-        <span>Delete Wall</span>
-      </button>
-      <button
-        type="button"
-        disabled={!cabinetBuilderDraft}
-        onClick={toggleCabinetBuilderMeasureMode}
-        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-semibold disabled:opacity-50"
-        style={{
-          borderColor: cabinetBuilderMeasureMode ? "#B7E4CF" : cabinetBuilderFieldBorder,
-          backgroundColor: cabinetBuilderMeasureMode ? "#EAF7EF" : cabinetBuilderFieldBg,
-          color: cabinetBuilderShellText,
-          boxShadow: cabinetBuilderMeasureMode ? "0 6px 18px rgba(20,83,45,0.08)" : "none",
-        }}
-      >
-        <img src="/ruler.png" alt="" className="h-4 w-4 object-contain" />
-        <span>Ruler</span>
-      </button>
-      {cabinetBuilderMeasureMode ? (
-        <span className="text-[12px] font-medium" style={{ color: projectPalette.textSoft }}>
-          {cabinetBuilderMeasurePoints.length >= 2
-            ? "Select again to start a new measurement."
-            : cabinetBuilderMeasurePoints.length === 1
-              ? "Select point B on the drawing."
-              : "Select point A on the drawing."}
-        </span>
-      ) : null}
-    </div>
-  );
-  const renderCabinetBuilderSelectedPartsPanel = (draft: CabinetBuilderDraft) => {
-    const selectedWall = getCabinetBuilderSelectedWallPiece(draft);
-    if (!selectedWall) return null;
-    if (!selectedWall.isMain && selectedWall.kind !== "cabinet") {
-      return (
-        <div className="w-full max-w-[360px] rounded-[12px] border p-3" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: "#FFFFFF" }}>
-          <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Selected Cabinet Parts</p>
-          <div className="mt-3 min-h-[84px]" />
-        </div>
-      );
-    }
-    const attachmentLike: CabinetBuilderAttachmentDraft = {
-      id: selectedWall.id,
-      side: selectedWall.side ?? "left",
-      position: selectedWall.position,
-      parentWallId: selectedWall.parentWallId,
-      kind: selectedWall.isMain ? "cabinet" : "cabinet",
-      newCabinet: selectedWall.newCabinet,
-      row: selectedWall.row,
-      doorsRow: selectedWall.doorsRow,
-      drawersRow: selectedWall.drawersRow,
-      childRows: selectedWall.childRows,
-    };
-    const rows = getCabinetBuilderAttachmentPartRows(attachmentLike);
-    const groupedRows = rows.reduce(
-      (acc, displayRow) => {
-        const partType = String(displayRow.row.partType || "Part").trim() || "Part";
-        const existing = acc.find((group) => group.partType === partType);
-        if (existing) {
-          existing.rows.push(displayRow);
-        } else {
-          acc.push({ partType, rows: [displayRow] });
-        }
-        return acc;
-      },
-      [] as Array<{ partType: string; rows: CabinetBuilderAttachedDisplayRow[] }>,
-    );
-    return (
-      <div className="w-full max-w-[360px] rounded-[12px] border p-3" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: "#FFFFFF" }}>
-        <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Selected Cabinet Parts</p>
-        <p className="mt-1 truncate text-[14px] font-bold text-[#111827]">{selectedWall.row.name || "Cabinet"}</p>
-        <div className="mt-3 space-y-2">
-          {groupedRows.length ? (
-            groupedRows.map((group) => {
-              const rowColor = partTypeColors[group.partType] ?? "#E2E8F0";
-              const headerBg = rowColor;
-              const contentBg = lightenHex(rowColor, 0.2);
-              const contentBorder = darkenHex(rowColor, 0.08);
-              const totalQuantity = group.rows.reduce((sum, displayRow) => {
-                const parsedQuantity = Number.parseFloat(String(displayRow.row.quantity || "").replace(/[^\d.-]/g, ""));
-                return sum + (Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1);
-              }, 0);
-              const totalQuantityText =
-                Math.abs(totalQuantity - Math.round(totalQuantity)) < 0.000001
-                  ? String(Math.round(totalQuantity))
-                  : numericDecimalText(String(totalQuantity));
-              const expandKey = `${selectedWall.id}:${group.partType}`;
-              const expanded = cabinetBuilderSelectedPartsExpandedKey === expandKey;
-              return (
-                <div key={`cab_selected_parts_group_${expandKey}`} className="overflow-hidden rounded-[14px]">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCabinetBuilderSelectedPartsExpandedKey((prev) => (prev === expandKey ? "" : expandKey))
-                    }
-                    className="inline-flex w-full items-center justify-between px-3 py-2 text-left"
-                    style={{
-                      backgroundColor: headerBg,
-                      color: "#000000",
-                      borderTopLeftRadius: 14,
-                      borderTopRightRadius: 14,
-                      borderBottomLeftRadius: expanded ? 0 : 14,
-                      borderBottomRightRadius: expanded ? 0 : 14,
-                    }}
-                  >
-                    <span className="text-[12px] font-medium">{group.partType}</span>
-                    <span className="text-[11px] text-[#475569]">{totalQuantityText}</span>
-                  </button>
-                  {expanded ? (
-                    <div
-                      className="border px-3 py-2"
-                      style={{
-                        backgroundColor: contentBg,
-                        borderColor: contentBorder,
-                        borderTopWidth: 0,
-                        borderBottomLeftRadius: 14,
-                        borderBottomRightRadius: 14,
-                      }}
-                    >
-                      {group.rows.map((displayRow, index) => {
-                        const row = displayRow.row;
-                        const isDrawerSummaryRow = isDrawerPartType(row.partType);
-                        const drawerHeightSummary = summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height || "-");
-                        const dimensionColumns = [
-                          {
-                            key: "height",
-                            label: "Height",
-                            value: isDrawerSummaryRow ? drawerHeightSummary : String(row.height || "").trim(),
-                          },
-                          {
-                            key: "width",
-                            label: "Width",
-                            value: String(row.width || "").trim(),
-                          },
-                          {
-                            key: "depth",
-                            label: "Depth",
-                            value: String(row.depth || "").trim(),
-                          },
-                        ].filter((dimension) => String(dimension.value || "").trim());
-                        const dimensionGridClass =
-                          dimensionColumns.length >= 3
-                            ? "grid-cols-3"
-                            : dimensionColumns.length === 2
-                              ? "grid-cols-2"
-                              : "grid-cols-1";
-                        return (
-                          <div key={`cab_selected_parts_${expandKey}_${displayRow.source.kind}_${index}`}>
-                            {index > 0 ? (
-                              <div
-                                className="my-2 h-px w-full"
-                                style={{ backgroundColor: darkenHex(rowColor, 0.12) }}
-                              />
-                            ) : null}
-                            <div className="px-1 py-1">
-                              <div
-                                className="grid overflow-hidden rounded-[8px] border text-[10px]"
-                                style={{ borderColor: darkenHex(rowColor, 0.14), backgroundColor: lightenHex(rowColor, 0.36), gridTemplateColumns: "minmax(0,1fr) 72px" }}
-                              >
-                                <div
-                                  className="border-b px-2 py-1 text-center font-medium uppercase tracking-[0.5px] text-[#475569]"
-                                  style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                >
-                                  Name
-                                </div>
-                                <div
-                                  className="border-b border-l px-2 py-1 text-center font-medium uppercase tracking-[0.5px] text-[#475569]"
-                                  style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                >
-                                  Qty
-                                </div>
-                                <div className="px-2 py-1.5 text-center text-[11px] font-semibold text-[#111827]">
-                                  {row.name || selectedWall.row.name || "-"}
-                                </div>
-                                <div
-                                  className="border-l px-2 py-1.5 text-center text-[11px] font-semibold text-[#111827]"
-                                  style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                >
-                                  {row.quantity || "1"}
-                                </div>
-                                {dimensionColumns.length ? (
-                                  <div
-                                    className={`col-span-2 mt-px grid border-t text-[10px] ${dimensionGridClass}`}
-                                    style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                  >
-                                    {dimensionColumns.map((dimension) => (
-                                      <div
-                                        key={`cab_selected_dim_head_${expandKey}_${index}_${dimension.key}`}
-                                        className="border-b px-2 py-1 text-center font-medium uppercase tracking-[0.5px] text-[#475569]"
-                                        style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                      >
-                                        {dimension.label}
-                                      </div>
-                                    ))}
-                                    {dimensionColumns.map((dimension) => (
-                                      <div
-                                        key={`cab_selected_dim_val_${expandKey}_${index}_${dimension.key}`}
-                                        className="px-2 py-1.5 text-center text-[11px] font-semibold text-[#111827]"
-                                      >
-                                        {dimension.value}
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : null}
-                                <div
-                                  className="col-span-2 mt-px grid border-t"
-                                  style={{ borderColor: darkenHex(rowColor, 0.12), gridTemplateColumns: "72px minmax(0,1fr)" }}
-                                >
-                                  <div
-                                    className="px-2 py-1 text-center font-medium uppercase tracking-[0.5px] text-[#475569]"
-                                    style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                  >
-                                    Board
-                                  </div>
-                                  <div
-                                    className="border-l px-2 py-1.5 text-center text-[11px] font-semibold text-[#111827]"
-                                    style={{ borderColor: darkenHex(rowColor, 0.12) }}
-                                  >
-                                    {boardDisplayLabel(row.board) || "-"}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })
-          ) : (
-            <p className="text-[12px] text-[#64748B]">No parts added to this cabinet yet.</p>
-          )}
-        </div>
-      </div>
-    );
-  };
-  const renderCabinetBuilderAttachedPartsList = (
-    draft: CabinetBuilderDraft,
-    opts: {
-      wrapperBorder: string;
-      wrapperBg: string;
-      buttonBorder: string;
-      buttonBg: string;
-      buttonText: string;
-    },
-  ) => {
-    const wallPieces = buildCabinetBuilderWallPieces(draft);
-    const cabinetPieces = wallPieces.filter((piece) => piece.isMain || piece.kind === "cabinet");
-    const groups = cabinetPieces
-      .map((piece) => {
-        const rows: CabinetBuilderAttachedDisplayRow[] = [];
-        const attachmentLike: CabinetBuilderAttachmentDraft = {
-          id: piece.id,
-          side: "left",
-          position: piece.position,
-          parentWallId: piece.parentWallId,
-          kind: piece.isMain ? "cabinet" : (piece.kind as CabinetBuilderAttachmentKind),
-          newCabinet: piece.newCabinet,
-          row: piece.row,
-          doorsRow: piece.doorsRow,
-          drawersRow: piece.drawersRow,
-          childRows: piece.childRows,
-        };
-        rows.push(...getCabinetBuilderAttachmentPartRows(attachmentLike));
-        draft.attachments
-          .filter((attachment) => attachment.kind === "panel" && (attachment.parentWallId || "main") === piece.id)
-          .forEach((panelAttachment) => {
-            rows.push({
-              row: { ...panelAttachment.row, name: panelAttachment.row.name || piece.row.name || "Panel" },
-              source: { kind: "panelSelf", ownerId: panelAttachment.id },
-            });
-          });
-        return {
-          id: piece.id,
-          row: piece.row,
-          isMain: piece.isMain,
-          rows,
-        };
-      })
-      .filter((group) => group.rows.length > 0);
-    if (!groups.length) return null;
-
-    return (
-      <div className="space-y-3">
-        <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Attached Parts</p>
-        <div className="space-y-3">
-          {groups.map((group) => {
-            const attachmentColor = partTypeColors[group.row.partType || ""] ?? "#E2E8F0";
-            const attachmentText = isLightHex(attachmentColor) ? "#1F2937" : "#F8FAFC";
-            const collapsed = collapsedCabinetBuilderAttachedGroups[group.id] ?? true;
-            const groupShowsGrain = group.rows.some(({ row }) =>
-              productionBoardAllowsGrainForValue(String(row.board || "").trim()),
-            );
-            const collapsedPartTypePills = group.rows.reduce<Array<{ partType: string; count: number; color: string }>>((acc, { row }) => {
-              const partType = String(row.partType || "").trim() || "Part";
-              const existing = acc.find((item) => item.partType === partType);
-              if (existing) {
-                existing.count += 1;
-                return acc;
-              }
-              acc.push({
-                partType,
-                count: 1,
-                color: partTypeColors[partType] ?? "#E2E8F0",
-              });
-              return acc;
-            }, []);
-            const groupGridTemplate = groupShowsGrain
-              ? "92px minmax(120px,1.05fr) minmax(160px,1.2fr) 68px 68px 68px 56px 92px 84px minmax(140px,1fr)"
-              : "92px minmax(120px,1.05fr) minmax(160px,1.2fr) 68px 68px 68px 56px 92px minmax(140px,1fr)";
-            return (
-              <div
-                key={group.id}
-                className="overflow-hidden"
-                style={{ backgroundColor: "#FFFFFF" }}
-              >
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    setCollapsedCabinetBuilderAttachedGroups((current) => ({
-                      ...current,
-                      [group.id]: !current[group.id],
-                    }));
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setCollapsedCabinetBuilderAttachedGroups((current) => ({
-                        ...current,
-                        [group.id]: !current[group.id],
-                      }));
-                    }
-                  }}
-                  className="flex cursor-pointer items-center justify-start gap-2 px-3 py-2"
-                  style={{ backgroundColor: hexToRgba(attachmentColor, 0.18) }}
-                >
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setCabinetBuilderSelectedWallId(group.id);
-                      setCabinetBuilderEditingAttachmentId("");
-                      setCabinetBuilderDoorsOpen(false);
-                      setCabinetBuilderDrawersOpen(false);
-                      setCabinetBuilderEditTab("edit");
-                      setCabinetBuilderEditOpen(true);
-                    }}
-                    className="inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-[8px] border"
-                    style={{ borderColor: opts.buttonBorder, backgroundColor: opts.buttonBg, color: opts.buttonText }}
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <div className="flex min-w-0 flex-1 items-center gap-3">
-                    <p className="min-w-0 truncate text-[15px] font-bold leading-none text-[#111827]">{group.row.name || "Cabinet"}</p>
-                    {collapsed ? (
-                      <div className="flex flex-wrap items-center justify-end gap-2">
-                        {collapsedPartTypePills.map((pill) => {
-                          const pillBg = lightenHex(pill.color, 0.18);
-                          const pillBorder = darkenHex(pill.color, 0.16);
-                          return (
-                            <span
-                              key={`${group.id}_${pill.partType}`}
-                              className="inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-medium text-[#000000]"
-                              style={{ backgroundColor: pillBg, borderColor: pillBorder }}
-                            >
-                              {pill.partType}
-                              {pill.count > 1 ? ` (${pill.count})` : ""}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="shrink-0" style={{ color: attachmentText }}>
-                    <ChevronDown size={16} className={`transition-transform ${collapsed ? "-rotate-90" : "rotate-0"}`} />
-                  </div>
-                </div>
-                {!collapsed && group.rows.length ? (
-                  <div className="overflow-x-auto">
-                    <div className="min-w-[980px]">
-                      <div
-                        className="grid gap-2 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.9px] text-[#111827]"
-                        style={{ gridTemplateColumns: groupGridTemplate }}
-                      >
-                        <p>Part Type</p>
-                        <p>Board</p>
-                        <p>Part Name</p>
-                        <p className="text-center">Height</p>
-                        <p className="text-center">Width</p>
-                        <p className="text-center">Depth</p>
-                        <p className="text-center">Qty</p>
-                        <p className="text-center">Clashing</p>
-                        {groupShowsGrain ? <p className="text-center">Grain</p> : null}
-                        <p>Information</p>
-                      </div>
-                    {group.rows.map((displayRow, index) => {
-                      const row = displayRow.row;
-                      const rowWarningKey = cabinetBuilderWarningKeyForSource(displayRow.source);
-                      const rowWarnings = cutlistCellWarnings[rowWarningKey] ?? {};
-                      const rowWarningMessages = Object.values(rowWarnings);
-                      const firstRowWarning = rowWarningMessages[0] ?? "";
-                      const rowColor = partTypeColors[row.partType || ""] ?? "#E2E8F0";
-                      const rowText = "#000000";
-                      const rowPalette = groupColorPalette(rowColor);
-                      const fieldBg = lightenHex(rowColor, 0.18);
-                      const fieldBorder = darkenHex(rowColor, 0.16);
-                      const fieldText = "#000000";
-                      const grainOptions = grainDimensionOptionsForRow(row);
-                      const configuredFrontSource =
-                        displayRow.source.kind === "configuredFront" ? displayRow.source : null;
-                      const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board || "").trim());
-                      const updateBoardValue = (value: string) => {
-                        const patch = productionBoardAllowsGrainForValue(String(value || "").trim())
-                          ? { board: value }
-                          : { board: value, grainValue: "", grain: false };
-                        if (displayRow.source.kind === "configuredFront") {
-                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                            ...sourceRow,
-                            ...patch,
-                          }));
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, patch);
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, patch);
-                      };
-                      const updateNameValue = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                            ...sourceRow,
-                            name: value,
-                          }));
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { name: value });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { name: value });
-                      };
-                      const updateHeightValue = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          if (displayRow.source.frontKind === "drawersRow") {
-                            updateCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind, displayRow.source.indexes, value);
-                          } else {
-                            updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                              ...sourceRow,
-                              height: value,
-                            }));
-                          }
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { height: value });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { height: value });
-                      };
-                      const updateWidthValue = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          if (displayRow.source.frontKind === "doorsRow") {
-                            updateCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind, displayRow.source.indexes, value);
-                          } else {
-                            updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                              ...sourceRow,
-                              width: value,
-                            }));
-                          }
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { width: value });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { width: value });
-                      };
-                      const updateDepthValue = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                            ...sourceRow,
-                            depth: value,
-                          }));
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { depth: value });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { depth: value });
-                      };
-                      const updateQuantityValue = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                            ...sourceRow,
-                            quantity: value,
-                          }));
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { quantity: value });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { quantity: value });
-                      };
-                      const updateClashLeft = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                            ...sourceRow,
-                            clashLeft: value,
-                            clashing: joinClashing(value, String(sourceRow.clashRight ?? "")),
-                          }));
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, {
-                            clashLeft: value,
-                            clashing: joinClashing(value, String(row.clashRight ?? "")),
-                          });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, {
-                          clashLeft: value,
-                          clashing: joinClashing(value, String(row.clashRight ?? "")),
-                        });
-                      };
-                      const updateClashRight = (value: string) => {
-                        if (displayRow.source.kind === "configuredFront") {
-                          updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                            ...sourceRow,
-                            clashRight: value,
-                            clashing: joinClashing(String(sourceRow.clashLeft ?? ""), value),
-                          }));
-                          return;
-                        }
-                        if (displayRow.source.kind === "child") {
-                          updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, {
-                            clashRight: value,
-                            clashing: joinClashing(String(row.clashLeft ?? ""), value),
-                          });
-                          return;
-                        }
-                        updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, {
-                          clashRight: value,
-                          clashing: joinClashing(String(row.clashLeft ?? ""), value),
-                        });
-                      };
-                      return (
-                        <Fragment key={`${group.id}_row_${index}`}>
-                        <div
-                          className="grid gap-2 border-t px-2 py-[3px] text-[12px]"
-                          title={firstRowWarning || undefined}
-                          style={{
-                            gridTemplateColumns: groupGridTemplate,
-                            borderTopColor: rowColor,
-                            backgroundColor: rowColor,
-                            color: "#000000",
-                            boxShadow: firstRowWarning ? "inset 0 0 0 1px #DC2626" : undefined,
-                          }}
-                        >
-                          <div className="flex items-center">
-                            <span
-                              className="inline-flex items-center rounded-full px-3 py-1 text-[11px] font-medium"
-                              style={{ backgroundColor: fieldBg, color: rowText, border: `1px solid ${fieldBorder}` }}
-                            >
-                              {row.partType}
-                            </span>
-                          </div>
-                          <div>
-                            <BoardPillDropdown
-                              value={row.board}
-                              options={cutlistBoardOptions}
-                              disabled={productionReadOnly}
-                              bg={fieldBg}
-                              border={fieldBorder}
-                              text={fieldText}
-                              size="compact"
-                              getSize={boardSizeFor}
-                              getLabel={boardDisplayLabel}
-                              onChange={updateBoardValue}
-                            />
-                          </div>
-                          <input value={row.name || ""} onChange={(e) => {
-                            updateNameValue(e.target.value);
-                          }} className="h-6 w-full rounded-[6px] border px-1 text-[11px] font-bold text-[#111827]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
-                          <input value={row.height || ""} onChange={(e) => {
-                            const value = numericDimensionText(e.target.value);
-                            updateHeightValue(value);
-                          }} onBlur={() => {
-                            if (displayRow.source.kind === "configuredFront" && displayRow.source.frontKind === "drawersRow") {
-                              blurCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind);
-                            }
-                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
-                          <input value={row.width || ""} onChange={(e) => {
-                            const value = numericDimensionText(e.target.value);
-                            updateWidthValue(value);
-                          }} onBlur={() => {
-                            if (displayRow.source.kind === "configuredFront" && displayRow.source.frontKind === "doorsRow") {
-                              blurCabinetBuilderConfiguredFrontIndexesByOwner(displayRow.source.ownerId, displayRow.source.frontKind);
-                            }
-                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
-                          <input value={row.depth || ""} onChange={(e) => {
-                            const value = numericDimensionText(e.target.value);
-                            updateDepthValue(value);
-                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
-                          <input value={row.quantity || ""} onChange={(e) => {
-                            const value = numericOnlyText(e.target.value);
-                            updateQuantityValue(value);
-                          }} className="h-6 w-full rounded-[6px] border px-1 text-center text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
-                          <div className="grid grid-cols-2 gap-1">
-                            <BoardPillDropdown value={String(row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg={fieldBg} border={fieldBorder} text={fieldText} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={updateClashLeft} />
-                            <BoardPillDropdown value={String(row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg={fieldBg} border={fieldBorder} text={fieldText} size="compact" getSize={() => ""} getLabel={(v) => v} onChange={updateClashRight} />
-                          </div>
-                          {groupShowsGrain ? (
-                            <div>
-                            {rowBoardAllowsGrain ? (
-                              <BoardPillDropdown
-                                value={String(row.grainValue || "")}
-                                options={grainOptions}
-                                disabled={productionReadOnly}
-                                bg={fieldBg}
-                                border={fieldBorder}
-                                text={fieldText}
-                                size="compact"
-                                getSize={() => ""}
-                                getLabel={(v) => v || "Select"}
-                                onChange={(value) => {
-                                  if (displayRow.source.kind === "configuredFront") {
-                                    updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({
-                                      ...sourceRow,
-                                      grainValue: value,
-                                      grain: Boolean(String(value).trim()),
-                                    }));
-                                    return;
-                                  }
-                                  if (displayRow.source.kind === "child") {
-                                    updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { grainValue: value, grain: Boolean(String(value).trim()) });
-                                    return;
-                                  }
-                                  updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { grainValue: value, grain: Boolean(String(value).trim()) });
-                                }}
-                              />
-                            ) : (
-                              <p className="pt-[3px] text-center text-[#334155]"></p>
-                            )}
-                          </div>
-                          ) : null}
-                          <input value={String(row.information || "")} onChange={(e) => {
-                            const value = e.target.value;
-                            if (displayRow.source.kind === "configuredFront") {
-                              updateCabinetBuilderConfiguredRowByOwner(displayRow.source.ownerId, displayRow.source.frontKind, (sourceRow) => ({ ...sourceRow, information: value }));
-                              return;
-                            }
-                            if (displayRow.source.kind === "child") {
-                              updateCabinetBuilderChildRowByOwner(displayRow.source.ownerId, displayRow.source.childId, { information: value });
-                              return;
-                            }
-                            updateCabinetBuilderWallPieceRowById(displayRow.source.ownerId, { information: value });
-                          }} className="h-6 w-full rounded-[6px] border px-1 text-[11px] text-[#334155]" style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: fieldText }} />
-                        </div>
-                        {rowWarningMessages.length ? (
-                          <div
-                            className="border-t px-3 py-2 text-[11px] text-[#B42318]"
-                            style={{ borderTopColor: "#FCA5A5", backgroundColor: "#FEF2F2" }}
-                          >
-                            {rowWarningMessages.map((message, messageIndex) => (
-                              <p key={`${rowWarningKey}_${messageIndex}`}>{message}</p>
-                            ))}
-                          </div>
-                        ) : null}
-                        </Fragment>
-                      );
-                    })}
-                    </div>
-                  </div>
-                ) : !collapsed ? (
-                  <p className="mt-2 text-[11px] text-[#64748B]">No parts added inside this cabinet yet.</p>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
-  const renderCabinetBuilderOverlayGapGuides = ({
-    item,
-    ownerId,
-    frontKind,
-    overlayMode,
-    overlayTopGapValue,
-    overlayBetweenGapValue,
-    overlayLeftGapValue,
-    overlayRightGapValue,
-    overlayTopGapPx,
-    overlayBetweenGapPxForHeight,
-    overlayBetweenGapPxForWidth,
-    overlayLeftGapPx,
-    overlayRightGapPx,
-    overlayDoorWidths,
-    overlayDrawerHeights,
-    scale,
-    editingGapPill,
-    onStartEditGap,
-    onChangeEditGapValue,
-    onCommitEditGap,
-    onCancelEditGap,
-    placedLabelRects,
-    blockedRects,
-  }: {
-    item: CabinetBuilderWallPiece & CabinetBuilderDisplayPieceLayout;
-    ownerId: string;
-    frontKind: "doorsRow" | "drawersRow";
-    overlayMode: DoorModeValue;
-    overlayTopGapValue: number;
-    overlayBetweenGapValue: number;
-    overlayLeftGapValue: number;
-    overlayRightGapValue: number;
-    overlayTopGapPx: number;
-    overlayBetweenGapPxForHeight: number;
-    overlayBetweenGapPxForWidth: number;
-    overlayLeftGapPx: number;
-    overlayRightGapPx: number;
-    overlayDoorWidths: { widths: number[]; manual: boolean[] };
-    overlayDrawerHeights: { heights: number[]; manual: boolean[] };
-    scale: number;
-    editingGapPill?: null | {
-      pillId: string;
-      ownerId: string;
-      kind: "doorsRow" | "drawersRow";
-      key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap";
-      value: string;
-    };
-    onStartEditGap?: (
-      pillId: string,
-      ownerId: string,
-      kind: "doorsRow" | "drawersRow",
-      key: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap",
-      currentValue: number,
-    ) => void;
-    onChangeEditGapValue?: (value: string) => void;
-    onCommitEditGap?: () => void;
-    onCancelEditGap?: () => void;
-    placedLabelRects?: Array<{ left: number; right: number; top: number; bottom: number }>;
-    blockedRects?: Array<{ left: number; right: number; top: number; bottom: number }>;
-  }): { lines: ReactNode[]; labels: ReactNode[] } => {
-    const gapStroke = "#FF2A2A";
-    const gapText = "#B42318";
-    const gapLabelBg = "#FFFFFF";
-    const gapLabelBorder = "#FCA5A5";
-    const labelFontSize = 10;
-    const labelHeight = 18;
-    const labelWidthFor = (value: string) => Math.max(28, value.length * 6.4 + 10);
-    const lines: ReactNode[] = [];
-    const labels: ReactNode[] = [];
-    const sharedPlacedLabelRects = placedLabelRects ?? [];
-    const staticBlockedRects = blockedRects ?? [];
-    const innerX = item.x + overlayLeftGapPx;
-    const innerRightX = item.x + item.width - overlayRightGapPx;
-    const innerY = item.y + overlayTopGapPx;
-    const innerBottomY = item.y + item.height;
-    const innerWidth = Math.max(0, innerRightX - innerX);
-    const innerHeight = Math.max(0, innerBottomY - innerY);
-    const rectsOverlap = (
-      a: { left: number; right: number; top: number; bottom: number },
-      b: { left: number; right: number; top: number; bottom: number },
-    ) => !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
-    const getGapLineProps = (pillId: string) =>
-      editingGapPill?.pillId === pillId
-        ? { strokeDasharray: "2.5 2.5", strokeLinecap: "round" as const }
-        : {};
-    const addLabel = (
-      key: string,
-      cx: number,
-      cy: number,
-      value: number,
-      gapKey: "doorTopGap" | "doorBetweenGap" | "doorSideLeftGap" | "doorSideRightGap",
-    ) => {
-      if (!(value > 0)) return null;
-      const text = formatDoorFrontHeightValue(value);
-      const labelWidth = labelWidthFor(text);
-      let adjustedCy = cy;
-      let nextRect = {
-        left: cx - labelWidth / 2,
-        right: cx + labelWidth / 2,
-        top: adjustedCy - labelHeight / 2,
-        bottom: adjustedCy + labelHeight / 2,
-      };
-      let guard = 0;
-      while (
-        (sharedPlacedLabelRects.some((existing) => rectsOverlap(existing, nextRect)) ||
-          staticBlockedRects.some((blocked) => rectsOverlap(blocked, nextRect))) &&
-        guard < 20
-      ) {
-        adjustedCy += labelHeight + 4;
-        nextRect = {
-          left: cx - labelWidth / 2,
-          right: cx + labelWidth / 2,
-          top: adjustedCy - labelHeight / 2,
-          bottom: adjustedCy + labelHeight / 2,
-        };
-        guard += 1;
-      }
-      sharedPlacedLabelRects.push(nextRect);
-      const pillId = `${item.id}_${key}`;
-      const isEditing = editingGapPill?.pillId === pillId;
-      const editScale = isEditing ? 1.45 : 1;
-      const editWidth = labelWidth;
-      return (
-        <g
-          key={`cab_gap_label_${key}`}
-          pointerEvents="auto"
-          transform={`translate(0 ${adjustedCy - cy}) translate(${cx} ${cy}) scale(${editScale}) translate(${-cx} ${-cy})`}
-          style={{ transition: "transform 180ms ease", cursor: onStartEditGap ? "pointer" : "default" }}
-          onDoubleClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onStartEditGap?.(pillId, ownerId, frontKind, gapKey, value);
-          }}
-        >
-          <rect
-            x={cx - labelWidth / 2}
-            y={cy - labelHeight / 2}
-            width={editWidth}
-            height={labelHeight}
-            rx="6"
-            fill={gapLabelBg}
-            stroke={gapLabelBorder}
-          />
-          {isEditing ? (
-            <foreignObject
-              x={cx - editWidth / 2}
-              y={cy - labelHeight / 2}
-              width={editWidth}
-              height={labelHeight}
-            >
-              <input
-                autoFocus
-                value={editingGapPill?.value ?? ""}
-                onFocus={(event) => {
-                  event.currentTarget.select();
-                }}
-                onChange={(event) => {
-                  event.stopPropagation();
-                  onChangeEditGapValue?.(numericDecimalText(event.target.value));
-                }}
-                onBlur={() => onCommitEditGap?.()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    onCommitEditGap?.();
-                  }
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    onCancelEditGap?.();
-                  }
-                }}
-                className="h-full w-full bg-transparent px-2 text-center text-[11px] font-bold text-[#B42318] outline-none"
-              />
-            </foreignObject>
-          ) : (
-            <text
-              x={cx}
-              y={cy}
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fontSize={labelFontSize}
-              fontWeight="700"
-              fill={gapText}
-            >
-              {text}
-            </text>
-          )}
-        </g>
-      );
-    };
-
-    if (overlayTopGapValue > 0 && overlayTopGapPx > 0 && innerWidth >= 18) {
-      const y = item.y + overlayTopGapPx / 2;
-      lines.push(
-        <g key={`cab_gap_top_${item.id}`} pointerEvents="none">
-          <line x1={innerX} y1={y} x2={innerRightX} y2={y} stroke={gapStroke} strokeWidth="1.5" {...getGapLineProps(`${item.id}_top_${item.id}`)} />
-        </g>,
-      );
-      const labelNode = addLabel(`top_${item.id}`, item.x + item.width / 2, y, overlayTopGapValue, "doorTopGap");
-      if (labelNode) labels.push(labelNode);
-    }
-
-    if (overlayLeftGapValue > 0 && overlayLeftGapPx > 0 && innerHeight >= 18) {
-      const x = item.x + overlayLeftGapPx / 2;
-      const centerY = innerY + innerHeight / 2;
-      lines.push(
-        <g key={`cab_gap_left_${item.id}`} pointerEvents="none">
-          <line x1={x} y1={innerY} x2={x} y2={innerBottomY} stroke={gapStroke} strokeWidth="1.5" {...getGapLineProps(`${item.id}_left_${item.id}`)} />
-        </g>,
-      );
-      const labelNode = addLabel(`left_${item.id}`, x, centerY, overlayLeftGapValue, "doorSideLeftGap");
-      if (labelNode) labels.push(labelNode);
-    }
-
-    if (overlayRightGapValue > 0 && overlayRightGapPx > 0 && innerHeight >= 18) {
-      const x = item.x + item.width - overlayRightGapPx / 2;
-      const centerY = innerY + innerHeight / 2;
-      lines.push(
-        <g key={`cab_gap_right_${item.id}`} pointerEvents="none">
-          <line x1={x} y1={innerY} x2={x} y2={innerBottomY} stroke={gapStroke} strokeWidth="1.5" {...getGapLineProps(`${item.id}_right_${item.id}`)} />
-        </g>,
-      );
-      const labelNode = addLabel(`right_${item.id}`, x, centerY, overlayRightGapValue, "doorSideRightGap");
-      if (labelNode) labels.push(labelNode);
-    }
-
-    if (overlayBetweenGapValue > 0) {
-      if (overlayMode === "door" && overlayBetweenGapPxForWidth > 0) {
-        let currentX = innerX;
-        overlayDoorWidths.widths.forEach((pieceWidth, index) => {
-          const pieceScaledWidth = pieceWidth * scale;
-          const pieceRight = currentX + pieceScaledWidth;
-          const hasNext = index < overlayDoorWidths.widths.length - 1;
-          if (hasNext) {
-            const gapCenterX = pieceRight + overlayBetweenGapPxForWidth / 2;
-            lines.push(
-              <g key={`cab_gap_between_door_${item.id}_${index}`} pointerEvents="none">
-                <line
-                  x1={gapCenterX}
-                  y1={innerY}
-                  x2={gapCenterX}
-                  y2={innerBottomY}
-                  stroke={gapStroke}
-                  strokeWidth="1.5"
-                  {...getGapLineProps(`${item.id}_door_between_${item.id}_${index}`)}
-                />
-              </g>,
-            );
-            const labelNode = addLabel(`door_between_${item.id}_${index}`, gapCenterX, innerY + innerHeight / 2, overlayBetweenGapValue, "doorBetweenGap");
-            if (labelNode) labels.push(labelNode);
-          }
-          currentX = pieceRight + overlayBetweenGapPxForWidth;
-        });
-      }
-
-      if (overlayMode === "drawer" && overlayBetweenGapPxForHeight > 0) {
-        let currentY = innerY;
-        overlayDrawerHeights.heights.forEach((pieceHeight, index) => {
-          const pieceScaledHeight = pieceHeight * scale;
-          const pieceBottom = currentY + pieceScaledHeight;
-          const hasNext = index < overlayDrawerHeights.heights.length - 1;
-          if (hasNext) {
-            const gapCenterY = pieceBottom + overlayBetweenGapPxForHeight / 2;
-            lines.push(
-              <g key={`cab_gap_between_drawer_${item.id}_${index}`} pointerEvents="none">
-                <line
-                  x1={innerX}
-                  y1={gapCenterY}
-                  x2={innerRightX}
-                  y2={gapCenterY}
-                  stroke={gapStroke}
-                  strokeWidth="1.5"
-                  {...getGapLineProps(`${item.id}_drawer_between_${item.id}_${index}`)}
-                />
-              </g>,
-            );
-            const labelNode = addLabel(`drawer_between_${item.id}_${index}`, item.x + item.width / 2, gapCenterY, overlayBetweenGapValue, "doorBetweenGap");
-            if (labelNode) labels.push(labelNode);
-          }
-          currentY = pieceBottom + overlayBetweenGapPxForHeight;
-        });
-      }
-    }
-
-    return { lines, labels };
-  };
-  const getCabinetBuilderPiecePalette = (
-    item: CabinetBuilderWallPiece,
-    draft: CabinetBuilderDraft | null,
-  ) => {
-    const usesPartTypeColor =
-      item.kind !== "main" && item.kind !== "cabinet"
-        ? true
-        : Boolean(item.newCabinet);
-
-    if (!usesPartTypeColor) {
-      return {
-        fill: "#FFFFFF",
-        stroke: "#334155",
-        text: "#1F2937",
-        badgeBg: "#FFFFFF",
-        badgeBorder: "#CBD5E1",
-        badgeText: "#1F2937",
-      };
-    }
-
-    const baseColor =
-      partTypeColors[item.row.partType || ""] ??
-      (item.kind === "panel"
-        ? partTypeColors[experimentalPanelPartType] ?? "#CBD5E1"
-        : partTypeColors[experimentalCabinetBuilderPartType] ?? "#CBD5E1");
-    const fill = lightenHex(baseColor, 0.24);
-    const stroke = darkenHex(baseColor, 0.14);
-    const text = isLightHex(fill) ? "#1F2937" : "#F8FAFC";
-    return {
-      fill,
-      stroke,
-      text,
-      badgeBg: lightenHex(baseColor, 0.3),
-      badgeBorder: stroke,
-      badgeText: text,
-    };
-  };
-  const getCabinetBuilderAttachmentAnchorExclusionRects = (
-    selectedPiece: (CabinetBuilderWallPiece & CabinetBuilderDisplayPieceLayout & { rawHeight?: number }) | null,
-    viewWidth: number,
-    viewHeight: number,
-    resolvedBaseCabHeight: string,
-  ) => {
-    if (!selectedPiece) return [] as Array<{ left: number; right: number; top: number; bottom: number }>;
-    const selectedPieceHasDualAttachZones =
-      selectedPiece.kind === "panel" && selectedPiece.panelHeightMode === "tall";
-    const anchors = selectedPieceHasDualAttachZones
-      ? [
-          { x: selectedPiece.x, y: selectedPiece.y + 18 },
-          { x: selectedPiece.x, y: selectedPiece.y + selectedPiece.height - 18 },
-          { x: selectedPiece.x + selectedPiece.width, y: selectedPiece.y + 18 },
-          { x: selectedPiece.x + selectedPiece.width, y: selectedPiece.y + selectedPiece.height - 18 },
-        ]
-      : [
-          { x: selectedPiece.x, y: selectedPiece.y + selectedPiece.height / 2 },
-          { x: selectedPiece.x + selectedPiece.width, y: selectedPiece.y + selectedPiece.height / 2 },
-        ];
-    const buttonSize = 36;
-    const padding = 8;
-    return anchors.map((anchor) => {
-      const left =
-        anchor.x <= selectedPiece.x + 1
-          ? anchor.x - buttonSize - 10
-          : anchor.x + 10;
-      const top = anchor.y - buttonSize / 2;
-      return {
-        left: Math.max(0, left - padding),
-        right: Math.min(viewWidth, left + buttonSize + padding),
-        top: Math.max(0, top - padding),
-        bottom: Math.min(viewHeight, top + buttonSize + padding),
-      };
-    });
-  };
-  const renderCutlistEntryModeTabs = (className = "") => {
-    const manualActiveBg = isDarkMode ? "#1F2937" : "#FFFFFF";
-    const wallBuilderActiveBg = isDarkMode ? "#1F2937" : "#FFFFFF";
-    const inactiveBg = isDarkMode ? "#0F172A" : "#EEF2F7";
-    const inactiveText = isDarkMode ? "#CBD5E1" : "#475467";
-    return (
-      <div
-        className={`grid grid-cols-2 overflow-hidden rounded-b-[10px] border ${className}`.trim()}
-        style={{ borderColor: projectPalette.border, backgroundColor: inactiveBg }}
-      >
-        {[
-          { id: "manual" as const, label: "Manual" },
-          { id: "wallBuilder" as const, label: "Wall Builder" },
-        ].map((mode) => {
-          const isActive = cutlistEntryMode === mode.id;
-          const activeBg = mode.id === "wallBuilder" ? wallBuilderActiveBg : manualActiveBg;
-          const activeText = isLightHex(activeBg) ? "#1F2937" : "#F8FAFC";
-          return (
-            <button
-              key={`cutlist_entry_mode_${mode.id}`}
-              type="button"
-              onClick={() => setCutlistEntryModeWithUi(mode.id)}
-              className="rounded-t-none px-3 py-2 text-[12px] font-semibold transition-colors"
-              style={{
-                backgroundColor: isActive ? activeBg : "transparent",
-                color: isActive ? activeText : inactiveText,
-              }}
-            >
-              {mode.label}
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-  const cabinetBuilderPopupFieldClassName = "h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]";
-  const cabinetBuilderPopupFieldNoWidthClassName = "h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]";
-  const renderCabinetBuilderInformationLinesEditor = ({
-    value,
-    keyPrefix,
-    disabled = false,
-    onLineChange,
-    onAddLine,
-    onRemoveLine,
-  }: {
-    value: string;
-    keyPrefix: string;
-    disabled?: boolean;
-    onLineChange: (index: number, value: string) => void;
-    onAddLine: () => void;
-    onRemoveLine: (index: number) => void;
-  }) => {
-    const lines = informationLinesFromValue(String(value ?? ""));
-    return (
-      <div className="space-y-2">
-        {lines.map((line, idx) => (
-          <div key={`${keyPrefix}_${idx}`} className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              {lines.length > 1 ? (
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => onRemoveLine(idx)}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
-                >
-                  <X size={14} strokeWidth={2.8} />
-                </button>
-              ) : null}
-            <input
-              disabled={disabled}
-              value={line}
-              onChange={(e) => onLineChange(idx, e.target.value)}
-              placeholder="Information"
-              className={`${cabinetBuilderPopupFieldClassName} disabled:opacity-55`}
-            />
-            </div>
-            {idx === lines.length - 1 ? (
-              <div className="flex justify-center">
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={onAddLine}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] disabled:opacity-55"
-                >
-                  <Plus size={15} strokeWidth={2.8} />
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    );
-  };
-  const setPendingCabinetBuilderInformationLines = (lines: string[]) => {
-    setPendingCabinetBuilderRow((prev) => ({ ...prev, information: informationValueFromLines(lines) }));
-  };
-  const onPendingCabinetBuilderInformationLineChange = (index: number, value: string) => {
-    setPendingCabinetBuilderRow((prev) => {
-      const next = informationLinesFromValue(String(prev.information ?? ""));
-      while (next.length <= index) next.push("");
-      next[index] = value;
-      return { ...prev, information: informationValueFromLines(next) };
-    });
-  };
-  const onPendingCabinetBuilderAddInformationLine = () => {
-    setPendingCabinetBuilderRow((prev) => {
-      const next = [...informationLinesFromValue(String(prev.information ?? "")), ""];
-      return { ...prev, information: informationValueFromLines(next) };
-    });
-  };
-  const onPendingCabinetBuilderRemoveInformationLine = (index: number) => {
-    setPendingCabinetBuilderRow((prev) => {
-      const lines = informationLinesFromValue(String(prev.information ?? ""));
-      if (lines.length <= 1) return { ...prev, information: "" };
-      const next = lines.filter((_, i) => i !== index);
-      return { ...prev, information: informationValueFromLines(next.length ? next : [""]) };
-    });
-  };
-  const setCabinetBuilderAttachmentInformationLines = (attachmentId: string, lines: string[]) => {
-    updateCabinetBuilderAttachmentRow(attachmentId, { information: informationValueFromLines(lines) });
-  };
-  const onCabinetBuilderAttachmentInformationLineChange = (attachmentId: string, currentValue: string, index: number, value: string) => {
-    const next = informationLinesFromValue(String(currentValue ?? ""));
-    while (next.length <= index) next.push("");
-    next[index] = value;
-    setCabinetBuilderAttachmentInformationLines(attachmentId, next);
-  };
-  const onCabinetBuilderAttachmentAddInformationLine = (attachmentId: string, currentValue: string) => {
-    setCabinetBuilderAttachmentInformationLines(attachmentId, [...informationLinesFromValue(String(currentValue ?? "")), ""]);
-  };
-  const onCabinetBuilderAttachmentRemoveInformationLine = (attachmentId: string, currentValue: string, index: number) => {
-    const lines = informationLinesFromValue(String(currentValue ?? ""));
-    if (lines.length <= 1) {
-      setCabinetBuilderAttachmentInformationLines(attachmentId, [""]);
-      return;
-    }
-    const next = lines.filter((_, i) => i !== index);
-    setCabinetBuilderAttachmentInformationLines(attachmentId, next.length ? next : [""]);
-  };
-  const renderCabinetBuilderAttachmentEditPopup = (attachment: CabinetBuilderAttachmentDraft) => {
-    const close = () => setCabinetBuilderEditingAttachmentId("");
-    if (attachment.kind !== "panel") {
-      return (
-        <div className="w-full max-w-[720px] rounded-[24px] border bg-white p-6 shadow-2xl [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]" style={{ borderColor: projectPalette.border }}>
-          <div className="flex items-center justify-between">
-            <p className="text-[22px] font-extrabold text-[#12345B]">Edit Cabinet</p>
-            <button type="button" onClick={close} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-              <BoardPillDropdown value={attachment.row.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { board: value })} />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
-              <input value={attachment.row.name} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-              <input value={attachment.row.height} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-              <input value={attachment.row.width} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-              <input value={attachment.row.depth} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-          </div>
-        </div>
-      );
-    }
-    const panelHeightMode = attachment.panelHeightMode ?? "base";
-    const panelSpanMode = attachment.panelSpanMode ?? "bottomToTopOfCab";
-    const grainAllowed = productionBoardAllowsGrainForValue(String(attachment.row.board || "").trim());
-    return (
-      <div className="w-full max-w-[640px] rounded-[24px] border bg-white p-6 shadow-2xl [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]" style={{ borderColor: projectPalette.border }}>
-        <div className="flex items-center justify-between">
-          <button
-            type="button"
-            disabled={productionReadOnly}
-            onClick={() => promptDeleteCabinetBuilderWallId(attachment.id)}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
-          >
-            <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
-          </button>
-          <p className="text-[22px] font-extrabold text-[#12345B]">{attachment.row.name || "Panel"}</p>
-          <button type="button" onClick={close} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
-        </div>
-        <div className="mt-5 space-y-4">
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="flex flex-wrap items-center gap-4">
-              <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
-                <input
-                  type="checkbox"
-                  checked={panelHeightMode === "base"}
-                  onChange={() => {
-                    updateCabinetBuilderAttachmentMeta(attachment.id, { panelHeightMode: "base" });
-                    updateCabinetBuilderAttachmentRow(attachment.id, {
-                      height: getCabinetBuilderPanelHeightBaselineText("base", panelSpanMode),
-                    });
-                  }}
-                />
-                Base
-              </label>
-              <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
-                <input
-                  type="checkbox"
-                  checked={panelHeightMode === "tall"}
-                  onChange={() => {
-                    updateCabinetBuilderAttachmentMeta(attachment.id, { panelHeightMode: "tall" });
-                    updateCabinetBuilderAttachmentRow(attachment.id, {
-                      height: getCabinetBuilderPanelHeightBaselineText("tall", panelSpanMode),
-                    });
-                  }}
-                />
-                Tall
-              </label>
-            </div>
-            <div className="min-w-[220px] flex-1 space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Panel Span</p>
-              <BoardPillDropdown
-                value={panelSpanMode}
-                options={["floorToCeiling", "floorToTopOfCab", "bottomToCeiling", "bottomToTopOfCab"]}
-                disabled={productionReadOnly}
-                bg="#FFFFFF"
-                border="#D8DEE8"
-                text="#0F172A"
-                size="default"
-                getSize={() => ""}
-                getLabel={(value) =>
-                  value === "floorToCeiling"
-                    ? "Floor to ceiling"
-                    : value === "floorToTopOfCab"
-                      ? "Floor to top of cab"
-                      : value === "bottomToCeiling"
-                        ? "Bottom of cab to ceiling"
-                        : "Bottom of cab to top of cab"
-                }
-                onChange={(value) => {
-                  const nextSpanMode =
-                    value === "floorToCeiling" || value === "floorToTopOfCab" || value === "bottomToCeiling" || value === "bottomToTopOfCab"
-                      ? value
-                      : "bottomToTopOfCab";
-                  updateCabinetBuilderAttachmentMeta(attachment.id, { panelSpanMode: nextSpanMode });
-                  updateCabinetBuilderAttachmentRow(attachment.id, {
-                    height: getCabinetBuilderPanelHeightBaselineText(panelHeightMode, nextSpanMode),
-                  });
-                }}
-              />
-            </div>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-              <BoardPillDropdown
-                value={attachment.row.board}
-                options={cutlistBoardOptions}
-                disabled={productionReadOnly}
-                bg="#FFFFFF"
-                border="#D8DEE8"
-                text="#0F172A"
-                getSize={boardSizeFor}
-                getLabel={boardDisplayLabel}
-                onChange={(value) => {
-                  const defaults = defaultClashingForPartType(experimentalPanelPartType, value);
-                  const grainAllowedForBoard = productionBoardAllowsGrainForValue(String(value || "").trim());
-                  updateCabinetBuilderAttachmentRow(attachment.id, {
-                    board: value,
-                    clashLeft: defaults.left,
-                    clashRight: defaults.right,
-                    clashing: joinClashing(defaults.left, defaults.right),
-                    grain: grainAllowedForBoard ? attachment.row.grain : false,
-                    grainValue: grainAllowedForBoard ? attachment.row.grainValue : "",
-                  });
-                }}
-              />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
-              <input value={attachment.row.name} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-              <input value={attachment.row.height} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-              <input value={attachment.row.width} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-              <input value={attachment.row.depth} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-              <input value={attachment.row.quantity} onChange={(e) => updateCabinetBuilderAttachmentRow(attachment.id, { quantity: numericOnlyText(e.target.value) || "1" })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-            </div>
-          </div>
-          <div className={`grid gap-3 ${grainAllowed ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Long</p>
-              <BoardPillDropdown value={String(attachment.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { clashLeft: value, clashing: joinClashing(value, String(attachment.row.clashRight ?? "")) })} />
-            </div>
-            <div className="space-y-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Short</p>
-              <BoardPillDropdown value={String(attachment.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { clashRight: value, clashing: joinClashing(String(attachment.row.clashLeft ?? ""), value) })} />
-            </div>
-            {grainAllowed ? (
-              <div className="space-y-1">
-                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                <BoardPillDropdown value={String(attachment.row.grainValue ?? "")} options={grainDimensionOptionsForRow(attachment.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderAttachmentRow(attachment.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
-              </div>
-            ) : null}
-          </div>
-          <div className="space-y-1">
-            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-            {renderCabinetBuilderInformationLinesEditor({
-              value: String(attachment.row.information ?? ""),
-              keyPrefix: `attachment_info_${attachment.id}`,
-              disabled: productionReadOnly,
-              onLineChange: (index, value) =>
-                onCabinetBuilderAttachmentInformationLineChange(attachment.id, String(attachment.row.information ?? ""), index, value),
-              onAddLine: () =>
-                onCabinetBuilderAttachmentAddInformationLine(attachment.id, String(attachment.row.information ?? "")),
-              onRemoveLine: (index) =>
-                onCabinetBuilderAttachmentRemoveInformationLine(attachment.id, String(attachment.row.information ?? ""), index),
-            })}
-          </div>
-        </div>
-      </div>
-    );
-  };
-  const renderCabinetBuilderChildEditorGroupShared = (
-    children: Array<{ id: string; row: CutlistEntryDraft }>,
-  ) => {
-    if (!children.length) return null;
-    const groupPartType = normalizeCabinetBuilderChildTabPartType(children[0]?.row.partType || "Part");
-    const groupColor = partTypeColors[groupPartType] ?? "#CBD5E1";
-    const singleChild = children.length === 1 ? children[0] : null;
-    return (
-      <div className="mt-2 space-y-3">
-        {renderCabinetBuilderPartTabHeader(
-          groupPartType,
-          singleChild
-            ? () => {
-                removeCabinetBuilderChildRow(singleChild.id);
-                setCabinetBuilderEditTab("edit");
-              }
-            : null,
-          () => {
-            addCabinetBuilderChildRowAndOpenTab(groupPartType);
-          },
-        )}
-        {children.map((child, childIndex) => {
-          const childIsExtra = isExtraPartType(String(child.row.partType || ""));
-          const showGroupedCard = children.length > 1;
-          return (
-            <div
-              key={`cabinet_child_editor_shared_${child.id}`}
-              className={showGroupedCard ? "rounded-[16px] border p-3" : ""}
-              style={
-                showGroupedCard
-                  ? {
-                      borderColor: darkenHex(groupColor, 0.08),
-                      backgroundColor: groupColor,
-                    }
-                  : undefined
-              }
-            >
-              {showGroupedCard ? (
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <span className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#111111]">
-                    {`Piece ${childIndex + 1}`}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={productionReadOnly}
-                    onClick={() => {
-                      removeCabinetBuilderChildRow(child.id);
-                      const remainingCount = children.length - 1;
-                      if (remainingCount <= 0) {
-                        setCabinetBuilderEditTab("edit");
-                      } else {
-                        setCabinetBuilderEditTab(buildCabinetBuilderChildTabId(groupPartType));
-                      }
-                    }}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
-                  >
-                    <X size={15} />
-                  </button>
-                </div>
-              ) : null}
-              <div
-                className={`grid gap-3 ${
-                  childIsExtra
-                    ? "md:grid-cols-[minmax(0,2.05fr)_minmax(0,2.05fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]"
-                    : "md:grid-cols-[160px_minmax(0,1fr)]"
-                }`}
-              >
-                <div className="min-w-0 space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                  <BoardPillDropdown value={child.row.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderChildRow(child.id, { board: value })} />
-                </div>
-                <div className="min-w-0 space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
-                  <input value={child.row.name} onChange={(e) => updateCabinetBuilderChildRow(child.id, { name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                </div>
-                {childIsExtra ? (
-                  <>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                      <input value={child.row.height} onChange={(e) => updateCabinetBuilderChildRow(child.id, { height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                      <input value={child.row.width} onChange={(e) => updateCabinetBuilderChildRow(child.id, { width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                      <input value={child.row.depth} onChange={(e) => updateCabinetBuilderChildRow(child.id, { depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                      <input value={child.row.quantity} onChange={(e) => updateCabinetBuilderChildRow(child.id, { quantity: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                  </>
-                ) : null}
-              </div>
-              {!childIsExtra ? (
-                <div className="mt-3 grid gap-3 md:grid-cols-4">
-                  <div className="space-y-1">
-                    <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                    {isClassicDrawerRowLike(child.row) ? (
-                      <DrawerHeightDropdown
-                        value={String(child.row.height || "")}
-                        options={drawerHeightLetterOptions}
-                        disabled={productionReadOnly}
-                        bg="#FFFFFF"
-                        border="#D8DEE8"
-                        text="#0F172A"
-                        onAdd={(token) => addCabinetBuilderChildDrawerHeightToken(child.id, token)}
-                        onRemove={(token) => removeCabinetBuilderChildDrawerHeightToken(child.id, token)}
-                      />
-                    ) : (
-                      <input value={child.row.height} onChange={(e) => updateCabinetBuilderChildRow(child.id, { height: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px]" />
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                    <input value={child.row.width} onChange={(e) => updateCabinetBuilderChildRow(child.id, { width: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px]" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                    <input value={child.row.depth} onChange={(e) => updateCabinetBuilderChildRow(child.id, { depth: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px]" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                    <input value={child.row.quantity} disabled={isClassicDrawerRowLike(child.row)} onChange={(e) => updateCabinetBuilderChildRow(child.id, { quantity: numericOnlyText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px] disabled:opacity-90" />
-                  </div>
-                </div>
-              ) : null}
-              {!isCabinetryPartType(child.row.partType) ? (
-                childIsExtra ? (
-                  <div
-                    className={`mt-3 grid gap-3 ${
-                      productionBoardAllowsGrainForValue(String(child.row.board || "").trim())
-                        ? "md:grid-cols-[minmax(0,2.05fr)_minmax(0,2.05fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]"
-                        : "md:grid-cols-[minmax(0,2.05fr)_minmax(0,2.05fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]"
-                    }`}
-                  >
-                    {productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? (
-                      <div className="md:col-[1/3] md:grid md:grid-cols-[minmax(0,1fr)_96px] md:items-start md:gap-3">
-                        <div className="space-y-1">
-                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                          {renderCabinetBuilderInformationLinesEditor({
-                            value: String(child.row.information ?? ""),
-                            keyPrefix: `selected_child_info_inline_shared_${child.id}`,
-                            disabled: productionReadOnly,
-                            onLineChange: (index, value) =>
-                              updateCabinetBuilderChildRow(child.id, {
-                                information: informationValueFromLines((() => {
-                                  const next = informationLinesFromValue(String(child.row.information ?? ""));
-                                  while (next.length <= index) next.push("");
-                                  next[index] = value;
-                                  return next;
-                                })()),
-                              }),
-                            onAddLine: () =>
-                              updateCabinetBuilderChildRow(child.id, {
-                                information: informationValueFromLines([
-                                  ...informationLinesFromValue(String(child.row.information ?? "")),
-                                  "",
-                                ]),
-                              }),
-                            onRemoveLine: (index) => {
-                              const lines = informationLinesFromValue(String(child.row.information ?? ""));
-                              const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                              updateCabinetBuilderChildRow(child.id, {
-                                information: informationValueFromLines(next.length ? next : [""]),
-                              });
-                            },
-                          })}
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                          <BoardPillDropdown value={String(child.row.grainValue ?? "")} options={grainDimensionOptionsForRow(child.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderChildRow(child.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-1 md:col-[1/3]">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                        {renderCabinetBuilderInformationLinesEditor({
-                          value: String(child.row.information ?? ""),
-                          keyPrefix: `selected_child_info_inline_shared_${child.id}`,
-                          disabled: productionReadOnly,
-                          onLineChange: (index, value) =>
-                            updateCabinetBuilderChildRow(child.id, {
-                              information: informationValueFromLines((() => {
-                                const next = informationLinesFromValue(String(child.row.information ?? ""));
-                                while (next.length <= index) next.push("");
-                                next[index] = value;
-                                return next;
-                              })()),
-                            }),
-                          onAddLine: () =>
-                            updateCabinetBuilderChildRow(child.id, {
-                              information: informationValueFromLines([
-                                ...informationLinesFromValue(String(child.row.information ?? "")),
-                                "",
-                              ]),
-                            }),
-                          onRemoveLine: (index) => {
-                            const lines = informationLinesFromValue(String(child.row.information ?? ""));
-                            const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                            updateCabinetBuilderChildRow(child.id, {
-                              information: informationValueFromLines(next.length ? next : [""]),
-                            });
-                          },
-                        })}
-                      </div>
-                    )}
-                    <div className="space-y-1 md:col-[3/5]">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Long Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashLeft: value, clashing: joinClashing(value, String(child.row.clashRight ?? "")) })} />
-                    </div>
-                    <div className="space-y-1 md:col-[5/7]">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Short Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashRight: value, clashing: joinClashing(String(child.row.clashLeft ?? ""), value) })} />
-                    </div>
-                  </div>
-                ) : (
-                  <div className={`mt-3 grid gap-3 ${productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Long Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashLeft: value, clashing: joinClashing(value, String(child.row.clashRight ?? "")) })} />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Short Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashRight: value, clashing: joinClashing(String(child.row.clashLeft ?? ""), value) })} />
-                    </div>
-                    {productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? (
-                      <div className="space-y-1">
-                        <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                        <BoardPillDropdown value={String(child.row.grainValue ?? "")} options={grainDimensionOptionsForRow(child.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderChildRow(child.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
-                      </div>
-                    ) : null}
-                  </div>
-                )
-              ) : null}
-              {!childIsExtra ? (
-                <div className="mt-3 space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                  {renderCabinetBuilderInformationLinesEditor({
-                    value: String(child.row.information ?? ""),
-                    keyPrefix: `selected_edit_child_info_shared_${child.id}`,
-                    disabled: productionReadOnly,
-                    onLineChange: (index, value) =>
-                      updateCabinetBuilderChildRow(child.id, {
-                        information: informationValueFromLines((() => {
-                          const next = informationLinesFromValue(String(child.row.information ?? ""));
-                          while (next.length <= index) next.push("");
-                          next[index] = value;
-                          return next;
-                        })()),
-                      }),
-                    onAddLine: () =>
-                      updateCabinetBuilderChildRow(child.id, {
-                        information: informationValueFromLines([
-                          ...informationLinesFromValue(String(child.row.information ?? "")),
-                          "",
-                        ]),
-                      }),
-                    onRemoveLine: (index) => {
-                      const lines = informationLinesFromValue(String(child.row.information ?? ""));
-                      const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                      updateCabinetBuilderChildRow(child.id, {
-                        information: informationValueFromLines(next.length ? next : [""]),
-                      });
-                    },
-                  })}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-  const renderCabinetBuilderWallDrawingPreview = ({
-    draft,
-    viewWidth,
-    viewHeight,
-    paddingX,
-    paddingY,
-    highlightWallId = null,
-    className = "block h-auto w-full bg-white",
-    showGapGuides = true,
-  }: {
-    draft: CabinetBuilderDraft;
-    viewWidth: number;
-    viewHeight: number;
-    paddingX: number;
-    paddingY: number;
-    highlightWallId?: string | null;
-    className?: string;
-    showGapGuides?: boolean;
-  }) => {
-    const wallPieces = buildCabinetBuilderWallPieces(draft);
-    const pieceLayouts = buildCabinetBuilderDisplayPieceLayouts(
-      wallPieces,
-      viewWidth,
-      viewHeight,
-      paddingX,
-      paddingY,
-      draft,
-    );
-    const scale = pieceLayouts[0]?.scale ?? 1;
-    const highlightedPiece = highlightWallId ? pieceLayouts.find((item) => item.id === highlightWallId) ?? null : null;
-    const overlayItems = pieceLayouts.flatMap((item) => {
-      const overlaySource = item.doorsRow || item.drawersRow;
-      if (!overlaySource) return [];
-      const overlayMode = normalizeDoorModeValue(overlaySource.doorMode);
-      const overlayCount = Number.parseInt(String(overlaySource.doorFrontCount || "1"), 10) || 1;
-      const overlayBaseColor = partTypeColors[String(overlaySource.partType || "").trim()] ?? "#CBD5E1";
-      const overlayStroke = darkenHex(overlayBaseColor, 0.14);
-      const overlayFill = lightenHex(overlayBaseColor, 0.2);
-      const overlayText = isLightHex(overlayFill) ? "#1F2937" : "#F8FAFC";
-      const overlayTotalHeight = Number.parseFloat(String(overlaySource.height ?? "").replace(/[^\d.-]/g, "")) || 0;
-      const overlayTotalWidth = Number.parseFloat(String(overlaySource.width ?? "").replace(/[^\d.-]/g, "")) || 0;
-      const overlayTopGapValue = Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0;
-      const overlayBetweenGapValue = Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0;
-      const overlayLeftGapValue = Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0;
-      const overlayRightGapValue = Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0;
-      const overlayTopGapPx = overlayTotalHeight > 0 ? (overlayTopGapValue / overlayTotalHeight) * item.height : 0;
-      const overlayBetweenGapPxForHeight =
-        overlayTotalHeight > 0 ? (overlayBetweenGapValue / overlayTotalHeight) * item.height : 0;
-      const overlayBetweenGapPxForWidth =
-        overlayTotalWidth > 0 ? (overlayBetweenGapValue / overlayTotalWidth) * item.width : 0;
-      const overlayLeftGapPx = overlayTotalWidth > 0 ? (overlayLeftGapValue / overlayTotalWidth) * item.width : 0;
-      const overlayRightGapPx = overlayTotalWidth > 0 ? (overlayRightGapValue / overlayTotalWidth) * item.width : 0;
-      const overlayClearHeight = Math.max(0, overlayTotalHeight - overlayTopGapValue);
-      const overlayClearWidth = Math.max(0, overlayTotalWidth - overlayLeftGapValue - overlayRightGapValue);
-      return [
-        {
-          item,
-          ownerId: item.id,
-          frontKind: item.doorsRow ? ("doorsRow" as const) : ("drawersRow" as const),
-          overlaySource,
-          overlayMode,
-          overlayStroke,
-          overlayFill,
-          overlayText,
-          overlayTopGapPx,
-          overlayBetweenGapPxForHeight,
-          overlayBetweenGapPxForWidth,
-          overlayLeftGapPx,
-          overlayRightGapPx,
-          overlayClearHeight,
-          overlayClearWidth,
-          overlayDrawerHeights:
-            overlayMode === "drawer"
-              ? resolveDoorFrontHeightNumbers(
-                  normalizeDoorFrontHeights(overlaySource.doorFrontHeights, overlayCount),
-                  String(overlaySource.height ?? ""),
-                  String(overlaySource.doorTopGap ?? ""),
-                  String(overlaySource.doorBetweenGap ?? ""),
-                  normalizeDoorFrontHeightManual(overlaySource.doorFrontHeightManual, overlayCount),
-                )
-              : { heights: [], manual: [] as boolean[] },
-          overlayDoorWidths:
-            overlayMode === "door"
-              ? resolveDoorFrontWidthNumbers(
-                  normalizeDoorFrontWidths(overlaySource.doorFrontWidths, overlayCount),
-                  String(overlaySource.width ?? ""),
-                  String(overlaySource.doorSideLeftGap ?? ""),
-                  String(overlaySource.doorSideRightGap ?? ""),
-                  String(overlaySource.doorBetweenGap ?? ""),
-                  normalizeDoorFrontWidthManual(overlaySource.doorFrontWidthManual, overlayCount),
-                )
-              : { widths: [], manual: [] as boolean[] },
-        },
-      ];
-    });
-    const overlayGapPlacementRects: Array<{ left: number; right: number; top: number; bottom: number }> = [];
-    const overlayGapGuides = showGapGuides
-      ? overlayItems.map(
-          ({
-            item,
-            ownerId,
-            frontKind,
-            overlayMode,
-            overlayTopGapPx,
-            overlayBetweenGapPxForHeight,
-            overlayBetweenGapPxForWidth,
-            overlayLeftGapPx,
-            overlayRightGapPx,
-            overlayDrawerHeights,
-            overlayDoorWidths,
-            overlaySource,
-          }) =>
-            renderCabinetBuilderOverlayGapGuides({
-              item,
-              ownerId,
-              frontKind,
-              overlayMode,
-              overlayTopGapValue: Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0,
-              overlayBetweenGapValue:
-                Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0,
-              overlayLeftGapValue:
-                Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0,
-              overlayRightGapValue:
-                Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0,
-              overlayTopGapPx,
-              overlayBetweenGapPxForHeight,
-              overlayBetweenGapPxForWidth,
-              overlayLeftGapPx,
-              overlayRightGapPx,
-              overlayDoorWidths,
-              overlayDrawerHeights,
-              scale,
-              placedLabelRects: overlayGapPlacementRects,
-              blockedRects: [],
-            }),
-        )
-      : [];
-    const getWallPieceGrainAxis = (row: Pick<CutlistRow, "grainValue" | "height" | "width" | "depth">) =>
-      resolveGrainAxis(
-        String(row.grainValue ?? ""),
-        String(row.height ?? ""),
-        String(row.width ?? ""),
-        String(row.depth ?? ""),
-      );
-
-    return (
-      <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} className={className}>
-        {pieceLayouts.map((item) => (
-          <g key={`cab_wall_preview_piece_${item.id}`}>
-            <rect x={item.x} y={item.y} width={item.width} height={item.height} fill={item.palette.fill} />
-            {item.kind === "panel"
-              ? renderSvgGrainIndicators({
-                  keyPrefix: `cab_wall_preview_piece_${item.id}`,
-                  x: item.x,
-                  y: item.y,
-                  width: item.width,
-                  height: item.height,
-                  grainAxis: getWallPieceGrainAxis(item.row),
-                  color: item.palette.stroke,
-                  opacity: 0.42,
-                })
-              : null}
-            {(() => {
-              const piecePrimaryText = numericDimensionText(item.row.height);
-              const pieceSecondaryText = numericDimensionText(
-                item.kind === "panel"
-                  ? String(item.row.depth || "").trim() || String(item.row.width || "").trim()
-                  : String(item.row.width || "").trim(),
-              );
-              const canShowInlineLabel = item.width >= 96 && item.height >= 28;
-              const canShowStackedLabel = item.width >= 54 && item.height >= 86;
-              return canShowInlineLabel ? (
-                <text
-                  x={item.x + item.width / 2}
-                  y={item.y + item.height / 2}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fontSize="11"
-                  fill={item.palette.text}
-                >
-                  {`${piecePrimaryText} x ${pieceSecondaryText}`}
-                </text>
-              ) : canShowStackedLabel ? (
-                <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" fontSize="11" fill={item.palette.text}>
-                  <tspan x={item.x + item.width / 2} dy="-1.1em">{piecePrimaryText}</tspan>
-                  <tspan x={item.x + item.width / 2} dy="1.15em">x</tspan>
-                  <tspan x={item.x + item.width / 2} dy="1.15em">{pieceSecondaryText}</tspan>
-                </text>
-              ) : null;
-            })()}
-          </g>
-        ))}
-        {pieceLayouts.map((item, index) => {
-          const isHighlighted = item.id === highlightedPiece?.id;
-          const previousItem = pieceLayouts[index - 1] ?? null;
-          const nextItem = pieceLayouts[index + 1] ?? null;
-          const topBottomStroke = isHighlighted ? "#2563EB" : item.palette.stroke;
-          const leftStroke = item.palette.stroke;
-          const sharedRightStroke = nextItem?.palette.stroke ?? item.palette.stroke;
-          const sharesLaneWithPrevious = Boolean(previousItem && previousItem.position === item.position);
-          const sharesColumnWithNext = Boolean(
-            nextItem &&
-              nextItem.position === item.position &&
-              Math.abs(nextItem.x - item.x) < 0.5 &&
-              Math.abs(nextItem.width - item.width) < 0.5,
-          );
-          const rightBoundaryTouchesNext = Boolean(
-            nextItem &&
-              nextItem.position !== item.position &&
-              Math.abs(item.x + item.width - nextItem.x) < 0.5,
-          );
-          const sharedBoundaryTop = sharesColumnWithNext
-            ? item.y
-            : rightBoundaryTouchesNext
-              ? Math.min(item.y, nextItem.y)
-              : item.y;
-          const sharedBoundaryBottom = sharesColumnWithNext
-            ? item.y + item.height
-            : rightBoundaryTouchesNext
-              ? Math.max(item.y + item.height, nextItem.y + nextItem.height)
-              : item.y + item.height;
-          return (
-            <g key={`cab_wall_preview_outline_${item.id}`} pointerEvents="none">
-              <line x1={item.x} x2={item.x + item.width} y1={item.y} y2={item.y} stroke={topBottomStroke} strokeWidth="1" />
-              <line
-                x1={item.x}
-                x2={item.x + item.width}
-                y1={item.y + item.height}
-                y2={item.y + item.height}
-                stroke={topBottomStroke}
-                strokeWidth="1"
-              />
-              {!previousItem || sharesLaneWithPrevious || Math.abs(previousItem.x + previousItem.width - item.x) > 0.5 ? (
-                <line x1={item.x} x2={item.x} y1={item.y} y2={item.y + item.height} stroke={leftStroke} strokeWidth="1" />
-              ) : null}
-              <line
-                x1={item.x + item.width}
-                x2={item.x + item.width}
-                y1={sharedBoundaryTop}
-                y2={sharedBoundaryBottom}
-                stroke={sharedRightStroke}
-                strokeWidth="1"
-              />
-            </g>
-          );
-        })}
-        {highlightedPiece ? (
-          <g key={`cab_wall_preview_selected_${highlightedPiece.id}`} pointerEvents="none">
-            <line x1={highlightedPiece.x} x2={highlightedPiece.x + highlightedPiece.width} y1={highlightedPiece.y} y2={highlightedPiece.y} stroke="#2563EB" strokeWidth="1" />
-            <line x1={highlightedPiece.x} x2={highlightedPiece.x + highlightedPiece.width} y1={highlightedPiece.y + highlightedPiece.height} y2={highlightedPiece.y + highlightedPiece.height} stroke="#2563EB" strokeWidth="1" />
-            <line x1={highlightedPiece.x} x2={highlightedPiece.x} y1={highlightedPiece.y} y2={highlightedPiece.y + highlightedPiece.height} stroke="#2563EB" strokeWidth="1" />
-            <line x1={highlightedPiece.x + highlightedPiece.width} x2={highlightedPiece.x + highlightedPiece.width} y1={highlightedPiece.y} y2={highlightedPiece.y + highlightedPiece.height} stroke="#2563EB" strokeWidth="1" />
-          </g>
-        ) : null}
-        {overlayItems.map(
-          ({
-            item,
-            overlaySource,
-            overlayMode,
-            overlayStroke,
-            overlayFill,
-            overlayText,
-            overlayTopGapPx,
-            overlayBetweenGapPxForHeight,
-            overlayBetweenGapPxForWidth,
-            overlayLeftGapPx,
-            overlayRightGapPx,
-            overlayClearHeight,
-            overlayClearWidth,
-            overlayDrawerHeights,
-            overlayDoorWidths,
-          }) =>
-            overlayMode === "drawer"
-              ? (() => {
-                  let currentY = item.y + overlayTopGapPx;
-                  const innerX = item.x + overlayLeftGapPx;
-                  const innerWidth = Math.max(0, item.width - overlayLeftGapPx - overlayRightGapPx);
-                  return overlayDrawerHeights.heights.map((pieceHeight, index) => {
-                    const pieceScaledHeight = pieceHeight * scale;
-                    const y = currentY;
-                    currentY += pieceScaledHeight + overlayBetweenGapPxForHeight;
-                    return (
-                      <g key={`cab_preview_draw_piece_${item.id}_${index}`} style={{ pointerEvents: "none" }}>
-                        <rect x={innerX} y={y} width={innerWidth} height={pieceScaledHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
-                        {renderSvgGrainIndicators({
-                          keyPrefix: `cab_preview_draw_piece_${item.id}_${index}`,
-                          x: innerX,
-                          y,
-                          width: innerWidth,
-                          height: pieceScaledHeight,
-                          grainAxis: getWallPieceGrainAxis(overlaySource),
-                          color: overlayStroke,
-                          opacity: 0.36,
-                        })}
-                        <text x={innerX + innerWidth / 2} y={y + pieceScaledHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
-                          {`${formatDoorFrontHeightValue(pieceHeight)} x ${formatDoorFrontHeightValue(overlayClearWidth)}`}
-                        </text>
-                      </g>
-                    );
-                  });
-                })()
-              : overlayMode === "door"
-                ? (() => {
-                    let currentX = item.x + overlayLeftGapPx;
-                    const frontY = item.y + overlayTopGapPx;
-                    const frontHeight = Math.max(0, item.height - overlayTopGapPx);
-                    return overlayDoorWidths.widths.map((pieceWidth, index) => {
-                      const pieceScaledWidth = pieceWidth * scale;
-                      const x = currentX;
-                      currentX += pieceScaledWidth + overlayBetweenGapPxForWidth;
-                      return (
-                        <g key={`cab_preview_door_piece_${item.id}_${index}`} style={{ pointerEvents: "none" }}>
-                          <rect x={x} y={frontY} width={pieceScaledWidth} height={frontHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
-                          {renderSvgGrainIndicators({
-                            keyPrefix: `cab_preview_door_piece_${item.id}_${index}`,
-                            x,
-                            y: frontY,
-                            width: pieceScaledWidth,
-                            height: frontHeight,
-                            grainAxis: getWallPieceGrainAxis(overlaySource),
-                            color: overlayStroke,
-                            opacity: 0.36,
-                          })}
-                          <text x={x + pieceScaledWidth / 2} y={frontY + frontHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
-                            {`${formatDoorFrontHeightValue(pieceWidth)} x ${formatDoorFrontHeightValue(overlayClearHeight)}`}
-                          </text>
-                        </g>
-                      );
-                    });
-                  })()
-                : null,
-        )}
-        {overlayGapGuides.flatMap((guide) => guide.lines)}
-        {overlayGapGuides.flatMap((guide) => guide.labels)}
-      </svg>
-    );
-  };
-  const renderCompactCabinetBuilderEntry = () => {
-    const color = cabinetBuilderShellBg;
-    const textColor = cabinetBuilderShellText;
-    const fieldBg = cabinetBuilderFieldBg;
-    const fieldBorder = cabinetBuilderFieldBorder;
-    const attachmentBeingEdited = cabinetBuilderDraft
-      ? cabinetBuilderDraft.attachments.find((item) => item.id === cabinetBuilderEditingAttachmentId) ?? null
-      : null;
-    const selectedEditableCabinet = cabinetBuilderDraft
-      ? getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)
-      : null;
-    const selectedFrontRowForEdit = cabinetBuilderDraft
-      ? getCabinetBuilderSelectedFrontRow(cabinetBuilderDraft)
-      : null;
-    const cabinetBuilderEditTabs = cabinetBuilderDraft
-      ? buildCabinetBuilderEditTabs(cabinetBuilderDraft)
-      : [{ id: "edit", label: "Edit", color: null as string | null }];
-    const activeCabinetBuilderEditTab =
-      cabinetBuilderEditTabs.find((tab) => tab.id === cabinetBuilderEditTab) ?? cabinetBuilderEditTabs[0];
-    const cabinetBuilderEditPanelBg = activeCabinetBuilderEditTab?.color
-      ? lightenHex(activeCabinetBuilderEditTab.color, 0.28)
-      : "#FFFFFF";
-    const cabinetBuilderEditPanelBorder = activeCabinetBuilderEditTab?.color
-      ? darkenHex(activeCabinetBuilderEditTab.color, 0.08)
-      : "#D8DEE8";
-  const selectedEditChildPartType =
-    selectedEditableCabinet
-      ? (() => {
-          const parsedPartType = parseCabinetBuilderChildTabPartType(cabinetBuilderEditTab);
-          if (parsedPartType) return parsedPartType;
-          if (cabinetBuilderEditTab.startsWith("child:")) {
-            const legacyChild = selectedEditableCabinet.childRows.find((child) => child.id === cabinetBuilderEditTab.slice(6)) ?? null;
-            return legacyChild ? normalizeCabinetBuilderChildTabPartType(legacyChild.row.partType || "Part") : "";
-          }
-          return "";
-        })()
-      : "";
-  const selectedEditChildren =
-    selectedEditableCabinet && selectedEditChildPartType
-      ? selectedEditableCabinet.childRows.filter(
-          (child) =>
-            normalizeCabinetBuilderChildTabPartType(child.row.partType || "Part").toLowerCase() ===
-            selectedEditChildPartType.toLowerCase(),
-        )
-      : [];
-  const selectedEditChild = selectedEditChildren[0] ?? null;
-  const selectedEditChildIsExtra = selectedEditChild
-    ? isExtraPartType(String(selectedEditChild.row.partType || ""))
-    : false;
-  const setSelectedCabinetBuilderInformationLines = (lines: string[]) => {
-    updateCabinetBuilderMainRow({ information: informationValueFromLines(lines) });
-  };
-  const onSelectedCabinetBuilderInformationLineChange = (index: number, value: string) => {
-    const next = informationLinesFromValue(String(selectedEditableCabinet?.row.information ?? ""));
-    while (next.length <= index) next.push("");
-    next[index] = value;
-    setSelectedCabinetBuilderInformationLines(next);
-  };
-  const onSelectedCabinetBuilderAddInformationLine = () => {
-    setSelectedCabinetBuilderInformationLines([
-      ...informationLinesFromValue(String(selectedEditableCabinet?.row.information ?? "")),
-      "",
-    ]);
-  };
-  const onSelectedCabinetBuilderRemoveInformationLine = (index: number) => {
-    const lines = informationLinesFromValue(String(selectedEditableCabinet?.row.information ?? ""));
-    if (lines.length <= 1) {
-      setSelectedCabinetBuilderInformationLines([""]);
-      return;
-    }
-    const next = lines.filter((_, i) => i !== index);
-    setSelectedCabinetBuilderInformationLines(next.length ? next : [""]);
-  };
-  const setSelectedCabinetBuilderChildInformationLines = (childId: string, lines: string[]) => {
-    updateCabinetBuilderChildRow(childId, { information: informationValueFromLines(lines) });
-  };
-  const onSelectedCabinetBuilderChildInformationLineChange = (childId: string, currentValue: string, index: number, value: string) => {
-    const next = informationLinesFromValue(String(currentValue ?? ""));
-    while (next.length <= index) next.push("");
-    next[index] = value;
-    setSelectedCabinetBuilderChildInformationLines(childId, next);
-  };
-  const onSelectedCabinetBuilderChildAddInformationLine = (childId: string, currentValue: string) => {
-    setSelectedCabinetBuilderChildInformationLines(childId, [...informationLinesFromValue(String(currentValue ?? "")), ""]);
-  };
-  const onSelectedCabinetBuilderChildRemoveInformationLine = (childId: string, currentValue: string, index: number) => {
-    const lines = informationLinesFromValue(String(currentValue ?? ""));
-    if (lines.length <= 1) {
-      setSelectedCabinetBuilderChildInformationLines(childId, [""]);
-      return;
-    }
-    const next = lines.filter((_, i) => i !== index);
-    setSelectedCabinetBuilderChildInformationLines(childId, next.length ? next : [""]);
-  };
-  const renderCabinetBuilderChildEditorGroup = (children: typeof selectedEditChildren) => {
-    if (!children.length) return null;
-    const groupPartType = normalizeCabinetBuilderChildTabPartType(children[0]?.row.partType || "Part");
-    const groupColor = partTypeColors[groupPartType] ?? "#CBD5E1";
-    return (
-      <div className="mt-2 space-y-3">
-        {renderCabinetBuilderPartTabHeader(
-          groupPartType,
-          null,
-          () => {
-            addCabinetBuilderChildRowAndOpenTab(groupPartType);
-          },
-        )}
-        {children.map((child, childIndex) => {
-          const childIsExtra = isExtraPartType(String(child.row.partType || ""));
-          const showGroupedCard = children.length > 1;
-          return (
-            <div
-              key={`cabinet_child_editor_${child.id}`}
-              className={showGroupedCard ? "rounded-[16px] border p-3" : ""}
-              style={
-                showGroupedCard
-                  ? {
-                      borderColor: darkenHex(groupColor, 0.08),
-                      backgroundColor: groupColor,
-                    }
-                  : undefined
-              }
-            >
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <span className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#111111]">
-                  {children.length > 1 ? `Piece ${childIndex + 1}` : groupPartType}
-                </span>
-                <button
-                  type="button"
-                  disabled={productionReadOnly}
-                  onClick={() => {
-                    removeCabinetBuilderChildRow(child.id);
-                    const remainingCount = children.length - 1;
-                    if (remainingCount <= 0) {
-                      setCabinetBuilderEditTab("edit");
-                    } else {
-                      setCabinetBuilderEditTab(buildCabinetBuilderChildTabId(groupPartType));
-                    }
-                  }}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828] disabled:opacity-55"
-                >
-                  <X size={15} />
-                </button>
-              </div>
-              <div
-                className={`grid gap-3 ${
-                  childIsExtra
-                    ? "md:grid-cols-[minmax(0,2.05fr)_minmax(0,2.05fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]"
-                    : "md:grid-cols-[160px_minmax(0,1fr)]"
-                }`}
-              >
-                <div className="min-w-0 space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                  <BoardPillDropdown value={child.row.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderChildRow(child.id, { board: value })} />
-                </div>
-                <div className="min-w-0 space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
-                  <input value={child.row.name} onChange={(e) => updateCabinetBuilderChildRow(child.id, { name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                </div>
-                {childIsExtra ? (
-                  <>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                      <input value={child.row.height} onChange={(e) => updateCabinetBuilderChildRow(child.id, { height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                      <input value={child.row.width} onChange={(e) => updateCabinetBuilderChildRow(child.id, { width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                      <input value={child.row.depth} onChange={(e) => updateCabinetBuilderChildRow(child.id, { depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                      <input value={child.row.quantity} onChange={(e) => updateCabinetBuilderChildRow(child.id, { quantity: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-2 text-center text-[13px]" />
-                    </div>
-                  </>
-                ) : null}
-              </div>
-              {!childIsExtra ? (
-                <div className="mt-3 grid gap-3 md:grid-cols-4">
-                  <div className="space-y-1">
-                    <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                    {isClassicDrawerRowLike(child.row) ? (
-                      <DrawerHeightDropdown
-                        value={String(child.row.height || "")}
-                        options={drawerHeightLetterOptions}
-                        disabled={productionReadOnly}
-                        bg="#FFFFFF"
-                        border="#D8DEE8"
-                        text="#0F172A"
-                        onAdd={(token) => addCabinetBuilderChildDrawerHeightToken(child.id, token)}
-                        onRemove={(token) => removeCabinetBuilderChildDrawerHeightToken(child.id, token)}
-                      />
-                    ) : (
-                      <input value={child.row.height} onChange={(e) => updateCabinetBuilderChildRow(child.id, { height: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px]" />
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                    <input value={child.row.width} onChange={(e) => updateCabinetBuilderChildRow(child.id, { width: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px]" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                    <input value={child.row.depth} onChange={(e) => updateCabinetBuilderChildRow(child.id, { depth: numericDimensionText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px]" />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                    <input value={child.row.quantity} disabled={isClassicDrawerRowLike(child.row)} onChange={(e) => updateCabinetBuilderChildRow(child.id, { quantity: numericOnlyText(e.target.value) })} className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-center text-[13px] disabled:opacity-90" />
-                  </div>
-                </div>
-              ) : null}
-              {!isCabinetryPartType(child.row.partType) ? (
-                childIsExtra ? (
-                  <div
-                    className={`mt-3 grid gap-3 ${
-                      productionBoardAllowsGrainForValue(String(child.row.board || "").trim())
-                        ? "md:grid-cols-[minmax(0,2.05fr)_minmax(0,2.05fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]"
-                        : "md:grid-cols-[minmax(0,2.05fr)_minmax(0,2.05fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)_minmax(0,0.55fr)]"
-                    }`}
-                  >
-                    {productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? (
-                      <div className="md:col-[1/3] md:grid md:grid-cols-[minmax(0,1fr)_96px] md:items-start md:gap-3">
-                        <div className="space-y-1">
-                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                          {renderCabinetBuilderInformationLinesEditor({
-                            value: String(child.row.information ?? ""),
-                            keyPrefix: `selected_child_info_inline_${child.id}`,
-                            disabled: productionReadOnly,
-                            onLineChange: (index, value) =>
-                              updateCabinetBuilderChildRow(child.id, {
-                                information: informationValueFromLines((() => {
-                                  const next = informationLinesFromValue(String(child.row.information ?? ""));
-                                  while (next.length <= index) next.push("");
-                                  next[index] = value;
-                                  return next;
-                                })()),
-                              }),
-                            onAddLine: () =>
-                              updateCabinetBuilderChildRow(child.id, {
-                                information: informationValueFromLines([
-                                  ...informationLinesFromValue(String(child.row.information ?? "")),
-                                  "",
-                                ]),
-                              }),
-                            onRemoveLine: (index) => {
-                              const lines = informationLinesFromValue(String(child.row.information ?? ""));
-                              const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                              updateCabinetBuilderChildRow(child.id, {
-                                information: informationValueFromLines(next.length ? next : [""]),
-                              });
-                            },
-                          })}
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                          <BoardPillDropdown value={String(child.row.grainValue ?? "")} options={grainDimensionOptionsForRow(child.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderChildRow(child.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-1 md:col-[1/3]">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                        {renderCabinetBuilderInformationLinesEditor({
-                          value: String(child.row.information ?? ""),
-                          keyPrefix: `selected_child_info_inline_${child.id}`,
-                          disabled: productionReadOnly,
-                          onLineChange: (index, value) =>
-                            updateCabinetBuilderChildRow(child.id, {
-                              information: informationValueFromLines((() => {
-                                const next = informationLinesFromValue(String(child.row.information ?? ""));
-                                while (next.length <= index) next.push("");
-                                next[index] = value;
-                                return next;
-                              })()),
-                            }),
-                          onAddLine: () =>
-                            updateCabinetBuilderChildRow(child.id, {
-                              information: informationValueFromLines([
-                                ...informationLinesFromValue(String(child.row.information ?? "")),
-                                "",
-                              ]),
-                            }),
-                          onRemoveLine: (index) => {
-                            const lines = informationLinesFromValue(String(child.row.information ?? ""));
-                            const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                            updateCabinetBuilderChildRow(child.id, {
-                              information: informationValueFromLines(next.length ? next : [""]),
-                            });
-                          },
-                        })}
-                      </div>
-                    )}
-                    <div className="space-y-1 md:col-[3/5]">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Long Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashLeft: value, clashing: joinClashing(value, String(child.row.clashRight ?? "")) })} />
-                    </div>
-                    <div className="space-y-1 md:col-[5/7]">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Short Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashRight: value, clashing: joinClashing(String(child.row.clashLeft ?? ""), value) })} />
-                    </div>
-                  </div>
-                ) : (
-                  <div className={`mt-3 grid gap-3 ${productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Long Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashLeft: value, clashing: joinClashing(value, String(child.row.clashRight ?? "")) })} />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Short Clashing</p>
-                      <BoardPillDropdown value={String(child.row.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderChildRow(child.id, { clashRight: value, clashing: joinClashing(String(child.row.clashLeft ?? ""), value) })} />
-                    </div>
-                    {productionBoardAllowsGrainForValue(String(child.row.board || "").trim()) ? (
-                      <div className="space-y-1">
-                        <p className="text-center text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                        <BoardPillDropdown value={String(child.row.grainValue ?? "")} options={grainDimensionOptionsForRow(child.row)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderChildRow(child.id, { grainValue: value, grain: Boolean(String(value).trim()) })} />
-                      </div>
-                    ) : null}
-                  </div>
-                )
-              ) : null}
-              {!childIsExtra ? (
-                <div className="mt-3 space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                  {renderCabinetBuilderInformationLinesEditor({
-                    value: String(child.row.information ?? ""),
-                    keyPrefix: `selected_edit_child_info_${child.id}`,
-                    disabled: productionReadOnly,
-                    onLineChange: (index, value) =>
-                      updateCabinetBuilderChildRow(child.id, {
-                        information: informationValueFromLines((() => {
-                          const next = informationLinesFromValue(String(child.row.information ?? ""));
-                          while (next.length <= index) next.push("");
-                          next[index] = value;
-                          return next;
-                        })()),
-                      }),
-                    onAddLine: () =>
-                      updateCabinetBuilderChildRow(child.id, {
-                        information: informationValueFromLines([
-                          ...informationLinesFromValue(String(child.row.information ?? "")),
-                          "",
-                        ]),
-                      }),
-                    onRemoveLine: (index) => {
-                      const lines = informationLinesFromValue(String(child.row.information ?? ""));
-                      const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                      updateCabinetBuilderChildRow(child.id, {
-                        information: informationValueFromLines(next.length ? next : [""]),
-                      });
-                    },
-                  })}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-    const renderCabinetBuilderOverlay = (content: ReactNode) =>
-      typeof document !== "undefined"
-        ? createPortal(
-            <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-              {content}
-            </div>,
-            document.body,
-          )
-        : null;
-    const closeCabinetBuilderConfiguredPopup = () => {
-      setCabinetBuilderDoorsOpen(false);
-      setCabinetBuilderDrawersOpen(false);
-    };
-    const renderCabinetBuilderConfiguredFrontPopup = () => {
-      const kind = cabinetBuilderDraft ? getCabinetBuilderSelectedFrontKind(cabinetBuilderDraft) : null;
-      const resolvedKind = kind ?? (cabinetBuilderDoorsOpen ? "doorsRow" : "drawersRow");
-      const currentRow = cabinetBuilderDraft ? getCabinetBuilderSelectedConfiguredRow(cabinetBuilderDraft, resolvedKind) : null;
-      if (!currentRow) return null;
-      const grainAllowed = productionBoardAllowsGrainForValue(String(currentRow.board || "").trim());
-      return (
-        <div className="w-full max-w-[1100px] rounded-[24px] border bg-white p-6 shadow-2xl [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]" style={{ borderColor: projectPalette.border }}>
-          <div className="flex items-center justify-between">
-            <p className="text-[22px] font-extrabold text-[#12345B]">{resolvedKind === "doorsRow" ? "Doors" : "Drawers"}</p>
-            <button type="button" onClick={closeCabinetBuilderConfiguredPopup} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
-          </div>
-          <div className="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-            <div className="space-y-3">
-              {renderDoorModeConfigurator({
-                mode: normalizeDoorModeValue(currentRow.doorMode),
-                frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
-                onModeChange: (mode) => setCabinetBuilderSelectedFrontMode(mode),
-                onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(resolvedKind, value),
-                disabled: productionReadOnly,
-                textColor: "#0F172A",
-                borderColor: "#D8DEE8",
-                fieldBg: "#FFFFFF",
-                fieldText: "#0F172A",
-              })}
-              <div className="space-y-1">
-                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                <BoardPillDropdown value={currentRow.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, board: value }))} />
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                  <input value={currentRow.height} onChange={(e) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                  <input value={currentRow.width} onChange={(e) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                  <input value={currentRow.quantity} onChange={(e) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Long Clashing</p>
-                  <BoardPillDropdown value={currentRow.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, clashLeft: value, clashing: joinClashing(value, String(row.clashRight ?? "")) }))} />
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Short Clashing</p>
-                  <BoardPillDropdown value={currentRow.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, clashRight: value, clashing: joinClashing(String(row.clashLeft ?? ""), value) }))} />
-                </div>
-              </div>
-              {grainAllowed ? (
-                <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                  <BoardPillDropdown value={String(currentRow.grainValue ?? "")} options={grainDimensionOptionsForRow(currentRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(resolvedKind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
-                </div>
-              ) : null}
-            </div>
-            <div>
-              {renderDoorSetupDesigner({
-                mode: normalizeDoorModeValue(currentRow.doorMode) === "drawer" ? "drawer" : "door",
-                frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
-                overallHeight: String(currentRow.height ?? ""),
-                overallWidth: String(currentRow.width ?? ""),
-                topGap: String(currentRow.doorTopGap ?? ""),
-                betweenGap: String(currentRow.doorBetweenGap ?? ""),
-                sideLeft: normalizeDoorSideValue(currentRow.doorSideLeft),
-                sideRight: normalizeDoorSideValue(currentRow.doorSideRight),
-                sideLeftGap: String(currentRow.doorSideLeftGap ?? ""),
-                sideRightGap: String(currentRow.doorSideRightGap ?? ""),
-                frontWidths: normalizeDoorFrontWidths(currentRow.doorFrontWidths, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                frontWidthManual: normalizeDoorFrontWidthManual(currentRow.doorFrontWidthManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                frontHeights: normalizeDoorFrontHeights(currentRow.doorFrontHeights, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                frontHeightManual: normalizeDoorFrontHeightManual(currentRow.doorFrontHeightManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(resolvedKind, "doorTopGap", value),
-                onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(resolvedKind, "doorBetweenGap", value),
-                onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(resolvedKind, key, value),
-                onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(resolvedKind, key, value),
-                onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(resolvedKind, index, value),
-                onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(resolvedKind, index, value),
-                onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(resolvedKind, index),
-                onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(resolvedKind, index),
-                disabled: productionReadOnly,
-                textColor: "#0F172A",
-                borderColor: "#D8DEE8",
-                fieldBg: "#FFFFFF",
-                fieldText: "#0F172A",
-                grainValue: String(currentRow.grainValue ?? ""),
-              })}
-            </div>
-          </div>
-          <div className="mt-5 flex justify-end gap-2">
-            <button type="button" onClick={closeCabinetBuilderConfiguredPopup} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
-            <button type="button" onClick={closeCabinetBuilderConfiguredPopup} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Save</button>
-          </div>
-        </div>
-      );
-    };
-
-    return (
-      <div className="space-y-3">
-        <div
-          className="overflow-visible px-0 py-0"
-          style={{ color: textColor }}
-        >
-          {!cabinetBuilderDraft ? (
-            <div className="flex min-h-[180px] items-center justify-center">
-              {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() ? (
-                <div className="flex flex-col items-center gap-3">
-                  <p className="text-[13px] font-semibold text-[#475467]">{cabinetBuilderWallName}</p>
-                  <button
-                    type="button"
-                    disabled={productionReadOnly}
-                    onClick={openCabinetBuilderCreate}
-                    className="rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
-                    style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: textColor }}
-                  >
-                    Create Cabinet
-                  </button>
-                </div>
-              ) : (
-                <div className="w-full max-w-[420px] space-y-3">
-                  <input
-                    value={cabinetBuilderWallName}
-                    onChange={(e) => setCabinetBuilderWallName(e.target.value)}
-                    placeholder="Wall name"
-                    className="h-11 w-full rounded-[12px] border border-[#D8DEE8] bg-white px-3 text-[13px] text-[#111827]"
-                  />
-                  <button
-                    type="button"
-                    disabled={productionReadOnly || !String(cabinetBuilderWallName || "").trim()}
-                    onClick={createCabinetBuilderWall}
-                    className="w-full rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
-                    style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: textColor }}
-                  >
-                    Create Wall
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className={`${isMobileProjectViewport ? "space-y-3" : "grid items-start gap-4 md:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]"}`}>
-                {renderCabinetBuilderSelectedPartsPanel(cabinetBuilderDraft) ? (
-                  <div className="px-1">{renderCabinetBuilderSelectedPartsPanel(cabinetBuilderDraft)}</div>
-                ) : null}
-                <div className="p-0">
-                  {(() => {
-                    const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
-                    const viewWidth = isTabletProjectViewport ? 760 : isMobileProjectViewport ? 560 : 1120;
-                    const viewHeight = isTabletProjectViewport ? 360 : isMobileProjectViewport ? 280 : 420;
-                    const paddingX = isTabletProjectViewport ? 80 : isMobileProjectViewport ? 52 : 42;
-                    const paddingY = isTabletProjectViewport ? 40 : isMobileProjectViewport ? 28 : 26;
-                    const dragViewport = { viewWidth, viewHeight, paddingX, paddingY };
-                    const displayWallPieces =
-                      cabinetBuilderDragActive && cabinetBuilderDraggingWallId && cabinetBuilderDragPointerX !== null
-                        ? buildCabinetBuilderPreviewWallPieces(cabinetBuilderDraft, cabinetBuilderDraggingWallId, cabinetBuilderDragPointerX, dragViewport)
-                        : wallPieces;
-                    const pieceLayouts = buildCabinetBuilderDisplayPieceLayouts(
-                      displayWallPieces,
-                      viewWidth,
-                      viewHeight,
-                      paddingX,
-                      paddingY,
-                      cabinetBuilderDraft,
-                    );
-                    const scale = pieceLayouts[0]?.scale ?? 1;
-                    const measureLengthText =
-                      cabinetBuilderMeasurePoints.length === 2 && scale > 0
-                        ? numericDimensionText(
-                            Math.sqrt(
-                              Math.pow(cabinetBuilderMeasurePoints[1].x - cabinetBuilderMeasurePoints[0].x, 2) +
-                                Math.pow(cabinetBuilderMeasurePoints[1].y - cabinetBuilderMeasurePoints[0].y, 2),
-                            ) / scale,
-                          )
-                        : "";
-                    const mainPiece = pieceLayouts.find((item) => item.isMain) ?? pieceLayouts[0];
-                    const selectedPiece = pieceLayouts.find((item) => item.id === cabinetBuilderSelectedWallId) ?? mainPiece;
-                    const hoveredPiece = pieceLayouts.find((item) => item.id === cabinetBuilderHoveredWallId) ?? null;
-                    const activeLabelPiece = hoveredPiece ?? selectedPiece ?? null;
-                    const activeGapBlockedRects =
-                      (cabinetBuilderSelectedHoverActive || cabinetBuilderAttachmentMenuSide !== null)
-                        ? getCabinetBuilderAttachmentAnchorExclusionRects(
-                            selectedPiece,
-                            viewWidth,
-                            viewHeight,
-                            resolvedProductionBaseCabHeight,
-                          )
-                        : [];
-                    const overlayItems = pieceLayouts.flatMap((item) => {
-                      const overlaySource = item.doorsRow || item.drawersRow;
-                      if (!overlaySource) return [];
-                      const overlayMode = normalizeDoorModeValue(overlaySource.doorMode);
-                      const overlayCount = Number.parseInt(String(overlaySource.doorFrontCount || "1"), 10) || 1;
-                      const overlayBaseColor = partTypeColors[String(overlaySource.partType || "").trim()] ?? "#CBD5E1";
-                      const overlayStroke = darkenHex(overlayBaseColor, 0.14);
-                      const overlayFill = lightenHex(overlayBaseColor, 0.2);
-                      const overlayText = isLightHex(overlayFill) ? "#1F2937" : "#F8FAFC";
-                      const overlayTotalHeight = Number.parseFloat(String(overlaySource.height ?? "").replace(/[^\d.-]/g, "")) || 0;
-                      const overlayTotalWidth = Number.parseFloat(String(overlaySource.width ?? "").replace(/[^\d.-]/g, "")) || 0;
-                      const overlayTopGapValue = Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0;
-                      const overlayBetweenGapValue = Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0;
-                      const overlayLeftGapValue = Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0;
-                      const overlayRightGapValue = Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0;
-                      const overlayTopGapPx =
-                        overlayTotalHeight > 0 ? (overlayTopGapValue / overlayTotalHeight) * item.height : 0;
-                      const overlayBetweenGapPxForHeight =
-                        overlayTotalHeight > 0 ? (overlayBetweenGapValue / overlayTotalHeight) * item.height : 0;
-                      const overlayBetweenGapPxForWidth =
-                        overlayTotalWidth > 0 ? (overlayBetweenGapValue / overlayTotalWidth) * item.width : 0;
-                      const overlayLeftGapPx =
-                        overlayTotalWidth > 0 ? (overlayLeftGapValue / overlayTotalWidth) * item.width : 0;
-                      const overlayRightGapPx =
-                        overlayTotalWidth > 0 ? (overlayRightGapValue / overlayTotalWidth) * item.width : 0;
-                      const overlayClearHeight = Math.max(0, overlayTotalHeight - overlayTopGapValue);
-                      const overlayClearWidth = Math.max(0, overlayTotalWidth - overlayLeftGapValue - overlayRightGapValue);
-                                        return [
-                                          {
-                                            item,
-                                            ownerId: item.id,
-                                            frontKind: item.doorsRow ? "doorsRow" as const : "drawersRow" as const,
-                                            overlaySource,
-                                            overlayMode,
-                                            overlayStroke,
-                          overlayFill,
-                          overlayText,
-                          overlayTopGapPx,
-                          overlayBetweenGapPxForHeight,
-                          overlayBetweenGapPxForWidth,
-                          overlayLeftGapPx,
-                          overlayRightGapPx,
-                          overlayClearHeight,
-                          overlayClearWidth,
-                          overlayDrawerHeights:
-                            overlayMode === "drawer"
-                              ? resolveDoorFrontHeightNumbers(
-                                  normalizeDoorFrontHeights(overlaySource.doorFrontHeights, overlayCount),
-                                  String(overlaySource.height ?? ""),
-                                  String(overlaySource.doorTopGap ?? ""),
-                                  String(overlaySource.doorBetweenGap ?? ""),
-                                  normalizeDoorFrontHeightManual(overlaySource.doorFrontHeightManual, overlayCount),
-                                )
-                              : { heights: [], manual: [] as boolean[] },
-                          overlayDoorWidths:
-                            overlayMode === "door"
-                              ? resolveDoorFrontWidthNumbers(
-                                  normalizeDoorFrontWidths(overlaySource.doorFrontWidths, overlayCount),
-                                  String(overlaySource.width ?? ""),
-                                  String(overlaySource.doorSideLeftGap ?? ""),
-                                  String(overlaySource.doorSideRightGap ?? ""),
-                                  String(overlaySource.doorBetweenGap ?? ""),
-                                  normalizeDoorFrontWidthManual(overlaySource.doorFrontWidthManual, overlayCount),
-                                )
-                              : { widths: [], manual: [] as boolean[] },
-                        },
-                      ];
-                    });
-                    const overlayGapPlacementRects: Array<{ left: number; right: number; top: number; bottom: number }> = [];
-                    const overlayGapGuides = overlayItems.map(
-                      ({
-                        item,
-                        overlayMode,
-                        ownerId,
-                        frontKind,
-                        overlayTopGapPx,
-                        overlayBetweenGapPxForHeight,
-                        overlayBetweenGapPxForWidth,
-                        overlayLeftGapPx,
-                        overlayRightGapPx,
-                        overlayDrawerHeights,
-                        overlayDoorWidths,
-                        overlaySource,
-                      }) =>
-                        renderCabinetBuilderOverlayGapGuides({
-                          item,
-                          ownerId,
-                          frontKind,
-                          overlayMode,
-                          overlayTopGapValue: Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0,
-                          overlayBetweenGapValue: Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0,
-                          overlayLeftGapValue: Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0,
-                          overlayRightGapValue: Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0,
-                          overlayTopGapPx,
-                          overlayBetweenGapPxForHeight,
-                          overlayBetweenGapPxForWidth,
-                          overlayLeftGapPx,
-                          overlayRightGapPx,
-                          overlayDoorWidths,
-                          overlayDrawerHeights,
-                          scale,
-                          editingGapPill: cabinetBuilderEditingGapPill,
-                          onStartEditGap: startCabinetBuilderOverlayGapEdit,
-                          onChangeEditGapValue: (value) =>
-                            setCabinetBuilderEditingGapPill((prev) => (prev ? { ...prev, value } : prev)),
-                          onCommitEditGap: commitCabinetBuilderOverlayGapEdit,
-                          onCancelEditGap: cancelCabinetBuilderOverlayGapEdit,
-                          placedLabelRects: overlayGapPlacementRects,
-                          blockedRects: activeGapBlockedRects,
-                        }),
-                    );
-                    const getWallPieceGrainAxis = (row: Pick<CutlistRow, "grainValue" | "height" | "width" | "depth">) =>
-                      resolveGrainAxis(
-                        String(row.grainValue ?? ""),
-                        String(row.height ?? ""),
-                        String(row.width ?? ""),
-                        String(row.depth ?? ""),
-                      );
-                    return (
-                      <div
-                        ref={cabinetBuilderDrawingViewportRef}
-                        tabIndex={0}
-                        onKeyDown={handleCabinetBuilderDrawingKeyDown}
-                        onWheelCapture={handleCabinetBuilderDrawingWheelCapture}
-                        onMouseEnter={clearCabinetBuilderHoverClearTimeout}
-                        onMouseLeave={() => {
-                          const activeHoverId =
-                            cabinetBuilderSelectedHoverActive ? selectedPiece?.id || "" : cabinetBuilderHoveredWallId || selectedPiece?.id || "";
-                          if (activeHoverId) scheduleCabinetBuilderWallHoverClear(activeHoverId);
-                        }}
-                        onMouseDownCapture={(event) => {
-                          event.currentTarget.focus();
-                        }}
-                        onContextMenu={handleCabinetBuilderMeasureContextMenu}
-                        className={`group relative mx-auto w-full overflow-visible outline-none ${isTabletProjectViewport ? "max-w-[760px]" : isMobileProjectViewport ? "max-w-[560px]" : "max-w-[1120px]"} ${cabinetBuilderMeasureMode ? "cursor-crosshair" : ""}`}
-                      >
-                      <div
-                        className="relative w-full"
-                        style={{
-                          transform: `scale(${cabinetBuilderDrawingZoom})`,
-                          transformOrigin: "center top",
-                        }}
-                      >
-                      <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} className="h-auto w-full overflow-visible">
-                        {cabinetBuilderMeasureMode ? (
-                          <rect
-                            x={0}
-                            y={0}
-                            width={viewWidth}
-                            height={viewHeight}
-                            fill="transparent"
-                            style={{ cursor: "crosshair" }}
-                            onMouseDown={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              recordCabinetBuilderMeasurePoint(event.clientX, event.clientY, viewWidth, viewHeight, pieceLayouts);
-                            }}
-                          />
-                        ) : null}
-                        {pieceLayouts.map((item) => (
-                          <g
-                            key={`cab_wall_piece_${item.id}`}
-                            data-cabinet-piece="1"
-                            onMouseEnter={() => markCabinetBuilderWallHovered(item.id)}
-                            onMouseDown={(event) => {
-                              if (cabinetBuilderMeasureMode) return;
-                              if (event.button !== 0) return;
-                              event.preventDefault();
-                              beginCabinetBuilderWallDrag(item.id, dragViewport, event.clientX);
-                            }}
-                            onClick={() => {
-                              if (cabinetBuilderMeasureMode) return;
-                              setCabinetBuilderSelectedWallId(item.id);
-                              setCabinetBuilderSelectedHoverActive(true);
-                              setCabinetBuilderAttachmentMenuSide(null);
-                            }}
-                            onDoubleClick={() => {
-                              if (cabinetBuilderMeasureMode || productionReadOnly) return;
-                              setCabinetBuilderSelectedWallId(item.id);
-                              setCabinetBuilderSelectedHoverActive(true);
-                              setCabinetBuilderAttachmentMenuSide(null);
-                              openCabinetBuilderEditForSelected("edit");
-                            }}
-                            style={{ cursor: cabinetBuilderMeasureMode ? "crosshair" : cabinetBuilderDragActive && cabinetBuilderDraggingWallId === item.id ? "grabbing" : "grab" }}
-                          >
-                            <rect
-                              x={item.x}
-                              y={item.y}
-                              width={item.width}
-                              height={item.height}
-                              fill={item.palette.fill}
-                            />
-                            {item.kind === "panel"
-                              ? renderSvgGrainIndicators({
-                                  keyPrefix: `wall_piece_${item.id}`,
-                                  x: item.x,
-                                  y: item.y,
-                                  width: item.width,
-                                  height: item.height,
-                                  grainAxis: getWallPieceGrainAxis(item.row),
-                                  color: item.palette.stroke,
-                                  opacity: 0.42,
-                                })
-                              : null}
-                            {(() => {
-                              const piecePrimaryText = numericDimensionText(item.row.height);
-                              const pieceSecondaryText = numericDimensionText(
-                                item.kind === "panel"
-                                  ? String(item.row.depth || "").trim() || String(item.row.width || "").trim()
-                                  : String(item.row.width || "").trim(),
-                              );
-                              const canShowInlineLabel = item.width >= 96 && item.height >= 28;
-                              const canShowStackedLabel = item.width >= 54 && item.height >= 86;
-                              return canShowInlineLabel ? (
-                                <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={item.palette.text}>
-                                  {`${piecePrimaryText} x ${pieceSecondaryText}`}
-                                </text>
-                              ) : canShowStackedLabel ? (
-                                <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" fontSize="11" fill={item.palette.text}>
-                                  <tspan x={item.x + item.width / 2} dy="-1.1em">{piecePrimaryText}</tspan>
-                                  <tspan x={item.x + item.width / 2} dy="1.15em">x</tspan>
-                                  <tspan x={item.x + item.width / 2} dy="1.15em">{pieceSecondaryText}</tspan>
-                                </text>
-                              ) : (
-                                <></>
-                              );
-                            })()}
-                          </g>
-                        ))}
-                        {pieceLayouts.map((item, index) => {
-                          const isSelected = item.id === selectedPiece?.id;
-                          const previousItem = pieceLayouts[index - 1] ?? null;
-                          const nextItem = pieceLayouts[index + 1] ?? null;
-                          const topBottomStroke = isSelected ? "#2563EB" : item.palette.stroke;
-                          const leftStroke = item.palette.stroke;
-                          const sharedRightStroke = nextItem?.palette.stroke ?? item.palette.stroke;
-                          const sharesLaneWithPrevious = Boolean(previousItem && previousItem.position === item.position);
-                          const sharesColumnWithNext = Boolean(
-                            nextItem &&
-                              nextItem.position === item.position &&
-                              Math.abs(nextItem.x - item.x) < 0.5 &&
-                              Math.abs(nextItem.width - item.width) < 0.5,
-                          );
-                          const leftBoundaryTop = item.y;
-                          const leftBoundaryBottom = item.y + item.height;
-                          const rightBoundaryTouchesNext = Boolean(
-                            nextItem &&
-                              nextItem.position !== item.position &&
-                              Math.abs((item.x + item.width) - nextItem.x) < 0.5,
-                          );
-                          const sharedBoundaryTop = sharesColumnWithNext
-                            ? item.y
-                            : rightBoundaryTouchesNext
-                              ? Math.min(item.y, nextItem.y)
-                              : item.y;
-                          const sharedBoundaryBottom = sharesColumnWithNext
-                            ? item.y + item.height
-                            : rightBoundaryTouchesNext
-                              ? Math.max(item.y + item.height, nextItem.y + nextItem.height)
-                              : item.y + item.height;
-                          return (
-                            <g key={`cab_wall_outline_${item.id}`} pointerEvents="none">
-                              <line x1={item.x} x2={item.x + item.width} y1={item.y} y2={item.y} stroke={topBottomStroke} strokeWidth="1" />
-                              <line x1={item.x} x2={item.x + item.width} y1={item.y + item.height} y2={item.y + item.height} stroke={topBottomStroke} strokeWidth="1" />
-                              {!previousItem || sharesLaneWithPrevious || Math.abs((previousItem.x + previousItem.width) - item.x) > 0.5 ? (
-                                <line x1={item.x} x2={item.x} y1={leftBoundaryTop} y2={leftBoundaryBottom} stroke={leftStroke} strokeWidth="1" />
-                              ) : null}
-                              <line
-                                x1={item.x + item.width}
-                                x2={item.x + item.width}
-                                y1={sharedBoundaryTop}
-                                y2={sharedBoundaryBottom}
-                                stroke={sharedRightStroke}
-                                strokeWidth="1"
-                              />
-                            </g>
-                          );
-                        })}
-                        {selectedPiece ? (
-                          <g key={`cab_wall_selected_outline_${selectedPiece.id}`} pointerEvents="none">
-                            <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y} stroke="#2563EB" strokeWidth="1" />
-                            <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y + selectedPiece.height} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
-                            <line x1={selectedPiece.x} x2={selectedPiece.x} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
-                            <line x1={selectedPiece.x + selectedPiece.width} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
-                          </g>
-                        ) : null}
-                        {overlayItems.map(({ item, overlaySource, overlayMode, overlayStroke, overlayFill, overlayText, overlayTopGapPx, overlayBetweenGapPxForHeight, overlayBetweenGapPxForWidth, overlayLeftGapPx, overlayRightGapPx, overlayClearHeight, overlayClearWidth, overlayDrawerHeights, overlayDoorWidths }) =>
-                          overlayMode === "drawer"
-                            ? (() => {
-                                let currentY = item.y + overlayTopGapPx;
-                                const innerX = item.x + overlayLeftGapPx;
-                                const innerWidth = Math.max(0, item.width - overlayLeftGapPx - overlayRightGapPx);
-                                return overlayDrawerHeights.heights.map((pieceHeight, index) => {
-                                  const pieceScaledHeight = pieceHeight * scale;
-                                  const y = currentY;
-                                  currentY += pieceScaledHeight + overlayBetweenGapPxForHeight;
-                                    return (
-                                      <g key={`cab_draw_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
-                                        <rect x={innerX} y={y} width={innerWidth} height={pieceScaledHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
-                                        {renderSvgGrainIndicators({
-                                          keyPrefix: `cab_draw_piece_${item.id}_${index}`,
-                                          x: innerX,
-                                          y,
-                                          width: innerWidth,
-                                          height: pieceScaledHeight,
-                                          grainAxis: getWallPieceGrainAxis(overlaySource),
-                                          color: overlayStroke,
-                                          opacity: 0.36,
-                                        })}
-                                        <text x={innerX + innerWidth / 2} y={y + pieceScaledHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
-                                          {`${formatDoorFrontHeightValue(pieceHeight)} x ${formatDoorFrontHeightValue(overlayClearWidth)}`}
-                                        </text>
-                                    </g>
-                                  );
-                                });
-                              })()
-                            : overlayMode === "door"
-                              ? (() => {
-                                  let currentX = item.x + overlayLeftGapPx;
-                                  const frontY = item.y + overlayTopGapPx;
-                                  const frontHeight = Math.max(0, item.height - overlayTopGapPx);
-                                  return overlayDoorWidths.widths.map((pieceWidth, index) => {
-                                    const pieceScaledWidth = pieceWidth * scale;
-                                    const x = currentX;
-                                    currentX += pieceScaledWidth + overlayBetweenGapPxForWidth;
-                                    return (
-                                      <g key={`cab_door_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
-                                        <rect x={x} y={frontY} width={pieceScaledWidth} height={frontHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
-                                        {renderSvgGrainIndicators({
-                                          keyPrefix: `cab_door_piece_${item.id}_${index}`,
-                                          x,
-                                          y: frontY,
-                                          width: pieceScaledWidth,
-                                          height: frontHeight,
-                                          grainAxis: getWallPieceGrainAxis(overlaySource),
-                                          color: overlayStroke,
-                                          opacity: 0.36,
-                                        })}
-                                        <text x={x + pieceScaledWidth / 2} y={frontY + frontHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
-                                          {`${formatDoorFrontHeightValue(pieceWidth)} x ${formatDoorFrontHeightValue(overlayClearHeight)}`}
-                                        </text>
-                                      </g>
-                                    );
-                                  });
-                                })()
-                              : null,
-                        )}
-                        {overlayGapGuides.flatMap((guide) => guide.lines)}
-                        {overlayGapGuides.flatMap((guide) => guide.labels)}
-                        {cabinetBuilderMeasurePoints.length >= 1 ? (
-                          <>
-                            {cabinetBuilderMeasurePoints.length === 2 ? (
-                              <line
-                                x1={cabinetBuilderMeasurePoints[0].x}
-                                y1={cabinetBuilderMeasurePoints[0].y}
-                                x2={cabinetBuilderMeasurePoints[1].x}
-                                y2={cabinetBuilderMeasurePoints[1].y}
-                                stroke="#16A34A"
-                                strokeWidth="2"
-                                strokeDasharray="6 4"
-                              />
-                            ) : null}
-                            {cabinetBuilderMeasurePoints.map((point, index) => (
-                              <g key={`cab_measure_point_${index}`} pointerEvents="none">
-                                <circle cx={point.x} cy={point.y} r="3.5" fill="#16A34A" stroke="#FFFFFF" strokeWidth="1.5" />
-                                <text x={point.x + 10} y={point.y - 10} fontSize="11" fontWeight="700" fill="#14532D">
-                                  {index === 0 ? "A" : "B"}
-                                </text>
-                              </g>
-                            ))}
-                            {cabinetBuilderMeasurePoints.length === 2 && measureLengthText ? (
-                              <g pointerEvents="none">
-                                <rect
-                                  x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2 - 34}
-                                  y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2 - 16}
-                                  width="68"
-                                  height="24"
-                                  rx="8"
-                                  fill="#FFFFFF"
-                                  stroke="#16A34A"
-                                />
-                                <text
-                                  x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2}
-                                  y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2}
-                                  textAnchor="middle"
-                                  dominantBaseline="middle"
-                                  fontSize="11"
-                                  fontWeight="700"
-                                  fill="#14532D"
-                                >
-                                  {measureLengthText}
-                                </text>
-                              </g>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </svg>
-                      {activeLabelPiece ? (
-                        <div
-                          className="pointer-events-none absolute z-10 rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm"
-                          style={{
-                            left: `${((activeLabelPiece.x + activeLabelPiece.width / 2) / viewWidth) * 100}%`,
-                            top: `${(activeLabelPiece.y / viewHeight) * 100}%`,
-                            transform: "translate(-50%, calc(-100% - 8px))",
-                            borderColor: activeLabelPiece.palette.badgeBorder,
-                            backgroundColor: activeLabelPiece.palette.badgeBg,
-                            color: activeLabelPiece.palette.badgeText,
-                          }}
-                        >
-                          {activeLabelPiece.row.name || "Cabinet"}
-                        </div>
-                      ) : null}
-                      {selectedPiece ? (() => {
-                        const canShowInlineLabel = selectedPiece.width >= 96 && selectedPiece.height >= 28;
-                        const canShowStackedLabel = selectedPiece.width >= 54 && selectedPiece.height >= 86;
-                        if (canShowInlineLabel || canShowStackedLabel) return null;
-                        const selectedPrimaryText = numericDimensionText(selectedPiece.row.height);
-                        const selectedSecondaryText = numericDimensionText(
-                          selectedPiece.kind === "panel"
-                            ? String(selectedPiece.row.depth || "").trim() || String(selectedPiece.row.width || "").trim()
-                            : String(selectedPiece.row.width || "").trim(),
-                        );
-                        return (
-                          <div
-                            className="pointer-events-none absolute z-20 rounded-[8px] border px-2 py-1 text-[11px] font-bold shadow-sm"
-                            style={{
-                              left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
-                              top: `${((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100}%`,
-                              transform: "translate(-50%, -50%)",
-                              borderColor: selectedPiece.palette.badgeBorder,
-                              backgroundColor: selectedPiece.palette.badgeBg,
-                              color: selectedPiece.palette.badgeText,
-                            }}
-                          >
-                            <div className="text-center leading-[1.05]">
-                              <div>{selectedPrimaryText}</div>
-                              <div>x</div>
-                              <div>{selectedSecondaryText}</div>
-                            </div>
-                          </div>
-                        );
-                      })() : null}
-                      {!cabinetBuilderMeasureMode ? (
-                      <div className="pointer-events-none absolute inset-0">
-                        <div
-                          className="pointer-events-auto absolute z-10"
-                          style={{
-                            left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
-                            top: `${(((selectedPiece.y + selectedPiece.height + 42 > viewHeight ? selectedPiece.y : selectedPiece.y + selectedPiece.height)) / viewHeight) * 100}%`,
-                            transform:
-                              selectedPiece.y + selectedPiece.height + 42 > viewHeight
-                                ? "translate(-50%, calc(-100% - 8px))"
-                                : "translate(-50%, 8px)",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            disabled={productionReadOnly}
-                            onClick={() => openCabinetBuilderEditForSelected("edit")}
-                            className="rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm disabled:opacity-55"
-                            style={{ borderColor: fieldBorder, backgroundColor: fieldBg, color: textColor }}
-                          >
-                            {`Edit ${selectedPiece?.row.name || "Cabinet"}`}
-                          </button>
-                        </div>
-                        {(() => {
-                          const selectedPieceHasDualAttachZones =
-                            selectedPiece.kind === "panel" && selectedPiece.panelHeightMode === "tall";
-                          const attachmentAnchors: Array<{
-                            side: "left" | "right";
-                            align: "top" | "bottom";
-                            leftPercent: number;
-                            topPercent: number;
-                            transform: string;
-                            menuClassName: string;
-                          }> = selectedPieceHasDualAttachZones
-                            ? [
-                                {
-                                  side: "left",
-                                  align: "top",
-                                  leftPercent: (selectedPiece.x / viewWidth) * 100,
-                                  topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
-                                  transform: "translate(calc(-100% - 10px), -50%)",
-                                  menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                },
-                                {
-                                  side: "left",
-                                  align: "bottom",
-                                  leftPercent: (selectedPiece.x / viewWidth) * 100,
-                                  topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
-                                  transform: "translate(calc(-100% - 10px), -50%)",
-                                  menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                },
-                                {
-                                  side: "right",
-                                  align: "top",
-                                  leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
-                                  topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
-                                  transform: "translate(10px, -50%)",
-                                  menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                },
-                                {
-                                  side: "right",
-                                  align: "bottom",
-                                  leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
-                                  topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
-                                  transform: "translate(10px, -50%)",
-                                  menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                },
-                              ]
-                            : [
-                                {
-                                  side: "left",
-                                  align: "bottom",
-                                  leftPercent: (selectedPiece.x / viewWidth) * 100,
-                                  topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
-                                  transform: "translate(calc(-100% - 10px), -50%)",
-                                  menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                },
-                                {
-                                  side: "right",
-                                  align: "bottom",
-                                  leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
-                                  topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
-                                  transform: "translate(10px, -50%)",
-                                  menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                },
-                              ];
-                          return attachmentAnchors.map((anchor) => {
-                            const menuOpen =
-                              cabinetBuilderAttachmentMenuSide === anchor.side &&
-                              cabinetBuilderAttachmentMenuAlign === anchor.align;
-                            const showAnchor = cabinetBuilderSelectedHoverActive || menuOpen;
-                            return (
-                              <div
-                                key={`cab_attach_${anchor.side}_${anchor.align}`}
-                                className="absolute transition-opacity duration-150"
-                                onMouseEnter={holdCabinetBuilderSelectedHover}
-                                onMouseLeave={() => scheduleCabinetBuilderWallHoverClear(selectedPiece.id)}
-                                style={{
-                                  left: `${anchor.leftPercent}%`,
-                                  top: `${anchor.topPercent}%`,
-                                  transform: anchor.transform,
-                                  opacity: showAnchor ? 1 : 0,
-                                  pointerEvents: showAnchor ? "auto" : "none",
-                                }}
-                              >
-                                <button
-                                  type="button"
-                                  disabled={productionReadOnly}
-                                  onClick={() => {
-                                    const isOpen =
-                                      cabinetBuilderAttachmentMenuSide === anchor.side &&
-                                      cabinetBuilderAttachmentMenuAlign === anchor.align;
-                                    setCabinetBuilderAttachmentMenuSide(isOpen ? null : anchor.side);
-                                    setCabinetBuilderAttachmentMenuAlign(anchor.align);
-                                  }}
-                                  className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] hover:bg-[#CFEBDD] disabled:opacity-55"
-                                >
-                                  <img src="/plus.png" alt="" className="block object-contain" style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }} />
-                                </button>
-                                {menuOpen ? (
-                                  <div className={anchor.menuClassName} style={{ borderColor: fieldBorder, backgroundColor: fieldBg }}>
-                                    <button type="button" disabled={productionReadOnly} onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "cabinet", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold disabled:opacity-55" style={{ borderColor: fieldBorder, color: textColor }}>
-                                      Cabinet
-                                    </button>
-                                    <button type="button" disabled={productionReadOnly} onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "panel", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold disabled:opacity-55" style={{ borderColor: fieldBorder, color: textColor }}>
-                                      Panel
-                                    </button>
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          });
-                        })()}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                    );
-                  })()}
-                </div>
-              </div>
-              {renderCabinetBuilderAttachedPartsList(cabinetBuilderDraft, {
-                wrapperBorder: fieldBorder,
-                wrapperBg: fieldBg,
-                buttonBorder: fieldBorder,
-                buttonBg: "rgba(255,255,255,0.72)",
-                buttonText: textColor,
-              })}
-            </div>
-          )}
-        </div>
-
-        {cabinetBuilderCreateOpen ? renderCabinetBuilderOverlay(
-            <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]" style={{ borderColor: projectPalette.border }}>
-              {(() => {
-                const isPanelAttachment = cabinetBuilderPendingAttachment?.kind === "panel";
-                const grainAllowed = productionBoardAllowsGrainForValue(String(pendingCabinetBuilderRow.board || "").trim());
-                return (
-                  <>
-                    <p className="text-[22px] font-extrabold text-[#12345B]">
-                      {isPanelAttachment ? "Add Panel" : cabinetBuilderPendingAttachment ? "Add Cabinet" : "New Cabinet"}
-                    </p>
-                    {isPanelAttachment ? (
-                      <div className="mt-5 space-y-4">
-                        <div className="flex flex-wrap items-center gap-4">
-                          <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
-                            <input
-                              type="checkbox"
-                              checked={cabinetBuilderPendingPanelHeightMode === "base"}
-                              onChange={() => {
-                                setCabinetBuilderPendingPanelHeightMode("base");
-                                setCabinetBuilderPendingPanelHeightError("");
-                                setPendingCabinetBuilderRow((prev) => ({
-                                  ...prev,
-                                  height: getCabinetBuilderPanelHeightBaselineText("base", cabinetBuilderPendingPanelSpanMode),
-                                }));
-                              }}
-                            />
-                            Base
-                          </label>
-                          <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
-                            <input
-                              type="checkbox"
-                              checked={cabinetBuilderPendingPanelHeightMode === "tall"}
-                              onChange={() => {
-                                setCabinetBuilderPendingPanelHeightMode("tall");
-                                setCabinetBuilderPendingPanelHeightError("");
-                                setPendingCabinetBuilderRow((prev) => ({
-                                  ...prev,
-                                  height: getCabinetBuilderPanelHeightBaselineText("tall", cabinetBuilderPendingPanelSpanMode),
-                                }));
-                              }}
-                            />
-                            Tall
-                          </label>
-                          <div className="min-w-[220px] flex-1 space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Panel Span</p>
-                            <BoardPillDropdown
-                              value={cabinetBuilderPendingPanelSpanMode}
-                              options={["floorToCeiling", "floorToTopOfCab", "bottomToCeiling", "bottomToTopOfCab"]}
-                              disabled={productionReadOnly}
-                              bg="#FFFFFF"
-                              border="#D8DEE8"
-                              text="#0F172A"
-                              size="default"
-                              getSize={() => ""}
-                              getLabel={(value) =>
-                                value === "floorToCeiling"
-                                  ? "Floor to ceiling"
-                                  : value === "floorToTopOfCab"
-                                    ? "Floor to top of cab"
-                                    : value === "bottomToCeiling"
-                                      ? "Bottom of cab to ceiling"
-                                      : "Bottom of cab to top of cab"
-                              }
-                              onChange={(value) => {
-                                const nextSpanMode =
-                                  value === "floorToCeiling" || value === "floorToTopOfCab" || value === "bottomToCeiling" || value === "bottomToTopOfCab"
-                                    ? value
-                                    : "bottomToTopOfCab";
-                                setCabinetBuilderPendingPanelSpanMode(nextSpanMode);
-                                setCabinetBuilderPendingPanelHeightError("");
-                                setPendingCabinetBuilderRow((prev) => ({
-                                  ...prev,
-                                  height: getCabinetBuilderPanelHeightBaselineText(cabinetBuilderPendingPanelHeightMode, nextSpanMode),
-                                }));
-                              }}
-                            />
-                          </div>
-                        </div>
-                        {cabinetBuilderPendingPanelNeedsExtraHeight ? (
-                          <p className="text-[12px] font-semibold text-[#B42318]">
-                            Add extra height above {cabinetBuilderPendingPanelBaselineText} before creating this panel.
-                          </p>
-                        ) : null}
-                        {cabinetBuilderPendingPanelHeightError ? (
-                          <p className="text-[12px] font-semibold text-[#B42318]">{cabinetBuilderPendingPanelHeightError}</p>
-                        ) : null}
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                            <BoardPillDropdown
-                              value={pendingCabinetBuilderRow.board}
-                              options={cutlistBoardOptions}
-                              disabled={productionReadOnly}
-                              bg="#FFFFFF"
-                              border="#D8DEE8"
-                              text="#0F172A"
-                              getSize={boardSizeFor}
-                              getLabel={boardDisplayLabel}
-                              onChange={(value) => {
-                                const defaults = defaultClashingForPartType(experimentalPanelPartType, value);
-                                const grainAllowedForBoard = productionBoardAllowsGrainForValue(String(value || "").trim());
-                                setPendingCabinetBuilderRow((prev) => ({
-                                  ...prev,
-                                  board: value,
-                                  clashLeft: defaults.left,
-                                  clashRight: defaults.right,
-                                  clashing: joinClashing(defaults.left, defaults.right),
-                                  grain: grainAllowedForBoard ? prev.grain : false,
-                                  grainValue: grainAllowedForBoard ? prev.grainValue : "",
-                                }));
-                              }}
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
-                            <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                          </div>
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-4">
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                            <input value={pendingCabinetBuilderRow.height} onChange={(e) => { setCabinetBuilderPendingPanelHeightError(""); setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) })); }} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                            <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                            <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                            <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) || "" }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                          </div>
-                        </div>
-                        <div className={`grid gap-3 ${grainAllowed ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Long</p>
-                            <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashLeft: value, clashing: joinClashing(value, String(prev.clashRight ?? "")) }))} />
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Short</p>
-                            <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashRight: value, clashing: joinClashing(String(prev.clashLeft ?? ""), value) }))} />
-                          </div>
-                          {grainAllowed ? (
-                            <div className="space-y-1">
-                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                              <BoardPillDropdown value={String(pendingCabinetBuilderRow.grainValue ?? "")} options={grainDimensionOptionsForRow(pendingCabinetBuilderRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, grainValue: value, grain: Boolean(String(value).trim()) }))} />
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                          {renderCabinetBuilderInformationLinesEditor({
-                            value: String(pendingCabinetBuilderRow.information ?? ""),
-                            keyPrefix: "pending_builder_info",
-                            disabled: productionReadOnly,
-                            onLineChange: onPendingCabinetBuilderInformationLineChange,
-                            onAddLine: onPendingCabinetBuilderAddInformationLine,
-                            onRemoveLine: onPendingCabinetBuilderRemoveInformationLine,
-                          })}
-                        </div>
-                      </div>
-                        ) : (
-                          <div className="mt-5 space-y-3">
-                            <label className="inline-flex items-center gap-2 text-[13px] font-semibold text-[#334155]">
-                              <input
-                                type="checkbox"
-                                checked={cabinetBuilderPendingNewCabinet}
-                                onChange={(e) => setCabinetBuilderPendingNewCabinet(e.target.checked)}
-                              />
-                              New Cabinet
-                            </label>
-                            <div className="grid gap-3 sm:grid-cols-3">
-                              <div className="space-y-1">
-                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Cabinet Name</p>
-                                <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                              </div>
-                              <div className="space-y-1">
-                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                                <input value={pendingCabinetBuilderRow.height} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                              </div>
-                              <div className="space-y-1">
-                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                                <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                              </div>
-                            </div>
-                            {cabinetBuilderPendingNewCabinet ? (
-                              <div className="space-y-4">
-                                <div className="grid gap-3 md:grid-cols-2">
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                                    <BoardPillDropdown
-                                      value={pendingCabinetBuilderRow.board}
-                                      options={cutlistBoardOptions}
-                                      disabled={productionReadOnly}
-                                      bg="#FFFFFF"
-                                      border="#D8DEE8"
-                                      text="#0F172A"
-                                      getSize={boardSizeFor}
-                                      getLabel={boardDisplayLabel}
-                                      onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, board: value }))}
-                                    />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                                    <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                  </div>
-                                </div>
-                                <div className="grid gap-3 md:grid-cols-4">
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                                    <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
-                                    <input value={pendingCabinetBuilderRow.fixedShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
-                                    <input value={pendingCabinetBuilderRow.adjustableShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                  </div>
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                                    {renderCabinetBuilderInformationLinesEditor({
-                                      value: String(pendingCabinetBuilderRow.information ?? ""),
-                                      keyPrefix: "pending_new_cabinet_info",
-                                      disabled: productionReadOnly,
-                                      onLineChange: onPendingCabinetBuilderInformationLineChange,
-                                      onAddLine: onPendingCabinetBuilderAddInformationLine,
-                                      onRemoveLine: onPendingCabinetBuilderRemoveInformationLine,
-                                    })}
-                                  </div>
-                                </div>
-                                <div className="grid gap-3 md:grid-cols-2">
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Drilling</p>
-                                    <select value={pendingCabinetBuilderRow.fixedShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
-                                      <option value="No">No</option>
-                                      <option value="Yes">Yes</option>
-                                    </select>
-                                  </div>
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Drilling</p>
-                                    <select value={pendingCabinetBuilderRow.adjustableShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
-                                      <option value="No">No</option>
-                                      <option value="Yes">Yes</option>
-                                    </select>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        )}
-                  </>
-                );
-              })()}
-              <div className="mt-5 flex justify-end gap-2">
-                <button type="button" onClick={() => { setCabinetBuilderPendingAttachment(null); setCabinetBuilderPendingPanelHeightError(""); setCabinetBuilderCreateOpen(false); }} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
-                <button type="button" onClick={confirmCabinetBuilderCreate} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Create</button>
-              </div>
-            </div>
-        ) : null}
-
-        {cabinetBuilderEditOpen && cabinetBuilderDraft ? renderCabinetBuilderOverlay(
-            <div
-              className="flex w-full max-w-[760px] flex-col overflow-hidden rounded-[24px] bg-transparent px-0 pb-0 pt-0 shadow-2xl"
-              style={{ height: "min(86vh, 820px)" }}
-            >
-              <div className="relative border-b border-[#D8DEE8] bg-[#F8FAFC] px-12 py-3 text-center">
-                <button
-                  type="button"
-                  disabled={productionReadOnly}
-                  onClick={promptDeleteSelectedCabinetBuilderCabinet}
-                  className="absolute left-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] disabled:opacity-55"
-                >
-                  <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
-                </button>
-                <p className="text-[22px] font-extrabold text-[#12345B]">{selectedEditableCabinet?.row.name || "Cabinet"}</p>
-                <button type="button" onClick={() => setCabinetBuilderEditOpen(false)} className="absolute right-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
-              </div>
-              <div
-                className="mt-0 grid w-full grid-flow-col auto-cols-fr items-end gap-0 border-b border-[#D8DEE8] px-0"
-                style={{
-                  backgroundColor: cabinetBuilderEditPanelBg,
-                }}
-              >
-                {cabinetBuilderEditTabs.map((tab) => {
-                  const isActive = cabinetBuilderEditTab === tab.id;
-                  const bg = tab.color ? (isActive ? tab.color : lightenHex(tab.color, 0.18)) : isActive ? "#DDF2E7" : "#FFFFFF";
-                  const border = tab.color ? tab.color : isActive ? "#BFE8CF" : "#D8DEE8";
-                  const text = tab.color ? "#000000" : isActive ? "#14532D" : "#334155";
-                  const isFirst = tab.id === cabinetBuilderEditTabs[0]?.id;
-                  const isLast = tab.id === cabinetBuilderEditTabs[cabinetBuilderEditTabs.length - 1]?.id;
-                  return (
-                      <button
-                        key={`cab_edit_tab_${tab.id}`}
-                        type="button"
-                        onClick={() => setCabinetBuilderEditTab(tab.id)}
-                        className="-mb-px -ml-px first:ml-0 w-full rounded-t-none rounded-b-none border px-4 py-2 text-center text-[12px] font-bold"
-                        style={{
-                          borderTopColor: border,
-                          borderBottomColor: isActive ? bg : "#D8DEE8",
-                          borderLeftColor: border,
-                          borderRightColor: border,
-                          backgroundColor: bg,
-                          color: text,
-                          opacity: 1,
-                        }}
-                      >
-                        {tab.label}
-                      </button>
-                    );
-                  })}
-              </div>
-              <div
-                className="min-h-0 flex-1 overflow-y-auto rounded-b-[24px] border border-t-0 px-3 py-3 [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]"
-                style={{ borderColor: cabinetBuilderEditPanelBorder, backgroundColor: cabinetBuilderEditPanelBg }}
-              >
-              <div className={`${cabinetBuilderEditTab === "edit" ? "p-3" : "hidden"}`}>
-                <p className="text-center text-[13px] font-bold uppercase tracking-[1px] text-[#12345B]">Add parts inside this drawing</p>
-                <div className="mt-3 flex flex-wrap justify-center gap-3">
-                  {buildCabinetBuilderEditPartTypePills(selectedEditableCabinet, selectedFrontRowForEdit?.partType).map((pill) => {
-                    const partColor = partTypeColors[pill.partType] ?? "#CBD5E1";
-                    return (
-                      <button
-                        key={`cab_builder_pill_${pill.key}`}
-                        type="button"
-                        disabled={productionReadOnly}
-                        onClick={() => {
-                          if (pill.kind === "cabinet") {
-                            setCabinetBuilderEditTab("cabinet");
-                            return;
-                          }
-                          if (pill.kind === "fronts") {
-                            ensureCabinetBuilderSelectedFronts();
-                            return;
-                          }
-                          addCabinetBuilderChildRowAndOpenTab(pill.partType);
-                        }}
-                        className="rounded-[10px] border px-4 py-2 text-[12px] font-bold disabled:opacity-55"
-                        style={{
-                          backgroundColor: partColor,
-                          borderColor: partColor,
-                          color: isLightHex(partColor) ? "#1F2937" : "#F8FAFC",
-                        }}
-                      >
-                        {pill.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              {selectedEditableCabinet?.newCabinet ? (
-                <div className={`${cabinetBuilderEditTab === "cabinet" ? "mt-2 space-y-4" : "hidden"}`}>
-                  {renderCabinetBuilderPartTabHeader(
-                    selectedEditableCabinet.row.partType || "Cabinetry",
-                    () => {
-                      setCabinetBuilderSelectedNewCabinet(false);
-                      setCabinetBuilderEditTab("edit");
-                    },
-                  )}
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                      <BoardPillDropdown value={selectedEditableCabinet?.row.board ?? ""} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderMainRow({ board: value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
-                      <input value={selectedEditableCabinet?.row.name ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                      <input value={selectedEditableCabinet?.row.height ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                      <input value={selectedEditableCabinet?.row.width ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                      <input value={selectedEditableCabinet?.row.depth ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                      <input value={selectedEditableCabinet?.row.quantity ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ quantity: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
-                      <input value={selectedEditableCabinet?.row.fixedShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ fixedShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
-                      <input value={selectedEditableCabinet?.row.adjustableShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ adjustableShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Drilling</p>
-                      <select value={selectedEditableCabinet?.row.fixedShelfDrilling ?? "No"} onChange={(e) => updateCabinetBuilderMainRow({ fixedShelfDrilling: normalizeDrillingValue(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
-                        <option value="No">No</option>
-                        <option value="Yes">Yes</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Drilling</p>
-                      <select value={selectedEditableCabinet?.row.adjustableShelfDrilling ?? "No"} onChange={(e) => updateCabinetBuilderMainRow({ adjustableShelfDrilling: normalizeDrillingValue(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
-                        <option value="No">No</option>
-                        <option value="Yes">Yes</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                    {renderCabinetBuilderInformationLinesEditor({
-                      value: String(selectedEditableCabinet?.row.information ?? ""),
-                      keyPrefix: `selected_cabinet_info_${selectedEditableCabinet?.id ?? "none"}`,
-                      disabled: productionReadOnly,
-                      onLineChange: onSelectedCabinetBuilderInformationLineChange,
-                      onAddLine: onSelectedCabinetBuilderAddInformationLine,
-                      onRemoveLine: onSelectedCabinetBuilderRemoveInformationLine,
-                    })}
-                  </div>
-                </div>
-              ) : null}
-              <div className={`${cabinetBuilderEditTab === "edit" ? "mt-5 p-3" : "hidden"}`}>
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div className="space-y-1 md:col-span-3">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
-                    <input
-                      value={selectedEditableCabinet?.row.name ?? ""}
-                      onChange={(e) => updateCabinetBuilderMainRow({ name: e.target.value })}
-                      className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                    <input
-                      value={selectedEditableCabinet?.row.height ?? ""}
-                      onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })}
-                      className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                    <input
-                      value={selectedEditableCabinet?.row.width ?? ""}
-                      onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })}
-                      className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
-                    />
-                  </div>
-                </div>
-              </div>
-              {selectedEditChildren.length ? renderCabinetBuilderChildEditorGroupShared(selectedEditChildren) : null}
-              {cabinetBuilderEditTab === "fronts"
-                ? (() => {
-                    const selectedFrontRow = selectedFrontRowForEdit;
-                    const frontKind = getCabinetBuilderSelectedFrontKind(cabinetBuilderDraft);
-                    if (!selectedFrontRow || !frontKind) return null;
-                    const grainAllowed = productionBoardAllowsGrainForValue(String(selectedFrontRow.board || "").trim());
-                    return (
-                      <div className="mt-2 space-y-4">
-                        {renderCabinetBuilderPartTabHeader(selectedFrontRow.partType || "Front", () => {
-                          clearCabinetBuilderSelectedFronts();
-                          setCabinetBuilderEditTab("edit");
-                        })}
-                        {renderDoorModeConfigurator({
-                          mode: normalizeDoorModeValue(selectedFrontRow.doorMode),
-                          frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
-                          onModeChange: (mode) =>
-                            setCabinetBuilderSelectedFrontMode(mode),
-                          onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(frontKind, value),
-                          disabled: productionReadOnly,
-                          textColor: "#0F172A",
-                          borderColor: "#D8DEE8",
-                          fieldBg: "#FFFFFF",
-                          fieldText: "#0F172A",
-                          layout: "split-tabs",
-                        })}
-                        <div className={`grid w-full gap-3 ${grainAllowed ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
-                          <div className="space-y-1">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                            <BoardPillDropdown
-                              value={selectedFrontRow.board}
-                              options={cutlistBoardOptions}
-                              disabled={productionReadOnly}
-                              bg="#FFFFFF"
-                              border="#D8DEE8"
-                              text="#0F172A"
-                              getSize={boardSizeFor}
-                              getLabel={boardDisplayLabel}
-                              onChange={(value) =>
-                                updateCabinetBuilderConfiguredRow(frontKind, (row) => {
-                                  const nextGrainAllowed = productionBoardAllowsGrainForValue(String(value || "").trim());
-                                  return {
-                                    ...row,
-                                    board: value,
-                                    grain: nextGrainAllowed ? row.grain : false,
-                                    grainValue: nextGrainAllowed ? row.grainValue : "",
-                                  };
-                                })
-                              }
-                            />
-                          </div>
-                          {grainAllowed ? (
-                            <div className="space-y-1">
-                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                              <BoardPillDropdown value={String(selectedFrontRow.grainValue ?? "")} options={grainDimensionOptionsForRow(selectedFrontRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(frontKind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="w-full space-y-1">
-                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                          {renderCabinetBuilderInformationLinesEditor({
-                            value: String(selectedFrontRow.information ?? ""),
-                            keyPrefix: `selected_front_info_${frontKind}`,
-                            disabled: productionReadOnly,
-                            onLineChange: (index, value) =>
-                              updateCabinetBuilderConfiguredRow(frontKind, (row) => {
-                                const next = informationLinesFromValue(String(row.information ?? ""));
-                                while (next.length <= index) next.push("");
-                                next[index] = value;
-                                return { ...row, information: informationValueFromLines(next) };
-                              }),
-                            onAddLine: () =>
-                              updateCabinetBuilderConfiguredRow(frontKind, (row) => ({
-                                ...row,
-                                information: informationValueFromLines([
-                                  ...informationLinesFromValue(String(row.information ?? "")),
-                                  "",
-                                ]),
-                              })),
-                            onRemoveLine: (index) =>
-                              updateCabinetBuilderConfiguredRow(frontKind, (row) => {
-                                const lines = informationLinesFromValue(String(row.information ?? ""));
-                                const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                                return { ...row, information: informationValueFromLines(next.length ? next : [""]) };
-                              }),
-                          })}
-                        </div>
-                        <div className="flex justify-center">
-                          {renderDoorSetupDesigner({
-                            mode: normalizeDoorModeValue(selectedFrontRow.doorMode) === "drawer" ? "drawer" : "door",
-                            frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
-                            overallHeight: String(selectedFrontRow.height ?? ""),
-                            overallWidth: String(selectedFrontRow.width ?? ""),
-                            topGap: String(selectedFrontRow.doorTopGap ?? ""),
-                            betweenGap: String(selectedFrontRow.doorBetweenGap ?? ""),
-                            sideLeft: normalizeDoorSideValue(selectedFrontRow.doorSideLeft),
-                            sideRight: normalizeDoorSideValue(selectedFrontRow.doorSideRight),
-                            sideLeftGap: String(selectedFrontRow.doorSideLeftGap ?? ""),
-                            sideRightGap: String(selectedFrontRow.doorSideRightGap ?? ""),
-                            frontWidths: normalizeDoorFrontWidths(selectedFrontRow.doorFrontWidths, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                            frontWidthManual: normalizeDoorFrontWidthManual(selectedFrontRow.doorFrontWidthManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                            frontHeights: normalizeDoorFrontHeights(selectedFrontRow.doorFrontHeights, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                            frontHeightManual: normalizeDoorFrontHeightManual(selectedFrontRow.doorFrontHeightManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                            onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorTopGap", value),
-                            onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorBetweenGap", value),
-                            onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(frontKind, key, value),
-                            onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(frontKind, key, value),
-                            onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
-                            onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
-                            onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
-                            onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
-                            disabled: productionReadOnly,
-                            textColor: "#0F172A",
-                            borderColor: "#D8DEE8",
-                            fieldBg: "#FFFFFF",
-                            fieldText: "#0F172A",
-                            grainValue: String(selectedFrontRow.grainValue ?? ""),
-                            fillAvailableSpace: true,
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })()
-                : null}
-              </div>
-            </div>
-        ) : null}
-        {cabinetBuilderDeleteConfirmOpen && cabinetBuilderActiveDeleteMeta ? renderCabinetBuilderOverlay(
-            <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
-              <p className="text-[22px] font-extrabold text-[#12345B]">Are you sure?</p>
-              <p className="mt-3 text-[14px] text-[#475467]">
-                {cabinetBuilderActiveDeleteMeta.connectedPartsCount > 0
-                  ? `Deleting ${cabinetBuilderActiveDeleteMeta.name} will also remove ${cabinetBuilderActiveDeleteMeta.connectedPartsCount} connected part${cabinetBuilderActiveDeleteMeta.connectedPartsCount === 1 ? "" : "s"}.`
-                  : `Delete ${cabinetBuilderActiveDeleteMeta.name}?`}
-              </p>
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => { setCabinetBuilderDeleteConfirmOpen(false); setCabinetBuilderDeleteTargetOverride(null); }}
-                  className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={deleteSelectedCabinetBuilderCabinet}
-                  className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
-                >
-                  Confirm
-                </button>
-              </div>
-            </div>,
-          ) : null}
-        {cabinetBuilderDeleteWallConfirmOpen ? renderCabinetBuilderOverlay(
-            <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
-              <p className="text-[22px] font-extrabold text-[#12345B]">Delete Wall</p>
-              <p className="mt-3 text-[14px] text-[#475467]">Are you sure you want to delete this wall drawing?</p>
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCabinetBuilderDeleteWallConfirmOpen(false)}
-                  className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void deleteCurrentCabinetBuilderWall()}
-                  className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
-                >
-                  Delete Wall
-                </button>
-              </div>
-            </div>,
-          ) : null}
-
-        {(cabinetBuilderDoorsOpen || cabinetBuilderDrawersOpen) && cabinetBuilderDraft ? renderCabinetBuilderOverlay(renderCabinetBuilderConfiguredFrontPopup()) : null}
-
-        {attachmentBeingEdited && cabinetBuilderDraft ? renderCabinetBuilderOverlay(
-            renderCabinetBuilderAttachmentEditPopup(attachmentBeingEdited)
-        ) : null}
-      </div>
-    );
   };
   const removeInitialCutlistRow = async (id: string) => {
     if (!salesAccess.edit) return;
@@ -21703,7 +17894,7 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    const pendingSet = expandCabinetBuilderLinkedRowIds(pending, cutlistRows);
+    const pendingSet = new Set(pending.map((rowId) => String(rowId || "").trim()));
     const removedRows = cutlistRows.filter((row) => pendingSet.has(String(row.id || "").trim()));
     const nextRows = cutlistRows.filter((row) => !pendingSet.has(String(row.id || "").trim()));
     setCutlistRows(nextRows);
@@ -21802,7 +17993,7 @@ export default function ProjectDetailsPage() {
           ? {
               ...row,
               height: formatted,
-              quantity: String(Math.max(1, parseDrawerHeightTokens(formatted).length)),
+              quantity: parseDrawerHeightTokens(formatted).length ? String(parseDrawerHeightTokens(formatted).length) : "",
             }
           : row,
       ),
@@ -22136,45 +18327,16 @@ export default function ProjectDetailsPage() {
     setEditingCellValue(nextValue);
   };
 
-  const cabinetBuilderGeneratedRowsByContainerId = useMemo(() => {
-    const grouped: Record<string, CutlistRow[]> = {};
-    for (const row of cutlistRows) {
-      if (row.cabinetBuilderRowKind !== "generated") continue;
-      const key = String(row.cabinetBuilderContainerId || "").trim();
-      if (!key) continue;
-      grouped[key] = [...(grouped[key] ?? []), row];
-    }
-    return grouped;
-  }, [cutlistRows]);
-  const groupCabinetBuilderGeneratedRows = useCallback((rows: CutlistRow[]) => {
-    const groups: Array<{ ownerName: string; rows: CutlistRow[] }> = [];
-    const byOwner = new Map<string, CutlistRow[]>();
-    const order: string[] = [];
-    for (const row of rows) {
-      const ownerName = String(row.parentName || row.name || "Cabinet").trim() || "Cabinet";
-      if (!byOwner.has(ownerName)) {
-        byOwner.set(ownerName, []);
-        order.push(ownerName);
-      }
-      byOwner.get(ownerName)?.push(row);
-    }
-    for (const ownerName of order) {
-      groups.push({ ownerName, rows: byOwner.get(ownerName) ?? [] });
-    }
-    return groups;
-  }, []);
-
   const effectiveCutlistRows = useMemo(() => {
     // Keep heavy Production derivations tied to committed rows only.
     // Live cell edits still render through the active input itself, but we avoid
     // recalculating Nesting/CNC/Order summaries on every keystroke.
-    return cutlistRows.filter((row) => row.cabinetBuilderRowKind !== "container");
+    return cutlistRows;
   }, [cutlistRows]);
 
   const visibleCutlistRows = useMemo(() => {
     const search = cutlistSearch.trim().toLowerCase();
     return cutlistRows.filter((row) => {
-      if (row.cabinetBuilderRowKind === "generated") return false;
       const roomOk = cutlistRoomFilter === "Project Cutlist" ? true : row.room === cutlistRoomFilter;
       const typeOk = cutlistPartTypeFilter === "All Part Types" || row.partType === cutlistPartTypeFilter;
       const searchOk =
@@ -22190,6 +18352,26 @@ export default function ProjectDetailsPage() {
       ),
     [cutlistDraftRows, cutlistRoomFilter],
   );
+  // Groups each main draft row with any sub parts spliced in directly after
+  // it (addSubPartDraftRow always inserts right after its main row, so
+  // adjacency alone is enough to tell which sub belongs to which main) — used
+  // to wrap a main+subs group in one shared bordered box so a sub part visibly
+  // sits inside its parent's row instead of floating as a separate one below it.
+  const visibleCutlistDraftRowGroups = useMemo(() => {
+    const groups: { main: CutlistDraftRow; subs: CutlistDraftRow[] }[] = [];
+    for (let i = 0; i < visibleCutlistDraftRows.length; i += 1) {
+      const row = visibleCutlistDraftRows[i];
+      if (subPartDraftRowIds.has(row.id)) continue;
+      const subs: CutlistDraftRow[] = [];
+      let j = i + 1;
+      while (j < visibleCutlistDraftRows.length && subPartDraftRowIds.has(visibleCutlistDraftRows[j].id)) {
+        subs.push(visibleCutlistDraftRows[j]);
+        j += 1;
+      }
+      groups.push({ main: row, subs });
+    }
+    return groups;
+  }, [visibleCutlistDraftRows, subPartDraftRowIds]);
   useEffect(() => {
     if (!visibleCutlistDraftRows.length) return;
     if (cutlistCompactDraftDeckIndex < 0) return;
@@ -22272,7 +18454,7 @@ export default function ProjectDetailsPage() {
     () => (isDoorPartType(cutlistEntry.partType) ? selectedDoorModeValue(cutlistEntry.doorMode) : ""),
     [cutlistEntry.doorMode, cutlistEntry.partType, isDoorPartType],
   );
-  const manualCutlistUsesPlainDoorRows = cutlistEntryMode === "manual";
+  const manualCutlistUsesPlainDoorRows = true;
   const singleEntrySuppressConfiguredHeightWarning = useMemo(
     () => isDoorPartType(cutlistEntry.partType) && normalizeDoorModeValue(cutlistEntry.doorMode) !== "manual",
     [cutlistEntry.doorMode, cutlistEntry.partType, isDoorPartType],
@@ -22281,19 +18463,6 @@ export default function ProjectDetailsPage() {
     const mode = normalizeDoorModeValue(cutlistEntry.doorMode);
     return mode === "door" || mode === "drawer";
   }, [cutlistEntry.doorMode]);
-  const visibleDraftRowsHaveConfiguredDoorMode = useMemo(
-    () => visibleCutlistDraftRows.some((row) => {
-      const mode = normalizeDoorModeValue(row.doorMode);
-      return mode === "door" || mode === "drawer";
-    }),
-    [visibleCutlistDraftRows],
-  );
-  const hideConfiguredDoorDraftHeaderRow = useMemo(
-    () =>
-      visibleCutlistDraftRows.length === 1 &&
-      visibleDraftRowsHaveConfiguredDoorMode,
-    [visibleCutlistDraftRows.length, visibleDraftRowsHaveConfiguredDoorMode],
-  );
   const hideConfiguredDoorSingleEntryHeaderRow = useMemo(
     () => cutlistEntryHasConfiguredDoorMode && visibleCutlistDraftRows.length === 0,
     [cutlistEntryHasConfiguredDoorMode, visibleCutlistDraftRows.length],
@@ -22302,13 +18471,6 @@ export default function ProjectDetailsPage() {
     const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
     return numericDimensionText(productionForm.cabinetry.baseCabHeight || toStr(projectSettings.baseCabHeight));
   }, [productionForm.cabinetry.baseCabHeight, project]);
-  const experimentalCabinetBuilderPartType = useMemo(
-    () =>
-      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "cabinet") ??
-      partTypeOptions.find((option) => isCabinetryPartType(option)) ??
-      "Cabinet",
-    [isCabinetryPartType, partTypeOptions],
-  );
   const experimentalPanelPartType = useMemo(
     () =>
       partTypeOptions.find((option) => isPanelPartType(option)) ??
@@ -22330,1346 +18492,6 @@ export default function ProjectDetailsPage() {
       partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "front") ??
       "Front",
     [isDoorPartType, partTypeOptions],
-  );
-  const isExperimentalCabinetBuilderPartType = useCallback(
-    (partType: string) =>
-      String(partType || "").trim().toLowerCase() ===
-      String(experimentalCabinetBuilderPartType || "").trim().toLowerCase(),
-    [experimentalCabinetBuilderPartType],
-  );
-  const cabinetBuilderEntryPartType = useMemo(
-    () => String(activeCutlistPartType || cutlistEntry.partType || "").trim(),
-    [activeCutlistPartType, cutlistEntry.partType],
-  );
-  const cabinetBuilderEntryActive = useMemo(
-    () => cutlistEntryMode === "wallBuilder",
-    [
-      cutlistEntryMode,
-    ],
-  );
-  const isCabinetBuilderContainerRow = useCallback(
-    (row: Partial<CutlistRow> | null | undefined) =>
-      Boolean(row && row.cabinetBuilderRowKind === "container" && isExperimentalCabinetBuilderPartType(String(row.partType || ""))),
-    [isExperimentalCabinetBuilderPartType],
-  );
-  const isCabinetBuilderGeneratedRow = useCallback(
-    (row: Partial<CutlistRow> | null | undefined) =>
-      Boolean(row && row.cabinetBuilderRowKind === "generated" && String(row.cabinetBuilderContainerId || "").trim()),
-    [],
-  );
-  const setCutlistEntryModeWithUi = useCallback(
-    (mode: "manual" | "wallBuilder") => {
-      setCutlistEntryMode(mode);
-      if (mode === "manual") {
-        setCabinetBuilderCreateOpen(false);
-        setCabinetBuilderAttachmentMenuSide(null);
-        setCabinetBuilderHoveredWallId("");
-        if (isExperimentalCabinetBuilderPartType(activeCutlistPartType)) {
-          setActiveCutlistPartType("");
-        }
-        if (isExperimentalCabinetBuilderPartType(cutlistEntry.partType)) {
-          setCutlistEntry((prev) => ({ ...prev, partType: "" }));
-        }
-        return;
-      }
-      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
-    },
-    [activeCutlistPartType, cutlistEntry.partType, experimentalCabinetBuilderPartType, isExperimentalCabinetBuilderPartType],
-  );
-  const cabinetBuilderSideName = useCallback((side: "left" | "right", baseName: string) => {
-    const cleanBase = String(baseName || "").trim() || "Cabinet";
-    return `${side === "left" ? "LH" : "RH"} ${cleanBase}`;
-  }, []);
-  const buildCabinetBuilderWallPieces = useCallback(
-    (draft: CabinetBuilderDraft): CabinetBuilderWallPiece[] => buildCabinetBuilderWallPiecesModel(draft),
-    [],
-  );
-  const getCabinetBuilderSelectedWallPiece = useCallback(
-    (draft: CabinetBuilderDraft) => getCabinetBuilderSelectedWallPieceModel(draft, cabinetBuilderSelectedWallId),
-    [cabinetBuilderSelectedWallId],
-  );
-  const getCabinetBuilderSelectedConfiguredRow = useCallback(
-    (draft: CabinetBuilderDraft, kind: "doorsRow" | "drawersRow") =>
-      getCabinetBuilderSelectedConfiguredRowModel(draft, kind, cabinetBuilderSelectedWallId),
-    [cabinetBuilderSelectedWallId],
-  );
-  const getCabinetBuilderSelectedFrontRow = useCallback(
-    (draft: CabinetBuilderDraft) => getCabinetBuilderSelectedFrontRowModel(draft, cabinetBuilderSelectedWallId),
-    [cabinetBuilderSelectedWallId],
-  );
-  const getCabinetBuilderSelectedFrontKind = useCallback(
-    (draft: CabinetBuilderDraft): "doorsRow" | "drawersRow" | null =>
-      getCabinetBuilderSelectedFrontKindModel(draft, cabinetBuilderSelectedWallId),
-    [cabinetBuilderSelectedWallId],
-  );
-  const getCabinetBuilderSelectedEditableCabinet = useCallback(
-    (draft: CabinetBuilderDraft): CabinetBuilderEditableCabinetSelection | null =>
-      getCabinetBuilderSelectedEditableCabinetModel(draft, cabinetBuilderSelectedWallId),
-    [cabinetBuilderSelectedWallId],
-  );
-  const getCabinetBuilderDescendantAttachmentIds = useCallback(
-    (attachments: CabinetBuilderAttachmentDraft[], rootId: string) => {
-      const descendantIds = new Set<string>();
-      const queue = [rootId];
-      while (queue.length) {
-        const currentId = queue.shift();
-        if (!currentId) continue;
-        attachments.forEach((attachment) => {
-          if ((attachment.parentWallId || "main") === currentId && !descendantIds.has(attachment.id)) {
-            descendantIds.add(attachment.id);
-            queue.push(attachment.id);
-          }
-        });
-      }
-      return descendantIds;
-    },
-    [],
-  );
-  const getCabinetBuilderDeleteDescendantIds = useCallback(
-    (
-      draft: CabinetBuilderDraft,
-      selectedWall: Pick<CabinetBuilderWallPiece, "id" | "isMain" | "kind">,
-    ) => getCabinetBuilderDeleteDescendantIdsModel(),
-    [],
-  );
-  const buildCabinetBuilderDeleteMeta = useCallback(
-    (draft: CabinetBuilderDraft, wallId: string): CabinetBuilderDeleteMeta | null =>
-      buildCabinetBuilderDeleteMetaModel(draft, wallId, cabinetBuilderSelectedWallId),
-    [cabinetBuilderSelectedWallId],
-  );
-  const cabinetBuilderSelectedDeleteMeta = useMemo(() => {
-    if (!cabinetBuilderDraft) return null;
-    return buildCabinetBuilderDeleteMeta(cabinetBuilderDraft, cabinetBuilderSelectedWallId || "main");
-  }, [buildCabinetBuilderDeleteMeta, cabinetBuilderDraft, cabinetBuilderSelectedWallId]);
-  const cabinetBuilderActiveDeleteMeta = cabinetBuilderDeleteTargetOverride ?? cabinetBuilderSelectedDeleteMeta;
-  const buildCabinetBuilderEditTabs = useCallback(
-    (draft: CabinetBuilderDraft) => {
-      const selectedEditableCabinet = getCabinetBuilderSelectedEditableCabinet(draft);
-      const selectedFrontRow = getCabinetBuilderSelectedFrontRow(draft);
-      const tabs: Array<{ id: string; label: string; color: string | null }> = [
-        { id: "edit", label: "Edit", color: null },
-      ];
-      if (selectedEditableCabinet?.newCabinet) {
-        tabs.push({
-          id: "cabinet",
-          label: selectedEditableCabinet.row.partType || "Cabinet",
-          color: partTypeColors[selectedEditableCabinet.row.partType || experimentalCabinetBuilderPartType] ?? "#CBD5E1",
-        });
-      }
-      if (selectedFrontRow) {
-        tabs.push({
-          id: "fronts",
-          label: selectedFrontRow.partType || "Fronts",
-          color: partTypeColors[selectedFrontRow.partType || experimentalConfiguredFrontPartType] ?? "#CBD5E1",
-        });
-      }
-      const seenPartTypes = new Set<string>();
-      for (const child of selectedEditableCabinet?.childRows ?? []) {
-        const labelBase = child.row.partType || "Part";
-        const normalizedLabel = normalizeCabinetBuilderChildTabPartType(labelBase).toLowerCase();
-        if (seenPartTypes.has(normalizedLabel)) continue;
-        seenPartTypes.add(normalizedLabel);
-        tabs.push({
-          id: buildCabinetBuilderChildTabId(labelBase),
-          label: labelBase,
-          color: partTypeColors[labelBase] ?? "#CBD5E1",
-        });
-      }
-      return tabs;
-    },
-    [
-      experimentalCabinetBuilderPartType,
-      experimentalConfiguredFrontPartType,
-      getCabinetBuilderSelectedEditableCabinet,
-      getCabinetBuilderSelectedFrontRow,
-      buildCabinetBuilderChildTabId,
-      normalizeCabinetBuilderChildTabPartType,
-      partTypeColors,
-    ],
-  );
-  const buildCabinetBuilderEditPartTypePills = useCallback(
-    (
-      selectedCabinet: { newCabinet?: boolean; row: { partType?: string | null } } | null,
-      selectedFrontPartType?: string | null,
-    ) => {
-      const normalize = (value: string) => String(value || "").trim().toLowerCase();
-      const cabinetPartType = String(selectedCabinet?.row.partType || experimentalCabinetBuilderPartType).trim();
-      const frontPartType = String(selectedFrontPartType || experimentalConfiguredFrontPartType).trim();
-      const pills: Array<{ key: string; kind: "cabinet" | "fronts" | "child"; partType: string; label: string }> = [];
-      const seen = new Set<string>();
-      const push = (kind: "cabinet" | "fronts" | "child", partType: string, label: string) => {
-        const normalizedPartType = normalize(partType);
-        const key = `${kind}:${normalizedPartType || normalize(label)}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        pills.push({ key, kind, partType, label });
-      };
-
-      for (const option of partTypeOptions) {
-        const optionLabel = String(option || "").trim();
-        const normalizedOption = normalize(optionLabel);
-        if (!normalizedOption) continue;
-        if (selectedCabinet?.newCabinet && normalizedOption === normalize(cabinetPartType)) {
-          push("cabinet", optionLabel, optionLabel);
-          continue;
-        }
-        if (normalizedOption === normalize(frontPartType)) {
-          push("fronts", optionLabel, optionLabel);
-          continue;
-        }
-        if (!isExperimentalCabinetBuilderPartType(optionLabel)) {
-          push("child", optionLabel, optionLabel);
-        }
-      }
-
-      if (selectedCabinet?.newCabinet && !pills.some((pill) => pill.kind === "cabinet")) {
-        push("cabinet", cabinetPartType, cabinetPartType);
-      }
-      if (!pills.some((pill) => pill.kind === "fronts")) {
-        push("fronts", frontPartType, frontPartType);
-      }
-
-      return pills;
-    },
-    [
-      experimentalCabinetBuilderPartType,
-      experimentalConfiguredFrontPartType,
-      isExperimentalCabinetBuilderPartType,
-      partTypeOptions,
-    ],
-  );
-  const getCabinetBuilderWallPieceRawWidth = useCallback(
-    (item: CabinetBuilderWallPiece) => getCabinetBuilderWallPieceRawWidthModel(item, boardThicknessFor),
-    [boardThicknessFor],
-  );
-  const getCabinetBuilderLaneRawWidth = useCallback(
-    (laneItems: CabinetBuilderWallPiece[]) => getCabinetBuilderLaneRawWidthModel(laneItems, getCabinetBuilderWallPieceRawWidth),
-    [getCabinetBuilderWallPieceRawWidth],
-  );
-  const getCabinetBuilderWallPieceHorizontalTrack = useCallback(
-    (item: CabinetBuilderWallPiece) => getCabinetBuilderWallPieceHorizontalTrackModel(item),
-    [],
-  );
-  const buildCabinetBuilderPreviewWallPieces = useCallback(
-    (
-      draft: CabinetBuilderDraft,
-      draggingId: string,
-      pointerX: number | null,
-      viewport: { viewWidth: number; viewHeight: number; paddingX: number; paddingY: number } | null,
-    ): CabinetBuilderWallPiece[] =>
-      buildCabinetBuilderPreviewWallPiecesModel({
-        draft,
-        draggingId,
-        pointerX,
-        viewport,
-        getRawWidth: getCabinetBuilderWallPieceRawWidth,
-      }),
-    [getCabinetBuilderWallPieceRawWidth],
-  );
-  const applyCabinetBuilderWallOrder = useCallback(
-    (draft: CabinetBuilderDraft, previewPieces: CabinetBuilderWallPiece[]): CabinetBuilderDraft =>
-      applyCabinetBuilderWallOrderModel(draft, previewPieces),
-    [],
-  );
-  const createCabinetBuilderBaseRow = useCallback(
-    (partType: string, overrides?: Partial<CutlistEntryDraft>): CutlistEntryDraft => {
-      const nextBoard = String(overrides?.board ?? cabinetBuilderDraft?.row.board ?? cutlistBoardOptions[0] ?? "");
-      const defaults = defaultClashingForPartType(partType, nextBoard);
-      const clashLeft = String(overrides?.clashLeft ?? defaults.left ?? "");
-      const clashRight = String(overrides?.clashRight ?? defaults.right ?? "");
-      return {
-        ...createEmptyCutlistEntry(),
-        partType,
-        board: nextBoard,
-        name: String(overrides?.name ?? cabinetBuilderDraft?.row.name ?? ""),
-        height: String(overrides?.height ?? resolvedProductionBaseCabHeight ?? ""),
-        width: String(overrides?.width ?? ""),
-        depth: String(overrides?.depth ?? ""),
-        quantity: String(overrides?.quantity ?? "1"),
-        clashLeft,
-        clashRight,
-        clashing: joinClashing(clashLeft, clashRight),
-        grain: Boolean(overrides?.grain ?? false),
-        grainValue: String(overrides?.grainValue ?? ""),
-        information: String(overrides?.information ?? ""),
-        fixedShelf: String(overrides?.fixedShelf ?? ""),
-        adjustableShelf: String(overrides?.adjustableShelf ?? ""),
-        fixedShelfDrilling: normalizeDrillingValue(overrides?.fixedShelfDrilling),
-        adjustableShelfDrilling: normalizeDrillingValue(overrides?.adjustableShelfDrilling),
-        hingesUp: normalizeDoorHingeValues(overrides?.hingesUp),
-        hingesDown: normalizeDoorHingeValues(overrides?.hingesDown),
-      };
-    },
-    [cabinetBuilderDraft?.row.board, cabinetBuilderDraft?.row.name, cutlistBoardOptions, resolvedProductionBaseCabHeight],
-  );
-  const getCabinetBuilderSelectedFrontDefaultSideGaps = useCallback(() => {
-    const fullGapNumber = Number.parseFloat(String(projectGapAllowancesDraft.baseVerticalGapDoorsPanels || "").replace(/[^\d.-]/g, "")) || 0;
-    const fullGap = numericDecimalText(String(fullGapNumber));
-    const halfGap = numericDecimalText(String(fullGapNumber / 2));
-    if (!cabinetBuilderDraft) return { left: fullGap, right: fullGap };
-    const selectedWall = getCabinetBuilderSelectedWallPiece(cabinetBuilderDraft);
-    if (!selectedWall) return { left: fullGap, right: fullGap };
-    const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
-    const lanePositions = Array.from(new Set(wallPieces.map((piece) => Number(piece.position)))).sort((a, b) => a - b);
-    const selectedLaneIndex = lanePositions.findIndex((position) => position === Number(selectedWall.position));
-    const classifyLaneGap = (position: number | undefined) => {
-      if (position === undefined) return fullGap;
-      const lanePieces = wallPieces.filter((piece) => Number(piece.position) === position);
-      if (!lanePieces.length) return fullGap;
-      return lanePieces.some((piece) => piece.kind === "panel") ? fullGap : halfGap;
-    };
-    return {
-      left: classifyLaneGap(selectedLaneIndex > 0 ? lanePositions[selectedLaneIndex - 1] : undefined),
-      right: classifyLaneGap(selectedLaneIndex >= 0 && selectedLaneIndex < lanePositions.length - 1 ? lanePositions[selectedLaneIndex + 1] : undefined),
-    };
-  }, [
-    buildCabinetBuilderWallPieces,
-    cabinetBuilderDraft,
-    getCabinetBuilderSelectedWallPiece,
-    projectGapAllowancesDraft.baseVerticalGapDoorsPanels,
-  ]);
-  const createConfiguredCabinetFrontRow = useCallback(
-    (mode: "door" | "drawer", overrides?: Partial<CutlistEntryDraft>): CutlistEntryDraft => {
-      const board = String(overrides?.board ?? cabinetBuilderDraft?.row.board ?? cutlistBoardOptions[0] ?? "");
-      const width = String(overrides?.width ?? cabinetBuilderDraft?.row.width ?? "");
-      const height = String(overrides?.height ?? cabinetBuilderDraft?.row.height ?? resolvedProductionBaseCabHeight ?? "");
-      const cabinetHeightNumber = Number.parseFloat(String(height || "").replace(/[^\d.-]/g, "")) || 0;
-      const baseCabHeightNumber = Number.parseFloat(String(resolvedProductionBaseCabHeight || "").replace(/[^\d.-]/g, "")) || 0;
-      const isBaseHeightCabinet = baseCabHeightNumber > 0 && cabinetHeightNumber <= baseCabHeightNumber + 0.01;
-      const topGap =
-        mode === "door"
-          ? isBaseHeightCabinet
-            ? projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer
-            : productionForm.cabinetry.topScribers
-              ? projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers
-              : projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers
-          : projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer;
-      const betweenGap =
-        mode === "door"
-          ? projectGapAllowancesDraft.tallVerticalGapDoorsPanels
-          : productionForm.hardware.wrapOverHandles
-            ? projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles
-            : projectGapAllowancesDraft.baseHorizontalGapNormalHandles;
-      const sideGaps = getCabinetBuilderSelectedFrontDefaultSideGaps();
-      const defaults = defaultClashingForPartType(experimentalConfiguredFrontPartType, board);
-      const frontCount = normalizeDoorFrontCountValue(overrides?.doorFrontCount || "1") || "1";
-      const frontCountNumber = Number.parseInt(frontCount, 10) || 1;
-      const rebalancedWidths =
-        mode === "door"
-          ? rebalanceDoorFrontWidths(
-              normalizeDoorFrontWidths(overrides?.doorFrontWidths, frontCountNumber),
-              width,
-              String(overrides?.doorSideLeftGap ?? sideGaps.left),
-              String(overrides?.doorSideRightGap ?? sideGaps.right),
-              numericOnlyText(String(overrides?.doorBetweenGap ?? betweenGap)),
-              normalizeDoorFrontWidthManual(overrides?.doorFrontWidthManual, frontCountNumber),
-            )
-          : { widths: [], manual: [] as boolean[] };
-      const rebalancedHeights =
-        mode === "drawer"
-          ? rebalanceDoorFrontHeights(
-              normalizeDoorFrontHeights(overrides?.doorFrontHeights, frontCountNumber),
-              height,
-              numericOnlyText(String(overrides?.doorTopGap ?? topGap)),
-              numericOnlyText(String(overrides?.doorBetweenGap ?? betweenGap)),
-              normalizeDoorFrontHeightManual(overrides?.doorFrontHeightManual, frontCountNumber),
-            )
-          : { heights: [], manual: [] as boolean[] };
-      const configuredPartType =
-        String(overrides?.partType ?? experimentalConfiguredFrontPartType ?? "").trim() ||
-        experimentalConfiguredFrontPartType;
-      return {
-        ...createEmptyCutlistEntry(),
-        partType: configuredPartType,
-        board,
-        name: String(overrides?.name ?? cabinetBuilderDraft?.row.name ?? ""),
-        height,
-        width,
-        depth: String(overrides?.depth ?? ""),
-        quantity: String(overrides?.quantity ?? "1"),
-        clashLeft: String(overrides?.clashLeft ?? defaults.left ?? ""),
-        clashRight: String(overrides?.clashRight ?? defaults.right ?? ""),
-        clashing: joinClashing(String(overrides?.clashLeft ?? defaults.left ?? ""), String(overrides?.clashRight ?? defaults.right ?? "")),
-        grain: Boolean(overrides?.grain ?? false),
-        grainValue: String(overrides?.grainValue ?? ""),
-        information: String(overrides?.information ?? ""),
-        doorMode: mode,
-        doorFrontCount: frontCount,
-        doorTopGap: numericOnlyText(String(overrides?.doorTopGap ?? topGap)),
-        doorBetweenGap: numericOnlyText(String(overrides?.doorBetweenGap ?? betweenGap)),
-        doorSideLeft: normalizeDoorSideValue(overrides?.doorSideLeft),
-        doorSideRight: normalizeDoorSideValue(overrides?.doorSideRight),
-        doorSideLeftGap: String(overrides?.doorSideLeftGap ?? sideGaps.left),
-        doorSideRightGap: String(overrides?.doorSideRightGap ?? sideGaps.right),
-        doorFrontWidths: rebalancedWidths.widths,
-        doorFrontWidthManual: rebalancedWidths.manual,
-        doorFrontHeights: rebalancedHeights.heights,
-        doorFrontHeightManual: rebalancedHeights.manual,
-        hingesUp: normalizeDoorHingeValues(overrides?.hingesUp),
-        hingesDown: normalizeDoorHingeValues(overrides?.hingesDown),
-      };
-    },
-    [
-      cabinetBuilderDraft?.row.board,
-      cabinetBuilderDraft?.row.height,
-      cabinetBuilderDraft?.row.name,
-      cabinetBuilderDraft?.row.width,
-      cutlistBoardOptions,
-      experimentalConfiguredFrontPartType,
-      productionForm.cabinetry.topScribers,
-      productionForm.hardware.wrapOverHandles,
-      projectGapAllowancesDraft.baseBelowBenchToTopOfDoorDrawer,
-      projectGapAllowancesDraft.baseHorizontalGapNormalHandles,
-      projectGapAllowancesDraft.baseHorizontalGapWrapOverHandles,
-      getCabinetBuilderSelectedFrontDefaultSideGaps,
-      projectGapAllowancesDraft.tallTopOfDoorToTopNoScribers,
-      projectGapAllowancesDraft.tallTopOfDoorToTopWithScribers,
-      projectGapAllowancesDraft.tallVerticalGapDoorsPanels,
-      resolvedProductionBaseCabHeight,
-    ],
-  );
-  const getCabinetBuilderPanelBaseHeight = useCallback(
-    (mode: CabinetBuilderPanelHeightMode) =>
-      getCabinetBuilderPanelBaseHeightModel(
-        mode,
-        String(productionForm.cabinetry.tallCabHeight || ""),
-        String(resolvedProductionBaseCabHeight || ""),
-      ),
-    [productionForm.cabinetry.tallCabHeight, resolvedProductionBaseCabHeight],
-  );
-  const getCabinetBuilderPanelHeightBaseline = useCallback(
-    (
-      heightMode: CabinetBuilderPanelHeightMode,
-      spanMode: CabinetBuilderPanelSpanMode,
-    ) =>
-      getCabinetBuilderPanelHeightBaselineModel(
-        heightMode,
-        spanMode,
-        String(productionForm.cabinetry.tallCabHeight || ""),
-        String(resolvedProductionBaseCabHeight || ""),
-        String(productionForm.cabinetry.footHeight || ""),
-      ),
-    [productionForm.cabinetry.footHeight, productionForm.cabinetry.tallCabHeight, resolvedProductionBaseCabHeight],
-  );
-  const getCabinetBuilderPanelHeightBaselineText = useCallback(
-    (
-      heightMode: CabinetBuilderPanelHeightMode,
-      spanMode: CabinetBuilderPanelSpanMode,
-    ) => numericDimensionText(String(getCabinetBuilderPanelHeightBaseline(heightMode, spanMode))),
-    [getCabinetBuilderPanelHeightBaseline],
-  );
-  const getCabinetBuilderWallPieceVerticalBounds = useCallback(
-    (item: CabinetBuilderWallPiece, rawHeight: number): { top: number; bottom: number } =>
-      getCabinetBuilderWallPieceVerticalBoundsModel({
-        item,
-        rawHeight,
-        wallPieces: cabinetBuilderDraft ? buildCabinetBuilderWallPieces(cabinetBuilderDraft) : [item],
-        tallCabHeight: String(productionForm.cabinetry.tallCabHeight || ""),
-        baseCabHeight: String(resolvedProductionBaseCabHeight || ""),
-        footHeight: String(productionForm.cabinetry.footHeight || ""),
-      }),
-    [buildCabinetBuilderWallPieces, cabinetBuilderDraft, productionForm.cabinetry.footHeight, productionForm.cabinetry.tallCabHeight, resolvedProductionBaseCabHeight],
-  );
-  const buildCabinetBuilderDisplayPieceLayouts = useCallback(
-    (
-      displayWallPieces: CabinetBuilderWallPiece[],
-      viewWidth: number,
-      viewHeight: number,
-      paddingX: number,
-      paddingY: number,
-      draft: CabinetBuilderDraft,
-    ) =>
-      buildCabinetBuilderDisplayPieceLayoutsModel({
-        displayWallPieces,
-        viewWidth,
-        viewHeight,
-        paddingX,
-        paddingY,
-        draft,
-        tallCabHeight: String(productionForm.cabinetry.tallCabHeight || ""),
-        baseCabHeight: String(resolvedProductionBaseCabHeight || ""),
-        footHeight: String(productionForm.cabinetry.footHeight || ""),
-        getRawWidth: getCabinetBuilderWallPieceRawWidth,
-        getLaneRawWidth: getCabinetBuilderLaneRawWidth,
-        getHorizontalTrack: getCabinetBuilderWallPieceHorizontalTrack,
-        getPalette: getCabinetBuilderPiecePalette,
-      }),
-    [
-      getCabinetBuilderLaneRawWidth,
-      getCabinetBuilderPiecePalette,
-      getCabinetBuilderWallPieceHorizontalTrack,
-      getCabinetBuilderWallPieceRawWidth,
-      productionForm.cabinetry.footHeight,
-      productionForm.cabinetry.tallCabHeight,
-      resolvedProductionBaseCabHeight,
-    ],
-  );
-  const cabinetBuilderPendingPanelNeedsExtraHeight =
-    cabinetBuilderPendingPanelSpanMode === "floorToCeiling" || cabinetBuilderPendingPanelSpanMode === "bottomToCeiling";
-  const cabinetBuilderPendingPanelBaselineText = getCabinetBuilderPanelHeightBaselineText(
-    cabinetBuilderPendingPanelHeightMode,
-    cabinetBuilderPendingPanelSpanMode,
-  );
-  const cabinetBuilderSelectedPartsPanel = cabinetBuilderDraft ? renderCabinetBuilderSelectedPartsPanel(cabinetBuilderDraft) : null;
-  const cabinetBuilderHasSelectedPartsPanel = Boolean(cabinetBuilderSelectedPartsPanel);
-  const createCabinetBuilderWall = useCallback(() => {
-    const name = String(cabinetBuilderWallName || "").trim();
-    if (!name) return;
-    setCutlistEntryMode("wallBuilder");
-    setActiveCutlistPartType(experimentalCabinetBuilderPartType);
-    setActiveCabinetBuilderSavedDraftId("");
-    setCabinetBuilderWallName(name);
-    setCabinetBuilderWallCreated(true);
-    setCabinetBuilderDraft(null);
-    setCabinetBuilderSelectedWallId("main");
-    setCabinetBuilderHoveredWallId("");
-    setCabinetBuilderAttachmentMenuSide(null);
-  }, [cabinetBuilderWallName, experimentalCabinetBuilderPartType]);
-  const openCabinetBuilderCreate = useCallback(() => {
-    setCutlistEntryMode("wallBuilder");
-    setActiveCutlistPartType(experimentalCabinetBuilderPartType);
-    setActiveCabinetBuilderSavedDraftId("");
-    setCabinetBuilderPendingNewCabinet(false);
-    setCabinetBuilderPendingPanelHeightMode("base");
-    setCabinetBuilderPendingPanelSpanMode("bottomToTopOfCab");
-    setCabinetBuilderPendingPanelHeightError("");
-    setPendingCabinetBuilderRow(
-      createCabinetBuilderBaseRow(experimentalCabinetBuilderPartType, {
-        name: "",
-        height: String(resolvedProductionBaseCabHeight || ""),
-        width: "",
-        quantity: "1",
-      }),
-    );
-    setCabinetBuilderPendingAttachment(null);
-    setCabinetBuilderSelectedWallId("main");
-    setCabinetBuilderHoveredWallId("");
-    setCabinetBuilderAttachmentMenuSide(null);
-    setCabinetBuilderCreateOpen(true);
-  }, [createCabinetBuilderBaseRow, experimentalCabinetBuilderPartType, resolvedProductionBaseCabHeight]);
-  const openSavedCabinetBuilderDraft = useCallback(
-    (savedDraft: SavedCabinetBuilderDraft) => {
-      setCabinetBuilderDraft(JSON.parse(JSON.stringify(savedDraft.draft)) as CabinetBuilderDraft);
-      setActiveCabinetBuilderSavedDraftId(savedDraft.id);
-      setCabinetBuilderWallName(String(savedDraft.name || "Wall").trim() || "Wall");
-      setCabinetBuilderWallCreated(true);
-      setCutlistEntryMode("wallBuilder");
-      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
-      setCutlistEntryRoom(String(savedDraft.room || "Project Cutlist").trim() || "Project Cutlist");
-      setCutlistRoomFilter(String(savedDraft.room || "Project Cutlist").trim() || "Project Cutlist");
-      setCabinetBuilderSelectedWallId("main");
-      setCabinetBuilderHoveredWallId("");
-      setCabinetBuilderAttachmentMenuSide(null);
-      setCabinetBuilderEditOpen(false);
-      setCabinetBuilderCreateOpen(false);
-      setCabinetBuilderDoorsOpen(false);
-      setCabinetBuilderDrawersOpen(false);
-    },
-    [experimentalCabinetBuilderPartType],
-  );
-  const saveCurrentCabinetBuilderDraft = useCallback(async () => {
-    if (!cabinetBuilderDraft || !cabinetBuilderWallCreated) return false;
-    const id = activeCabinetBuilderSavedDraftId || `wall_draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const room = String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist";
-    const name = String(cabinetBuilderWallName || cabinetBuilderDraft.row.name || "Wall").trim() || "Wall";
-    const nextEntry: SavedCabinetBuilderDraft = {
-      id,
-      name,
-      room,
-      updatedAt: new Date().toISOString(),
-      draft: JSON.parse(JSON.stringify(cabinetBuilderDraft)) as CabinetBuilderDraft,
-    };
-    const existingIndex = savedCabinetBuilderDrafts.findIndex((draft) => draft.id === id);
-    const existingDraft = existingIndex >= 0 ? savedCabinetBuilderDrafts[existingIndex] : null;
-    if (
-      existingDraft &&
-      existingDraft.name === nextEntry.name &&
-      existingDraft.room === nextEntry.room &&
-      JSON.stringify(existingDraft.draft) === JSON.stringify(nextEntry.draft)
-    ) {
-      if (!activeCabinetBuilderSavedDraftId) {
-        setActiveCabinetBuilderSavedDraftId(id);
-      }
-      return true;
-    }
-    const nextDrafts =
-      existingIndex >= 0
-        ? savedCabinetBuilderDrafts.map((draft, index) => (index === existingIndex ? nextEntry : draft))
-        : [nextEntry, ...savedCabinetBuilderDrafts];
-    const ok = await persistSavedCabinetBuilderDrafts(nextDrafts);
-    if (!ok) return false;
-    setSavedCabinetBuilderDrafts(nextDrafts);
-    setActiveCabinetBuilderSavedDraftId(id);
-    setCabinetBuilderWallCreated(true);
-    logCutlistActivity(`${name} wall draft saved`, {
-      partType: experimentalCabinetBuilderPartType,
-      dedupeKey: `wall-draft-save:${id}:${nextEntry.updatedAt}`,
-    });
-    return true;
-  }, [
-    activeCabinetBuilderSavedDraftId,
-    cabinetBuilderDraft,
-    cabinetBuilderWallCreated,
-    cabinetBuilderWallName,
-    cutlistEntryRoom,
-    cutlistRoomFilter,
-    experimentalCabinetBuilderPartType,
-    persistSavedCabinetBuilderDrafts,
-    savedCabinetBuilderDrafts,
-  ]);
-  const autosaveCurrentCabinetBuilderDraft = useCallback(async () => {
-    if (!cabinetBuilderDraft || !cabinetBuilderWallCreated) return false;
-    const id = activeCabinetBuilderSavedDraftId || `wall_draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const room = String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist";
-    const name = String(cabinetBuilderWallName || cabinetBuilderDraft.row.name || "Wall").trim() || "Wall";
-    const nextEntry: SavedCabinetBuilderDraft = {
-      id,
-      name,
-      room,
-      updatedAt: new Date().toISOString(),
-      draft: JSON.parse(JSON.stringify(cabinetBuilderDraft)) as CabinetBuilderDraft,
-    };
-    const existingIndex = savedCabinetBuilderDrafts.findIndex((draft) => draft.id === id);
-    const existingDraft = existingIndex >= 0 ? savedCabinetBuilderDrafts[existingIndex] : null;
-    if (
-      existingDraft &&
-      existingDraft.name === nextEntry.name &&
-      existingDraft.room === nextEntry.room &&
-      JSON.stringify(existingDraft.draft) === JSON.stringify(nextEntry.draft)
-    ) {
-      if (!activeCabinetBuilderSavedDraftId) {
-        setActiveCabinetBuilderSavedDraftId(id);
-      }
-      return true;
-    }
-    const nextDrafts =
-      existingIndex >= 0
-        ? savedCabinetBuilderDrafts.map((draft, index) => (index === existingIndex ? nextEntry : draft))
-        : [nextEntry, ...savedCabinetBuilderDrafts];
-    const ok = await persistSavedCabinetBuilderDrafts(nextDrafts);
-    if (!ok) return false;
-    setSavedCabinetBuilderDrafts(nextDrafts);
-    setActiveCabinetBuilderSavedDraftId(id);
-    setCabinetBuilderWallCreated(true);
-    return true;
-  }, [
-    activeCabinetBuilderSavedDraftId,
-    cabinetBuilderDraft,
-    cabinetBuilderWallCreated,
-    cabinetBuilderWallName,
-    cutlistEntryRoom,
-    cutlistRoomFilter,
-    persistSavedCabinetBuilderDrafts,
-    savedCabinetBuilderDrafts,
-  ]);
-  const startNewCabinetBuilderWall = useCallback(async () => {
-    if (cabinetBuilderDraft && cabinetBuilderWallCreated) {
-      const ok = await autosaveCurrentCabinetBuilderDraft();
-      if (!ok) return;
-    }
-    setCabinetBuilderDeleteWallConfirmOpen(false);
-    setCabinetBuilderDraft(null);
-    setActiveCabinetBuilderSavedDraftId("");
-    setCabinetBuilderWallName("");
-    setCabinetBuilderWallCreated(false);
-    setCabinetBuilderSelectedWallId("main");
-    setCabinetBuilderHoveredWallId("");
-    setCabinetBuilderAttachmentMenuSide(null);
-    setCabinetBuilderCreateOpen(false);
-    setCabinetBuilderEditOpen(false);
-    setCabinetBuilderDoorsOpen(false);
-    setCabinetBuilderDrawersOpen(false);
-    setCabinetBuilderMeasureMode(false);
-    setCabinetBuilderMeasurePoints([]);
-    cabinetBuilderAutosaveSnapshotRef.current = "";
-  }, [
-    autosaveCurrentCabinetBuilderDraft,
-    cabinetBuilderDraft,
-    cabinetBuilderWallCreated,
-  ]);
-  const deleteCurrentCabinetBuilderWall = useCallback(async () => {
-    const normalizedId = String(activeCabinetBuilderSavedDraftId || "").trim();
-    if (normalizedId) {
-      const nextDrafts = savedCabinetBuilderDrafts.filter((draft) => draft.id !== normalizedId);
-      const ok = await persistSavedCabinetBuilderDrafts(nextDrafts);
-      if (!ok) return;
-      setSavedCabinetBuilderDrafts(nextDrafts);
-    }
-    setCabinetBuilderDeleteWallConfirmOpen(false);
-    setCabinetBuilderDraft(null);
-    setActiveCabinetBuilderSavedDraftId("");
-    setCabinetBuilderWallName("");
-    setCabinetBuilderWallCreated(false);
-    setCabinetBuilderSelectedWallId("main");
-    setCabinetBuilderHoveredWallId("");
-    setCabinetBuilderAttachmentMenuSide(null);
-    setCabinetBuilderCreateOpen(false);
-    setCabinetBuilderEditOpen(false);
-    setCabinetBuilderDoorsOpen(false);
-    setCabinetBuilderDrawersOpen(false);
-    setCabinetBuilderMeasureMode(false);
-    setCabinetBuilderMeasurePoints([]);
-    cabinetBuilderAutosaveSnapshotRef.current = "";
-  }, [
-    activeCabinetBuilderSavedDraftId,
-    persistSavedCabinetBuilderDrafts,
-    savedCabinetBuilderDrafts,
-  ]);
-  const cabinetBuilderAutosaveSnapshot = useMemo(() => {
-    if (!cabinetBuilderDraft || !cabinetBuilderWallCreated) return "";
-    return JSON.stringify({
-      name: String(cabinetBuilderWallName || "").trim(),
-      room: String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist",
-      draft: cabinetBuilderDraft,
-    });
-  }, [
-    cabinetBuilderDraft,
-    cabinetBuilderWallCreated,
-    cabinetBuilderWallName,
-    cutlistEntryRoom,
-    cutlistRoomFilter,
-  ]);
-  useEffect(() => {
-    if (!cabinetBuilderAutosaveSnapshot) {
-      cabinetBuilderAutosaveSnapshotRef.current = "";
-      return;
-    }
-    if (cabinetBuilderAutosaveSnapshot === cabinetBuilderAutosaveSnapshotRef.current) {
-      return;
-    }
-    const snapshot = cabinetBuilderAutosaveSnapshot;
-    const timeout = window.setTimeout(() => {
-      void (async () => {
-        const ok = await autosaveCurrentCabinetBuilderDraft();
-        if (ok) {
-          cabinetBuilderAutosaveSnapshotRef.current = snapshot;
-        }
-      })();
-    }, 350);
-    return () => window.clearTimeout(timeout);
-  }, [autosaveCurrentCabinetBuilderDraft, cabinetBuilderAutosaveSnapshot]);
-  const openCabinetBuilderAttachmentCreate = useCallback(
-    (side: "left" | "right", kind: CabinetBuilderAttachmentKind = "cabinet", align: "top" | "bottom" = "bottom") => {
-      const draft = cabinetBuilderDraft;
-      const wallPieces = draft ? buildCabinetBuilderWallPieces(draft) : [];
-      const selectedWall = wallPieces.find((item) => item.id === cabinetBuilderSelectedWallId) ?? wallPieces.find((item) => item.isMain) ?? null;
-      const inheritedAlign: "top" | "bottom" =
-        kind === "cabinet"
-          ? selectedWall?.kind === "cabinet"
-            ? (selectedWall.verticalAlign ?? "bottom")
-            : align
-          : align;
-      const inheritedName = selectedWall?.row.name || draft?.row.name || "";
-      const partType = kind === "panel" ? experimentalPanelPartType : experimentalCabinetBuilderPartType;
-      const panelHeightMode: "base" | "tall" = selectedWall && Number.parseFloat(String(selectedWall.row.height || "").replace(/[^\d.-]/g, "")) > (Number.parseFloat(String(resolvedProductionBaseCabHeight || "").replace(/[^\d.-]/g, "")) || 0) ? "tall" : "base";
-      const panelSpanMode: "floorToCeiling" | "floorToTopOfCab" | "bottomToCeiling" | "bottomToTopOfCab" = "bottomToTopOfCab";
-      const panelHeightSeed = getCabinetBuilderPanelHeightBaselineText(panelHeightMode, panelSpanMode);
-      const cabinetHeightSeed =
-        kind !== "panel" && selectedWall?.kind === "panel"
-          ? String(resolvedProductionBaseCabHeight || "")
-          : String(selectedWall?.row.height || draft?.row.height || resolvedProductionBaseCabHeight || "");
-      setCabinetBuilderPendingNewCabinet(false);
-      setCabinetBuilderPendingPanelHeightMode(panelHeightMode);
-      setCabinetBuilderPendingPanelSpanMode(panelSpanMode);
-      setCabinetBuilderPendingPanelHeightError("");
-      setPendingCabinetBuilderRow(
-        createCabinetBuilderBaseRow(partType, {
-          name: cabinetBuilderSideName(side, inheritedName),
-          height: kind === "panel" ? panelHeightSeed : cabinetHeightSeed,
-          width: kind === "panel" ? "" : String(selectedWall?.row.width || draft?.row.width || ""),
-          depth: kind === "panel" ? "" : String(selectedWall?.row.depth || draft?.row.depth || ""),
-          quantity: "1",
-          board: String(selectedWall?.row.board || draft?.row.board || cutlistBoardOptions[0] || ""),
-        }),
-      );
-      setCabinetBuilderPendingAttachment({ side, kind, align: inheritedAlign });
-      setCabinetBuilderHoveredWallId("");
-      setCabinetBuilderAttachmentMenuSide(null);
-      setCabinetBuilderAttachmentMenuAlign("bottom");
-      setCabinetBuilderCreateOpen(true);
-    },
-    [
-      buildCabinetBuilderWallPieces,
-      cabinetBuilderDraft,
-      cabinetBuilderSelectedWallId,
-      cabinetBuilderSideName,
-      createCabinetBuilderBaseRow,
-      cutlistBoardOptions,
-      experimentalCabinetBuilderPartType,
-      experimentalPanelPartType,
-      getCabinetBuilderPanelHeightBaselineText,
-      resolvedProductionBaseCabHeight,
-    ],
-  );
-  const openCabinetBuilderEditForSelected = useCallback(
-    (tab: string = "edit") => {
-      setCabinetBuilderDoorsOpen(false);
-      setCabinetBuilderDrawersOpen(false);
-      const selectedWall = cabinetBuilderDraft ? getCabinetBuilderSelectedWallPiece(cabinetBuilderDraft) : null;
-      if (selectedWall && !selectedWall.isMain && selectedWall.kind === "panel") {
-        setCabinetBuilderEditOpen(false);
-        setCabinetBuilderEditTab("edit");
-        setCabinetBuilderEditingAttachmentId(selectedWall.id);
-        return;
-      }
-      setCabinetBuilderEditingAttachmentId("");
-      setCabinetBuilderEditTab(tab);
-      setCabinetBuilderEditOpen(true);
-    },
-    [cabinetBuilderDraft, getCabinetBuilderSelectedWallPiece],
-  );
-  const ensureCabinetBuilderSelectedFronts = useCallback(() => {
-    setCabinetBuilderDraft((prev) =>
-      prev
-        ? ensureCabinetBuilderSelectedFrontsInDraftModel(
-            prev,
-            cabinetBuilderSelectedWallId,
-            createConfiguredCabinetFrontRow,
-          )
-        : prev,
-    );
-    openCabinetBuilderEditForSelected("fronts");
-  }, [
-    cabinetBuilderSelectedWallId,
-    createConfiguredCabinetFrontRow,
-    openCabinetBuilderEditForSelected,
-  ]);
-  const setCabinetBuilderSelectedFrontMode = useCallback(
-    (mode: "manual" | "door" | "drawer") => {
-      setCabinetBuilderDraft((prev) =>
-        prev
-          ? setCabinetBuilderSelectedFrontModeInDraftModel(
-              prev,
-              cabinetBuilderSelectedWallId,
-              mode,
-              normalizeDoorModeValue,
-              createConfiguredCabinetFrontRow,
-            )
-          : prev,
-      );
-    },
-    [
-      cabinetBuilderSelectedWallId,
-      createConfiguredCabinetFrontRow,
-      normalizeDoorModeValue,
-    ],
-  );
-  const deleteSelectedCabinetBuilderCabinet = useCallback(() => {
-    const deleteMeta = cabinetBuilderActiveDeleteMeta;
-    if (!deleteMeta) return;
-    setCabinetBuilderDraft((prev) => (prev ? removeCabinetBuilderWallByDeleteMetaModel(prev, deleteMeta) : prev));
-    setCabinetBuilderDeleteConfirmOpen(false);
-    setCabinetBuilderDeleteTargetOverride(null);
-    setCabinetBuilderEditOpen(false);
-    setCabinetBuilderEditingAttachmentId("");
-    setCabinetBuilderHoveredWallId("");
-    setCabinetBuilderAttachmentMenuSide(null);
-    setCabinetBuilderSelectedWallId(deleteMeta.isMain ? "main" : deleteMeta.nextSelectedWallId);
-  }, [cabinetBuilderActiveDeleteMeta]);
-  const promptDeleteCabinetBuilderWallId = useCallback(
-    (wallId: string) => {
-      if (!cabinetBuilderDraft || productionReadOnly) return;
-      const deleteMeta = buildCabinetBuilderDeleteMeta(cabinetBuilderDraft, wallId);
-      if (!deleteMeta) return;
-      setCabinetBuilderSelectedWallId(deleteMeta.id);
-      setCabinetBuilderDeleteTargetOverride(deleteMeta);
-      if (deleteMeta.requiresConfirm) {
-        setCabinetBuilderDeleteConfirmOpen(true);
-        return;
-      }
-      setCabinetBuilderDeleteConfirmOpen(false);
-      setCabinetBuilderEditingAttachmentId("");
-      setCabinetBuilderEditOpen(false);
-      setCabinetBuilderHoveredWallId("");
-      setCabinetBuilderAttachmentMenuSide(null);
-      setCabinetBuilderDraft((prev) => (prev ? removeCabinetBuilderWallByDeleteMetaModel(prev, deleteMeta) : prev));
-      setCabinetBuilderDeleteTargetOverride(null);
-      setCabinetBuilderSelectedWallId(deleteMeta.isMain ? "main" : deleteMeta.nextSelectedWallId);
-    },
-    [buildCabinetBuilderDeleteMeta, cabinetBuilderDraft, productionReadOnly],
-  );
-  const promptDeleteSelectedCabinetBuilderCabinet = useCallback(() => {
-    const deleteMeta = cabinetBuilderSelectedDeleteMeta;
-    if (!deleteMeta || productionReadOnly) return;
-    setCabinetBuilderDeleteTargetOverride(null);
-    if (deleteMeta.requiresConfirm) {
-      setCabinetBuilderDeleteConfirmOpen(true);
-      return;
-    }
-    deleteSelectedCabinetBuilderCabinet();
-  }, [cabinetBuilderSelectedDeleteMeta, deleteSelectedCabinetBuilderCabinet, productionReadOnly]);
-  const confirmCabinetBuilderCreate = useCallback(() => {
-    const pendingKind = cabinetBuilderPendingAttachment?.kind ?? null;
-    const pendingPartType = pendingKind === "panel" ? experimentalPanelPartType : experimentalCabinetBuilderPartType;
-    const pendingPanelBaseline =
-      pendingKind === "panel"
-        ? getCabinetBuilderPanelHeightBaseline(cabinetBuilderPendingPanelHeightMode, cabinetBuilderPendingPanelSpanMode)
-        : 0;
-    const normalizedPendingRow = createCabinetBuilderBaseRow(pendingPartType, {
-      ...pendingCabinetBuilderRow,
-      name: String(pendingCabinetBuilderRow.name || "").trim(),
-      height: numericDimensionText(String(pendingCabinetBuilderRow.height || resolvedProductionBaseCabHeight || "")),
-      width: numericDimensionText(String(pendingCabinetBuilderRow.width || "")),
-      depth: numericDimensionText(String(pendingCabinetBuilderRow.depth || "")),
-      quantity: numericOnlyText(String(pendingCabinetBuilderRow.quantity || "1")) || "1",
-      clashLeft: String(pendingCabinetBuilderRow.clashLeft || "").trim(),
-      clashRight: String(pendingCabinetBuilderRow.clashRight || "").trim(),
-      clashing: joinClashing(
-        String(pendingCabinetBuilderRow.clashLeft || "").trim(),
-        String(pendingCabinetBuilderRow.clashRight || "").trim(),
-      ),
-      information: String(pendingCabinetBuilderRow.information || ""),
-      grainValue: String(pendingCabinetBuilderRow.grainValue || ""),
-      grain: Boolean(String(pendingCabinetBuilderRow.grainValue || "").trim()),
-    });
-    if (pendingKind === "panel") {
-      const enteredHeight = Number.parseFloat(String(normalizedPendingRow.height || "").replace(/[^\d.-]/g, "")) || 0;
-      const needsExtraHeight =
-        cabinetBuilderPendingPanelSpanMode === "floorToCeiling" || cabinetBuilderPendingPanelSpanMode === "bottomToCeiling";
-      if (needsExtraHeight && enteredHeight <= pendingPanelBaseline) {
-        setCabinetBuilderPendingPanelHeightError(
-          `Increase height above ${numericDimensionText(String(pendingPanelBaseline))} for the selected panel span.`,
-        );
-        return;
-      }
-    }
-    setCabinetBuilderPendingPanelHeightError("");
-    const pendingAttachment = cabinetBuilderPendingAttachment;
-    if (pendingKind && cabinetBuilderDraft && pendingAttachment) {
-      let nextSelectedId = "";
-      setCabinetBuilderDraft((prev) => {
-        if (!prev) return prev;
-        const result = confirmCabinetBuilderPendingAttachmentInDraftModel({
-          draft: prev,
-          selectedWallId: cabinetBuilderSelectedWallId,
-          pendingKind,
-          pendingAttachment,
-          normalizedPendingRow,
-          pendingNewCabinet: cabinetBuilderPendingNewCabinet,
-          pendingPanelHeightMode: cabinetBuilderPendingPanelHeightMode,
-          pendingPanelSpanMode: cabinetBuilderPendingPanelSpanMode,
-        });
-        nextSelectedId = result.selectedId;
-        return result.draft;
-      });
-      if (nextSelectedId) {
-        setCabinetBuilderSelectedWallId(nextSelectedId);
-        setCabinetBuilderHoveredWallId(nextSelectedId);
-      }
-    } else {
-      setCabinetBuilderDraft(
-        createCabinetBuilderRootDraftModel({
-          row: normalizedPendingRow,
-          newCabinet: cabinetBuilderPendingNewCabinet,
-        }),
-      );
-      setCabinetBuilderSelectedWallId("main");
-      setCabinetBuilderHoveredWallId("");
-      setCutlistEntry((prev) => ({ ...prev, partType: experimentalCabinetBuilderPartType }));
-      setActiveCutlistPartType(experimentalCabinetBuilderPartType);
-    }
-    setCabinetBuilderPendingAttachment(null);
-    setCabinetBuilderAttachmentMenuSide(null);
-    setCabinetBuilderCreateOpen(false);
-  }, [
-    cabinetBuilderDraft,
-    cabinetBuilderPendingAttachment,
-    cabinetBuilderPendingNewCabinet,
-    cabinetBuilderPendingPanelHeightMode,
-    cabinetBuilderPendingPanelSpanMode,
-    cabinetBuilderSelectedWallId,
-    confirmCabinetBuilderPendingAttachmentInDraftModel,
-    createCabinetBuilderRootDraftModel,
-    createCabinetBuilderBaseRow,
-    experimentalCabinetBuilderPartType,
-    experimentalPanelPartType,
-    getCabinetBuilderPanelHeightBaseline,
-    pendingCabinetBuilderRow.height,
-    pendingCabinetBuilderRow.depth,
-    pendingCabinetBuilderRow.clashLeft,
-    pendingCabinetBuilderRow.clashRight,
-    pendingCabinetBuilderRow.grainValue,
-    pendingCabinetBuilderRow.information,
-    pendingCabinetBuilderRow.name,
-    pendingCabinetBuilderRow.quantity,
-    pendingCabinetBuilderRow.width,
-    resolvedProductionBaseCabHeight,
-  ]);
-  const updateCabinetBuilderRow = useCallback((updater: (prev: CabinetBuilderDraft) => CabinetBuilderDraft) => {
-    setCabinetBuilderDraft((prev) => (prev ? updater(prev) : prev));
-  }, []);
-  const addCabinetBuilderAttachment = useCallback(
-    (side: "left" | "right", kind: CabinetBuilderAttachmentKind) => {
-      let nextSelectedId = "";
-      setCabinetBuilderDraft((prev) => {
-        if (!prev) return prev;
-        const wallPieces = buildCabinetBuilderWallPieces(prev);
-        const selectedWall =
-          wallPieces.find((item) => item.id === cabinetBuilderSelectedWallId) ?? wallPieces.find((item) => item.isMain) ?? null;
-        const inheritedName = selectedWall?.row.name || prev.row.name;
-        const panelThickness = numericDimensionText(String(productionForm.existing.panelThickness || productionForm.existing.carcassThickness || "18"));
-        const nextRow =
-          kind === "panel"
-            ? createCabinetBuilderBaseRow(experimentalPanelPartType, {
-                name: cabinetBuilderSideName(side, inheritedName),
-                height: prev.row.height,
-                width: panelThickness,
-                depth: prev.row.depth,
-              })
-            : createCabinetBuilderBaseRow(experimentalCabinetBuilderPartType, {
-                name: cabinetBuilderSideName(side, inheritedName),
-                height: prev.row.height,
-                width: prev.row.width,
-                depth: prev.row.depth,
-              });
-        const result = addCabinetBuilderAttachmentInDraftModel({
-          draft: prev,
-          selectedWallId: cabinetBuilderSelectedWallId,
-          kind,
-          side,
-          row: nextRow,
-          newCabinet: false,
-          verticalAlign: "bottom",
-        });
-        nextSelectedId = result.selectedId;
-        return result.draft;
-      });
-      setCabinetBuilderAttachmentMenuSide(null);
-      if (nextSelectedId) {
-        setCabinetBuilderSelectedWallId(nextSelectedId);
-        setCabinetBuilderHoveredWallId(nextSelectedId);
-      }
-    },
-    [
-      addCabinetBuilderAttachmentInDraftModel,
-      buildCabinetBuilderWallPieces,
-      cabinetBuilderSideName,
-      cabinetBuilderSelectedWallId,
-      createCabinetBuilderBaseRow,
-      experimentalCabinetBuilderPartType,
-      experimentalPanelPartType,
-      productionForm.existing.carcassThickness,
-      productionForm.existing.panelThickness,
-    ],
-  );
-  const beginCabinetBuilderWallDrag = useCallback(
-    (
-      pieceId: string,
-      viewport: { viewWidth: number; viewHeight: number; paddingX: number; paddingY: number },
-      clientX: number,
-    ) => {
-      if (productionReadOnly) return;
-      setCabinetBuilderSelectedWallId(pieceId);
-      setCabinetBuilderHoveredWallId(pieceId);
-      setCabinetBuilderAttachmentMenuSide(null);
-      setCabinetBuilderDraggingWallId(pieceId);
-      setCabinetBuilderDragActive(false);
-      setCabinetBuilderDragViewport(viewport);
-      const rect = cabinetBuilderDrawingViewportRef.current?.getBoundingClientRect();
-      if (!rect || rect.width <= 0) {
-        cabinetBuilderDragStartPointerXRef.current = null;
-        setCabinetBuilderDragActive(false);
-        setCabinetBuilderDragPointerX(null);
-        return;
-      }
-      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      const pointerX = ratio * viewport.viewWidth;
-      cabinetBuilderDragStartPointerXRef.current = pointerX;
-      setCabinetBuilderDragPointerX(pointerX);
-    },
-    [productionReadOnly],
-  );
-  const finishCabinetBuilderWallDrag = useCallback(() => {
-    if (!cabinetBuilderDraggingWallId || !cabinetBuilderDraft || cabinetBuilderDragPointerX === null || !cabinetBuilderDragViewport) {
-      setCabinetBuilderDraggingWallId("");
-      setCabinetBuilderDragActive(false);
-      setCabinetBuilderDragPointerX(null);
-      setCabinetBuilderDragViewport(null);
-      cabinetBuilderDragStartPointerXRef.current = null;
-      return;
-    }
-    const dragStartX = cabinetBuilderDragStartPointerXRef.current;
-    if (!cabinetBuilderDragActive || (dragStartX !== null && Math.abs(cabinetBuilderDragPointerX - dragStartX) < 8)) {
-      setCabinetBuilderDraggingWallId("");
-      setCabinetBuilderDragActive(false);
-      setCabinetBuilderDragPointerX(null);
-      setCabinetBuilderDragViewport(null);
-      cabinetBuilderDragStartPointerXRef.current = null;
-      return;
-    }
-    const previewPieces = buildCabinetBuilderPreviewWallPieces(
-      cabinetBuilderDraft,
-      cabinetBuilderDraggingWallId,
-      cabinetBuilderDragPointerX,
-      cabinetBuilderDragViewport,
-    );
-    setCabinetBuilderDraft((prev) => (prev ? applyCabinetBuilderWallOrder(prev, previewPieces) : prev));
-    setCabinetBuilderDraggingWallId("");
-    setCabinetBuilderDragActive(false);
-    setCabinetBuilderDragPointerX(null);
-    setCabinetBuilderDragViewport(null);
-    cabinetBuilderDragStartPointerXRef.current = null;
-  }, [
-    applyCabinetBuilderWallOrder,
-    buildCabinetBuilderPreviewWallPieces,
-    cabinetBuilderDragActive,
-    cabinetBuilderDraft,
-    cabinetBuilderDragPointerX,
-    cabinetBuilderDragViewport,
-    cabinetBuilderDraggingWallId,
-  ]);
-  useEffect(() => {
-    if (!cabinetBuilderDraggingWallId || !cabinetBuilderDragViewport) return;
-    const handleMouseMove = (event: MouseEvent) => {
-      const rect = cabinetBuilderDrawingViewportRef.current?.getBoundingClientRect();
-      if (!rect || rect.width <= 0) return;
-      const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-      const nextPointerX = ratio * cabinetBuilderDragViewport.viewWidth;
-      const dragStartX = cabinetBuilderDragStartPointerXRef.current;
-      if (!cabinetBuilderDragActive && dragStartX !== null && Math.abs(nextPointerX - dragStartX) >= 8) {
-        setCabinetBuilderDragActive(true);
-      }
-      setCabinetBuilderDragPointerX(nextPointerX);
-    };
-    const handleMouseUp = () => {
-      finishCabinetBuilderWallDrag();
-    };
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [cabinetBuilderDragActive, cabinetBuilderDraggingWallId, cabinetBuilderDragViewport, finishCabinetBuilderWallDrag]);
-  const handleCabinetBuilderDrawingKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!cabinetBuilderDraft) return;
-      const key = event.key;
-      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(key)) return;
-      const orderedWalls = buildCabinetBuilderWallPieces(cabinetBuilderDraft).sort((a, b) => a.position - b.position);
-      if (!orderedWalls.length) return;
-      event.preventDefault();
-      setCabinetBuilderAttachmentMenuSide(null);
-      const currentIndex = Math.max(
-        0,
-        orderedWalls.findIndex((item) => item.id === cabinetBuilderSelectedWallId),
-      );
-      let nextIndex = currentIndex;
-      if (key === "ArrowLeft" || key === "ArrowUp") {
-        nextIndex = Math.max(0, currentIndex - 1);
-      } else if (key === "ArrowRight" || key === "ArrowDown") {
-        nextIndex = Math.min(orderedWalls.length - 1, currentIndex + 1);
-      } else if (key === "Home") {
-        nextIndex = 0;
-      } else if (key === "End") {
-        nextIndex = orderedWalls.length - 1;
-      }
-      const nextWall = orderedWalls[nextIndex];
-      if (!nextWall) return;
-      setCabinetBuilderSelectedWallId(nextWall.id);
-      setCabinetBuilderHoveredWallId(nextWall.id);
-    },
-    [buildCabinetBuilderWallPieces, cabinetBuilderDraft, cabinetBuilderSelectedWallId],
-  );
-  const toggleCabinetBuilderMeasureMode = useCallback(() => {
-    setCabinetBuilderMeasureMode((prev) => {
-      const next = !prev;
-      if (!next) {
-        setCabinetBuilderMeasurePoints([]);
-      }
-      return next;
-    });
-    setCabinetBuilderAttachmentMenuSide(null);
-  }, []);
-  const resetCabinetBuilderMeasure = useCallback(() => {
-    setCabinetBuilderMeasurePoints([]);
-  }, []);
-  const handleCabinetBuilderMeasureContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (!cabinetBuilderMeasureMode) return;
-    event.preventDefault();
-    const now = Date.now();
-    if (now - cabinetBuilderMeasureLastRightClickAtRef.current <= 450) {
-      cabinetBuilderMeasureLastRightClickAtRef.current = 0;
-      setCabinetBuilderMeasureMode(false);
-      setCabinetBuilderMeasurePoints([]);
-      return;
-    }
-    cabinetBuilderMeasureLastRightClickAtRef.current = now;
-    resetCabinetBuilderMeasure();
-  }, [cabinetBuilderMeasureMode, resetCabinetBuilderMeasure]);
-  const zoomCabinetBuilderDrawingAtTarget = useCallback((target: EventTarget | null, deltaY: number) => {
-    const targetIsPiece = target instanceof Element && Boolean(target.closest("[data-cabinet-piece='1']"));
-    if (!cabinetBuilderHoveredWallId && !targetIsPiece) {
-      return false;
-    }
-    const zoomDelta = deltaY < 0 ? 0.12 : -0.12;
-    setCabinetBuilderDrawingZoom((prev) => Math.max(0.55, Math.min(2.4, Number((prev + zoomDelta).toFixed(2)))));
-    return true;
-  }, [cabinetBuilderHoveredWallId]);
-  const handleCabinetBuilderDrawingWheelCapture = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    const target = event.target;
-    const targetIsPiece = target instanceof Element && Boolean(target.closest("[data-cabinet-piece='1']"));
-    if (!cabinetBuilderHoveredWallId && !targetIsPiece) return;
-    event.preventDefault();
-    event.stopPropagation();
-  }, [cabinetBuilderHoveredWallId]);
-  const getCabinetBuilderSnappedMeasurePoint = useCallback(
-    (
-      rawPoint: { x: number; y: number },
-      pieceLayouts: CabinetBuilderDisplayPieceLayout[],
-      snapThreshold: number,
-      axisLock?: { axis: "horizontal" | "vertical"; anchor: { x: number; y: number } },
-    ): { x: number; y: number } | null => {
-      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-      const candidates = pieceLayouts.flatMap((item) => {
-        const midX = item.x + item.width / 2;
-        const midY = item.y + item.height / 2;
-        if (axisLock?.axis === "horizontal") {
-          const y = axisLock.anchor.y;
-          if (y < item.y || y > item.y + item.height) return [];
-          return [
-            { x: item.x, y },
-            { x: item.x + item.width, y },
-          ];
-        }
-        if (axisLock?.axis === "vertical") {
-          const x = axisLock.anchor.x;
-          if (x < item.x || x > item.x + item.width) return [];
-          return [
-            { x, y: item.y },
-            { x, y: item.y + item.height },
-          ];
-        }
-        return [
-          { x: item.x, y: item.y },
-          { x: item.x + item.width, y: item.y },
-          { x: item.x, y: item.y + item.height },
-          { x: item.x + item.width, y: item.y + item.height },
-          { x: midX, y: item.y },
-          { x: midX, y: item.y + item.height },
-          { x: item.x, y: midY },
-          { x: item.x + item.width, y: midY },
-          { x: clamp(rawPoint.x, item.x, item.x + item.width), y: item.y },
-          { x: clamp(rawPoint.x, item.x, item.x + item.width), y: item.y + item.height },
-          { x: item.x, y: clamp(rawPoint.y, item.y, item.y + item.height) },
-          { x: item.x + item.width, y: clamp(rawPoint.y, item.y, item.y + item.height) },
-        ];
-      });
-      let bestPoint: { x: number; y: number } | null = null;
-      let bestDistance = snapThreshold;
-      candidates.forEach((candidate) => {
-        const distance = Math.hypot(candidate.x - rawPoint.x, candidate.y - rawPoint.y);
-        if (distance <= bestDistance) {
-          bestPoint = candidate;
-          bestDistance = distance;
-        }
-      });
-      return bestPoint;
-    },
-    [],
-  );
-  const recordCabinetBuilderMeasurePoint = useCallback(
-    (
-      clientX: number,
-      clientY: number,
-      viewWidth: number,
-      viewHeight: number,
-      pieceLayouts: CabinetBuilderDisplayPieceLayout[],
-    ) => {
-      const rect = cabinetBuilderDrawingViewportRef.current?.getBoundingClientRect();
-      if (!rect || rect.width <= 0 || rect.height <= 0) return;
-      const rawPointBase = {
-        x: Math.max(0, Math.min(viewWidth, ((clientX - rect.left) / rect.width) * viewWidth)),
-        y: Math.max(0, Math.min(viewHeight, ((clientY - rect.top) / rect.height) * viewHeight)),
-      };
-      const viewUnitsPerPixel = ((viewWidth / rect.width) + (viewHeight / rect.height)) / 2;
-      setCabinetBuilderMeasurePoints((prev) => {
-        const firstPoint = prev[0] ?? null;
-        const axisLock =
-          firstPoint && prev.length === 1
-            ? Math.abs(rawPointBase.x - firstPoint.x) >= Math.abs(rawPointBase.y - firstPoint.y)
-              ? { axis: "horizontal" as const, anchor: firstPoint }
-              : { axis: "vertical" as const, anchor: firstPoint }
-            : undefined;
-        const rawPoint = axisLock
-          ? axisLock.axis === "horizontal"
-            ? { x: rawPointBase.x, y: axisLock.anchor.y }
-            : { x: axisLock.anchor.x, y: rawPointBase.y }
-          : rawPointBase;
-        const snappedPoint = getCabinetBuilderSnappedMeasurePoint(rawPoint, pieceLayouts, 14 * viewUnitsPerPixel, axisLock);
-        if (!snappedPoint) return prev;
-        return prev.length >= 2 ? [snappedPoint] : [...prev, snappedPoint];
-      });
-    },
-    [getCabinetBuilderSnappedMeasurePoint],
-  );
-  useEffect(() => {
-    if (cabinetBuilderDraft) return;
-    setCabinetBuilderMeasureMode(false);
-    setCabinetBuilderMeasurePoints([]);
-    setCabinetBuilderDrawingZoom(1);
-  }, [cabinetBuilderDraft]);
-  useEffect(() => {
-    const node = cabinetBuilderDrawingViewportRef.current;
-    if (!node) return;
-    const handleWheel = (event: WheelEvent) => {
-      if (!zoomCabinetBuilderDrawingAtTarget(event.target, event.deltaY)) return;
-      event.preventDefault();
-      event.stopPropagation();
-    };
-    node.addEventListener("wheel", handleWheel, { passive: false });
-    return () => {
-      node.removeEventListener("wheel", handleWheel);
-    };
-  }, [cabinetBuilderDraft, zoomCabinetBuilderDrawingAtTarget]);
-  const addCabinetBuilderChildRow = useCallback(
-    (partType: string) => {
-      let nextChildId = "";
-      setCabinetBuilderDraft((prev) => {
-        if (!prev) return prev;
-        const result = addCabinetBuilderChildRowInDraftModel({
-          draft: prev,
-          selectedWallId: cabinetBuilderSelectedWallId,
-          partType,
-          carcassThicknessText: String(productionForm.existing.carcassThickness || ""),
-          panelThicknessText: String(productionForm.existing.panelThickness || ""),
-          boardThicknessFor,
-          isExtraPartType,
-          isDoorPartType,
-          isDrawerPartType,
-          isPanelPartType,
-          createCabinetBuilderBaseRow,
-          createConfiguredCabinetFrontRow,
-          numericDimensionText,
-        });
-        nextChildId = result.childId;
-        return result.draft;
-      });
-      return nextChildId;
-    },
-    [
-      cabinetBuilderSelectedWallId,
-      createCabinetBuilderBaseRow,
-      createConfiguredCabinetFrontRow,
-      boardThicknessFor,
-      isDoorPartType,
-      isDrawerPartType,
-      isPanelPartType,
-      numericDimensionText,
-      productionForm.existing.carcassThickness,
-      productionForm.existing.panelThickness,
-    ],
-  );
-  const addCabinetBuilderChildRowAndOpenTab = useCallback(
-    (partType: string) => {
-      const nextChildId = addCabinetBuilderChildRow(partType);
-      if (!nextChildId) return "";
-      setCabinetBuilderEditingAttachmentId("");
-      setCabinetBuilderEditOpen(true);
-      setCabinetBuilderEditTab(buildCabinetBuilderChildTabId(partType));
-      return nextChildId;
-    },
-    [addCabinetBuilderChildRow, buildCabinetBuilderChildTabId],
   );
   const buildEffectiveProductionCutlistRow = (
     source: Partial<CutlistRow>,
@@ -23734,110 +18556,6 @@ export default function ProjectDetailsPage() {
     () => buildEffectiveProductionCutlistRow(cutlistEntry, cutlistEntryRoom || "Project Cutlist", "single"),
     [buildEffectiveProductionCutlistRow, cutlistEntry, cutlistEntryRoom],
   );
-  const buildCabinetBuilderRowsForAdd = useCallback(() => {
-    if (!cabinetBuilderDraft) {
-      return [] as Array<{
-        ownerId: string;
-        ownerName: string;
-        rows: Array<{ row: CutlistRow; source: CabinetBuilderAttachedDisplayRowSource }>;
-      }>;
-    }
-    const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
-    const cabinetPieces = wallPieces.filter((piece) => piece.isMain || piece.kind === "cabinet");
-    return cabinetPieces
-      .map((piece) => {
-        const ownerName = String(piece.row.name || "").trim() || "Cabinet";
-        const attachmentLike: CabinetBuilderAttachmentDraft = {
-          id: piece.id,
-          side: "left",
-          position: piece.position,
-          parentWallId: piece.parentWallId,
-          kind: piece.isMain ? "cabinet" : (piece.kind as CabinetBuilderAttachmentKind),
-          newCabinet: piece.newCabinet,
-          row: piece.row,
-          doorsRow: piece.doorsRow,
-          drawersRow: piece.drawersRow,
-          childRows: piece.childRows,
-        };
-        const displayRows: CabinetBuilderAttachedDisplayRow[] = [
-          ...getCabinetBuilderAttachmentPartRows(attachmentLike),
-          ...cabinetBuilderDraft.attachments
-            .filter((attachment) => attachment.kind === "panel" && (attachment.parentWallId || "main") === piece.id)
-            .map((panelAttachment) => ({
-              row: { ...panelAttachment.row, name: panelAttachment.row.name || ownerName },
-              source: { kind: "panelSelf", ownerId: panelAttachment.id } as CabinetBuilderAttachedDisplayRowSource,
-            })),
-        ];
-        return {
-          ownerId: piece.id,
-          ownerName,
-          rows: displayRows.map((displayRow) => ({
-            source: displayRow.source,
-            row: buildEffectiveProductionCutlistRow(
-              { ...displayRow.row, parentName: ownerName },
-              cutlistEntryRoom || "Project Cutlist",
-            ),
-          })),
-        };
-      })
-      .filter((group) => group.rows.length > 0);
-  }, [
-    buildCabinetBuilderWallPieces,
-    buildEffectiveProductionCutlistRow,
-    cabinetBuilderDraft,
-    cutlistEntryRoom,
-    getCabinetBuilderAttachmentPartRows,
-  ]);
-  const getCabinetBuilderDrawingDisplayRows = useCallback((draft: CabinetBuilderDraft) => {
-    const wallPieces = buildCabinetBuilderWallPieces(draft);
-    const cabinetPieces = wallPieces.filter((piece) => piece.isMain || piece.kind === "cabinet");
-    return cabinetPieces.flatMap((piece) => {
-      const ownerName = String(piece.row.name || "").trim() || "Cabinet";
-      const attachmentLike: CabinetBuilderAttachmentDraft = {
-        id: piece.id,
-        side: "left",
-        position: piece.position,
-        parentWallId: piece.parentWallId,
-        kind: piece.isMain ? "cabinet" : (piece.kind as CabinetBuilderAttachmentKind),
-        newCabinet: piece.newCabinet,
-        row: piece.row,
-        doorsRow: piece.doorsRow,
-        drawersRow: piece.drawersRow,
-        childRows: piece.childRows,
-      };
-      return [
-        ...getCabinetBuilderAttachmentPartRows(attachmentLike),
-        ...draft.attachments
-          .filter((attachment) => attachment.kind === "panel" && (attachment.parentWallId || "main") === piece.id)
-          .map((panelAttachment) => ({
-            row: { ...panelAttachment.row, name: panelAttachment.row.name || ownerName },
-            source: { kind: "panelSelf", ownerId: panelAttachment.id } as CabinetBuilderAttachedDisplayRowSource,
-          })),
-      ];
-    });
-  }, [buildCabinetBuilderWallPieces, getCabinetBuilderAttachmentPartRows]);
-  const getCabinetBuilderDrawingPieceCount = useCallback((draft: CabinetBuilderDraft) => {
-    return getCabinetBuilderDrawingDisplayRows(draft).reduce((total, displayRow) => {
-      const quantityValue = Number.parseFloat(String(displayRow.row.quantity ?? "").replace(/[^\d.-]/g, ""));
-      return total + (Number.isFinite(quantityValue) && quantityValue > 0 ? quantityValue : 1);
-    }, 0);
-  }, [getCabinetBuilderDrawingDisplayRows]);
-  const buildCabinetBuilderRowsForSave = useCallback(() => {
-    if (!cabinetBuilderDraft) return [] as CutlistRow[];
-    return buildCabinetBuilderRowsForAdd().flatMap((group) =>
-      group.rows.map(({ row }) => ({
-        ...row,
-        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        parentName: String(row.parentName || group.ownerName).trim() || group.ownerName,
-        cabinetBuilderRowKind: undefined,
-        cabinetBuilderContainerId: undefined,
-        cabinetBuilderData: null,
-      })),
-    );
-  }, [
-    buildCabinetBuilderRowsForAdd,
-    cabinetBuilderDraft,
-  ]);
 
   useEffect(() => {
     if (!isDoorPartType(cutlistEntry.partType)) return;
@@ -25926,19 +20644,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const isSalesItemsFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "items";
   const isSalesQuoteFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "quote";
   const isSalesSummaryFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "summary";
+  const isSalesSpecificationsFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "specifications";
   const isNestingFullscreen =
     resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
-  const isDrawingsFullscreen =
-    resolvedTab === "production" && productionAccess.view && productionNav === "drawings";
   const isProductionSectionFullscreen =
-    isCutlistFullscreen || isCncFullscreen || isOrderFullscreen || isNestingFullscreen || isDrawingsFullscreen;
+    isCutlistFullscreen || isCncFullscreen || isOrderFullscreen || isNestingFullscreen;
   useEffect(() => {
     setChromeHidden(
       isProductionSectionFullscreen ||
         isSalesInitialFullscreen ||
         isSalesItemsFullscreen ||
         isSalesQuoteFullscreen ||
-        isSalesSummaryFullscreen,
+        isSalesSummaryFullscreen ||
+        isSalesSpecificationsFullscreen,
     );
     return () => setChromeHidden(false);
   }, [
@@ -25947,6 +20665,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     isSalesItemsFullscreen,
     isSalesQuoteFullscreen,
     isSalesSummaryFullscreen,
+    isSalesSpecificationsFullscreen,
     setChromeHidden,
   ]);
   const addRoomModalPortal =
@@ -26475,6 +21194,257 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     } finally {
       setIsGeneratingSalesSummaryPdf(false);
     }
+  };
+  useEffect(() => {
+    const isOnSpecsPage = resolvedTab === "sales" && salesAccess.view && salesNav === "specifications";
+    if (!isOnSpecsPage) return;
+    const existing = normalizeSpecsGrid((salesPayload as Record<string, unknown>).specificationsGrid);
+    if (existing) {
+      setSpecsSheetGrid(existing);
+      return;
+    }
+    if (specsSheetInitStartedRef.current) return;
+    const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
+    if (!template) return;
+    specsSheetInitStartedRef.current = true;
+    const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
+    setSpecsSheetGrid(resolved);
+    void persistSalesPatch({ ...salesPayload, specificationsGrid: resolved }).then((ok) => {
+      if (!ok) {
+        console.error("Specs sheet initial clone failed to save");
+        setSpecsSheetSaveError("initial-clone-save-failed");
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedTab, salesAccess.view, salesNav, salesPayload, companyDoc, effectiveQuoteTemplateReplacements]);
+  const specsSheetSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onSpecsSheetChange = (data: SpecsGrid) => {
+    setSpecsSheetGrid(data);
+    // persistSalesPatch re-writes the entire sales object (rooms, quote extras, every quote
+    // snapshot) on every call, not just this one field — the same "large combined payload, written
+    // too often" pattern that exhausted Firestore's write queue for the company template. A longer
+    // debounce here keeps writes infrequent regardless of how continuously someone edits the sheet.
+    if (specsSheetSaveTimeoutRef.current) clearTimeout(specsSheetSaveTimeoutRef.current);
+    specsSheetSaveTimeoutRef.current = setTimeout(() => {
+      void persistSalesPatch({ ...salesPayload, specificationsGrid: data }).then((ok) => {
+        if (!ok) {
+          console.error("Specs sheet save failed");
+          setSpecsSheetSaveError("save-failed");
+        } else {
+          setSpecsSheetSaveError("");
+        }
+      });
+    }, 2000);
+  };
+  // Explicit, deliberate reset (confirmed via its own popup) — this project's specs sheet otherwise
+  // only ever clones from the company template ONCE, on its very first visit, then stays permanently
+  // independent by design. That leaves no recourse if the very first clone happened to catch a bad or
+  // stale company template (e.g. one whose save was silently failing at the time) — this gives a way
+  // to force a brand new clone from whatever the company template currently is, on demand.
+  const resetSpecsSheetToTemplate = async () => {
+    const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
+    if (!template) return;
+    if (specsSheetSaveTimeoutRef.current) clearTimeout(specsSheetSaveTimeoutRef.current);
+    const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
+    setSpecsSheetGrid(resolved);
+    setSpecsSheetEditorKey((prev) => prev + 1);
+    setIsSpecsSheetResetConfirmOpen(false);
+    const ok = await persistSalesPatch({ ...salesPayload, specificationsGrid: resolved });
+    if (!ok) {
+      console.error("Specs sheet reset failed to save");
+      setSpecsSheetSaveError("reset-save-failed");
+    } else {
+      setSpecsSheetSaveError("");
+    }
+  };
+  // Reads the grid's own columnWidths/row heights/cell text/style directly — no style-pool
+  // indirection, no hidden rows/columns, no Excel-style "text spills into the next empty cell"
+  // simulation to fight (cells just wrap normally like a plain table). Much simpler than the old
+  // Univer-based version, since this data model is entirely ours end-to-end.
+  const buildSpecsGridPdfBlob = async (rawGrid: SpecsGrid): Promise<Blob | null> => {
+    // Older projects (and anything a company's 100-row default template still carries) can have a
+    // stored sheet full of unused blank rows from before empty rows were pruned at clone time — strip
+    // them here too, right before export, so print/PDF output never regresses to spilling those rows
+    // across several mostly-blank extra pages, regardless of how the on-screen grid got that way.
+    const grid = pruneEmptySpecsRows(rawGrid);
+    if (grid.rows.length === 0 || grid.columnWidths.length === 0) return null;
+
+    // Same defensive sanitizing as the editor's own render path (specs-grid-editor.tsx) — a single
+    // bad stored width/height would otherwise poison the whole PDF's layout math.
+    const columnWidths = grid.columnWidths.map((w) => (typeof w === "number" && Number.isFinite(w) && w > 0 ? w : DEFAULT_COL_WIDTH_PX));
+    const rowHeights = grid.rows.map((r) => (typeof r.heightPx === "number" && Number.isFinite(r.heightPx) && r.heightPx > 0 ? r.heightPx : DEFAULT_ROW_HEIGHT_PX));
+
+    // CSS reference pixel (96 DPI) -> PDF point (72 DPI) — the exact ratio a browser uses when it
+    // prints px-sized content, so a column/row converted this way lands at the same physical size
+    // on paper as it renders on screen, instead of stretching to always fill the full page width.
+    const PX_TO_PT = 0.75;
+    // jspdf-autotable's own approximate ratio between a cell's font size and the line-height it
+    // actually needs (its internal FONT_ROW_RATIO) — used below to size text down to fit a short
+    // row's own padding-adjusted space, rather than letting autoTable's default floor inflate it.
+    const SPECS_PDF_LINE_HEIGHT_FACTOR = 1.15;
+    const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: grid.pageSize.toLowerCase() });
+    const pageWidthPt = doc.internal.pageSize.getWidth();
+    const marginPt = 24;
+    const usableWidthPt = pageWidthPt - marginPt * 2;
+    const totalWidthPt = columnWidths.reduce((sum, w) => sum + w, 0) * PX_TO_PT || 1;
+    // Only ever shrink (never stretch) so a narrow grid prints at its true designed size instead of
+    // being blown up to fill the page — the same factor applies to width/height/font/border/padding
+    // so a cell's shape stays faithful to what it looked like on screen.
+    const scale = totalWidthPt > usableWidthPt ? usableWidthPt / totalWidthPt : 1;
+
+    // Cell images are stored as plain (small) URLs, not embedded data — resolve every distinct one
+    // to a data URL up front (jsPDF's addImage/getImageProperties need real image data, not a bare
+    // URL) since `didDrawCell` below runs synchronously during the table's render pass.
+    const distinctImageUrls = Array.from(
+      new Set(grid.rows.flatMap((row) => row.cells.flatMap((cell) => (cell?.imageUrl ? [cell.imageUrl] : [])))),
+    );
+    const imageDataUrlEntries = await Promise.all(
+      distinctImageUrls.map(async (url) => [url, await resolveProjectImageDataUrl(url)] as const),
+    );
+    const imageDataUrlCache: Record<string, string> = Object.fromEntries(imageDataUrlEntries);
+
+    type AutoTableCell = {
+      content: string;
+      colSpan?: number;
+      rowSpan?: number;
+      styles?: Record<string, unknown>;
+      imageUrl?: string;
+      imageAlign?: SpecsCellStyle["align"];
+      imageVerticalAlign?: SpecsCellStyle["verticalAlign"];
+    };
+    // Expanded once here (not per-cell) — see getExpandedRowGroups' own comment: a group's saved
+    // bounds can cut through a merged cell it was only meant to partially border, so every read of a
+    // group's bounds goes through this correction rather than the raw grid.groups list. A hidden
+    // group's rows are skipped from the output entirely (not just blanked) — matching the editor's
+    // own "completely hides" behavior for a project's own copy of the sheet.
+    const expandedGroups = getExpandedRowGroups(grid);
+    const hiddenRowIndexes = new Set<number>();
+    for (const g of expandedGroups) {
+      if (!g.hidden) continue;
+      for (let r = g.startRow; r <= g.endRow; r += 1) hiddenRowIndexes.add(r);
+    }
+    const body: AutoTableCell[][] = [];
+    for (let r = 0; r < grid.rows.length; r += 1) {
+      if (hiddenRowIndexes.has(r)) continue;
+      const row = grid.rows[r];
+      const rowArr: AutoTableCell[] = [];
+      for (let c = 0; c < grid.columnWidths.length; c += 1) {
+        const cell = row.cells[c];
+        if (cell === null) continue;
+        const { rowSpan, colSpan } = getCellSpan(cell);
+        const style = cell.style ?? {};
+        // A rowSpan cell needs the SUM of every row it spans for its minimum height, or a merged
+        // cell prints far shorter than it actually looks in the editor.
+        let spannedHeightPx = 0;
+        for (let idx = r; idx < r + rowSpan && idx < grid.rows.length; idx += 1) {
+          spannedHeightPx += rowHeights[idx];
+        }
+        const targetHeightPt = spannedHeightPx * PX_TO_PT * scale;
+        // Falls back to the editor's own on-screen default cell font size (converted the same
+        // px->pt way as an explicit style.fontSize would be), not an unrelated fixed pt value —
+        // otherwise every cell that never had its font size manually changed prints at a different
+        // size than what the Specifications window actually shows for it.
+        const requestedFontSizePt = (style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX) * PX_TO_PT * scale;
+        const basePaddingPt = 4 * scale;
+        // jspdf-autotable's own cellPadding/fontSize table defaults are a FLOOR on a row's height,
+        // not a cap — a compact row that renders fine on screen (where the editor genuinely clips
+        // content to the configured height, per the earlier row-height fix) would otherwise get
+        // forced taller here to fit the default padding + font's line height, printing noticeably
+        // larger than the on-screen preview. Shrink padding first (down to a small minimum), then
+        // font size, so short rows print at roughly their real size instead of inflating — the PDF
+        // equivalent of the editor's own "clip, don't grow" behavior.
+        const cellPaddingPt = Math.max(0.5, Math.min(basePaddingPt, targetHeightPt * 0.25));
+        const availableForTextPt = Math.max(1, targetHeightPt - cellPaddingPt * 2);
+        const fontSizePt = cell.imageUrl ? requestedFontSizePt : Math.min(requestedFontSizePt, availableForTextPt / SPECS_PDF_LINE_HEIGHT_FACTOR);
+        const cellStyles: Record<string, unknown> = {
+          fontSize: fontSizePt,
+          cellPadding: cellPaddingPt,
+          halign: style.align ?? "left",
+          valign: style.verticalAlign ?? "top",
+        };
+        if (style.bold) cellStyles.fontStyle = "bold";
+        if (style.bgColor) cellStyles.fillColor = style.bgColor;
+        if (style.textColor) cellStyles.textColor = style.textColor;
+        cellStyles.minCellHeight = targetHeightPt;
+        const borderWidthPt = (style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX) * PX_TO_PT * scale;
+        cellStyles.lineWidth = {
+          top: style.borderTop ? borderWidthPt : 0,
+          right: style.borderRight ? borderWidthPt : 0,
+          bottom: style.borderBottom ? borderWidthPt : 0,
+          left: style.borderLeft ? borderWidthPt : 0,
+        };
+        if (style.borderColor && (style.borderTop || style.borderRight || style.borderBottom || style.borderLeft)) {
+          cellStyles.lineColor = style.borderColor;
+        }
+        const imageUrl = cell.imageUrl;
+        rowArr.push({
+          // An image replaces the cell's visible text entirely (matching the editor), drawn on top
+          // in didDrawCell below once autoTable has placed this cell's box.
+          content: imageUrl ? "" : cell.text,
+          ...(imageUrl ? { imageUrl, imageAlign: style.align, imageVerticalAlign: style.verticalAlign } : {}),
+          ...(rowSpan > 1 ? { rowSpan } : {}),
+          ...(colSpan > 1 ? { colSpan } : {}),
+          styles: cellStyles,
+        });
+      }
+      body.push(rowArr);
+    }
+
+    const columnStyles: Record<number, { cellWidth: number }> = {};
+    columnWidths.forEach((w, idx) => {
+      columnStyles[idx] = { cellWidth: w * PX_TO_PT * scale };
+    });
+
+    autoTable(doc, {
+      body,
+      theme: "plain",
+      startY: marginPt,
+      margin: { left: marginPt, right: marginPt, top: marginPt, bottom: marginPt },
+      styles: { fontSize: DEFAULT_CELL_FONT_SIZE_PX * PX_TO_PT * scale, cellPadding: 4 * scale, overflow: "linebreak", valign: "middle", lineWidth: 0 },
+      columnStyles,
+      didDrawCell: (data) => {
+        const raw = data.cell.raw as AutoTableCell | undefined;
+        const imageUrl = raw?.imageUrl;
+        const dataUrl = imageUrl ? imageDataUrlCache[imageUrl] : undefined;
+        if (!dataUrl || !dataUrl.startsWith("data:")) return;
+        try {
+          const props = doc.getImageProperties(dataUrl);
+          const fitScale = Math.min(data.cell.width / props.width, data.cell.height / props.height);
+          const drawWidth = props.width * fitScale;
+          const drawHeight = props.height * fitScale;
+          // Matches imageObjectPositionFor's on-screen defaults: unset -> centered, since that reads
+          // best for a logo placed in a cell larger than it needs.
+          const extraX = data.cell.width - drawWidth;
+          const extraY = data.cell.height - drawHeight;
+          const x = data.cell.x + (raw?.imageAlign === "left" ? 0 : raw?.imageAlign === "right" ? extraX : extraX / 2);
+          const y = data.cell.y + (raw?.imageVerticalAlign === "top" ? 0 : raw?.imageVerticalAlign === "bottom" ? extraY : extraY / 2);
+          doc.addImage(dataUrl, props.fileType, x, y, drawWidth, drawHeight);
+        } catch {
+          // Malformed/unsupported image data — leave the cell blank rather than failing the export.
+        }
+      },
+    });
+
+    return doc.output("blob");
+  };
+  const onPrintSpecificationsSheet = async () => {
+    if (!specsSheetGrid) return;
+    const blob = await buildSpecsGridPdfBlob(specsSheetGrid);
+    if (blob) openPdfBlobInPrintWindow(blob);
+  };
+  const onDownloadSpecificationsSheetPdf = async () => {
+    if (!specsSheetGrid) return;
+    const blob = await buildSpecsGridPdfBlob(specsSheetGrid);
+    if (!blob) return;
+    const safeProject = (project?.name || "specifications").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_").slice(0, 64);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safeProject}_specifications.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 2500);
   };
   const projectLoadingAppShellTabRegistration = useMemo(() => {
     const projectId = String(params.projectId || "").trim();
@@ -27560,7 +22530,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     disabled={isSavingQuoteProjectText}
                     onClick={() => {
-                      void leaveQuoteWindow("specifications");
+                      void leaveQuoteWindow("overview");
                     }}
                     className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
                     style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
@@ -28554,7 +23524,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <DragGhostLayer controller={salesItemsDragGhost} />
     </>
   );
-  const salesSpecificationsContent = (
+  const salesOverviewContent = (
     <>
       <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
         <section
@@ -29344,7 +24314,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   };
 
   const saveAndBackFromInitialMeasure = async () => {
-    setSalesNav("specifications");
+    setSalesNav("overview");
     if (initialEditingCell) {
       void commitInitialCellEdit().then(() => {
         setLockMessage("");
@@ -32060,143 +27030,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       : null;
 
-  if (isDrawingsFullscreen) {
-    const drawingDrafts = [
-      ...(cabinetBuilderDraft &&
-      cabinetBuilderWallCreated &&
-      String(cabinetBuilderWallName || "").trim() &&
-      !activeCabinetBuilderSavedDraftId
-        ? [
-            {
-              id: "__current__",
-              name: String(cabinetBuilderWallName || "").trim(),
-              room: String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist",
-              updatedAt: "",
-              draft: cabinetBuilderDraft,
-              isCurrent: true,
-            },
-          ]
-        : []),
-      ...savedCabinetBuilderDrafts.map((draft) => ({ ...draft, isCurrent: false })),
-    ];
-    return (
-      <ProtectedRoute>
-        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
-            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
-              <ClipboardList size={14} />
-              <span>Drawings</span>
-              <span style={{ color: projectPalette.textMuted }}>|</span>
-              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setProductionNav("cutlist");
-                  setCutlistEntryMode("wallBuilder");
-                }}
-                className="inline-flex h-9 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
-              >
-                <Plus size={13} />
-                New Drawing
-              </button>
-              <button
-                type="button"
-                onClick={() => setProductionNav("overview")}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D5DEE8] bg-white text-[#334155] hover:bg-[#F8FAFC]"
-                aria-label="Back"
-                title="Back"
-              >
-                <img src="/angle-left.png" alt="Back" className="h-4 w-4 object-contain" />
-              </button>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4">
-            {!drawingDrafts.length ? (
-              <div className="rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
-                <p className="text-[13px] font-semibold" style={{ color: projectPalette.textSoft }}>No wall drawings saved yet.</p>
-                <p className="mt-1 text-[12px]" style={{ color: projectPalette.textMuted }}>Create a wall in Wall Builder and it will appear here.</p>
-              </div>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {drawingDrafts.map((savedDraft) => {
-                  const wallPieces = buildCabinetBuilderWallPieces(savedDraft.draft);
-                  const drawingPieceCount = getCabinetBuilderDrawingPieceCount(savedDraft.draft);
-                  const updatedLabel =
-                    savedDraft.updatedAt && !Number.isNaN(new Date(savedDraft.updatedAt).getTime())
-                      ? new Date(savedDraft.updatedAt).toLocaleString()
-                      : "";
-                  return (
-                    <div
-                      key={`production_drawing_fullscreen_${savedDraft.id}`}
-                      className="overflow-hidden rounded-[18px] border"
-                      style={{
-                        borderColor: "var(--glass-border)",
-                        backgroundColor: "var(--glass-bg-strong)",
-                        backdropFilter: "blur(20px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                        boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                      }}
-                    >
-                      <div className="border-b px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-[14px] font-bold" style={{ color: "var(--text-main)" }}>{savedDraft.name || "Wall"}</p>
-                            <p className="truncate text-[11px] font-medium" style={{ color: projectPalette.textMuted }}>{savedDraft.room || "Project Cutlist"}</p>
-                            {savedDraft.isCurrent ? (
-                              <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.8px] text-[#1D4ED8]">Current Draft</p>
-                            ) : updatedLabel ? (
-                              <p className="mt-1 text-[10px]" style={{ color: projectPalette.textMuted }}>Updated {updatedLabel}</p>
-                            ) : null}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCabinetBuilderDrawingViewer({
-                                id: savedDraft.id,
-                                name: savedDraft.name,
-                                room: savedDraft.room,
-                                updatedAt: savedDraft.updatedAt,
-                                draft: JSON.parse(JSON.stringify(savedDraft.draft)) as CabinetBuilderDraft,
-                                isCurrent: savedDraft.isCurrent,
-                              });
-                            }}
-                            className="inline-flex h-8 shrink-0 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
-                          >
-                            <Pencil size={12} />
-                            Open
-                          </button>
-                        </div>
-                      </div>
-                      <div className="px-3 py-3">
-                        <div className="overflow-hidden rounded-[12px] border" style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}>
-                          {renderCabinetBuilderWallDrawingPreview({
-                            draft: savedDraft.draft,
-                            viewWidth: 420,
-                            viewHeight: 220,
-                            paddingX: 20,
-                            paddingY: 18,
-                            className: "block h-auto w-full bg-white",
-                            showGapGuides: false,
-                          })}
-                        </div>
-                        <div className="mt-3 flex items-center justify-between text-[11px]" style={{ color: projectPalette.textMuted }}>
-                          <span>{drawingPieceCount} pieces</span>
-                          <span>{wallPieces.filter((item) => item.kind === "panel").length} panels</span>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </ProtectedRoute>
-    );
-  }
-
   if (isOrderFullscreen) {
     return (
       <ProtectedRoute>
@@ -32958,7 +27791,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     />
                                   </div>
                                   {hasShelfQuantity(draft.fixedShelf) && (
-                                    <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                    <div className="mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                       <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
                                         <DrillingArrowIcon color={draftTextColor} />
                                         Drilling
@@ -32993,7 +27826,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     />
                                   </div>
                                   {hasShelfQuantity(draft.adjustableShelf) && (
-                                    <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                    <div className="mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                       <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
                                         <DrillingArrowIcon color={draftTextColor} />
                                         Drilling
@@ -33504,24 +28337,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return (
         <ProtectedRoute>
           <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-            <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-3" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
-              <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+            <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-3">
+              <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Scissors size={14} />
                 <span>Cutlist</span>
-                <span style={{ color: projectPalette.textMuted }}>|</span>
-                <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
+                <span style={{ color: "var(--text-muted)" }}>|</span>
+                <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
               </div>
               <button
                 type="button"
                 onClick={() => void onSaveAndBackFromCutlist()}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D5DEE8] bg-white text-[#334155] hover:bg-[#F8FAFC]"
+                className="relative z-[1] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border hover:brightness-95"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                 aria-label="Save and back"
                 title="Save and back"
               >
                 <img src="/angle-left.png" alt="Back" className="h-4 w-4 object-contain" />
               </button>
             </div>
-            <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+            <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
               <div
                 ref={cutlistActivityScrollRef}
                 className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -33654,7 +28488,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             type="button"
                             onClick={() => removeCutlistActivity(entry.id)}
                             data-cutlist-activity-control="true"
-                            className="inline-flex h-[18px] items-center rounded-[8px] border border-[#F2A7A7] bg-[#FFECEC] px-2 text-[10px] font-extrabold text-[#991B1B] hover:bg-[#FFDCDC]"
+                            className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[10px] font-extrabold hover:brightness-95" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
                             {entry.action || "Clear"}
                           </button>
@@ -33665,7 +28499,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
             </div>
-                    <div className="shrink-0 overflow-hidden border-b" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
+                    <div className="shrink-0 overflow-hidden border-b" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
               <div
                 className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
                 onScroll={(e) => {
@@ -33691,8 +28525,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         }}
                         className="min-w-full snap-start px-4 py-3 text-center text-[17px] font-bold"
                         style={{
-                          backgroundColor: active ? projectPalette.panelBg : productionContainerHeaderBg,
-                          color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : projectPalette.textSoft,
+                          backgroundColor: active ? "var(--panel-bg)" : productionContainerHeaderBg,
+                          color: active ? "var(--brand-strong)" : "var(--text-main)",
                         }}
                       >
                         {roomTab.label}
@@ -33707,11 +28541,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 {cutlistRoomFilter !== "Project Cutlist" && (
                   <section
                     className="-mt-3 overflow-visible rounded-[14px] border px-3 pb-3 pt-0"
-                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
                   >
-                    {renderCutlistEntryModeTabs("-mx-3 rounded-b-none border-x-0 border-t-0")}
                     <div className="space-y-3 pt-3">
-                      {!cabinetBuilderEntryActive ? (
+                      {(
                         <div className="flex flex-wrap items-center gap-2 pb-3">
                           {partTypeOptions.map((v) => {
                             const color = partTypeColors[v] ?? "#CBD5E1";
@@ -33720,24 +28553,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`cutlist_fullscreen_mobile_entry_${v}`}
                                 type="button"
                                 disabled={productionReadOnly}
-                                onClick={() => addDraftRowForPartType(v)}
+                                onClick={(e) => {
+                                  if (isDoorPartType(v)) {
+                                    setDrawerBankCountDraft("3");
+                                    setDoorDrawerPickerStep("choose");
+                                    setDoorDrawerPickerSuggestedMode("");
+                                    setDoorDrawerPickerMainRowId("");
+                                    setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
+                                    setDoorDrawerPickerPartType(v);
+                                    return;
+                                  }
+                                  addDraftRowForPartType(v);
+                                }}
                                 style={{
                                   backgroundColor: color,
                                   borderColor: color,
                                   color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
                                 }}
-                                className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                                className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
                               >
                                 {v}
                               </button>
                             );
                           })}
                         </div>
-                      ) : null}
+                      )}
 
-                      {cabinetBuilderEntryActive ? (
-                        renderCompactCabinetBuilderEntry()
-                      ) : (
+                      {(
                       <div className="space-y-0 isolate">
                         {visibleCutlistDraftRows.map((draft) => {
                           const draftIndex = cutlistDraftRows.findIndex((row) => row.id === draft.id);
@@ -33763,6 +28605,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             normalizeDoorHingeValues(draft.hingesUp).length > 0 ||
                             normalizeDoorHingeValues(draft.hingesDown).length > 0;
                           const draftDoorHingesEnabled = cutlistCompactDoorHingeEnabledRows[draft.id] ?? draftHasDoorHinges;
+                          const isSubPartDraft = subPartDraftRowIds.has(draft.id);
+                          const isFrontBankRow = draftIsDoor && (draftDoorMode === "drawer" || draftDoorMode === "door");
+                          const frontBankCount = isFrontBankRow ? Math.max(1, Number.parseInt(draft.doorFrontCount || "1", 10) || 1) : 0;
+                          const frontBankTopGapValue = isFrontBankRow ? String(draft.doorTopGap ?? "") : "";
+                          // Always shown for a front-bank row — a cleared gap displays
+                          // as "0" inside the bubble instead of the bubble disappearing.
+                          const frontBankHasTopGapLabel = isFrontBankRow;
+                          const frontBankHasBetweenGapLabel = isFrontBankRow;
                           const boardWarn = warningForCell(draft.id, "board");
                           const nameWarn = warningForCell(draft.id, "name");
                           const heightWarn = warningForCell(draft.id, "height");
@@ -33772,12 +28622,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           return (
                             <div
                               key={`cutlist_fullscreen_mobile_draft_${draft.id}`}
-                              className={`overflow-visible rounded-[12px] border ${isActiveDraftCard ? "px-3 pb-3 pt-0" : "px-3 py-2"}`}
+                              className={`overflow-visible rounded-[12px] border ${isActiveDraftCard ? "px-3 pb-3 pt-0" : "px-3 py-2"} ${isSubPartDraft ? "ml-4" : ""}`}
                               onClick={!isActiveDraftCard ? () => setCutlistCompactDraftDeckIndex(draftIndex) : undefined}
                               style={{
                                 backgroundColor: color,
                                 color: draftTextColor,
                                 borderColor: draftFieldBorder,
+                                borderLeftWidth: isSubPartDraft ? 3 : undefined,
+                                borderLeftColor: isSubPartDraft ? "var(--brand-strong)" : undefined,
                                 marginTop: isDeckMode && draftIndex > cutlistCompactDraftDeckIndex ? -10 : 0,
                                 marginBottom: isDeckMode && draftIndex < cutlistCompactDraftDeckIndex ? -10 : 0,
                                 boxShadow: isActiveDraftCard ? "0 10px 24px rgba(15, 23, 42, 0.12)" : "0 4px 10px rgba(15, 23, 42, 0.08)",
@@ -33800,6 +28652,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 }
                               >
                                 <div className="min-w-0 flex flex-1 items-center gap-3">
+                                  {isSubPartDraft ? (
+                                    <span
+                                      className="shrink-0 rounded-[6px] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+                                      style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                                    >
+                                      ↳ Sub part
+                                    </span>
+                                  ) : null}
                                   <p
                                     className="shrink-0 text-[13px] font-bold uppercase tracking-[1px]"
                                     style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}
@@ -33816,17 +28676,37 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   ) : null}
                                 </div>
                                 {isActiveDraftCard ? (
-                                  <button
-                                    type="button"
-                                    disabled={productionReadOnly}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      removeDraftCutlistRow(draft.id);
-                                    }}
-                                    className="h-8 w-8 shrink-0 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
-                                  >
-                                    <X size={15} className="mx-auto" strokeWidth={2.8} />
-                                  </button>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    {!isSubPartDraft && (isCabinetryPartType(draft.partType) || isDrawerPartType(draft.partType)) && (
+                                      <button
+                                        type="button"
+                                        disabled={productionReadOnly}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSubPartTypePickerOrigin(captureGlassModalOrigin(e));
+                                          setSubPartTypePickerMainRowId(draft.id);
+                                        }}
+                                        className="h-8 w-8 shrink-0 rounded-[8px] border hover:brightness-95 disabled:opacity-55"
+                                        style={{ backgroundColor: "var(--panel-muted)", borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                                        title="Add sub part"
+                                        aria-label="Add sub part"
+                                      >
+                                        <Plus size={15} className="mx-auto" />
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={productionReadOnly}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeDraftCutlistRow(draft.id);
+                                      }}
+                                      className="h-8 w-8 shrink-0 rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                      style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                    >
+                                      <X size={15} className="mx-auto" strokeWidth={2.8} />
+                                    </button>
+                                  </div>
                                 ) : null}
                               </div>
                               {isActiveDraftCard ? (
@@ -33834,38 +28714,87 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 {!draftIsConfiguredDoor ? (
                                 <div className="space-y-1">
                                   <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Board</p>
-                                  <div className="relative z-[120] pointer-events-auto">
-                                    <BoardPillDropdown
-                                      value={draft.board}
-                                      options={cutlistBoardOptions}
-                                      disabled={productionReadOnly}
-                                      title={boardWarn || undefined}
-                                      className={warningClassForCell(draft.id, "board")}
-                                      bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                                      border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                                      text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                                      getSize={boardSizeFor}
-                                      getLabel={boardDisplayLabel}
-                                      onChange={(next) => onDraftBoardChange(draft.id, next)}
-                                    />
-                                  </div>
+                                  {isFrontBankRow ? (() => {
+                                    const boardManualArr = normalizeDoorFrontBoardManual(draft.doorFrontBoardManual, frontBankCount);
+                                    const boardValuesArr = normalizeDoorFrontBoards(draft.doorFrontBoards, frontBankCount);
+                                    return renderFrontFieldStack(
+                                      frontBankCount,
+                                      boardManualArr,
+                                      "Linked board — untick to give this front its own board",
+                                      (index, linked) => onDraftFrontBoardLinkToggle(draft.id, index, linked),
+                                      (index) => (
+                                        <BoardPillDropdown
+                                          value={boardManualArr[index] ? boardValuesArr[index] : boardValuesArr[index] || draft.board}
+                                          options={cutlistBoardOptions}
+                                          disabled={productionReadOnly}
+                                          bg={draftFieldBg}
+                                          border={draftFieldBorder}
+                                          text={draftTextColor}
+                                          size="compact"
+                                          className="!h-8 !text-[11px]"
+                                          reserveRightIcon
+                                          getSize={boardSizeFor}
+                                          getLabel={boardDisplayLabel}
+                                          onChange={(next) => onDraftFrontBoardChange(draft.id, index, next)}
+                                        />
+                                      ),
+                                    );
+                                  })() : (
+                                    <div ref={registerCutlistWarnCellRef(draft.id, "board")} className="relative z-[120] pointer-events-auto">
+                                      <BoardPillDropdown
+                                        value={draft.board}
+                                        options={cutlistBoardOptions}
+                                        disabled={productionReadOnly}
+                                        title={boardWarn || undefined}
+                                        className={warningClassForCell(draft.id, "board")}
+                                        bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                                        border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                                        text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                                        getSize={boardSizeFor}
+                                        getLabel={boardDisplayLabel}
+                                        onChange={(next) => onDraftBoardChange(draft.id, next)}
+                                      />
+                                    </div>
+                                  )}
                                 </div>
                                 ) : null}
                                 <div className={`space-y-1 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   {!draftIsConfiguredDoor ? (
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Part Name</p>
                                   ) : null}
-                                  <div className="relative z-[20] grid gap-[4px] overflow-visible">
+                                  <div ref={registerCutlistWarnCellRef(draft.id, "name")} className="relative z-[20] grid gap-[4px] overflow-visible">
                                       {!draftIsConfiguredDoor ? (
-                                      <PartNameSuggestionInput
-                                        disabled={productionReadOnly}
-                                        title={nameWarn || undefined}
-                                        value={draft.name}
-                                        options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                                        onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
-                                        className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                                        style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                                      />
+                                        isFrontBankRow ? (() => {
+                                          const nameManualArr = normalizeDoorFrontManualArray(draft.doorFrontNameManual, frontBankCount);
+                                          const nameValuesArr = normalizeDoorFrontTextArray(draft.doorFrontNames, frontBankCount);
+                                          return renderFrontFieldStack(
+                                            frontBankCount,
+                                            nameManualArr,
+                                            "Linked name — untick to give this front its own name",
+                                            (index, linked) => onDraftFrontNameLinkToggle(draft.id, index, linked),
+                                            (index) => (
+                                              <PartNameSuggestionInput
+                                                disabled={productionReadOnly}
+                                                value={nameManualArr[index] ? nameValuesArr[index] : nameValuesArr[index] || draft.name}
+                                                placeholder={nameManualArr[index] ? draft.name : undefined}
+                                                options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                                                onChange={(next) => onDraftFrontNameChange(draft.id, index, next)}
+                                                className="h-8 rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] cs-frontbank-ghost"
+                                                style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                              />
+                                            ),
+                                          );
+                                        })() : (
+                                          <PartNameSuggestionInput
+                                            disabled={productionReadOnly}
+                                            title={nameWarn || undefined}
+                                            value={draft.name}
+                                            options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                                            onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                                            className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
+                                            style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                                          />
+                                        )
                                       ) : null}
                                       {draftIsDoor && !manualCutlistUsesPlainDoorRows
                                         ? renderDoorModeConfigurator({
@@ -33957,7 +28886,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       {(isTabletProjectViewport || draftCompactConfiguredPanel === "fields") ? (
                                         <div className="space-y-3">
                                           <div className="space-y-1">
-                                            <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Board Type</p>
+                                            <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Board Type</p>
                                             <div className="relative z-[120] pointer-events-auto">
                                               <BoardPillDropdown
                                                 value={draft.board}
@@ -33976,7 +28905,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           </div>
                                           <div className={`grid gap-2 ${showCutlistGrainColumn && draftBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_112px]" : "grid-cols-1"}`}>
                                             <div className="space-y-1">
-                                              <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Part Name</p>
+                                              <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Part Name</p>
                                               <PartNameSuggestionInput
                                                 disabled={productionReadOnly}
                                                 title={nameWarn || undefined}
@@ -33989,7 +28918,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             </div>
                                             {showCutlistGrainColumn && draftBoardAllowsGrain ? (
                                               <div className="space-y-1">
-                                                <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Grain</p>
+                                                <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Grain</p>
                                                 <BoardPillDropdown
                                                   value={String(draft.grainValue ?? "")}
                                                   options={grainDimensionOptionsForRow(draft)}
@@ -34012,19 +28941,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           </div>
                                           <div className="grid grid-cols-5 gap-2">
                                             <div className="space-y-1">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Height</p>
-                                              <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
+                                              <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                             </div>
                                             <div className="space-y-1">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Width</p>
-                                              <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
+                                              <input ref={registerCutlistWarnCellRef(draft.id, "width")} disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                             </div>
                                             <div className="space-y-1">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
-                                              <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
+                                              <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
                                             </div>
                                             <div className="space-y-1 col-span-2">
-                                              <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
+                                              <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
                                               <div className="grid grid-cols-2 gap-2">
                                                 <BoardPillDropdown
                                                   value={draft.clashLeft ?? ""}
@@ -34055,7 +28984,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           </div>
                                           {draftDoorMode === "door" ? (
                                             <div className="space-y-1">
-                                              <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Hinges</p>
+                                              <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Hinges</p>
                                               {renderDoorHingeEditor({
                                                 upValues: normalizeDoorHingeValues(draft.hingesUp),
                                                 downValues: normalizeDoorHingeValues(draft.hingesDown),
@@ -34073,7 +29002,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             </div>
                                           ) : null}
                                           <div className="space-y-1">
-                                            <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Information</p>
+                                            <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Information</p>
                                             <div className="grid gap-[6px]">
                                               {informationLinesFromValue(draft.information).map((line, idx) => (
                                                 <div key={`${draft.id}_configured_mobile_info_${idx}`} className="flex items-center gap-[6px]">
@@ -34083,8 +29012,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
                                                     className={
                                                       idx === 0
-                                                        ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
-                                                        : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                                        ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[20px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
+                                                        : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                                    }
+                                                    style={
+                                                      idx === 0
+                                                        ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                                        : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
                                                     }
                                                   >
                                                     {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
@@ -34157,6 +29091,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Height</p>
                                     {isDrawerPartType(draft.partType) ? (
+                                      <div ref={registerCutlistWarnCellRef(draft.id, "height")}>
                                       <DrawerHeightDropdown
                                         value={String(draft.height || "")}
                                         options={drawerHeightLetterOptions}
@@ -34169,53 +29104,215 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         onAdd={(token) => addDraftDrawerHeightToken(draft.id, token)}
                                         onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
                                       />
-                                    ) : (
-                                      <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      </div>
+                                    ) : isFrontBankRow && draftDoorMode === "drawer" ? (
+                                      (() => {
+                                        const frontHeights = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
+                                        const frontHeightManual = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
+                                        const seamCount = Math.max(0, frontBankCount - 1);
+                                        const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
+                                        const resolvedFrontHeights = resolveDrawerBankFrontHeights(
+                                          frontHeights,
+                                          String(draft.height ?? ""),
+                                          frontBankTopGapValue,
+                                          frontBetweenGaps,
+                                          frontHeightManual,
+                                        ).heights;
+                                        return renderFrontSplitStack({
+                                          count: frontBankCount,
+                                          values: frontHeights,
+                                          resolvedValues: resolvedFrontHeights,
+                                          topGapValue: frontBankTopGapValue,
+                                          betweenGaps: frontBetweenGaps,
+                                          hasTopGapLabel: frontBankHasTopGapLabel,
+                                          hasBetweenGapLabel: frontBankHasBetweenGapLabel,
+                                          onValueChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                          onValueBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
+                                          onTopGapChange: (next) => onDraftDoorGapChange(draft.id, "doorTopGap", next),
+                                          onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
+                                          topGapTitle: "Below bench to top of door/drawer — editing this stops it following the settings default",
+                                          betweenGapTitle: "Horizontal gap between drawers — editing this stops it following the settings default",
+                                          fieldLabel: "height",
+                                          fieldBg: draftFieldBg,
+                                          fieldBorder: draftFieldBorder,
+                                          fieldText: draftTextColor,
+                                          gapKey: draft.id,
+                                        });
+                                      })()
+                                    ) : isFrontBankRow ? (() => {
+                                      const heightManualArr = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
+                                      const heightValuesArr = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
+                                      return renderFrontFieldStack(
+                                        frontBankCount,
+                                        heightManualArr,
+                                        "Linked height — untick to give this front its own height",
+                                        (index, linked) => onDraftFrontHeightLinkToggle(draft.id, index, linked),
+                                        (index) => (
+                                          <input
+                                            disabled={productionReadOnly}
+                                            inputMode="decimal"
+                                            title={`Front ${index + 1} height`}
+                                            value={heightManualArr[index] ? heightValuesArr[index] : heightValuesArr[index] || draft.height}
+                                            placeholder={heightManualArr[index] ? draft.height : undefined}
+                                            onChange={(e) => onDraftFrontHeightChange(draft.id, index, e.target.value)}
+                                            className="h-8 w-full rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                          />
+                                        ),
+                                      );
+                                    })() : (
+                                      <input
+                                        ref={registerCutlistWarnCellRef(draft.id, "height")}
+                                        disabled={productionReadOnly}
+                                        inputMode="decimal"
+                                        title={heightWarn || undefined}
+                                        value={draft.height}
+                                        onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })}
+                                        className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`}
+                                        style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
+                                      />
                                     )}
+                                    {isFrontBankRow && resolvedProductionBaseCabHeight ? (
+                                      <p className="text-[9px] font-semibold" style={{ color: "var(--text-muted)" }}>Base: {resolvedProductionBaseCabHeight}</p>
+                                    ) : null}
                                   </div>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Width</p>
-                                    <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    {isFrontBankRow && draftDoorMode === "door" ? (() => {
+                                      const frontWidths = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
+                                      const frontWidthManual = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
+                                      const seamCount = Math.max(0, frontBankCount - 1);
+                                      const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
+                                      const resolvedFrontWidths = resolveDrawerBankFrontHeights(
+                                        frontWidths,
+                                        String(draft.width ?? ""),
+                                        "0",
+                                        frontBetweenGaps,
+                                        frontWidthManual,
+                                      ).heights;
+                                      return renderFrontSplitStack({
+                                        count: frontBankCount,
+                                        values: frontWidths,
+                                        resolvedValues: resolvedFrontWidths,
+                                        topGapValue: "0",
+                                        betweenGaps: frontBetweenGaps,
+                                        hasTopGapLabel: false,
+                                        hasBetweenGapLabel: frontBankHasBetweenGapLabel,
+                                        onValueChange: (index, value) => onDraftFrontWidthSplitChange(draft.id, index, value),
+                                        onValueBlur: (index) => onDraftFrontWidthSplitBlur(draft.id, index),
+                                        onTopGapChange: () => {},
+                                        onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
+                                        topGapTitle: "",
+                                        betweenGapTitle: "Vertical gap between doors — editing this stops it following the settings default",
+                                        fieldLabel: "width",
+                                        fieldBg: draftFieldBg,
+                                        fieldBorder: draftFieldBorder,
+                                        fieldText: draftTextColor,
+                                        gapKey: `${draft.id}:w`,
+                                      });
+                                    })() : isFrontBankRow ? (() => {
+                                      const widthManualArr = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
+                                      const widthValuesArr = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
+                                      return renderFrontFieldStack(
+                                        frontBankCount,
+                                        widthManualArr,
+                                        "Linked width — untick to give this front its own width",
+                                        (index, linked) => onDraftFrontWidthLinkToggle(draft.id, index, linked),
+                                        (index) => (
+                                          <input
+                                            disabled={productionReadOnly}
+                                            inputMode="decimal"
+                                            title={`Front ${index + 1} width`}
+                                            value={widthManualArr[index] ? widthValuesArr[index] : widthValuesArr[index] || draft.width}
+                                            placeholder={widthManualArr[index] ? draft.width : undefined}
+                                            onChange={(e) => onDraftFrontWidthChange(draft.id, index, e.target.value)}
+                                            className="h-8 w-full rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                          />
+                                        ),
+                                      );
+                                    })() : (
+                                      <input
+                                        ref={registerCutlistWarnCellRef(draft.id, "width")}
+                                        disabled={productionReadOnly}
+                                        inputMode="decimal"
+                                        title={widthWarn || undefined}
+                                        value={draft.width}
+                                        onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)}
+                                        className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`}
+                                        style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }}
+                                      />
+                                    )}
                                   </div>
-                                  <div className="space-y-1 text-center">
-                                    <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Depth</p>
-                                    <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
-                                  </div>
+                                  {isFrontBankRow ? null : (
+                                    <div className="space-y-1 text-center">
+                                      <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Depth</p>
+                                      <input ref={registerCutlistWarnCellRef(draft.id, "depth")} disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                    </div>
+                                  )}
                                 </div>
                                 <div className={`grid gap-2 ${draftIsCabinetry ? "grid-cols-1" : draftBoardAllowsGrain && showCutlistGrainColumn ? "grid-cols-4" : "grid-cols-3"} ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                   <div className="space-y-1 text-center">
                                     <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Quantity</p>
-                                    <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                                    {isFrontBankRow ? (() => {
+                                      const quantityManualArr = normalizeDoorFrontManualArray(draft.doorFrontQuantityManual, frontBankCount);
+                                      const quantityValuesArr = normalizeDoorFrontTextArray(draft.doorFrontQuantities, frontBankCount);
+                                      return renderFrontFieldStack(
+                                        frontBankCount,
+                                        quantityManualArr,
+                                        "Linked quantity — untick to give this front its own quantity",
+                                        (index, linked) => onDraftFrontQuantityLinkToggle(draft.id, index, linked),
+                                        (index) => (
+                                          <input
+                                            disabled={productionReadOnly}
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            title={`Front ${index + 1} quantity`}
+                                            value={quantityManualArr[index] ? quantityValuesArr[index] : quantityValuesArr[index] || draft.quantity}
+                                            placeholder={quantityManualArr[index] ? draft.quantity : undefined}
+                                            onChange={(e) => onDraftFrontQuantityChange(draft.id, index, e.target.value)}
+                                            className="h-8 w-full rounded-[6px] border bg-transparent px-1 pr-5 text-[11px] text-center cs-frontbank-ghost"
+                                            style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                          />
+                                        ),
+                                      );
+                                    })() : (
+                                      <input ref={registerCutlistWarnCellRef(draft.id, "quantity")} disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                                    )}
                                   </div>
                                   {!draftIsCabinetry ? (
                                     <>
                                       <div className="space-y-1 col-span-2">
                                         <p className="text-center text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>Clashing</p>
                                         <div className="grid grid-cols-2 gap-2">
-                                          <BoardPillDropdown
-                                            value={draft.clashLeft ?? ""}
-                                            options={CLASH_LEFT_OPTIONS}
-                                            disabled={productionReadOnly || isDrawerPartType(draft.partType)}
-                                            bg={draftFieldBg}
-                                            border={draftFieldBorder}
-                                            text={draftTextColor}
-                                            size="default"
-                                            getSize={() => ""}
-                                            getLabel={(v) => v}
-                                            onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
-                                          />
-                                          <BoardPillDropdown
-                                            value={draft.clashRight ?? ""}
-                                            options={CLASH_RIGHT_OPTIONS}
-                                            disabled={productionReadOnly || isDrawerPartType(draft.partType)}
-                                            bg={draftFieldBg}
-                                            border={draftFieldBorder}
-                                            text={draftTextColor}
-                                            size="default"
-                                            getSize={() => ""}
-                                            getLabel={(v) => v}
-                                            onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
-                                          />
+                                          <div>
+                                            <BoardPillDropdown
+                                              value={draft.clashLeft ?? ""}
+                                              options={CLASH_LEFT_OPTIONS}
+                                              disabled={productionReadOnly || isDrawerPartType(draft.partType)}
+                                              bg={draftFieldBg}
+                                              border={draftFieldBorder}
+                                              text={draftTextColor}
+                                              size="default"
+                                              getSize={() => ""}
+                                              getLabel={(v) => v}
+                                              onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
+                                            />
+                                          </div>
+                                          <div>
+                                            <BoardPillDropdown
+                                              value={draft.clashRight ?? ""}
+                                              options={CLASH_RIGHT_OPTIONS}
+                                              disabled={productionReadOnly || isDrawerPartType(draft.partType)}
+                                              bg={draftFieldBg}
+                                              border={draftFieldBorder}
+                                              text={draftTextColor}
+                                              size="default"
+                                              getSize={() => ""}
+                                              getLabel={(v) => v}
+                                              onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
+                                            />
+                                          </div>
                                         </div>
                                       </div>
                                       {showCutlistGrainColumn && draftBoardAllowsGrain ? (
@@ -34243,14 +29340,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </>
                                   ) : null}
                                 </div>
-                                {draftIsDoor && !draftIsConfiguredDoor ? (
+                                {draftIsDoor && !draftIsConfiguredDoor && draftDoorMode !== "drawer" ? (
                                   <div className={`space-y-1 ${isTabletProjectViewport ? "sm:col-span-2" : ""}`}>
                                     <label className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[1px]" style={{ color: draftTextColor === "#F8FAFC" ? "rgba(255,255,255,0.8)" : "#475569" }}>
                                       <input
                                         type="checkbox"
                                         checked={draftDoorHingesEnabled}
                                         disabled={productionReadOnly}
-                                        className="h-4 w-4 accent-[#12345B]"
+                                        className="h-4 w-4 accent-[var(--brand-strong)]"
                                         onChange={(e) => {
                                           const checked = e.target.checked;
                                           setCutlistCompactDoorHingeEnabledRows((prev) => ({
@@ -34269,7 +29366,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </label>
                                     <div className="relative overflow-visible">
                                       <div className="pointer-events-auto">
-                                      {draftDoorHingesEnabled && draftDoorMode === "manual" ? renderDoorHingeEditor({
+                                      {draftDoorHingesEnabled ? renderDoorHingeEditor({
                                           upValues: normalizeDoorHingeValues(draft.hingesUp),
                                           downValues: normalizeDoorHingeValues(draft.hingesDown),
                                           onChange: (direction, index, value) => onDraftCutlistHingeChange(draft.id, direction, index, value),
@@ -34318,8 +29415,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
                                       className={
                                         idx === 0
-                                          ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
-                                          : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                          ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[20px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
+                                          : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                      }
+                                      style={
+                                        idx === 0
+                                          ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                          : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
                                       }
                                     >
                                       {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
@@ -34347,8 +29449,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                       <button
                         disabled={productionReadOnly}
-                        onClick={() => void (cutlistEntryMode === "wallBuilder" ? addCutlistRow() : addDraftRowsToCutlist())}
-                        className="inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] text-[18px] font-extrabold text-[#14532D] disabled:opacity-55"
+                        onClick={() => void addDraftRowsToCutlist()}
+                        className="inline-flex h-[44px] w-full items-center justify-center rounded-[10px] border text-[18px] font-normal text-white hover:brightness-95 disabled:opacity-55"
+                        style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
                       >
                         Add to Cutlist
                       </button>
@@ -34356,22 +29459,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </section>
                 )}
 
-                <section className="overflow-hidden rounded-[14px] border" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, boxShadow: projectPalette.shadow }}>
-                  <div className="border-b px-3 py-3" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
+                <section className="overflow-hidden rounded-[14px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", boxShadow: "var(--shadow-glass)" }}>
+                  <div className="border-b px-3 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                     <div className="grid gap-2">
                       <input
                         value={cutlistSearch}
                         onChange={(e) => setCutlistSearch(e.target.value)}
                         placeholder="Search cutlist..."
                         className="h-9 rounded-[10px] border px-3 text-[12px] outline-none"
-                        style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                       />
                     </div>
                   </div>
 
                   <div className="space-y-3 p-3">
                     {groupedCutlistRows.length === 0 && (
-                      <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
+                      <div className="rounded-[10px] border border-dashed px-3 py-8 text-center text-[12px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
                         No cutlist rows yet.
                       </div>
                     )}
@@ -34455,7 +29558,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             onBlur={() => void commitCellEdit()}
                                             onCommit={() => void commitCellEdit()}
                                             onCancel={cancelCellEdit}
-                                            className="h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] font-semibold text-[#0F172A]"
+                                            className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] font-semibold text-[var(--text-main)]"
                                           />
                                         ) : (
                                           <button
@@ -34493,7 +29596,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               }
                                               if (e.key === "Escape") cancelCellEdit();
                                             }}
-                                            className="h-8 w-[56px] rounded-[8px] border border-[#94A3B8] bg-white px-2 text-right text-[12px] font-bold text-[#0F172A]"
+                                            className="h-8 w-[56px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-right text-[12px] font-bold text-[var(--text-main)]"
                                           />
                                         ) : (
                                           <button
@@ -34517,12 +29620,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     {compactExpanded ? (
                                       <div
                                         className="px-3 pb-3 pt-1 text-[11px]"
-                                        style={{ color: "#334155", backgroundColor: "rgba(255,255,255,0.68)" }}
+                                        style={{ color: "var(--text-main)", backgroundColor: "var(--panel-bg)" }}
                                       >
                                         <div>
                                           <div className="py-3">
                                             <div className={`grid gap-x-3 gap-y-2 ${isMobileProjectViewport ? "grid-cols-[88px_minmax(0,1fr)]" : "grid-cols-2"}`}>
-                                            <p className="font-bold text-[#0F172A]">Part Name</p>
+                                            <p className="font-bold text-[var(--text-main)]">Part Name</p>
                                             {isEditing(row.id, "name") ? (
                                               <PartNameSuggestionInput
                                                 autoFocus
@@ -34532,14 +29635,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 onBlur={() => void commitCellEdit()}
                                                 onCommit={() => void commitCellEdit()}
                                                 onCancel={cancelCellEdit}
-                                                className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
                                               />
                                             ) : (
                                               <button
                                                 type="button"
                                                 disabled={productionReadOnly}
                                                 onClick={() => startCellEdit(row, "name")}
-                                                className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                               >
                                                 {row.name || "-"}
                                               </button>
@@ -34547,7 +29650,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                                             {showRoomColumnInList ? (
                                               <>
-                                                <p className="font-bold text-[#0F172A]">Room</p>
+                                                <p className="font-bold text-[var(--text-main)]">Room</p>
                                                 {isEditing(row.id, "room") ? (
                                                   <select
                                                     autoFocus
@@ -34565,8 +29668,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${warningClassForCell(row.id, "room")} ${isMobileProjectViewport ? "text-right" : "text-left"}`}
-                                                    style={warningStyleForCell(row.id, "room", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" })}
+                                                    className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] ${warningClassForCell(row.id, "room")} ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                    style={warningStyleForCell(row.id, "room", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" })}
                                                   >
                                                     {cutlistEntryRoomOptions.map((opt) => (
                                                       <option key={opt} value={opt}>{opt}</option>
@@ -34577,7 +29680,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     type="button"
                                                     disabled={productionReadOnly}
                                                     onClick={() => startCellEdit(row, "room")}
-                                                    className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                   >
                                                     {row.room || "-"}
                                                   </button>
@@ -34585,15 +29688,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               </>
                                             ) : null}
 
-                                            <p className="font-bold text-[#0F172A]">Board</p>
+                                            <p className="font-bold text-[var(--text-main)]">Board</p>
                                             {isEditing(row.id, "board") ? (
                                               <BoardPillDropdown
                                                 value={editingCellValue}
                                                 options={Array.from(new Set([row.board, ...cutlistBoardOptions].filter(Boolean)))}
                                                 disabled={productionReadOnly}
-                                                bg="#FFFFFF"
-                                                border="#94A3B8"
-                                                text="#0F172A"
+                                                bg="var(--panel-bg)"
+                                                border="var(--glass-border)"
+                                                text="var(--text-main)"
                                                 size="compact"
                                                 getSize={boardSizeFor}
                                                 getLabel={boardDisplayLabel}
@@ -34607,7 +29710,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 disabled={productionReadOnly}
                                                 onClick={() => startCellEdit(row, "board")}
-                                                className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                               >
                                                 {boardDisplayLabel(row.board) || "-"}
                                               </button>
@@ -34615,7 +29718,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                                             {!rowIsConfiguredDoor ? (
                                               <>
-                                                <p className="font-bold text-[#0F172A]">Height</p>
+                                                <p className="font-bold text-[var(--text-main)]">Height</p>
                                                 {isEditing(row.id, "height") ? (
                                                   isDrawerPartType(row.partType) ? (
                                                     <DrawerHeightDropdown
@@ -34624,9 +29727,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       compact
                                                       title={warningForCell(row.id, "height") || undefined}
                                                       className={warningClassForCell(row.id, "height")}
-                                                      bg={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).backgroundColor ?? "#FFFFFF"}
-                                                      border={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).borderColor ?? "#94A3B8"}
-                                                      text={warningStyleForCell(row.id, "height", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).color ?? "#0F172A"}
+                                                      bg={warningStyleForCell(row.id, "height", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).backgroundColor ?? "var(--panel-bg)"}
+                                                      border={warningStyleForCell(row.id, "height", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).borderColor ?? "var(--glass-border)"}
+                                                      text={warningStyleForCell(row.id, "height", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).color ?? "var(--text-main)"}
                                                       onAdd={(token) => addEditingDrawerHeightToken(token)}
                                                       onRemove={(token) => removeEditingDrawerHeightToken(token)}
                                                       onOpenChange={(isOpen) => {
@@ -34654,7 +29757,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                      className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                      className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
                                                     />
                                                   )
                                                 ) : (
@@ -34662,14 +29765,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     type="button"
                                                     disabled={productionReadOnly}
                                                     onClick={() => startCellEdit(row, "height")}
-                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                     style={matchesGrainDimension(rowGrainValue, row.height, "height") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
                                                   >
                                                     {isDrawerPartType(row.partType) ? (summarizeDrawerHeightTokens(String(row.height ?? "")) || String(row.height ?? "")) : (row.height || "-")}
                                                   </button>
                                                 )}
 
-                                                <p className="font-bold text-[#0F172A]">Width</p>
+                                                <p className="font-bold text-[var(--text-main)]">Width</p>
                                                 {isEditing(row.id, "width") ? (
                                                   <input
                                                     autoFocus
@@ -34689,21 +29792,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                    className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
                                                   />
                                                 ) : (
                                                   <button
                                                     type="button"
                                                     disabled={productionReadOnly}
                                                     onClick={() => startCellEdit(row, "width")}
-                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                     style={matchesGrainDimension(rowGrainValue, row.width, "width") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
                                                   >
                                                     {row.width || "-"}
                                                   </button>
                                                 )}
 
-                                                <p className="font-bold text-[#0F172A]">Depth</p>
+                                                <p className="font-bold text-[var(--text-main)]">Depth</p>
                                                 {isEditing(row.id, "depth") ? (
                                                   <input
                                                     autoFocus
@@ -34723,21 +29826,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                    className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
                                                   />
                                                 ) : (
                                                   <button
                                                     type="button"
                                                     disabled={productionReadOnly}
                                                     onClick={() => startCellEdit(row, "depth")}
-                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                     style={matchesGrainDimension(rowGrainValue, row.depth, "depth") ? { fontWeight: 700, textDecoration: "underline" } : undefined}
                                                   >
                                                     {row.depth || "-"}
                                                   </button>
                                                 )}
 
-                                                <p className="font-bold text-[#0F172A]">Quantity</p>
+                                                <p className="font-bold text-[var(--text-main)]">Quantity</p>
                                                 {isEditing(row.id, "quantity") ? (
                                                   <input
                                                     autoFocus
@@ -34757,14 +29860,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className={`h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
+                                                    className={`h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"}`}
                                                   />
                                                 ) : (
                                                   <button
                                                     type="button"
                                                     disabled={productionReadOnly}
                                                     onClick={() => startCellEdit(row, "quantity")}
-                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                    className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                   >
                                                     {row.quantity || "1"}
                                                   </button>
@@ -34772,12 +29875,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               </>
                                             ) : (
                                               <>
-                                                <p className="font-bold text-[#0F172A]">Pieces</p>
+                                                <p className="font-bold text-[var(--text-main)]">Pieces</p>
                                                 <div className={`min-w-0 space-y-2 ${isMobileProjectViewport ? "text-right" : "text-left"}`}>
                                                   {doorPieces.length ? doorPieces.map((piece) => (
-                                                    <div key={`${row.id}_compact_piece_${piece.key}`} className="rounded-[8px] border border-[#D7DEE8] bg-white/60 px-2 py-2">
-                                                      <p className="break-words font-semibold text-[#0F172A]">{piece.partName}</p>
-                                                      <p className="mt-1 break-words text-[#475569]">
+                                                    <div key={`${row.id}_compact_piece_${piece.key}`} className="rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-2 py-2">
+                                                      <p className="break-words font-semibold text-[var(--text-main)]">{piece.partName}</p>
+                                                      <p className="mt-1 break-words text-[var(--text-muted)]">
                                                         <span
                                                           style={
                                                             matchesGrainDimension(String(piece.grainValue ?? ""), piece.height, "height")
@@ -34798,14 +29901,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                           {piece.width || "-"} W
                                                         </span>
                                                       </p>
-                                                      <p className="mt-1 text-[#475569]">Qty {piece.quantity || "1"}</p>
+                                                      <p className="mt-1 text-[var(--text-muted)]">Qty {piece.quantity || "1"}</p>
                                                     </div>
-                                                  )) : <p className="text-[#475569]">-</p>}
+                                                  )) : <p className="text-[var(--text-muted)]">-</p>}
                                                 </div>
                                               </>
                                             )}
 
-                                            <p className="font-bold text-[#0F172A]">Clashing</p>
+                                            <p className="font-bold text-[var(--text-main)]">Clashing</p>
                                             {isEditing(row.id, "clashing") ? (
                                               isCabinetryPartType(row.partType) ? (
                                                 <div data-cutlist-cabinetry-edit={row.id} className="grid min-h-[78px] content-center gap-[1px] text-left">
@@ -34835,14 +29938,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                      className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                      className="h-[18px] w-full min-w-0 rounded-[5px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[9px] text-[var(--text-main)]"
                                                     />
                                                   </div>
                                                   <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                                     {hasShelfQuantity(editingFixedShelf) ? (
                                                       <>
                                                         <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none">
-                                                          <DrillingArrowIcon color="#0F172A" />
+                                                          <DrillingArrowIcon color="var(--text-main)" />
                                                           Drilling
                                                         </span>
                                                         <div data-cutlist-drilling="fixed" className="w-full min-w-0">
@@ -34850,9 +29953,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                             value={editingFixedShelfDrilling}
                                                             options={DRILLING_OPTIONS}
                                                             disabled={productionReadOnly}
-                                                            bg="#FFFFFF"
-                                                            border="#94A3B8"
-                                                            text="#0F172A"
+                                                            bg="var(--panel-bg)"
+                                                            border="var(--glass-border)"
+                                                            text="var(--text-main)"
                                                             size="compact"
                                                             className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                             getSize={() => ""}
@@ -34895,14 +29998,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                      className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                      className="h-[18px] w-full min-w-0 rounded-[5px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[9px] text-[var(--text-main)]"
                                                     />
                                                   </div>
                                                   <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                                     {hasShelfQuantity(editingAdjustableShelf) ? (
                                                       <>
                                                         <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none">
-                                                          <DrillingArrowIcon color="#0F172A" />
+                                                          <DrillingArrowIcon color="var(--text-main)" />
                                                           Drilling
                                                         </span>
                                                         <div data-cutlist-drilling="adjustable" className="w-full min-w-0">
@@ -34910,9 +30013,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                             value={editingAdjustableShelfDrilling}
                                                             options={DRILLING_OPTIONS}
                                                             disabled={productionReadOnly}
-                                                            bg="#FFFFFF"
-                                                            border="#94A3B8"
-                                                            text="#0F172A"
+                                                            bg="var(--panel-bg)"
+                                                            border="var(--glass-border)"
+                                                            text="var(--text-main)"
                                                             size="compact"
                                                             className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                             getSize={() => ""}
@@ -34963,22 +30066,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 disabled={productionReadOnly}
                                                 onClick={() => startCellEdit(row, "clashing")}
-                                                className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                               >
                                                 {clashingValue}
                                               </button>
                                             )}
 
-                                            <p className="font-bold text-[#0F172A]">Grain</p>
+                                            <p className="font-bold text-[var(--text-main)]">Grain</p>
                                             {rowBoardAllowsGrain ? (
                                               isEditing(row.id, "grain") ? (
                                                 <BoardPillDropdown
                                                   value={editingCellValue}
                                                   options={grainDimensionOptionsForRow(row)}
                                                   disabled={productionReadOnly}
-                                                  bg="#FFFFFF"
-                                                  border="#94A3B8"
-                                                  text="#0F172A"
+                                                  bg="var(--panel-bg)"
+                                                  border="var(--glass-border)"
+                                                  text="var(--text-main)"
                                                   size="compact"
                                                   getSize={() => ""}
                                                   getLabel={(v) => v}
@@ -34992,23 +30095,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   type="button"
                                                   disabled={productionReadOnly}
                                                   onClick={() => startCellEdit(row, "grain")}
-                                                  className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                  className={`min-w-0 break-words rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                 >
                                                   {rowGrainValue || (row.grain ? "Yes" : "-")}
                                                 </button>
                                               )
                                             ) : (
-                                              <p className={`min-w-0 break-words text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>-</p>
+                                              <p className={`min-w-0 break-words text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>-</p>
                                             )}
 
                                             {hasFixedShelf ? (
                                               <>
-                                                <p className="font-bold text-[#0F172A]">Fixed Shelf</p>
+                                                <p className="font-bold text-[var(--text-main)]">Fixed Shelf</p>
                                                 <button
                                                   type="button"
                                                   disabled={productionReadOnly}
                                                   onClick={() => startCellEdit(row, "clashing")}
-                                                  className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                  className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                 >
                                                   {row.fixedShelf}
                                                 </button>
@@ -35017,12 +30120,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                                             {hasAdjustableShelf ? (
                                               <>
-                                                <p className="font-bold text-[#0F172A]">Adjustable Shelf</p>
+                                                <p className="font-bold text-[var(--text-main)]">Adjustable Shelf</p>
                                                 <button
                                                   type="button"
                                                   disabled={productionReadOnly}
                                                   onClick={() => startCellEdit(row, "clashing")}
-                                                  className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
+                                                  className={`min-w-0 rounded-[6px] px-1 py-[2px] text-[var(--text-main)] ${isMobileProjectViewport ? "text-right" : "text-left"} disabled:opacity-100`}
                                                 >
                                                   {row.adjustableShelf}
                                                 </button>
@@ -35033,13 +30136,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                                           <div className="py-3" style={{ borderTop: `1px solid ${color}` }}>
                                             <div className="mb-2 flex items-center justify-between gap-2">
-                                              <p className="text-[10px] font-bold uppercase tracking-[1px] text-[#64748B]">Information</p>
+                                              <p className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-muted)" }}>Information</p>
                                               {!isEditing(row.id, "information") && !hasInformationContent ? (
                                                 <button
                                                   type="button"
                                                   disabled={productionReadOnly}
                                                   onClick={() => startCellEdit(row, "information")}
-                                                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
+                                                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
+                                                  style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
                                                 >
                                                   <Plus size={16} className="mx-auto" strokeWidth={2.8} />
                                                 </button>
@@ -35056,8 +30160,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       onClick={() => (idx === 0 ? onEditingAddInformationLine() : onEditingRemoveInformationLine(idx))}
                                                       className={
                                                         idx === 0
-                                                          ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
-                                                          : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                          ? "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-white hover:brightness-95"
+                                                          : "inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-white hover:brightness-95"
+                                                      }
+                                                      style={
+                                                        idx === 0
+                                                          ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                                          : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
                                                       }
                                                     >
                                                       {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
@@ -35074,7 +30183,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                         }
                                                         if (e.key === "Escape") cancelCellEdit();
                                                       }}
-                                                      className="h-8 w-full rounded-[8px] border border-[#94A3B8] bg-white px-2 text-[12px] text-[#0F172A]"
+                                                      className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
                                                     />
                                                   </div>
                                                 ))}
@@ -35084,7 +30193,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 type="button"
                                                 disabled={productionReadOnly}
                                                 onClick={() => startCellEdit(row, "information")}
-                                                className="w-full space-y-[2px] text-left text-[#475569] disabled:opacity-100"
+                                                className="w-full space-y-[2px] text-left text-[var(--text-main)] disabled:opacity-100"
                                               >
                                                 {hasInformationContent ? infoLines.map((line, idx) => (
                                                   <p key={`cutlist_fullscreen_mobile_info_${row.id}_${idx}`} className="break-words">{line}</p>
@@ -35114,30 +30223,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5">
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
-              <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
-                <span className="truncate" style={{ color: projectPalette.textSoft }}>
+              <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                <span className="truncate" style={{ color: "var(--text-main)" }}>
                   {String(cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist"}
                 </span>
               </div>
             </div>
-            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <Scissors size={14} />
               <span>Cutlist</span>
-              <span style={{ color: projectPalette.textMuted }}>|</span>
-              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
+              <span style={{ color: "var(--text-muted)" }}>|</span>
+              <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
               onClick={() => void onSaveAndBackFromCutlist()}
-              className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+              className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
             >
               <ArrowLeft size={14} />
               Save & Back
             </button>
           </div>
-          <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+          <div className="overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -35296,7 +30407,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           type="button"
                           onClick={() => removeCutlistActivity(entry.id)}
                           data-cutlist-activity-control="true"
-                          className="inline-flex h-[18px] items-center rounded-[8px] border border-[#F2A7A7] bg-[#FFECEC] px-2 text-[10px] font-extrabold text-[#991B1B] hover:bg-[#FFDCDC]"
+                          className="inline-flex h-[18px] items-center rounded-[8px] border px-2 text-[10px] font-extrabold hover:brightness-95" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                         >
                           {entry.action || "Clear"}
                         </button>
@@ -35307,27 +30418,42 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           </div>
-          <div className={`grid min-h-0 flex-1 gap-0 ${isProductionNotesPanelOpen ? "xl:grid-cols-[190px_1fr_340px]" : "xl:grid-cols-[190px_1fr]"}`}>
-            <aside className="border-r border-[#DCE3EC] bg-white">
+          <div className="grid min-h-[calc(100dvh-56px)] gap-0 xl:grid-cols-[190px_1fr]">
+            <aside className="sticky top-[56px] self-start border-r border-[var(--glass-border)] bg-[var(--panel-bg)]" style={{ minHeight: "calc(100dvh - 56px)", maxHeight: "calc(100dvh - 56px)", overflowY: "auto" }}>
               <div className="flex h-full flex-col p-2">
-                <p className="mb-2 px-2 text-[16px] font-medium text-[#111827]">Rooms</p>
-                <div className="space-y-1">
+                <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: "var(--text-main)" }}>Rooms</p>
+                <div className="flex flex-1 flex-col">
+                <div ref={cutlistRoomListRef} className="relative space-y-1">
+                  {cutlistRoomHighlightRect && (
+                    <div
+                      aria-hidden="true"
+                      className="absolute left-0 right-0 rounded-[9px]"
+                      style={{
+                        top: cutlistRoomHighlightRect.top,
+                        height: cutlistRoomHighlightRect.height,
+                        backgroundColor: "var(--brand-soft)",
+                        transition: "top 260ms cubic-bezier(0.22, 1, 0.36, 1), height 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                        zIndex: 0,
+                      }}
+                    />
+                  )}
                   {cutlistAddedRoomTabs.map((roomTab) => {
                     const active = cutlistRoomFilter === roomTab.filter;
                     return (
                       <button
                         key={`${roomTab.label}_${roomTab.filter}`}
+                        ref={(el) => { cutlistRoomButtonRefs.current[roomTab.filter] = el; }}
                         type="button"
                         onClick={() => setCutlistRoomFilter(roomTab.filter)}
-                        className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                          active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                        className={`relative z-[1] w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                          active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                         }`}
                       >
                         {roomTab.label}
                       </button>
                     );
                   })}
-                  <div className="my-2 h-px bg-[#DCE3EC]" />
+                  <div className="my-2 h-px bg-[var(--glass-border)]" />
                   {cutlistRoomTabs
                     .filter((tab) => tab.filter === "Project Cutlist")
                     .map((roomTab) => {
@@ -35335,10 +30461,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       return (
                         <button
                           key={`${roomTab.label}_${roomTab.filter}`}
+                          ref={(el) => { cutlistRoomButtonRefs.current[roomTab.filter] = el; }}
                           type="button"
                           onClick={() => setCutlistRoomFilter(roomTab.filter)}
-                          className={`w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                            active ? "bg-[#E9EFF7] text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
+                          className={`relative z-[1] w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
+                            active ? "text-[var(--brand-strong)]" : "text-[var(--text-main)] hover:bg-[var(--panel-muted)]"
                           }`}
                         >
                           {roomTab.label}
@@ -35349,79 +30476,57 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     type="button"
                     disabled={!salesAccess.edit || isSavingSalesRooms}
                     onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
-                    className="mt-2 w-full rounded-[9px] border border-[#BFE8CF] bg-[#DDF2E7] px-2 py-2 text-left text-[12px] font-bold text-[#1F6A3B] disabled:opacity-55"
+                    className="relative z-[1] mt-2 w-full rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
                     + Add Room
                   </button>
+                </div>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(e) => {
                       if (isProductionNotesPanelOpen) {
                         void closeProductionNotesPanel();
                         return;
                       }
+                      setProductionNotesModalOrigin(captureGlassModalOrigin(e));
                       openProductionNotesPanel();
                     }}
-                    className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold"
-                    style={{
-                      borderColor: projectPalette.border,
-                      backgroundColor: isProductionNotesPanelOpen ? productionContainerHeaderBg : projectPalette.panelBg,
-                      color: isDarkMode ? "#f1f1f1" : "#12345B",
-                    }}
+                    className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95"
+                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
-                    <Quote size={13} />
-                    Note
+                    <NotebookPen size={13} />
+                    Notes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      if (isContractorsPanelOpen) {
+                        void closeContractorsPanel();
+                        return;
+                      }
+                      setContractorsModalOrigin(captureGlassModalOrigin(e));
+                      openContractorsPanel();
+                    }}
+                    className="mt-2 inline-flex w-full items-center gap-2 rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95"
+                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  >
+                    <HardHat size={13} />
+                    Contractors
                   </button>
                 </div>
-                {savedCabinetBuilderDrafts.length || (cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim()) ? (
-                  <div className="mt-auto pt-3">
-                    <div className="mb-2 h-px bg-[#DCE3EC]" />
-                    <div className="space-y-1">
-                      <p className="px-2 text-[11px] font-bold uppercase tracking-[0.8px] text-[#64748B]">Saved Walls</p>
-                      {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() && !activeCabinetBuilderSavedDraftId ? (
-                        <div className="rounded-[9px] bg-[#E9EFF7] px-1 py-1">
-                          <div className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold text-[#12345B]">
-                            <span className="block truncate">{cabinetBuilderWallName}</span>
-                            <span className="block truncate text-[10px] font-medium text-[#64748B]">{cutlistEntryRoom || "Project Cutlist"}</span>
-                          </div>
-                        </div>
-                      ) : null}
-                      {savedCabinetBuilderDrafts.map((savedDraft) => {
-                        const active = activeCabinetBuilderSavedDraftId === savedDraft.id;
-                        return (
-                          <div
-                            key={savedDraft.id}
-                            className={`rounded-[9px] px-1 py-1 ${active ? "bg-[#E9EFF7]" : ""}`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => openSavedCabinetBuilderDraft(savedDraft)}
-                              className={`w-full min-w-0 rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                                active ? "text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
-                              }`}
-                            >
-                              <span className="block truncate">{savedDraft.name}</span>
-                              <span className="block truncate text-[10px] font-medium text-[#64748B]">{savedDraft.room}</span>
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
               </div>
             </aside>
 
-            <div className="flex min-h-full flex-col gap-4 overflow-auto p-4">
+            <div className="flex flex-col gap-4 p-4">
               {cutlistRoomFilter !== "Project Cutlist" && (
               <section className="relative z-10 -mt-4 -mx-4 w-[calc(100%+2rem)] overflow-visible">
-                {renderCutlistEntryModeTabs("rounded-b-none border-x-0 border-t-0")}
                 <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
-                  <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist Entry</p>
-                  {cabinetBuilderEntryActive ? renderCabinetBuilderToolbar() : null}
+                  <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
+                  {null}
                 </div>
                 <div className="space-y-3 px-0 pb-0">
-                  {!cabinetBuilderEntryActive ? (
+                  {(
                     <div className="flex flex-wrap items-center gap-2 px-1">
                       {partTypeOptions.map((v) => {
                         const color = partTypeColors[v] ?? "#CBD5E1";
@@ -35430,40 +30535,76 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             key={v}
                             type="button"
                             disabled={productionReadOnly}
-                            onClick={() => addDraftRowForPartType(v)}
+                            onClick={(e) => {
+                              if (isDoorPartType(v)) {
+                                setDrawerBankCountDraft("3");
+                                setDoorDrawerPickerStep("choose");
+                                setDoorDrawerPickerSuggestedMode("");
+                                setDoorDrawerPickerMainRowId("");
+                                setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
+                                setDoorDrawerPickerPartType(v);
+                                return;
+                              }
+                              addDraftRowForPartType(v);
+                            }}
                             style={{
                               backgroundColor: color,
                               borderColor: color,
                               color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
                             }}
-                            className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                            className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
                           >
                             {v}
                           </button>
                         );
                       })}
                     </div>
-                  ) : null}
+                  )}
 
-                  {!hideConfiguredDoorDraftHeaderRow && !cabinetBuilderEntryActive ? (
-                    <div className="grid gap-2 text-[11px] font-bold text-[#8A97A8]" style={{ gridTemplateColumns: cutlistEntryGridTemplate }}>
-                      <p></p>
-                      {cutlistEntryColumnDefs.map((col) => (
-                        <p
-                          key={`draft_header_${col.key}`}
-                          className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                          style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
-                        >
-                            {col.key === "clashing" ? (draftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
-                        </p>
-                      ))}
-                    </div>
-                  ) : null}
-                  {cabinetBuilderEntryActive ? (
-                    renderCompactCabinetBuilderEntry()
-                  ) : (
+                  <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: "var(--text-muted)" }}>
+                    <p></p>
+                    {cutlistEntryColumnDefs.map((col) => (
+                      <p
+                        key={`draft_header_${col.key}`}
+                        className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                        style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                      >
+                          {col.key === "clashing" ? (draftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                      </p>
+                    ))}
+                  </div>
+                  {(
                   <div className="space-y-1">
-                      {visibleCutlistDraftRows.map((draft) => {
+                      {visibleCutlistDraftRowGroups.map((rowGroup) => {
+                        const groupRows = rowGroup.subs.length > 0 ? [rowGroup.main, ...rowGroup.subs] : [rowGroup.main];
+                        const groupInner = groupRows.map((draft) => {
+                        const isSubPartDraft = subPartDraftRowIds.has(draft.id);
+                        // A sub-part front bank's own "Height" field only ever exists internally
+                        // (there's no separate overall-height box once the front-bank UI takes over
+                        // that column) — its per-front split should always track the main row's own
+                        // real Height live, not a one-time copy taken when the sub was created, so
+                        // editing the main row's Height later still reflows the sub's fronts.
+                        const frontBankHeightSource = isSubPartDraft ? rowGroup.main.height : draft.height;
+                        // Height's own cell has no wrapping div (cutlistEntryCellStyle is spread
+                        // straight onto the <input>), so the grid's align-items already centers it
+                        // correctly. Every OTHER field has a wrapping <div style={cutlistEntryCellStyle(...)}>
+                        // as the actual grid item — align-items on the grid centers THAT DIV, but
+                        // the div's own (block) child still sits at ITS top by default. Spreading
+                        // this into each such wrapper's own style forces the div itself to center
+                        // its child, matching Height's behavior exactly.
+                        // marginLeft: -4 compensates for the sub row's own left padding growing from
+                        // 1px to 5px (to reveal more of the main row's colour) — without this, every
+                        // field would drift 4px right of where the main row's header columns sit.
+                        // width: "100%" has to come with it — a grid item with no explicit width and
+                        // a negative margin doesn't just shift position, the browser grows its
+                        // auto-width to fill the margin's "missing" space instead, silently making
+                        // every field a few px wider than the main row's matching column. Explicit
+                        // width forces a plain shift with no such side effect. The X (delete)
+                        // button's own cell intentionally has no compensation, so it's the one thing
+                        // that visibly moves into the bigger gap.
+                        const subCellCenterStyle: React.CSSProperties | undefined = isSubPartDraft
+                          ? { display: "flex", alignItems: "center", marginLeft: -4, width: "100%" }
+                          : undefined;
                         const color = partTypeColors[draft.partType] ?? "#CBD5E1";
                         const draftTextColor = isLightHex(color) ? "#1F2937" : "#F8FAFC";
                         const draftFieldBg = lightenHex(color, 0.12);
@@ -35471,6 +30612,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         const draftIsCabinetry = isCabinetryPartType(draft.partType);
                             const draftIsDoor = isDoorPartType(draft.partType);
                             const draftDoorMode = selectedDoorModeValue(draft.doorMode);
+                        const isFrontBankRow = draftIsDoor && (draftDoorMode === "drawer" || draftDoorMode === "door");
+                        const frontBankCount = isFrontBankRow ? Math.max(1, Number.parseInt(draft.doorFrontCount || "1", 10) || 1) : 0;
+                        const frontBankTopGapValue = isFrontBankRow ? String(draft.doorTopGap ?? "") : "";
+                        // Always shown for a front-bank row — a cleared gap displays
+                        // as "0" inside the bubble instead of the bubble disappearing.
+                        const frontBankHasTopGapLabel = isFrontBankRow;
+                        const frontBankHasBetweenGapLabel = isFrontBankRow;
                         const draftBoardAllowsGrain = productionBoardAllowsGrainForValue(String(draft.board ?? "").trim());
                       const draftGrainValue = String(draft.grainValue ?? "").trim();
                       const draftHeightGrainMatch = matchesGrainDimension(draftGrainValue, draft.height, "height");
@@ -35494,7 +30642,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 type="button"
                                 disabled={productionReadOnly}
                                 onClick={() => removeDraftCutlistRow(draft.id)}
-                                className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                className="h-8 w-8 rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                               >
                                 <X size={15} className="mx-auto" strokeWidth={2.8} />
                               </button>
@@ -35528,7 +30677,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 type="button"
                                 disabled={productionReadOnly}
                                 onClick={() => removeDraftCutlistRow(draft.id)}
-                                className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                className="h-8 w-8 rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                               >
                                 <X size={15} className="mx-auto" strokeWidth={2.8} />
                               </button>
@@ -35545,7 +30695,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   fieldText: draftTextColor,
                                 }) : null}
                                 <div className="space-y-1">
-                                  <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Board Type</p>
+                                  <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Board Type</p>
                                   <div className="relative z-[120] pointer-events-auto">
                                     <BoardPillDropdown
                                       value={draft.board}
@@ -35564,7 +30714,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </div>
                                 <div className={`grid gap-2 ${draftBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_120px]" : "grid-cols-1"}`}>
                                   <div className="space-y-1">
-                                    <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Part Name</p>
+                                    <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Part Name</p>
                                     <PartNameSuggestionInput
                                       disabled={productionReadOnly}
                                       title={nameWarn || undefined}
@@ -35577,7 +30727,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   </div>
                                   {draftBoardAllowsGrain ? (
                                     <div className="space-y-1">
-                                      <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Grain</p>
+                                      <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Grain</p>
                                       <BoardPillDropdown
                                         value={String(draft.grainValue ?? "")}
                                         options={grainDimensionOptionsForRow(draft)}
@@ -35600,19 +30750,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </div>
                                 <div className="grid grid-cols-5 gap-2">
                                   <div className="space-y-1">
-                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Height</p>
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Height</p>
                                     <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                   <div className="space-y-1">
-                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Width</p>
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Width</p>
                                     <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                   </div>
                                   <div className="space-y-1">
-                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Quantity</p>
                                     <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }) }} />
                                   </div>
                                   <div className="space-y-1 col-span-2">
-                                    <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
+                                    <p className="text-center text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Clashing</p>
                                     <div className="grid grid-cols-2 gap-2">
                                     <BoardPillDropdown
                                       value={draft.clashLeft ?? ""}
@@ -35642,7 +30792,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   </div>
                                 </div>
                                 <div className="space-y-1">
-                                  <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Information</p>
+                                  <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Information</p>
                                   <div className="grid gap-[2px]">
                                     {informationLinesFromValue(draft.information).map((line, idx) => (
                                       <div key={`${draft.id}_configured_info_${idx}`} className="flex items-center gap-[3px]">
@@ -35652,8 +30802,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
                                           className={
                                             idx === 0
-                                              ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
-                                              : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                              ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-[20px] font-bold leading-none text-white hover:brightness-95 disabled:opacity-55"
+                                              : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                          }
+                                          style={
+                                            idx === 0
+                                              ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                              : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
                                           }
                                         >
                                           {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
@@ -35672,7 +30827,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </div>
                                 {draftDoorMode === "door" ? (
                                   <div className="space-y-1">
-                                    <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Hinges</p>
+                                    <p className="text-[11px] font-bold" style={{ color: "var(--text-main)" }}>Hinges</p>
                                     {renderDoorHingeEditor({
                                       upValues: normalizeDoorHingeValues(draft.hingesUp),
                                       downValues: normalizeDoorHingeValues(draft.hingesDown),
@@ -35737,47 +30892,132 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         );
                       }
                       return (
+                        <Fragment key={draft.id}>
                           <div
-                            key={draft.id}
-                            className={`relative grid gap-2 overflow-visible border-y px-1 py-1 ${draftIsDoor ? "items-start" : "items-center"}`}
-                            style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: color, color: draftTextColor, borderColor: draftFieldBorder }}
+                            className={`relative grid gap-2 overflow-visible ${draftIsDoor && !isSubPartDraft ? "items-start" : "items-center"} ${isSubPartDraft ? "pl-[2px] pr-[2px] rounded-[8px] border" : "py-1 px-1 border-y"}`}
+                            style={{
+                              gridTemplateColumns: cutlistEntryGridTemplate,
+                              backgroundColor: color,
+                              color: draftTextColor,
+                              borderColor: draftFieldBorder,
+                              marginTop: isSubPartDraft ? 0 : undefined,
+                              alignItems: isSubPartDraft ? "center" : undefined,
+                              paddingTop: isSubPartDraft ? 2 : undefined,
+                              paddingBottom: isSubPartDraft ? 2 : undefined,
+                            }}
                           >
-                          <button
-                            type="button"
-                            disabled={productionReadOnly}
-                            onClick={() => removeDraftCutlistRow(draft.id)}
-                            className="h-8 w-8 rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
-                          >
-                            <X size={15} className="mx-auto" strokeWidth={2.8} />
-                          </button>
-                          <div className="relative z-[120] pointer-events-auto" style={cutlistEntryCellStyle("board")}>
-                            <BoardPillDropdown
-                              value={draft.board}
-                              options={cutlistBoardOptions}
+                          <div className="flex flex-col items-center gap-1" style={draftIsDoor && !isSubPartDraft ? { alignSelf: "center" } : undefined}>
+                            <button
+                              type="button"
                               disabled={productionReadOnly}
-                              title={boardWarn || undefined}
-                              className={warningClassForCell(draft.id, "board")}
-                              bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
-                              border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
-                              text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
-                              getSize={boardSizeFor}
-                              getLabel={boardDisplayLabel}
-                              onChange={(next) => onDraftBoardChange(draft.id, next)}
-                            />
+                              onClick={() => removeDraftCutlistRow(draft.id)}
+                              onDoubleClick={() => removeDraftCutlistRow(draft.id, true)}
+                              title="Delete row (double-click to force delete a filled-in row)"
+                              className={`rounded-[8px] border font-bold text-white hover:brightness-95 disabled:opacity-55 ${isSubPartDraft ? "h-6 w-6 text-[9px]" : "h-8 w-8 text-[11px]"}`}
+                              style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                            >
+                              <X size={isSubPartDraft ? 11 : 15} className="mx-auto" strokeWidth={2.8} />
+                            </button>
+                            {!isSubPartDraft && (isCabinetryPartType(draft.partType) || isDrawerPartType(draft.partType)) && (
+                              <button
+                                type="button"
+                                disabled={productionReadOnly}
+                                onClick={(e) => {
+                                  setSubPartTypePickerOrigin(captureGlassModalOrigin(e));
+                                  setSubPartTypePickerMainRowId(draft.id);
+                                }}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                title="Add sub part"
+                                aria-label="Add sub part"
+                              >
+                                <Plus size={15} className="mx-auto" strokeWidth={2.8} />
+                              </button>
+                            )}
+                          </div>
+                          <div ref={registerCutlistWarnCellRef(draft.id, "board")} className="relative z-[120] pointer-events-auto" style={{ ...cutlistEntryCellStyle("board"), ...subCellCenterStyle }}>
+                            {isFrontBankRow ? (() => {
+                              const boardManualArr = normalizeDoorFrontBoardManual(draft.doorFrontBoardManual, frontBankCount);
+                              const boardValuesArr = normalizeDoorFrontBoards(draft.doorFrontBoards, frontBankCount);
+                              return renderFrontFieldStack(
+                                frontBankCount,
+                                boardManualArr,
+                                "Linked board — untick to give this front its own board",
+                                (index, linked) => onDraftFrontBoardLinkToggle(draft.id, index, linked),
+                                (index) => (
+                                  <BoardPillDropdown
+                                    value={boardManualArr[index] ? boardValuesArr[index] : boardValuesArr[index] || draft.board}
+                                    options={cutlistBoardOptions}
+                                    disabled={productionReadOnly}
+                                    bg={draftFieldBg}
+                                    border={draftFieldBorder}
+                                    text={draftTextColor}
+                                    size="compact"
+                                    className={isSubPartDraft ? "!h-6 !text-[10px]" : "!h-8 !text-[11px]"}
+                                    reserveRightIcon
+                                    getSize={boardSizeFor}
+                                    getLabel={boardDisplayLabel}
+                                    onChange={(next) => onDraftFrontBoardChange(draft.id, index, next)}
+                                  />
+                                ),
+                                undefined,
+                                isSubPartDraft,
+                              );
+                            })() : (
+                              <BoardPillDropdown
+                                value={draft.board}
+                                options={cutlistBoardOptions}
+                                disabled={productionReadOnly}
+                                title={boardWarn || undefined}
+                                size={isSubPartDraft ? "compact" : "default"}
+                                className={warningClassForCell(draft.id, "board")}
+                                bg={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
+                                border={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
+                                text={warningStyleForCell(draft.id, "board", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).color ?? draftTextColor}
+                                getSize={boardSizeFor}
+                                getLabel={boardDisplayLabel}
+                                onChange={(next) => onDraftBoardChange(draft.id, next)}
+                              />
+                            )}
                           </div>
                           <div
+                            ref={registerCutlistWarnCellRef(draft.id, "name")}
                             className="relative z-[20] grid gap-[4px] overflow-visible"
-                            style={cutlistEntryCellStyle("name")}
+                            style={{ ...cutlistEntryCellStyle("name"), ...subCellCenterStyle }}
                           >
-                            <PartNameSuggestionInput
-                              disabled={productionReadOnly}
-                              title={nameWarn || undefined}
-                              value={draft.name}
-                              options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
-                              onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
-                              className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] ${warningClassForCell(draft.id, "name")}`}
-                              style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
-                            />
+                            {isFrontBankRow ? (() => {
+                              const nameManualArr = normalizeDoorFrontManualArray(draft.doorFrontNameManual, frontBankCount);
+                              const nameValuesArr = normalizeDoorFrontTextArray(draft.doorFrontNames, frontBankCount);
+                              return renderFrontFieldStack(
+                                frontBankCount,
+                                nameManualArr,
+                                "Linked name — untick to give this front its own name",
+                                (index, linked) => onDraftFrontNameLinkToggle(draft.id, index, linked),
+                                (index) => (
+                                  <PartNameSuggestionInput
+                                    disabled={productionReadOnly}
+                                    value={nameManualArr[index] ? nameValuesArr[index] : nameValuesArr[index] || draft.name}
+                                    placeholder={nameManualArr[index] ? draft.name : undefined}
+                                    options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                                    onChange={(next) => onDraftFrontNameChange(draft.id, index, next)}
+                                    className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} rounded-[6px] border bg-transparent px-1 pr-5 cs-frontbank-ghost`}
+                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                  />
+                                ),
+                                undefined,
+                                isSubPartDraft,
+                              );
+                            })() : (
+                              <PartNameSuggestionInput
+                                disabled={productionReadOnly}
+                                title={nameWarn || undefined}
+                                value={draft.name}
+                                options={productionPartNameSuggestionsForRoom(draft.room, draft.name)}
+                                onChange={(next) => updateDraftCutlistRow(draft.id, { name: next })}
+                                className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} rounded-[8px] border bg-transparent px-2 ${warningClassForCell(draft.id, "name")}`}
+                                style={warningStyleForCell(draft.id, "name", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })}
+                              />
+                            )}
                             {draftIsDoor
                               && !manualCutlistUsesPlainDoorRows
                               ? renderDoorModeConfigurator({
@@ -35792,7 +31032,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   fieldText: draftTextColor,
                                 })
                               : null}
-                            {draftIsDoor && draftDoorMode !== "manual"
+                            {draftIsDoor && draftDoorMode !== "manual" && !manualCutlistUsesPlainDoorRows
                               ? (
                                 <div style={cutlistEntryCellStyle("information", 2)}>
                                   {!manualCutlistUsesPlainDoorRows ? renderDoorSetupDesigner({
@@ -35839,7 +31079,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </div>
                               )
                               : null}
-                                {draftIsDoor && draftDoorMode === "manual" ? (
+                                {draftIsDoor && draftDoorMode !== "drawer" && !isSubPartDraft ? (
                                 <div className="relative h-[40px] w-0 overflow-visible">
                                 <div className="pointer-events-auto absolute left-0 top-0">
                                   {renderDoorHingeEditor({
@@ -35859,12 +31099,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             ) : null}
                           </div>
                           {isDrawerPartType(draft.partType) ? (
-                            <div style={cutlistEntryCellStyle("height")}>
+                            <div ref={registerCutlistWarnCellRef(draft.id, "height")} style={{ ...cutlistEntryCellStyle("height"), display: "flex", alignItems: "center", marginLeft: isSubPartDraft ? -4 : undefined, width: isSubPartDraft ? "100%" : undefined }}>
                             <DrawerHeightDropdown
                               value={String(draft.height || "")}
                               options={drawerHeightLetterOptions}
                               disabled={productionReadOnly}
                               title={heightWarn || undefined}
+                              compact={isSubPartDraft}
                               className={warningClassForCell(draft.id, "height")}
                               bg={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).backgroundColor ?? draftFieldBg}
                               border={warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }).borderColor ?? draftFieldBorder}
@@ -35873,12 +31114,170 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               onRemove={(token) => removeDraftDrawerHeightToken(draft.id, token)}
                             />
                             </div>
+                          ) : isFrontBankRow && draftDoorMode === "drawer" ? (
+                            (() => {
+                              const frontHeights = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
+                              const frontHeightManual = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
+                              const seamCount = Math.max(0, frontBankCount - 1);
+                              const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
+                              const resolvedFrontHeights = resolveDrawerBankFrontHeights(
+                                frontHeights,
+                                String(frontBankHeightSource ?? ""),
+                                frontBankTopGapValue,
+                                frontBetweenGaps,
+                                frontHeightManual,
+                              ).heights;
+                              return (
+                                <div style={cutlistEntryCellStyle("height")}>
+                                  {renderFrontSplitStack({
+                                    count: frontBankCount,
+                                    values: frontHeights,
+                                    resolvedValues: resolvedFrontHeights,
+                                    topGapValue: frontBankTopGapValue,
+                                    betweenGaps: frontBetweenGaps,
+                                    hasTopGapLabel: frontBankHasTopGapLabel,
+                                    hasBetweenGapLabel: frontBankHasBetweenGapLabel,
+                                    onValueChange: (index, value) => onDraftDoorFrontHeightChange(draft.id, index, value),
+                                    onValueBlur: (index) => onDraftDoorFrontHeightBlur(draft.id, index),
+                                    onTopGapChange: (next) => onDraftDoorGapChange(draft.id, "doorTopGap", next),
+                                    onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
+                                    topGapTitle: "Below bench to top of door/drawer — editing this stops it following the settings default",
+                                    betweenGapTitle: "Horizontal gap between drawers — editing this stops it following the settings default",
+                                    fieldLabel: "height",
+                                    fieldBg: draftFieldBg,
+                                    fieldBorder: draftFieldBorder,
+                                    fieldText: draftTextColor,
+                                    gapKey: draft.id,
+                                    compact: isSubPartDraft,
+                                  })}
+                                </div>
+                              );
+                            })()
+                          ) : isFrontBankRow ? (
+                            (() => {
+                              const heightManualArr = normalizeDoorFrontHeightManual(draft.doorFrontHeightManual, frontBankCount);
+                              const heightValuesArr = normalizeDoorFrontHeights(draft.doorFrontHeights, frontBankCount);
+                              return (
+                                <div style={cutlistEntryCellStyle("height")}>
+                                  {renderFrontFieldStack(
+                                    frontBankCount,
+                                    heightManualArr,
+                                    "Linked height — untick to give this front its own height",
+                                    (index, linked) => onDraftFrontHeightLinkToggle(draft.id, index, linked),
+                                    (index) => (
+                                      <input
+                                        disabled={productionReadOnly}
+                                        inputMode="decimal"
+                                        title={`Front ${index + 1} height`}
+                                        value={heightManualArr[index] ? heightValuesArr[index] : heightValuesArr[index] || draft.height}
+                                        placeholder={heightManualArr[index] ? draft.height : undefined}
+                                        onChange={(e) => onDraftFrontHeightChange(draft.id, index, e.target.value)}
+                                        className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
+                                        style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                      />
+                                    ),
+                                  )}
+                                </div>
+                              );
+                            })()
                           ) : (
-                            <input disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                            <input ref={registerCutlistWarnCellRef(draft.id, "height")} disabled={productionReadOnly} inputMode="decimal" title={heightWarn || undefined} value={draft.height} onChange={(e) => updateDraftCutlistRow(draft.id, { height: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "height")}`} style={{ ...warningStyleForCell(draft.id, "height", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height"), marginLeft: isSubPartDraft ? -4 : undefined }} />
                           )}
-                          <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
-                          <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
-                          <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={{ ...warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                          <div ref={registerCutlistWarnCellRef(draft.id, "width")} style={{ ...cutlistEntryCellStyle("width"), ...subCellCenterStyle }}>
+                            {isFrontBankRow && draftDoorMode === "door" ? (() => {
+                              const frontWidths = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
+                              const frontWidthManual = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
+                              const seamCount = Math.max(0, frontBankCount - 1);
+                              const frontBetweenGaps = resolveDrawerBankBetweenGaps(draft, seamCount);
+                              const resolvedFrontWidths = resolveDrawerBankFrontHeights(
+                                frontWidths,
+                                String(draft.width ?? ""),
+                                "0",
+                                frontBetweenGaps,
+                                frontWidthManual,
+                              ).heights;
+                              return renderFrontSplitStack({
+                                count: frontBankCount,
+                                values: frontWidths,
+                                resolvedValues: resolvedFrontWidths,
+                                topGapValue: "0",
+                                betweenGaps: frontBetweenGaps,
+                                hasTopGapLabel: false,
+                                hasBetweenGapLabel: frontBankHasBetweenGapLabel,
+                                onValueChange: (index, value) => onDraftFrontWidthSplitChange(draft.id, index, value),
+                                onValueBlur: (index) => onDraftFrontWidthSplitBlur(draft.id, index),
+                                onTopGapChange: () => {},
+                                onBetweenGapChange: (index, next) => onDraftFrontBetweenGapChange(draft.id, index, next),
+                                topGapTitle: "",
+                                betweenGapTitle: "Vertical gap between doors — editing this stops it following the settings default",
+                                fieldLabel: "width",
+                                fieldBg: draftFieldBg,
+                                fieldBorder: draftFieldBorder,
+                                fieldText: draftTextColor,
+                                gapKey: `${draft.id}:w`,
+                                compact: isSubPartDraft,
+                              });
+                            })() : isFrontBankRow ? (() => {
+                              const widthManualArr = normalizeDoorFrontWidthManual(draft.doorFrontWidthManual, frontBankCount);
+                              const widthValuesArr = normalizeDoorFrontWidths(draft.doorFrontWidths, frontBankCount);
+                              return renderFrontFieldStack(
+                                frontBankCount,
+                                widthManualArr,
+                                "Linked width — untick to give this front its own width",
+                                (index, linked) => onDraftFrontWidthLinkToggle(draft.id, index, linked),
+                                (index) => (
+                                  <input
+                                    disabled={productionReadOnly}
+                                    inputMode="decimal"
+                                    title={`Front ${index + 1} width`}
+                                    value={widthManualArr[index] ? widthValuesArr[index] : widthValuesArr[index] || draft.width}
+                                    placeholder={widthManualArr[index] ? draft.width : undefined}
+                                    onChange={(e) => onDraftFrontWidthChange(draft.id, index, e.target.value)}
+                                    className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
+                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                  />
+                                ),
+                                undefined,
+                                isSubPartDraft,
+                              );
+                            })() : (
+                              <input disabled={productionReadOnly} inputMode="decimal" title={widthWarn || undefined} value={draft.width} onChange={(e) => onDraftDoorOverallWidthChange(draft.id, e.target.value)} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "width")}`} style={{ ...warningStyleForCell(draft.id, "width", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                            )}
+                          </div>
+                          <div ref={registerCutlistWarnCellRef(draft.id, "depth")} style={{ ...cutlistEntryCellStyle("depth"), ...subCellCenterStyle }}>
+                            {isFrontBankRow ? null : (
+                              <input disabled={productionReadOnly} inputMode="decimal" title={depthWarn || undefined} value={draft.depth} onChange={(e) => updateDraftCutlistRow(draft.id, { depth: numericDimensionText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center ${warningClassForCell(draft.id, "depth")}`} style={{ ...warningStyleForCell(draft.id, "depth", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }), ...(draftDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                            )}
+                          </div>
+                          <div ref={registerCutlistWarnCellRef(draft.id, "quantity")} style={{ ...cutlistEntryCellStyle("quantity"), ...subCellCenterStyle }}>
+                            {isFrontBankRow ? (() => {
+                              const quantityManualArr = normalizeDoorFrontManualArray(draft.doorFrontQuantityManual, frontBankCount);
+                              const quantityValuesArr = normalizeDoorFrontTextArray(draft.doorFrontQuantities, frontBankCount);
+                              return renderFrontFieldStack(
+                                frontBankCount,
+                                quantityManualArr,
+                                "Linked quantity — untick to give this front its own quantity",
+                                (index, linked) => onDraftFrontQuantityLinkToggle(draft.id, index, linked),
+                                (index) => (
+                                  <input
+                                    disabled={productionReadOnly}
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    title={`Front ${index + 1} quantity`}
+                                    value={quantityManualArr[index] ? quantityValuesArr[index] : quantityValuesArr[index] || draft.quantity}
+                                    placeholder={quantityManualArr[index] ? draft.quantity : undefined}
+                                    onChange={(e) => onDraftFrontQuantityChange(draft.id, index, e.target.value)}
+                                    className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[11px]"} w-full rounded-[6px] border bg-transparent px-1 pr-5 text-center cs-frontbank-ghost`}
+                                    style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
+                                  />
+                                ),
+                                undefined,
+                                isSubPartDraft,
+                              );
+                            })() : (
+                              <input disabled={productionReadOnly || (isDrawerPartType(draft.partType) && !draftIsDoor)} inputMode="numeric" pattern="[0-9]*" title={quantityWarn || undefined} value={draft.quantity} onChange={(e) => updateDraftCutlistRow(draft.id, { quantity: numericOnlyText(e.target.value) })} className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} w-full rounded-[8px] border bg-transparent px-2 text-center disabled:opacity-90 ${warningClassForCell(draft.id, "quantity")}`} style={warningStyleForCell(draft.id, "quantity", { backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor })} />
+                            )}
+                          </div>
                           {draftIsCabinetry ? (
                             <div className="grid content-start gap-[1px]" style={cutlistEntryCellStyle("clashing", 2)}>
                               <div className="grid content-start gap-0">
@@ -35893,7 +31292,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   />
                                 </div>
                                 {hasShelfQuantity(draft.fixedShelf) && (
-                                  <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                  <div className="mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                     <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
                                       <DrillingArrowIcon color={draftTextColor} />
                                       Drilling
@@ -35928,7 +31327,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   />
                                 </div>
                                 {hasShelfQuantity(draft.adjustableShelf) && (
-                                  <div className="-mt-[5px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
+                                  <div className="mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
                                     <span className="inline-flex w-full items-center justify-end gap-[2px] pr-[3px] text-[9px] font-bold leading-none" style={{ color: draftTextColor }}>
                                       <DrillingArrowIcon color={draftTextColor} />
                                       Drilling
@@ -35954,7 +31353,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </div>
                           ) : (
                             <>
-                              <div style={cutlistEntrySubCellStyle("clashing", 0)}>
+                              <div style={{ ...cutlistEntrySubCellStyle("clashing", 0), ...subCellCenterStyle, ...(draftIsDoor && !isSubPartDraft ? { alignSelf: "center" } : null) }}>
                                 <BoardPillDropdown
                                   value={draft.clashLeft ?? ""}
                                   options={CLASH_LEFT_OPTIONS}
@@ -35962,13 +31361,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   bg={draftFieldBg}
                                   border={draftFieldBorder}
                                   text={draftTextColor}
-                                  size="default"
+                                  size={isSubPartDraft ? "compact" : "default"}
                                   getSize={() => ""}
                                   getLabel={(v) => v}
                                   onChange={(v) => updateDraftCutlistRow(draft.id, { clashLeft: v })}
                                 />
                               </div>
-                              <div style={cutlistEntrySubCellStyle("clashing", 1)}>
+                              <div style={{ ...cutlistEntrySubCellStyle("clashing", 1), ...subCellCenterStyle, ...(draftIsDoor && !isSubPartDraft ? { alignSelf: "center" } : null) }}>
                                 <BoardPillDropdown
                                   value={draft.clashRight ?? ""}
                                   options={CLASH_RIGHT_OPTIONS}
@@ -35976,7 +31375,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   bg={draftFieldBg}
                                   border={draftFieldBorder}
                                   text={draftTextColor}
-                                  size="default"
+                                  size={isSubPartDraft ? "compact" : "default"}
                                   getSize={() => ""}
                                   getLabel={(v) => v}
                                   onChange={(v) => updateDraftCutlistRow(draft.id, { clashRight: v })}
@@ -35984,27 +31383,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </div>
                             </>
                           )}
-                          <div className="grid gap-[2px]" style={cutlistEntryCellStyle("information")}>
+                          <div className="grid gap-[6px]" style={{ ...cutlistEntryCellStyle("information"), ...(isSubPartDraft ? { alignItems: "center", marginLeft: -4, width: "100%" } : null), ...(draftIsDoor && !isSubPartDraft ? { alignSelf: "center" } : null) }}>
                             {informationLinesFromValue(draft.information).map((line, idx) => (
                               <div key={`${draft.id}_info_${idx}`} className="flex items-center gap-[3px]">
                                 <button
                                   type="button"
                                   disabled={productionReadOnly}
                                   onClick={() => (idx === 0 ? onDraftAddInformationLine(draft.id) : onDraftRemoveInformationLine(draft.id, idx))}
-                                  className={
+                                  className={`inline-flex items-center justify-center rounded-[8px] border font-bold text-white hover:brightness-95 disabled:opacity-55 ${isSubPartDraft ? "h-6 w-6" : "h-7 w-7"} ${idx === 0 ? "text-[20px] leading-none" : "text-[11px]"}`}
+                                  style={
                                     idx === 0
-                                      ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[20px] font-bold leading-none text-[#1F8A4C] hover:bg-[#DDF2E7] disabled:opacity-55"
-                                      : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[11px] font-bold text-[#C62828] disabled:opacity-55"
+                                      ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                      : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
                                   }
                                 >
-                                  {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
+                                  {idx === 0 ? (
+                                    <Plus size={isSubPartDraft ? 13 : 16} className="mx-auto" strokeWidth={2.8} />
+                                  ) : (
+                                    <X size={isSubPartDraft ? 12 : 15} className="mx-auto" strokeWidth={2.8} />
+                                  )}
                                 </button>
                                 <input
                                   disabled={productionReadOnly}
                                   value={line}
                                   onChange={(e) => onDraftInformationLineChange(draft.id, idx, e.target.value)}
                                   placeholder="Information"
-                                  className="h-8 flex-1 rounded-[8px] border bg-transparent px-2 text-[12px]"
+                                  className={`${isSubPartDraft ? "h-6 text-[10px]" : "h-8 text-[12px]"} flex-1 rounded-[8px] border bg-transparent px-2`}
                                   style={{ backgroundColor: draftFieldBg, borderColor: draftFieldBorder, color: draftTextColor }}
                                 />
                               </div>
@@ -36012,7 +31416,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           </div>
                           {showCutlistGrainColumn && (
                             draftBoardAllowsGrain ? (
-                              <div style={cutlistEntryCellStyle("grain")}>
+                              <div style={{ ...cutlistEntryCellStyle("grain"), ...subCellCenterStyle }}>
                                 <BoardPillDropdown
                                   value={String(draft.grainValue ?? "")}
                                   options={grainDimensionOptionsForRow(draft)}
@@ -36020,7 +31424,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   bg={draftFieldBg}
                                   border={draftFieldBorder}
                                   text={draftTextColor}
-                                  size="default"
+                                  size={isSubPartDraft ? "compact" : "default"}
                                   getSize={() => ""}
                                   getLabel={(v) => v || (draftBoardAllowsGrain ? "Select" : "")}
                                   onChange={(v) =>
@@ -36036,14 +31440,47 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             )
                           )}
                         </div>
+                        </Fragment>
                       );
-                    })}
+                        });
+                        if (rowGroup.subs.length === 0) {
+                          return <Fragment key={rowGroup.main.id}>{groupInner}</Fragment>;
+                        }
+                        const mainColor = partTypeColors[rowGroup.main.partType] ?? "#CBD5E1";
+                        return (
+                          <div
+                            key={rowGroup.main.id}
+                            className="overflow-hidden"
+                            style={{ backgroundColor: mainColor }}
+                          >
+                            {groupInner[0]}
+                            {/* Left padding is 5px here (matching the right side) — up from the 1px
+                                that used to keep Board/Name/Height/etc lined up with the main row's
+                                header columns. Since this whole wrapper is OUTSIDE the row's own grid
+                                (not just its padding), margin-ing the row itself would move its entire
+                                bordered box — including the border the user is measuring "the gap"
+                                against — right back to where it started, undoing this. Instead, every
+                                field cell EXCEPT the X (delete) button gets its own -4px marginLeft
+                                (subCellCenterStyle, plus the Height/Information cells that don't use
+                                it) to cancel the 4px this padding adds versus the old 1px — so those
+                                fields land at the exact same absolute position as before, and only the
+                                X button (uncompensated) visibly moves into the bigger gap. Top/bottom
+                                padding (5px each) is a plain visible gap, split evenly so the sub
+                                row's own box sits centered instead of flush against one edge.
+                                flex-col + gap-1 puts a small gap between each sub row. */}
+                            <div className="flex flex-col gap-1 pl-[5px] pr-[5px] pt-[5px] pb-[5px]">
+                              {groupInner.slice(1)}
+                            </div>
+                          </div>
+                        );
+                      })}
                   </div>
                   )}
                   <button
                     disabled={productionReadOnly}
-                    onClick={() => void (cutlistEntryMode === "wallBuilder" ? addCutlistRow() : addDraftRowsToCutlist())}
-                    className="inline-flex h-[50px] w-full items-center justify-center border-y border-[#BFE8CF] bg-[#DDF2E7] text-[24px] font-extrabold text-[#14532D] disabled:opacity-55"
+                    onClick={() => void addDraftRowsToCutlist()}
+                    className="inline-flex h-[50px] w-full items-center justify-center border-y text-[24px] font-normal text-white hover:brightness-95 disabled:opacity-55"
+                    style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
                   >
                     Add to Cutlist
                   </button>
@@ -36054,8 +31491,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <section className="relative z-10 -mx-4 w-[calc(100%+2rem)] overflow-visible">
                 <div className="flex h-[50px] items-center justify-between px-1">
                   <div className="inline-flex items-center gap-2">
-                    <p className="text-[14px] font-medium uppercase tracking-[1px] text-[#12345B]">Cutlist List</p>
-                    <p className="rounded-[999px] border border-[#D6DEE9] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#334155]">
+                    <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist List</p>
+                    <p className="rounded-[999px] border px-3 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}>
                       {formatPartCount(visibleCutlistRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0))}
                     </p>
                   </div>
@@ -36064,24 +31501,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       value={cutlistSearch}
                       onChange={(e) => setCutlistSearch(e.target.value)}
                       placeholder="Search part name or board"
-                      className="h-8 w-[280px] rounded-[8px] border border-[#D8DEE8] bg-[#EEF1F5] px-2 text-[12px]"
+                      className="h-8 w-[280px] rounded-[8px] border px-2 text-[12px]"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                     />
-                    <select
+                    <GlassSelectDropdown
                       value={cutlistPartTypeFilter}
-                      onChange={(e) => setCutlistPartTypeFilter(e.target.value)}
-                      className="h-8 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                    >
-                      <option value="All Part Types">All Part Types</option>
-                      {partTypeOptions.map((v) => (
-                        <option key={v} value={v}>{v}</option>
-                      ))}
-                    </select>
+                      onChange={setCutlistPartTypeFilter}
+                      options={["All Part Types", ...partTypeOptions]}
+                      className="h-8 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px] text-[var(--text-main)]"
+                    />
                   </div>
                 </div>
                 <div className="flex flex-col space-y-2 px-0 pb-0">
                   <div className="overflow-visible bg-transparent">
                     {groupedCutlistRows.length === 0 && (
-                      <div className="px-3 py-6 text-center text-[12px] text-[#7A8798]">No cutlist rows yet.</div>
+                      <div className="px-3 py-6 text-center text-[12px]" style={{ color: "var(--text-muted)" }}>No cutlist rows yet.</div>
                     )}
                     {groupedCutlistRows.map((group) => {
                       const color = partTypeColors[group.partType] ?? "#CBD5E1";
@@ -36131,11 +31565,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     void deletePendingCutlistRowsForGroup(group.partType);
                                   }}
                                   className="inline-flex h-8 items-center justify-center rounded-[8px] border px-3 text-[12px] font-bold"
-                                  style={{
-                                    borderColor: groupDeleteConfirmArmed ? "#8AC0A0" : "#F2A7A7",
-                                    backgroundColor: groupDeleteConfirmArmed ? "#DFF3E7" : "#FFECEC",
-                                    color: groupDeleteConfirmArmed ? "#1E6A43" : "#991B1B",
-                                  }}
+                                  style={
+                                    groupDeleteConfirmArmed
+                                      ? { borderColor: "#8AC0A0", backgroundColor: "#DFF3E7", color: "#1E6A43" }
+                                      : { borderColor: "var(--danger-strong)", backgroundImage: "var(--danger-gradient)", color: "#FFFFFF" }
+                                  }
                                   title={groupDeleteConfirmArmed ? "Confirm delete selected rows" : "Delete selected rows"}
                                 >
                                   {groupDeleteConfirmArmed ? `Confirm (${pendingGroupCount})` : `Delete (${pendingGroupCount})`}
@@ -36159,7 +31593,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               </button>
                             </div>
                           </div>
-                          {!collapsed && (
+                          <div
+                            className="grid transition-[grid-template-rows] duration-300 ease-out"
+                            style={{ gridTemplateRows: collapsed ? "0fr" : "1fr" }}
+                          >
+                          <div className="overflow-hidden">
                           <table className="w-full text-left text-[12px]">
                             <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
                               <tr>
@@ -36190,20 +31628,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 const rowIsCabinetry = isCabinetryPartType(row.partType);
                                 const rowIsDrawer = isDrawerPartType(row.partType);
                                 const rowIsDoor = isDoorPartType(row.partType);
-                                const rowIsCabinetBuilderContainer = isCabinetBuilderContainerRow(row);
                                 const rowIsConfiguredDoor = rowIsDoor && normalizeDoorModeValue(row.doorMode) !== "manual";
                                 const rowPendingDelete = pendingGroupRows.includes(row.id);
                                 const cabinetryOpen = Boolean(expandedCabinetryRows[row.id]);
                                 const drawerOpen = Boolean(expandedDrawerRows[row.id]);
                                 const doorOpen = Boolean(expandedDoorRows[row.id]);
-                                const cabinetryPieces = rowIsCabinetry && !rowIsCabinetBuilderContainer ? buildCabinetryDerivedPieces(row) : [];
+                                const cabinetryPieces = rowIsCabinetry ? buildCabinetryDerivedPieces(row) : [];
                                 const drawerPieces = rowIsDrawer ? buildDrawerDerivedPieces(row) : [];
                                 const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
-                                const cabinetBuilderPieces = rowIsCabinetBuilderContainer ? (cabinetBuilderGeneratedRowsByContainerId[row.id] ?? []) : [];
-                                const spillInfoToSubRows = rowIsCabinetBuilderContainer || rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor;
-                                const visibleSubRowCount = rowIsCabinetBuilderContainer
-                                  ? (cabinetryOpen ? cabinetBuilderPieces.length : 0)
-                                  : rowIsCabinetry
+                                const spillInfoToSubRows = rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor;
+                                const visibleSubRowCount = rowIsCabinetry
                                   ? (cabinetryOpen ? cabinetryPieces.length : 0)
                                   : rowIsDrawer
                                     ? (drawerOpen ? drawerPieces.length : 0)
@@ -36232,24 +31666,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         type="button"
                                         disabled={productionReadOnly}
                                         onClick={() => togglePendingCutlistRowDelete(group.partType, row.id)}
-                                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border disabled:opacity-55"
-                                        style={{
-                                          borderColor: rowPendingDelete ? "#8AC0A0" : "#F4B5B5",
-                                          backgroundColor: rowPendingDelete ? "#DFF3E7" : "#FCEAEA",
-                                          color: rowPendingDelete ? "#1E6A43" : "#C62828",
-                                        }}
+                                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border text-white hover:brightness-95 disabled:opacity-55"
+                                        style={
+                                          rowPendingDelete
+                                            ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                            : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
+                                        }
                                       >
                                         {rowPendingDelete ? (
-                                          <img src="/tick.png" alt="Selected" className="h-[11px] w-[11px] object-contain" />
+                                          <img
+                                            src="/tick.png"
+                                            alt="Selected"
+                                            className="h-[11px] w-[11px] object-contain"
+                                            style={{ filter: "brightness(0) invert(1)" }}
+                                          />
                                         ) : (
                                           <X size={11} strokeWidth={2.5} />
                                         )}
                                       </button>
                                       <button
                                         type="button"
-                                        disabled={!(rowIsCabinetBuilderContainer || rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor)}
+                                        disabled={!(rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor)}
                                         onClick={() => {
-                                          if (rowIsCabinetBuilderContainer || rowIsCabinetry) {
+                                          if (rowIsCabinetry) {
                                             toggleCabinetryRowExpand(row.id);
                                             return;
                                           }
@@ -36261,17 +31700,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             toggleDoorRowExpand(row.id);
                                           }
                                         }}
-                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetBuilderContainer || rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor) ? "" : "invisible pointer-events-none"}`}
+                                        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] border ${(rowIsCabinetry || rowIsDrawer || rowIsConfiguredDoor) ? "" : "invisible pointer-events-none"}`}
                                         style={{
                                           backgroundColor: color,
                                           borderColor: darkenHex(color, 0.18),
                                         }}
-                                        title={(rowIsCabinetBuilderContainer || rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "Collapse details" : "Expand details"}
+                                        title={(rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "Collapse details" : "Expand details"}
                                       >
                                         <img
                                           src="/Arrow.png"
                                           alt="Expand"
-                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetBuilderContainer || rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
+                                          className={`h-[11px] w-[11px] transition-transform ${(rowIsCabinetry ? cabinetryOpen : rowIsDrawer ? drawerOpen : doorOpen) ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
                                           style={{ filter: groupTextColor === "#FFFFFF" ? "invert(1) brightness(2)" : "none" }}
                                         />
                                       </button>
@@ -36300,8 +31739,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             }
                                             if (e.key === "Escape") cancelCellEdit();
                                           }}
-                                          className={`h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${warningClassForCell(row.id, "room")}`}
-                                          style={warningStyleForCell(row.id, "room", { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" })}
+                                          className={`h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${warningClassForCell(row.id, "room")}`}
+                                          style={warningStyleForCell(row.id, "room", { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" })}
                                         >
                                           {cutlistEntryRoomOptions.map((opt) => (
                                             <option key={opt} value={opt}>{opt}</option>
@@ -36345,7 +31784,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 }
                                                 if (e.key === "Escape") cancelCellEdit();
                                               }}
-                                              className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A]"
+                                              className="h-6 w-full min-w-0 max-w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)]"
                                             >
                                                <option value=""></option>
                                                {options.map((opt) => (
@@ -36384,9 +31823,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               value={editingCellValue}
                                               options={options}
                                               disabled={productionReadOnly}
-                                              bg="#FFFFFF"
-                                              border="#94A3B8"
-                                              text="#0F172A"
+                                              bg="var(--panel-bg)"
+                                              border="var(--glass-border)"
+                                              text="var(--text-main)"
                                               size="compact"
                                               getSize={boardSizeFor}
                                               getLabel={boardDisplayLabel}
@@ -36428,9 +31867,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               value={editingCellValue}
                                               options={grainDimensionOptionsForRow(row)}
                                               disabled={productionReadOnly}
-                                              bg="#FFFFFF"
-                                              border="#94A3B8"
-                                              text="#0F172A"
+                                              bg="var(--panel-bg)"
+                                              border="var(--glass-border)"
+                                              text="var(--text-main)"
                                               size="compact"
                                               getSize={() => ""}
                                               getLabel={(v) => v}
@@ -36455,7 +31894,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       return (
                                         <td
                                           key={`${row.id}_${col.label}`}
-                                          className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                          className={`px-2 py-[3px] align-middle ${alignClass} ${isFlashingCell(row.id, "height") ? "cutlist-cell-flash-red" : ""}`}
                                           onDoubleClick={() => startCellEdit(row, "height")}
                                           style={{
                                             ...cutlistListColumnStyle("height"),
@@ -36471,9 +31910,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                 compact
                                                 title={cellWarn || undefined}
                                                 className={cellWarnClass}
-                                                bg={warningStyleForCell(row.id, key, { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).backgroundColor ?? "#FFFFFF"}
-                                                border={warningStyleForCell(row.id, key, { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).borderColor ?? "#94A3B8"}
-                                                text={warningStyleForCell(row.id, key, { backgroundColor: "#FFFFFF", borderColor: "#94A3B8", color: "#0F172A" }).color ?? "#0F172A"}
+                                                bg={warningStyleForCell(row.id, key, { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).backgroundColor ?? "var(--panel-bg)"}
+                                                border={warningStyleForCell(row.id, key, { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).borderColor ?? "var(--glass-border)"}
+                                                text={warningStyleForCell(row.id, key, { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }).color ?? "var(--text-main)"}
                                                 onAdd={(token) => addEditingDrawerHeightToken(token)}
                                                 onRemove={(token) => removeEditingDrawerHeightToken(token)}
                                                 onOpenChange={(isOpen) => {
@@ -36503,7 +31942,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   }
                                                   if (e.key === "Escape") cancelCellEdit();
                                                 }}
-                                                className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                                className={`h-6 w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${alignClass}`}
                                               />
                                             )
                                           ) : (
@@ -36556,7 +31995,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[9px] text-[var(--text-main)]"
                                                   />
                                                 </div>
                                                 <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
@@ -36571,9 +32010,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                           value={editingFixedShelfDrilling}
                                                           options={DRILLING_OPTIONS}
                                                           disabled={productionReadOnly}
-                                                          bg="#FFFFFF"
-                                                          border="#94A3B8"
-                                                          text="#0F172A"
+                                                          bg="var(--panel-bg)"
+                                                          border="var(--glass-border)"
+                                                          text="var(--text-main)"
                                                           size="compact"
                                                           className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                           getSize={() => ""}
@@ -36621,7 +32060,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[#94A3B8] bg-white px-1 text-[9px] text-[#0F172A]"
+                                                    className="h-[18px] w-full min-w-0 rounded-[5px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[9px] text-[var(--text-main)]"
                                                   />
                                                 </div>
                                                 <div className="-mt-[2px] grid grid-cols-[78px_minmax(0,1fr)] items-center gap-[4px]">
@@ -36636,9 +32075,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                           value={editingAdjustableShelfDrilling}
                                                           options={DRILLING_OPTIONS}
                                                           disabled={productionReadOnly}
-                                                          bg="#FFFFFF"
-                                                          border="#94A3B8"
-                                                          text="#0F172A"
+                                                          bg="var(--panel-bg)"
+                                                          border="var(--glass-border)"
+                                                          text="var(--text-main)"
                                                           size="compact"
                                                           className="!h-[18px] !rounded-[5px] !text-[9px]"
                                                           getSize={() => ""}
@@ -36749,8 +32188,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                     onClick={() => (idx === 0 ? onEditingAddInformationLine() : onEditingRemoveInformationLine(idx))}
                                                     className={
                                                       idx === 0
-                                                        ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
-                                                        : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                        ? "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95"
+                                                        : "inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95"
+                                                    }
+                                                    style={
+                                                      idx === 0
+                                                        ? { backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }
+                                                        : { backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }
                                                     }
                                                   >
                                                     {idx === 0 ? <Plus size={16} className="mx-auto" strokeWidth={2.8} /> : <X size={15} className="mx-auto" strokeWidth={2.8} />}
@@ -36772,7 +32216,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                       }
                                                       if (e.key === "Escape") cancelCellEdit();
                                                     }}
-                                                    className="h-7 w-full rounded-[6px] border border-[#94A3B8] bg-white px-2 text-[11px] text-[#0F172A]"
+                                                    className="h-7 w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] text-[var(--text-main)]"
                                                   />
                                                 </div>
                                               ))}
@@ -36809,7 +32253,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     return (
                                       <td
                                         key={`${row.id}_${col.label}`}
-                                        className={`px-2 py-[3px] align-middle ${alignClass}`}
+                                        className={`px-2 py-[3px] align-middle ${alignClass} ${isFlashingCell(row.id, key) ? "cutlist-cell-flash-red" : ""}`}
                                         onDoubleClick={() => startCellEdit(row, key)}
                                         style={{
                                           ...cutlistListColumnStyle(key),
@@ -36839,7 +32283,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               if (e.key === "Escape") cancelCellEdit();
                                             }}
                                             style={drawerTextboxLift ? { transform: "translateY(-2px)" } : undefined}
-                                            className={`h-6 w-full rounded-[6px] border border-[#94A3B8] bg-white px-1 text-[11px] text-[#0F172A] ${alignClass}`}
+                                            className={`h-6 w-full rounded-[6px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-1 text-[11px] text-[var(--text-main)] ${alignClass}`}
                                           />
                                         ) : (
                                           isGrainMatchedDimension ? (
@@ -36852,80 +32296,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     );
                                   })}
                                 </tr>
-                                {rowIsCabinetBuilderContainer && cabinetryOpen && groupCabinetBuilderGeneratedRows(cabinetBuilderPieces).flatMap((pieceGroup) => ([
-                                  <tr
-                                    key={`${row.id}_builder_group_${pieceGroup.ownerName}`}
-                                    className="border-t"
-                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
-                                  >
-                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
-                                    {showRoomColumnInList ? (
-                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}></td>
-                                    ) : null}
-                                    <td
-                                      className="px-2 py-[3px] align-middle text-[11px] font-bold"
-                                      colSpan={showRoomColumnInList ? cutlistListColumnDefs.length : cutlistListColumnDefs.length}
-                                      style={{ color: groupTextColor }}
-                                    >
-                                      {pieceGroup.ownerName}
-                                    </td>
-                                  </tr>,
-                                  ...pieceGroup.rows.map((piece, pieceIdx) => (
-                                  <tr
-                                    key={`${row.id}_builder_${piece.id}`}
-                                    data-cutlist-subrow-parent={row.id}
-                                    data-cutlist-subrow-key={piece.id}
-                                    className="border-t"
-                                    style={{ backgroundColor: palette.headerBg, color: groupTextColor, borderTopColor: palette.divider }}
-                                  >
-                                    <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
-                                    {showRoomColumnInList && (
-                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
-                                        {piece.room}
-                                      </td>
-                                    )}
-                                    {cutlistListColumnDefs.map((col) => {
-                                      const key = col.key as CutlistEditableField;
-                                      const alignClass = cutlistCellAlignClass(key);
-                                      const infoLineIndex = mainInfoCount + pieceIdx;
-                                      const editingThisInfoCell = col.key === "information" && isEditing(row.id, "information");
-                                      let value = "";
-                                      if (col.key === "partType") value = piece.partType || "";
-                                      if (col.key === "board") value = boardDisplayLabel(piece.board) || "";
-                                      if (col.key === "name") value = piece.name || "";
-                                      if (col.key === "height") value = piece.height || "";
-                                      if (col.key === "width") value = piece.width || "";
-                                      if (col.key === "depth") value = piece.depth || "";
-                                      if (col.key === "quantity") value = piece.quantity || "";
-                                      if (col.key === "clashing") value = joinClashing(piece.clashLeft ?? "", piece.clashRight ?? "") || piece.clashing || "";
-                                      if (col.key === "information") value = overflowInfoLines[pieceIdx] ?? "";
-                                      if (col.key === "grain") value = String(piece.grainValue || (piece.grain ? "Yes" : ""));
-                                      const pieceGrainValue = String(piece.grainValue || "");
-                                      const isPieceGrainMatchedDimension =
-                                        (key === "height" && matchesGrainDimension(pieceGrainValue, piece.height, "height")) ||
-                                        (key === "width" && matchesGrainDimension(pieceGrainValue, piece.width, "width")) ||
-                                        (key === "depth" && matchesGrainDimension(pieceGrainValue, piece.depth, "depth"));
-                                      return (
-                                        <td
-                                          key={`${row.id}_${piece.id}_${col.key}`}
-                                          className={`px-2 py-[3px] align-middle text-[11px] ${alignClass}`}
-                                          onDoubleClick={() => {
-                                            if (col.key !== "information") return;
-                                            startCellEdit(row, "information", infoLineIndex);
-                                          }}
-                                          style={{
-                                            ...cutlistListColumnStyle(key),
-                                            color: groupTextColor,
-                                            ...(isPieceGrainMatchedDimension ? { fontWeight: 700, textDecoration: "underline" } : {}),
-                                          }}
-                                        >
-                                          {editingThisInfoCell ? "" : value}
-                                        </td>
-                                      );
-                                    })}
-                                  </tr>
-                                  )),
-                                ]))}
                                 {rowIsCabinetry && cabinetryOpen && cabinetryPieces.map((piece, pieceIdx) => (
                                   <tr
                                     key={`${row.id}_cab_${piece.key}`}
@@ -37097,7 +32467,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               })}
                             </tbody>
                           </table>
-                          )}
+                          </div>
+                          </div>
                         </section>
                       );
                     })}
@@ -37105,17 +32476,367 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </section>
             </div>
-            {isProductionNotesPanelOpen ? (
-              <aside className="hidden border-l border-[#DCE3EC] bg-white xl:block">
-                <div className="h-full min-h-0 overflow-hidden">
-                  {renderProductionNotesCard("sidebar")}
-                </div>
-              </aside>
-            ) : null}
+          </div>
           </div>
           {cutlistFieldWarningBubblesPortal}
           {addRoomModalPortal}
           {unlockEditModalPortal}
+          {shouldRenderProductionNotesModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close notes dialog backdrop"
+                    onClick={() => void closeProductionNotesPanel()}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div
+                    ref={productionNotesModalPanelRef}
+                    className="glass-modal-panel relative flex h-[min(640px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
+                    style={{ zIndex: 2147483647 }}
+                  >
+                    {renderProductionNotesCard("sidebar")}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderContractorsModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close contractors dialog backdrop"
+                    onClick={() => void closeContractorsPanel()}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div
+                    ref={contractorsModalPanelRef}
+                    className="glass-modal-panel relative flex h-[min(640px,90vh)] w-[min(560px,96vw)] flex-col overflow-hidden"
+                    style={{ zIndex: 2147483647 }}
+                  >
+                    <div className="glass-modal-header shrink-0 px-5 py-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                          Contractors
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void closeContractorsPanel()}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          title="Close"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                      {contractorOptions.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {contractorOptions.map((name) => {
+                            const active = activeContractorTab === name;
+                            return (
+                              <button
+                                key={name}
+                                type="button"
+                                onClick={() => void selectContractorTab(name)}
+                                className="rounded-[9px] border px-3 py-1.5 text-[12px] font-bold transition hover:brightness-105"
+                                style={
+                                  active
+                                    ? {
+                                        backgroundImage: "var(--brand-gradient)",
+                                        borderColor: "var(--brand-strong)",
+                                        color: "#FFFFFF",
+                                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.45)",
+                                      }
+                                    : {
+                                        backgroundColor: "rgba(255,255,255,0.32)",
+                                        backdropFilter: "blur(12px) saturate(180%)",
+                                        WebkitBackdropFilter: "blur(12px) saturate(180%)",
+                                        borderColor: "var(--glass-border)",
+                                        color: "var(--text-main)",
+                                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.5)",
+                                      }
+                                }
+                              >
+                                {name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                      {contractorOptions.length > 0 && !productionReadOnly ? (
+                        <div ref={setContractorsToolbarHost} className="mt-2 min-w-0 overflow-hidden" />
+                      ) : null}
+                    </div>
+                    {contractorOptions.length === 0 ? (
+                      <div className="glass-scroll flex-1 overflow-auto px-5 py-4">
+                        <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                          No contractors configured yet — add some in Company Settings → Production → Contractors.
+                        </p>
+                      </div>
+                    ) : (
+                        <div className="glass-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
+                          {!productionReadOnly ? (
+                            <QuoteDocumentEditor
+                              key={`contractor-notes-${activeContractorTab}`}
+                              mode="embedded"
+                              toolbarPlacement="inline"
+                              toolbarHost={contractorsToolbarHost}
+                              toolbarDensity="compact"
+                              embeddedChrome="card"
+                              embeddedMinHeight={180}
+                              embeddedEditableMinHeight={120}
+                              value={contractorNotesEditorInitialValue}
+                              readOnly={isSavingGeneralDetails || productionReadOnly}
+                              autoFocus
+                              onChange={(nextValue) => {
+                                contractorNotesEditorDraftRef.current = nextValue;
+                              }}
+                            />
+                          ) : (
+                            <div
+                              className="min-h-[180px] notes-rich leading-[20px]"
+                              dangerouslySetInnerHTML={{
+                                __html: notesToDisplayHtml(project?.contractorNotes?.[activeContractorTab] || ""),
+                              }}
+                            />
+                          )}
+                        </div>
+                    )}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderSubPartTypePickerModal && typeof document !== "undefined"
+            ? createPortal(
+                (() => {
+                  const closeSubPartTypePicker = () => setSubPartTypePickerMainRowId("");
+                  // Don't offer the main row's own part type as a sub-part choice — a row can't
+                  // meaningfully have a sub-part of the exact same type as itself.
+                  const pickerMainRow = cutlistDraftRows.find((row) => row.id === subPartTypePickerMainRowId);
+                  const pickerPartTypeOptions = partTypeOptions.filter(
+                    (v) => v.trim().toLowerCase() !== String(pickerMainRow?.partType || "").trim().toLowerCase(),
+                  );
+                  // Anchored dropdown-style popover instead of a centered modal — pops out to the
+                  // right of the clicked "+" button, matching its own height, one row, no wrap.
+                  const anchor = subPartTypePickerOrigin;
+                  const buttonHeight = anchor?.height ?? 32;
+                  const panelPad = 6;
+                  const panelHeight = buttonHeight + panelPad * 2;
+                  const panelLeft = anchor ? anchor.left : 12;
+                  const panelTop = (anchor ? anchor.top : 12) - panelPad;
+                  return (
+                    <div className="fixed inset-0" style={{ zIndex: 2147483647 }}>
+                      <button
+                        type="button"
+                        aria-label="Close sub part type picker backdrop"
+                        onClick={closeSubPartTypePicker}
+                        className="absolute inset-0"
+                        style={{ background: "transparent" }}
+                      />
+                      <div
+                        ref={subPartTypePickerPanelRef}
+                        className="glass-modal-panel absolute flex items-center overflow-visible"
+                        style={{
+                          left: panelLeft,
+                          top: panelTop,
+                          height: panelHeight,
+                          width: "max-content",
+                          maxWidth: "calc(100vw - 24px)",
+                          padding: `${panelPad}px`,
+                          gap: 6,
+                          borderRadius: 8,
+                          zIndex: 2147483647,
+                        }}
+                      >
+                        {pickerPartTypeOptions.map((v) => {
+                              const color = partTypeColors[v] ?? "#CBD5E1";
+                              return (
+                                <button
+                                  key={v}
+                                  type="button"
+                                  onClick={(e) => {
+                                    const mainRowId = subPartTypePickerMainRowId;
+                                    const mainRow = cutlistDraftRows.find((row) => row.id === mainRowId);
+                                    if (mainRow && isCabinetryPartType(mainRow.partType) && isDoorPartType(v)) {
+                                      // Route through the same Doors/Drawers popup used for a
+                                      // top-level quick-add, in sub-part mode, so the user can
+                                      // still review/adjust it when the cabinet's name doesn't
+                                      // match a "N Drawer" pattern.
+                                      closeSubPartTypePicker();
+                                      const mainName = String(mainRow.name || "");
+                                      const drawerCountMatch = mainName.match(/(\d+)\s*Drawers?\b/i);
+                                      const doorMatch = mainName.match(/\d+\s*Doors?\b/i);
+                                      setDoorDrawerPickerMainRowId(mainRowId);
+                                      setDoorDrawerPickerPartType(v);
+                                      setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
+                                      if (drawerCountMatch) {
+                                        setDrawerBankCountDraft(drawerCountMatch[1]);
+                                        setDoorDrawerPickerStep("drawerCount");
+                                        setDoorDrawerPickerSuggestedMode("");
+                                      } else {
+                                        setDoorDrawerPickerStep("choose");
+                                        setDoorDrawerPickerSuggestedMode(doorMatch ? "door" : "");
+                                      }
+                                      return;
+                                    }
+                                    addSubPartDraftRow(mainRowId, v);
+                                    closeSubPartTypePicker();
+                                  }}
+                                  style={{
+                                    height: buttonHeight,
+                                    backgroundColor: color,
+                                    borderColor: color,
+                                    color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                  }}
+                              className="shrink-0 whitespace-nowrap rounded-[8px] border px-3 text-[12px] font-medium hover:brightness-95"
+                            >
+                              {v}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })(),
+                document.body,
+              )
+            : null}
+          {shouldRenderDoorDrawerPickerModal && typeof document !== "undefined"
+            ? createPortal(
+                (() => {
+                  const closeDoorDrawerPicker = () => {
+                    setDoorDrawerPickerPartType("");
+                    setDoorDrawerPickerMainRowId("");
+                    setDoorDrawerPickerSuggestedMode("");
+                  };
+                  const confirmDrawerCount = () => {
+                    const count = Number.parseInt(drawerBankCountDraft, 10) || 1;
+                    if (doorDrawerPickerMainRowId) {
+                      addCabinetDrawerBankSubPartDraftRow(doorDrawerPickerMainRowId, doorDrawerPickerPartType, count);
+                    } else {
+                      addDrawerFrontsDraftRow(doorDrawerPickerPartType, count);
+                    }
+                    closeDoorDrawerPicker();
+                  };
+                  // Anchored dropdown-style popover instead of a centered modal: pins
+                  // to the left edge of the clicked part-type button and drops down
+                  // below it, opening OVER the row beneath rather than the whole screen.
+                  const panelWidth = 220;
+                  const anchor = doorDrawerPickerOrigin;
+                  const viewportW = typeof window !== "undefined" ? window.innerWidth : panelWidth + 24;
+                  const panelLeft = anchor ? Math.min(Math.max(anchor.left, 12), viewportW - panelWidth - 12) : 12;
+                  const panelTop = anchor ? anchor.top + anchor.height + 10 : 12;
+                  return (
+                    <div className="fixed inset-0" style={{ zIndex: 2147483647 }}>
+                      <button
+                        type="button"
+                        aria-label="Close doors or drawers picker"
+                        onClick={closeDoorDrawerPicker}
+                        className="absolute inset-0"
+                        style={{ background: "transparent" }}
+                      />
+                      <div
+                        ref={doorDrawerPickerPanelRef}
+                        className="glass-modal-panel absolute flex max-h-[60vh] flex-col overflow-hidden"
+                        style={{
+                          left: panelLeft,
+                          top: panelTop,
+                          width: panelWidth,
+                          maxWidth: "calc(100vw - 24px)",
+                          zIndex: 2147483647,
+                        }}
+                      >
+                        <div className="glass-scroll min-h-0 flex-1 overflow-auto px-4 py-3">
+                          {doorDrawerPickerStep === "drawerCount" ? (
+                            <div className="space-y-2">
+                              <div className="mx-auto flex w-fit items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDrawerBankCountDraft(String(Math.max(1, (Number.parseInt(drawerBankCountDraft, 10) || 0) - 1)))
+                                  }
+                                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border text-[14px] font-bold text-white hover:brightness-95"
+                                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                  title="Decrease"
+                                >
+                                  −
+                                </button>
+                                <input
+                                  autoFocus
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  value={drawerBankCountDraft}
+                                  onChange={(e) => setDrawerBankCountDraft(numericOnlyText(e.target.value))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") confirmDrawerCount();
+                                  }}
+                                  className="h-8 w-16 rounded-[8px] border bg-transparent text-center text-[13px] font-bold"
+                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setDrawerBankCountDraft(String((Number.parseInt(drawerBankCountDraft, 10) || 0) + 1))}
+                                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border text-[14px] font-bold text-white hover:brightness-95"
+                                  style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                  title="Increase"
+                                >
+                                  +
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={confirmDrawerCount}
+                                disabled={(Number.parseInt(drawerBankCountDraft, 10) || 0) < 1}
+                                className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                              >
+                                Add {drawerBankCountDraft || ""} Drawer{drawerBankCountDraft === "1" ? "" : "s"}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (doorDrawerPickerMainRowId) {
+                                    addSubPartDraftRow(doorDrawerPickerMainRowId, doorDrawerPickerPartType);
+                                  } else {
+                                    addDraftRowForPartType(doorDrawerPickerPartType);
+                                  }
+                                  closeDoorDrawerPicker();
+                                }}
+                                className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border text-[12px] font-bold hover:brightness-95"
+                                style={
+                                  doorDrawerPickerSuggestedMode === "door"
+                                    ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                                    : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }
+                                }
+                              >
+                                Doors
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDrawerBankCountDraft("3");
+                                  setDoorDrawerPickerStep("drawerCount");
+                                }}
+                                className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border text-[12px] font-bold hover:brightness-95"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              >
+                                Drawers
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })(),
+                document.body,
+              )
+            : null}
         </div>
       </ProtectedRoute>
     );
@@ -38371,7 +34092,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
               <button
                 type="button"
-                onClick={() => setSalesNav("specifications")}
+                onClick={() => setSalesNav("overview")}
                 className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
                 style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
               >
@@ -38383,6 +34104,136 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4 md:p-5">
             {salesSummaryContent}
           </div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
+  if (isSalesSpecificationsFullscreen) {
+    const hasTemplate = Boolean((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
+    return (
+      <ProtectedRoute>
+        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
+            <div className="inline-flex items-center gap-3">
+              <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                <ClipboardList size={14} />
+                <span>Specifications</span>
+                <span style={{ color: "var(--text-muted)" }}>|</span>
+                <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
+              </div>
+              {specsSheetSaveError ? (
+                <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
+                  Save failed — your last edit may not have saved
+                </span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={!hasTemplate || !specsSheetGrid}
+                onClick={() => void onPrintSpecificationsSheet()}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+              >
+                <Printer size={14} />
+                Print
+              </button>
+              <button
+                type="button"
+                disabled={!hasTemplate || !specsSheetGrid}
+                onClick={() => void onDownloadSpecificationsSheetPdf()}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+              >
+                <Download size={14} />
+                Download PDF
+              </button>
+              <button
+                type="button"
+                disabled={!hasTemplate}
+                onClick={() => setIsSpecsSheetResetConfirmOpen(true)}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+                style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+              >
+                <RotateCcw size={14} />
+                Reset to Template
+              </button>
+              <button
+                type="button"
+                onClick={() => setSalesNav("overview")}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <ArrowLeft size={14} />
+                Back
+              </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 p-3 sm:p-4 md:p-5">
+            {!hasTemplate ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
+                <ClipboardList size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
+                <p>No specifications template configured yet.</p>
+                <p>Add one in Company Settings → Sales → Specs Layout.</p>
+              </div>
+            ) : specsSheetGrid ? (
+              <SpecsGridEditor
+                key={specsSheetEditorKey}
+                value={specsSheetGrid}
+                onChange={onSpecsSheetChange}
+                className="flex h-full w-full flex-col"
+                companyLogoUrl={quoteCompanyLogoPath || undefined}
+                companyColor={companyThemeColor || undefined}
+                showGroupVisibilityPanel
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-[12px]" style={{ color: "var(--text-muted)" }}>
+                Setting up this project&apos;s specifications sheet…
+              </div>
+            )}
+          </div>
+          {isSpecsSheetResetConfirmOpen && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close reset confirmation backdrop"
+                    onClick={() => setIsSpecsSheetResetConfirmOpen(false)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset to Template</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        This will discard everything currently on this project&apos;s specifications sheet and replace it with a fresh copy of the current company template. This can&apos;t be undone.
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsSpecsSheetResetConfirmOpen(false)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void resetSpecsSheetToTemplate()}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                          style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                        >
+                          Reset to Template
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
         </div>
       </ProtectedRoute>
     );
@@ -39323,18 +35174,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 disabled={isSavingGeneralDetails}
                 onClick={() => void closeProductionNotesPanel()}
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
-                style={{ backgroundColor: "#7E9EBB", borderColor: "#2F4E68" }}
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                 title="Save and close notes"
               >
-                <img
-                  src="/angle-right.png"
-                  alt="Close"
-                  className="block object-contain"
-                  style={{ width: 16, height: 16, filter: "brightness(0) invert(1)" }}
-                  onError={(e) => {
-                    e.currentTarget.src = "/file.svg";
-                  }}
-                />
+                <X size={16} />
               </button>
             </div>
             <div
@@ -39342,7 +35185,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className={`${!productionReadOnly ? "mt-2 min-w-0 overflow-hidden" : "hidden"}`}
             />
           </div>
-          <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3" style={{ color: projectPalette.textSoft }}>
+          <div className="glass-scroll min-h-0 flex-1 overflow-auto px-4 pb-4 pt-3" style={{ color: projectPalette.textSoft }}>
             {!productionReadOnly ? (
               <QuoteDocumentEditor
                 key="production-notes-sidebar"
@@ -39350,7 +35193,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 toolbarPlacement="inline"
                 toolbarHost={productionNotesToolbarHost}
                 toolbarDensity="compact"
-                embeddedChrome="flat"
+                embeddedChrome="card"
                 embeddedMinHeight={180}
                 embeddedEditableMinHeight={120}
                 value={productionNotesEditorInitialValue}
@@ -40524,6 +36367,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[
+                  { label: "Overview", icon: LayoutGrid, key: "overview" as const },
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const },
                   { label: "Items", icon: ListChecks, key: "items" as const },
                   { label: "Quote", icon: Quote, key: "quote" as const },
@@ -40891,7 +36735,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ) : salesNav === "items" ? (
                   salesItemsBoardContent
                 ) : (
-                  salesSpecificationsContent
+                  salesOverviewContent
                 )}
               </div>
             </div>
@@ -40903,7 +36747,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
                 {[ 
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
-                  { label: "Drawings", icon: ClipboardList, key: "drawings" as const },
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
                   { label: "Order", icon: ShoppingCart, key: "order" as const },
@@ -41007,42 +36850,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <Quote size={13} />
                             Note
                           </button>
-                          {savedCabinetBuilderDrafts.length || (cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim()) ? (
-                            <>
-                              <div className="my-2 h-px bg-[#DCE3EC]" />
-                              <div className="space-y-1">
-                                <p className="px-2 text-[11px] font-bold uppercase tracking-[0.8px] text-[#64748B]">Saved Walls</p>
-                                {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() && !activeCabinetBuilderSavedDraftId ? (
-                                  <div className="rounded-[9px] bg-[#E9EFF7] px-1 py-1">
-                                    <div className="w-full rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold text-[#12345B]">
-                                      <span className="block truncate">{cabinetBuilderWallName}</span>
-                                      <span className="block truncate text-[10px] font-medium text-[#64748B]">{cutlistEntryRoom || "Project Cutlist"}</span>
-                                    </div>
-                                  </div>
-                                ) : null}
-                                {savedCabinetBuilderDrafts.map((savedDraft) => {
-                                  const active = activeCabinetBuilderSavedDraftId === savedDraft.id;
-                                  return (
-                                    <div
-                                      key={`saved_wall_sidebar_${savedDraft.id}`}
-                                      className={`rounded-[9px] px-1 py-1 ${active ? "bg-[#E9EFF7]" : ""}`}
-                                    >
-                                      <button
-                                        type="button"
-                                        onClick={() => openSavedCabinetBuilderDraft(savedDraft)}
-                                        className={`w-full min-w-0 rounded-[9px] px-2 py-2 text-left text-[12px] font-semibold ${
-                                          active ? "text-[#12345B]" : "text-[#334155] hover:bg-[#F1F5F9]"
-                                        }`}
-                                      >
-                                        <span className="block truncate">{savedDraft.name}</span>
-                                        <span className="block truncate text-[10px] font-medium text-[#64748B]">{savedDraft.room}</span>
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </>
-                          ) : null}
                         </div>
                         <div className={`grid gap-2 ${isMobileProjectViewport ? "" : "sm:grid-cols-3"}`}>
                           {[
@@ -41142,9 +36949,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const rowPartColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
                             const rowPalette = groupColorPalette(rowPartColor);
                             const infoLines = informationLinesFromValue(String(row.information ?? ""));
-                            const rowIsCabinetBuilderContainer = isCabinetBuilderContainerRow(row);
                             const rowIsConfiguredDoor = isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual";
-                            const cabinetBuilderPieces = rowIsCabinetBuilderContainer ? (cabinetBuilderGeneratedRowsByContainerId[row.id] ?? []) : [];
                             const doorPieces = rowIsConfiguredDoor ? buildConfiguredDoorListSubrows(row) : [];
                             const rowBoardAllowsGrain = productionBoardAllowsGrainForValue(String(row.board ?? "").trim());
                             const rowGrainValue = String(row.grainValue ?? "").trim();
@@ -41185,9 +36990,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <button
                                       disabled={productionReadOnly}
                                       onClick={() => void removeCutlistRow(row.id)}
+                                      onDoubleClick={() => void removeCutlistRow(row.id, true)}
                                       className="flex h-7 w-7 items-center justify-center rounded-[8px] border disabled:opacity-55"
                                       style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                                      title="Delete row"
+                                      title="Delete row (double-click to force delete a filled-in row)"
                                     >
                                       <X size={12} strokeWidth={2.5} />
                                     </button>
@@ -41219,7 +37025,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <p className="font-bold text-[#0F172A]">Board</p>
                                       <p className={`min-w-0 break-words text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{boardDisplayLabel(row.board) || "-"}</p>
 
-                                      {!rowIsConfiguredDoor && !rowIsCabinetBuilderContainer ? (
+                                      {!rowIsConfiguredDoor ? (
                                         <>
                                           <p className="font-bold text-[#0F172A]">Height</p>
                                           <p
@@ -41247,46 +37053,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                                           <p className="font-bold text-[#0F172A]">Quantity</p>
                                           <p className={`min-w-0 text-[#334155] ${isMobileProjectViewport ? "text-right" : "text-left"}`}>{row.quantity || "1"}</p>
-                                        </>
-                                      ) : rowIsCabinetBuilderContainer ? (
-                                        <>
-                                          <p className="font-bold text-[#0F172A]">Cabinet Parts</p>
-                                          <div className={`min-w-0 space-y-2 ${isMobileProjectViewport ? "text-right" : "text-left"}`}>
-                                            {cabinetBuilderPieces.length ? groupCabinetBuilderGeneratedRows(cabinetBuilderPieces).map((pieceGroup) => (
-                                              <div key={`${row.id}_mobile_builder_group_${pieceGroup.ownerName}`} className="space-y-2">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#334155]">{pieceGroup.ownerName}</p>
-                                                {pieceGroup.rows.map((piece) => (
-                                                  <div key={`${row.id}_mobile_builder_${piece.id}`} className="rounded-[8px] border border-[#D7DEE8] bg-white/60 px-2 py-2">
-                                                    <p className="break-words font-semibold text-[#0F172A]">{piece.name || "-"}</p>
-                                                    <p className="mt-1 break-words text-[#475569]">{piece.partType || "-"} • {boardDisplayLabel(piece.board) || "-"}</p>
-                                                    <p className="mt-1 break-words text-[#475569]">
-                                                      <span
-                                                        style={
-                                                          matchesGrainDimension(String(piece.grainValue ?? ""), piece.height, "height")
-                                                            ? { fontWeight: 700, textDecoration: "underline" }
-                                                            : undefined
-                                                        }
-                                                      >
-                                                        {piece.height || "-"} H
-                                                      </span>
-                                                      {" x "}
-                                                      <span
-                                                        style={
-                                                          matchesGrainDimension(String(piece.grainValue ?? ""), piece.width, "width")
-                                                            ? { fontWeight: 700, textDecoration: "underline" }
-                                                            : undefined
-                                                        }
-                                                      >
-                                                        {piece.width || "-"} W
-                                                      </span>
-                                                      {piece.depth ? ` x ${piece.depth} D` : ""}
-                                                    </p>
-                                                    <p className="mt-1 text-[#475569]">Qty {piece.quantity || "1"}</p>
-                                                  </div>
-                                                ))}
-                                              </div>
-                                            )) : <p className="text-[#475569]">-</p>}
-                                          </div>
                                         </>
                                       ) : (
                                         <>
@@ -41485,13 +37251,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div className="flex min-h-full flex-col gap-4 pl-4">
                       {cutlistRoomFilter !== "Project Cutlist" && (
                       <section className="relative z-10 -mt-4 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
-                        {renderCutlistEntryModeTabs("rounded-b-none border-x-0 border-t-0")}
                         <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
                           <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
-                          {cabinetBuilderEntryActive ? renderCabinetBuilderToolbar() : null}
                         </div>
                         <div className="space-y-3 px-0 pb-0">
-                          {!cabinetBuilderEntryActive ? (
+                          {(
                             <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
                               {partTypeOptions.map((v) => {
                                 const color = partTypeColors[v] ?? "#CBD5E1";
@@ -41513,9 +37277,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 );
                               })}
                             </div>
-                          ) : null}
+                          )}
 
-                          {!hideConfiguredDoorSingleEntryHeaderRow && !cabinetBuilderEntryActive ? (
+                          {!hideConfiguredDoorSingleEntryHeaderRow ? (
                             <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
                               <p></p>
                               {cutlistEntryColumnDefs.map((col) => (
@@ -41529,1500 +37293,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               ))}
                             </div>
                           ) : null}
-                          {cabinetBuilderEntryActive ? (
-                            <div className="px-0 py-3" style={{ color: cabinetBuilderShellText }}>
-                              {!cabinetBuilderDraft ? (
-                                <div className="flex min-h-[180px] items-center justify-center">
-                                  {cabinetBuilderWallCreated && String(cabinetBuilderWallName || "").trim() ? (
-                                    <div className="flex flex-col items-center gap-3">
-                                      <p className="text-[13px] font-semibold text-[#475467]">{cabinetBuilderWallName}</p>
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly}
-                                        onClick={openCabinetBuilderCreate}
-                                        className="rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
-                                        style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg, color: cabinetBuilderShellText }}
-                                      >
-                                        Create Cabinet
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div className="w-full max-w-[420px] space-y-3">
-                                      <input
-                                        value={cabinetBuilderWallName}
-                                        onChange={(e) => setCabinetBuilderWallName(e.target.value)}
-                                        placeholder="Wall name"
-                                        className="h-11 w-full rounded-[12px] border border-[#D8DEE8] bg-white px-3 text-[13px] text-[#111827]"
-                                      />
-                                      <button
-                                        type="button"
-                                        disabled={productionReadOnly || !String(cabinetBuilderWallName || "").trim()}
-                                        onClick={createCabinetBuilderWall}
-                                        className="w-full rounded-[12px] border px-4 py-3 text-[13px] font-bold disabled:opacity-55"
-                                        style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg, color: cabinetBuilderShellText }}
-                                      >
-                                        Create Wall
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                  <div className="space-y-4">
-                                    <div className="grid items-start gap-4 xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]">
-                                      {cabinetBuilderSelectedPartsPanel ? (
-                                        <div className="px-1">{cabinetBuilderSelectedPartsPanel}</div>
-                                      ) : null}
-                                      <div className="p-0">
-                                      {(() => {
-                                        const wallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDraft);
-                                        const viewWidth = 1120;
-                                        const viewHeight = 420;
-                                        const paddingX = 42;
-                                        const paddingY = 26;
-                                        const dragViewport = { viewWidth, viewHeight, paddingX, paddingY };
-                                        const displayWallPieces =
-                                          cabinetBuilderDragActive && cabinetBuilderDraggingWallId && cabinetBuilderDragPointerX !== null
-                                            ? buildCabinetBuilderPreviewWallPieces(cabinetBuilderDraft, cabinetBuilderDraggingWallId, cabinetBuilderDragPointerX, dragViewport)
-                                            : wallPieces;
-                                        const pieceLayouts = buildCabinetBuilderDisplayPieceLayouts(
-                                          displayWallPieces,
-                                          viewWidth,
-                                          viewHeight,
-                                          paddingX,
-                                          paddingY,
-                                          cabinetBuilderDraft,
-                                        );
-                                        const scale = pieceLayouts[0]?.scale ?? 1;
-                                        const measureLengthText =
-                                          cabinetBuilderMeasurePoints.length === 2 && scale > 0
-                                            ? numericDimensionText(
-                                                Math.sqrt(
-                                                  Math.pow(cabinetBuilderMeasurePoints[1].x - cabinetBuilderMeasurePoints[0].x, 2) +
-                                                    Math.pow(cabinetBuilderMeasurePoints[1].y - cabinetBuilderMeasurePoints[0].y, 2),
-                                                ) / scale,
-                                              )
-                                            : "";
-                                        const mainPiece = pieceLayouts.find((item) => item.isMain) ?? pieceLayouts[0];
-                                        const selectedPiece = pieceLayouts.find((item) => item.id === cabinetBuilderSelectedWallId) ?? mainPiece;
-                                        const hoveredPiece = pieceLayouts.find((item) => item.id === cabinetBuilderHoveredWallId) ?? null;
-                                        const activeLabelPiece = hoveredPiece ?? selectedPiece ?? null;
-                                        const activeGapBlockedRects =
-                                          (cabinetBuilderSelectedHoverActive || cabinetBuilderAttachmentMenuSide !== null)
-                                            ? getCabinetBuilderAttachmentAnchorExclusionRects(
-                                                selectedPiece,
-                                                viewWidth,
-                                                viewHeight,
-                                                resolvedProductionBaseCabHeight,
-                                              )
-                                            : [];
-                                        const overlayItems = pieceLayouts.flatMap((item) => {
-                                          const overlaySource = item.doorsRow || item.drawersRow;
-                                          if (!overlaySource) return [];
-                                          const overlayMode = normalizeDoorModeValue(overlaySource.doorMode);
-                                          const overlayCount = Number.parseInt(String(overlaySource.doorFrontCount || "1"), 10) || 1;
-                                          const overlayBaseColor = partTypeColors[String(overlaySource.partType || "").trim()] ?? "#CBD5E1";
-                                          const overlayStroke = darkenHex(overlayBaseColor, 0.14);
-                                          const overlayFill = lightenHex(overlayBaseColor, 0.2);
-                                          const overlayText = isLightHex(overlayFill) ? "#1F2937" : "#F8FAFC";
-                                          const overlayTotalHeight = Number.parseFloat(String(overlaySource.height ?? "").replace(/[^\d.-]/g, "")) || 0;
-                                          const overlayTotalWidth = Number.parseFloat(String(overlaySource.width ?? "").replace(/[^\d.-]/g, "")) || 0;
-                                          const overlayTopGapValue = Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0;
-                                          const overlayBetweenGapValue = Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0;
-                                          const overlayLeftGapValue = Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0;
-                                          const overlayRightGapValue = Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0;
-                                          const overlayTopGapPx =
-                                            overlayTotalHeight > 0 ? (overlayTopGapValue / overlayTotalHeight) * item.height : 0;
-                                          const overlayBetweenGapPxForHeight =
-                                            overlayTotalHeight > 0 ? (overlayBetweenGapValue / overlayTotalHeight) * item.height : 0;
-                                          const overlayBetweenGapPxForWidth =
-                                            overlayTotalWidth > 0 ? (overlayBetweenGapValue / overlayTotalWidth) * item.width : 0;
-                                          const overlayLeftGapPx =
-                                            overlayTotalWidth > 0 ? (overlayLeftGapValue / overlayTotalWidth) * item.width : 0;
-                                          const overlayRightGapPx =
-                                            overlayTotalWidth > 0 ? (overlayRightGapValue / overlayTotalWidth) * item.width : 0;
-                                          const overlayClearHeight = Math.max(0, overlayTotalHeight - overlayTopGapValue);
-                                          const overlayClearWidth = Math.max(0, overlayTotalWidth - overlayLeftGapValue - overlayRightGapValue);
-                                          return [
-                                            {
-                                              item,
-                                              ownerId: item.id,
-                                              frontKind: item.doorsRow ? "doorsRow" as const : "drawersRow" as const,
-                                              overlaySource,
-                                              overlayMode,
-                                              overlayStroke,
-                                              overlayFill,
-                                              overlayText,
-                                              overlayTopGapPx,
-                                              overlayBetweenGapPxForHeight,
-                                              overlayBetweenGapPxForWidth,
-                                              overlayLeftGapPx,
-                                              overlayRightGapPx,
-                                              overlayClearHeight,
-                                              overlayClearWidth,
-                                              overlayDrawerHeights:
-                                                overlayMode === "drawer"
-                                                  ? resolveDoorFrontHeightNumbers(
-                                                      normalizeDoorFrontHeights(overlaySource.doorFrontHeights, overlayCount),
-                                                      String(overlaySource.height ?? ""),
-                                                      String(overlaySource.doorTopGap ?? ""),
-                                                      String(overlaySource.doorBetweenGap ?? ""),
-                                                      normalizeDoorFrontHeightManual(overlaySource.doorFrontHeightManual, overlayCount),
-                                                    )
-                                                  : { heights: [], manual: [] as boolean[] },
-                                              overlayDoorWidths:
-                                                overlayMode === "door"
-                                                  ? resolveDoorFrontWidthNumbers(
-                                                      normalizeDoorFrontWidths(overlaySource.doorFrontWidths, overlayCount),
-                                                      String(overlaySource.width ?? ""),
-                                                      String(overlaySource.doorSideLeftGap ?? ""),
-                                                      String(overlaySource.doorSideRightGap ?? ""),
-                                                      String(overlaySource.doorBetweenGap ?? ""),
-                                                      normalizeDoorFrontWidthManual(overlaySource.doorFrontWidthManual, overlayCount),
-                                                    )
-                                                  : { widths: [], manual: [] as boolean[] },
-                                            },
-                                          ];
-                                        });
-                                        const overlayGapPlacementRects: Array<{ left: number; right: number; top: number; bottom: number }> = [];
-                                        const overlayGapGuides = overlayItems.map(
-                                          ({
-                                            item,
-                                            ownerId,
-                                            frontKind,
-                                            overlayMode,
-                                            overlayTopGapPx,
-                                            overlayBetweenGapPxForHeight,
-                                            overlayBetweenGapPxForWidth,
-                                            overlayLeftGapPx,
-                                            overlayRightGapPx,
-                                            overlayDrawerHeights,
-                                            overlayDoorWidths,
-                                            overlaySource,
-                                          }) =>
-                                            renderCabinetBuilderOverlayGapGuides({
-                                              item,
-                                              ownerId,
-                                              frontKind,
-                                              overlayMode,
-                                              overlayTopGapValue: Number.parseFloat(String(overlaySource.doorTopGap || "").replace(/[^\d.-]/g, "")) || 0,
-                                              overlayBetweenGapValue: Number.parseFloat(String(overlaySource.doorBetweenGap || "").replace(/[^\d.-]/g, "")) || 0,
-                                              overlayLeftGapValue: Number.parseFloat(String(overlaySource.doorSideLeftGap || "").replace(/[^\d.-]/g, "")) || 0,
-                                              overlayRightGapValue: Number.parseFloat(String(overlaySource.doorSideRightGap || "").replace(/[^\d.-]/g, "")) || 0,
-                                              overlayTopGapPx,
-                                              overlayBetweenGapPxForHeight,
-                                              overlayBetweenGapPxForWidth,
-                                              overlayLeftGapPx,
-                                              overlayRightGapPx,
-                                              overlayDoorWidths,
-                                              overlayDrawerHeights,
-                                              scale,
-                                              editingGapPill: cabinetBuilderEditingGapPill,
-                                              onStartEditGap: startCabinetBuilderOverlayGapEdit,
-                                              onChangeEditGapValue: (value) =>
-                                                setCabinetBuilderEditingGapPill((prev) => (prev ? { ...prev, value } : prev)),
-                                              onCommitEditGap: commitCabinetBuilderOverlayGapEdit,
-                                              onCancelEditGap: cancelCabinetBuilderOverlayGapEdit,
-                                              placedLabelRects: overlayGapPlacementRects,
-                                              blockedRects: activeGapBlockedRects,
-                                            }),
-                                        );
-                                        const getWallPieceGrainAxis = (row: Pick<CutlistRow, "grainValue" | "height" | "width" | "depth">) =>
-                                          resolveGrainAxis(
-                                            String(row.grainValue ?? ""),
-                                            String(row.height ?? ""),
-                                            String(row.width ?? ""),
-                                            String(row.depth ?? ""),
-                                          );
-                                        return (
-                                          <div
-                                            ref={cabinetBuilderDrawingViewportRef}
-                                            tabIndex={0}
-                                            onKeyDown={handleCabinetBuilderDrawingKeyDown}
-                                            onWheelCapture={handleCabinetBuilderDrawingWheelCapture}
-                                            onMouseEnter={clearCabinetBuilderHoverClearTimeout}
-                                            onMouseLeave={() => {
-                                              const activeHoverId =
-                                                cabinetBuilderSelectedHoverActive ? selectedPiece?.id || "" : cabinetBuilderHoveredWallId || selectedPiece?.id || "";
-                                              if (activeHoverId) scheduleCabinetBuilderWallHoverClear(activeHoverId);
-                                            }}
-                                            onMouseDownCapture={(event) => {
-                                              event.currentTarget.focus();
-                                            }}
-                                            onContextMenu={handleCabinetBuilderMeasureContextMenu}
-                                            className={`group relative mx-auto w-full max-w-[1120px] overflow-visible outline-none ${cabinetBuilderMeasureMode ? "cursor-crosshair" : ""}`}
-                                          >
-                                            <div
-                                              className="relative w-full"
-                                              style={{
-                                                transform: `scale(${cabinetBuilderDrawingZoom})`,
-                                                transformOrigin: "center top",
-                                              }}
-                                            >
-                                            <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} className="h-auto w-full overflow-visible">
-                                              {cabinetBuilderMeasureMode ? (
-                                                <rect
-                                                  x={0}
-                                                  y={0}
-                                                  width={viewWidth}
-                                                  height={viewHeight}
-                                                  fill="transparent"
-                                                  style={{ cursor: "crosshair" }}
-                                                  onMouseDown={(event) => {
-                                                    event.preventDefault();
-                                                    event.stopPropagation();
-                                                    recordCabinetBuilderMeasurePoint(event.clientX, event.clientY, viewWidth, viewHeight, pieceLayouts);
-                                                  }}
-                                                />
-                                              ) : null}
-                                              {pieceLayouts.map((item) => (
-                                                <g
-                                                  key={`cab_wall_piece_desktop_${item.id}`}
-                                                  data-cabinet-piece="1"
-                                                  onMouseEnter={() => markCabinetBuilderWallHovered(item.id)}
-                                                  onMouseDown={(event) => {
-                                                    if (cabinetBuilderMeasureMode) return;
-                                                    if (event.button !== 0) return;
-                                                    event.preventDefault();
-                                                    beginCabinetBuilderWallDrag(item.id, dragViewport, event.clientX);
-                                                  }}
-                                                  onClick={() => {
-                                                    if (cabinetBuilderMeasureMode) return;
-                                                      setCabinetBuilderSelectedWallId(item.id);
-                                                      setCabinetBuilderSelectedHoverActive(true);
-                                                      setCabinetBuilderAttachmentMenuSide(null);
-                                                    }}
-                                                  onDoubleClick={() => {
-                                                    if (cabinetBuilderMeasureMode || productionReadOnly) return;
-                                                      setCabinetBuilderSelectedWallId(item.id);
-                                                      setCabinetBuilderSelectedHoverActive(true);
-                                                      setCabinetBuilderAttachmentMenuSide(null);
-                                                      openCabinetBuilderEditForSelected("edit");
-                                                    }}
-                                                  style={{ cursor: cabinetBuilderMeasureMode ? "crosshair" : cabinetBuilderDragActive && cabinetBuilderDraggingWallId === item.id ? "grabbing" : "grab" }}
-                                                >
-                                                  <rect
-                                                    x={item.x}
-                                                    y={item.y}
-                                                    width={item.width}
-                                                    height={item.height}
-                                                    fill={item.palette.fill}
-                                                  />
-                                                  {item.kind === "panel"
-                                                    ? renderSvgGrainIndicators({
-                                                        keyPrefix: `wall_piece_desktop_${item.id}`,
-                                                        x: item.x,
-                                                        y: item.y,
-                                                        width: item.width,
-                                                        height: item.height,
-                                                        grainAxis: getWallPieceGrainAxis(item.row),
-                                                        color: item.palette.stroke,
-                                                        opacity: 0.42,
-                                                      })
-                                                    : null}
-                                                  {(() => {
-                                                    const piecePrimaryText = numericDimensionText(item.row.height);
-                                                    const pieceSecondaryText = numericDimensionText(
-                                                      item.kind === "panel"
-                                                        ? String(item.row.depth || "").trim() || String(item.row.width || "").trim()
-                                                        : String(item.row.width || "").trim(),
-                                                    );
-                                                    const canShowInlineLabel = item.width >= 96 && item.height >= 28;
-                                                    const canShowStackedLabel = item.width >= 54 && item.height >= 86;
-                                                    return canShowInlineLabel ? (
-                                                      <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={item.palette.text}>
-                                                        {`${piecePrimaryText} x ${pieceSecondaryText}`}
-                                                      </text>
-                                                    ) : canShowStackedLabel ? (
-                                                      <text x={item.x + item.width / 2} y={item.y + item.height / 2} textAnchor="middle" fontSize="11" fill={item.palette.text}>
-                                                        <tspan x={item.x + item.width / 2} dy="-1.1em">{piecePrimaryText}</tspan>
-                                                        <tspan x={item.x + item.width / 2} dy="1.15em">x</tspan>
-                                                        <tspan x={item.x + item.width / 2} dy="1.15em">{pieceSecondaryText}</tspan>
-                                                      </text>
-                                                    ) : (
-                                                      <></>
-                                                    );
-                                                  })()}
-                                                </g>
-                                              ))}
-                                              {pieceLayouts.map((item, index) => {
-                                                const isSelected = item.id === selectedPiece?.id;
-                                                const previousItem = pieceLayouts[index - 1] ?? null;
-                                                const nextItem = pieceLayouts[index + 1] ?? null;
-                                                const topBottomStroke = isSelected ? "#2563EB" : item.palette.stroke;
-                                                const leftStroke = item.palette.stroke;
-                                                const sharedRightStroke = nextItem?.palette.stroke ?? item.palette.stroke;
-                                                const sharesLaneWithPrevious = Boolean(previousItem && previousItem.position === item.position);
-                                                const sharesColumnWithNext = Boolean(
-                                                  nextItem &&
-                                                    nextItem.position === item.position &&
-                                                    Math.abs(nextItem.x - item.x) < 0.5 &&
-                                                    Math.abs(nextItem.width - item.width) < 0.5,
-                                                );
-                                                const leftBoundaryTop = item.y;
-                                                const leftBoundaryBottom = item.y + item.height;
-                                                const rightBoundaryTouchesNext = Boolean(
-                                                  nextItem &&
-                                                    nextItem.position !== item.position &&
-                                                    Math.abs((item.x + item.width) - nextItem.x) < 0.5,
-                                                );
-                                                const sharedBoundaryTop = sharesColumnWithNext
-                                                  ? item.y
-                                                  : rightBoundaryTouchesNext
-                                                    ? Math.min(item.y, nextItem.y)
-                                                    : item.y;
-                                                const sharedBoundaryBottom = sharesColumnWithNext
-                                                  ? item.y + item.height
-                                                  : rightBoundaryTouchesNext
-                                                    ? Math.max(item.y + item.height, nextItem.y + nextItem.height)
-                                                    : item.y + item.height;
-                                                return (
-                                                  <g key={`cab_wall_outline_desktop_${item.id}`} pointerEvents="none">
-                                                    <line x1={item.x} x2={item.x + item.width} y1={item.y} y2={item.y} stroke={topBottomStroke} strokeWidth="1" />
-                                                    <line
-                                                      x1={item.x}
-                                                      x2={item.x + item.width}
-                                                      y1={item.y + item.height}
-                                                      y2={item.y + item.height}
-                                                      stroke={topBottomStroke}
-                                                      strokeWidth="1"
-                                                    />
-                                                    {!previousItem || sharesLaneWithPrevious || Math.abs((previousItem.x + previousItem.width) - item.x) > 0.5 ? (
-                                                      <line x1={item.x} x2={item.x} y1={leftBoundaryTop} y2={leftBoundaryBottom} stroke={leftStroke} strokeWidth="1" />
-                                                    ) : null}
-                                                    <line
-                                                      x1={item.x + item.width}
-                                                      x2={item.x + item.width}
-                                                      y1={sharedBoundaryTop}
-                                                      y2={sharedBoundaryBottom}
-                                                      stroke={sharedRightStroke}
-                                                      strokeWidth="1"
-                                                    />
-                                                  </g>
-                                                );
-                                              })}
-                                              {selectedPiece ? (
-                                                <g key={`cab_wall_selected_outline_desktop_${selectedPiece.id}`} pointerEvents="none">
-                                                  <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y} stroke="#2563EB" strokeWidth="1" />
-                                                  <line x1={selectedPiece.x} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y + selectedPiece.height} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
-                                                  <line x1={selectedPiece.x} x2={selectedPiece.x} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
-                                                  <line x1={selectedPiece.x + selectedPiece.width} x2={selectedPiece.x + selectedPiece.width} y1={selectedPiece.y} y2={selectedPiece.y + selectedPiece.height} stroke="#2563EB" strokeWidth="1" />
-                                                </g>
-                                              ) : null}
-                                              {overlayItems.map(({ item, overlaySource, overlayMode, overlayStroke, overlayFill, overlayText, overlayTopGapPx, overlayBetweenGapPxForHeight, overlayBetweenGapPxForWidth, overlayLeftGapPx, overlayRightGapPx, overlayClearHeight, overlayClearWidth, overlayDrawerHeights, overlayDoorWidths }) =>
-                                                overlayMode === "drawer"
-                                                  ? (() => {
-                                                      let currentY = item.y + overlayTopGapPx;
-                                                      const innerX = item.x + overlayLeftGapPx;
-                                                      const innerWidth = Math.max(0, item.width - overlayLeftGapPx - overlayRightGapPx);
-                                                      return overlayDrawerHeights.heights.map((pieceHeight, index) => {
-                                                        const pieceScaledHeight = pieceHeight * scale;
-                                                          const y = currentY;
-                                                          currentY += pieceScaledHeight + overlayBetweenGapPxForHeight;
-                                                          return (
-                                                            <g key={`cab_draw_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
-                                                              <rect x={innerX} y={y} width={innerWidth} height={pieceScaledHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
-                                                              {renderSvgGrainIndicators({
-                                                                keyPrefix: `cab_draw_piece_desktop_${item.id}_${index}`,
-                                                                x: innerX,
-                                                                y,
-                                                                width: innerWidth,
-                                                                height: pieceScaledHeight,
-                                                                grainAxis: getWallPieceGrainAxis(overlaySource),
-                                                                color: overlayStroke,
-                                                                opacity: 0.36,
-                                                              })}
-                                                              <text x={innerX + innerWidth / 2} y={y + pieceScaledHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
-                                                                {`${formatDoorFrontHeightValue(pieceHeight)} x ${formatDoorFrontHeightValue(overlayClearWidth)}`}
-                                                            </text>
-                                                          </g>
-                                                        );
-                                                      });
-                                                    })()
-                                                  : overlayMode === "door"
-                                                    ? (() => {
-                                                        let currentX = item.x + overlayLeftGapPx;
-                                                        const frontY = item.y + overlayTopGapPx;
-                                                        const frontHeight = Math.max(0, item.height - overlayTopGapPx);
-                                                        return overlayDoorWidths.widths.map((pieceWidth, index) => {
-                                                          const pieceScaledWidth = pieceWidth * scale;
-                                                            const x = currentX;
-                                                            currentX += pieceScaledWidth + overlayBetweenGapPxForWidth;
-                                                            return (
-                                                              <g key={`cab_door_piece_${item.id}_${index}`} data-cabinet-piece="1" style={{ pointerEvents: "none" }}>
-                                                                <rect x={x} y={frontY} width={pieceScaledWidth} height={frontHeight} fill={overlayFill} stroke={overlayStroke} strokeWidth="1" />
-                                                                {renderSvgGrainIndicators({
-                                                                  keyPrefix: `cab_door_piece_desktop_${item.id}_${index}`,
-                                                                  x,
-                                                                  y: frontY,
-                                                                  width: pieceScaledWidth,
-                                                                  height: frontHeight,
-                                                                  grainAxis: getWallPieceGrainAxis(overlaySource),
-                                                                  color: overlayStroke,
-                                                                  opacity: 0.36,
-                                                                })}
-                                                                <text x={x + pieceScaledWidth / 2} y={frontY + frontHeight / 2} textAnchor="middle" dominantBaseline="middle" fontSize="11" fill={overlayText}>
-                                                                  {`${formatDoorFrontHeightValue(pieceWidth)} x ${formatDoorFrontHeightValue(overlayClearHeight)}`}
-                                                              </text>
-                                                            </g>
-                                                          );
-                                                        });
-                                                      })()
-                                                    : null,
-                                              )}
-                                              {overlayGapGuides.flatMap((guide) => guide.lines)}
-                                              {overlayGapGuides.flatMap((guide) => guide.labels)}
-                                              {cabinetBuilderMeasurePoints.length >= 1 ? (
-                                                <>
-                                                  {cabinetBuilderMeasurePoints.length === 2 ? (
-                                                    <line
-                                                      x1={cabinetBuilderMeasurePoints[0].x}
-                                                      y1={cabinetBuilderMeasurePoints[0].y}
-                                                      x2={cabinetBuilderMeasurePoints[1].x}
-                                                      y2={cabinetBuilderMeasurePoints[1].y}
-                                                      stroke="#16A34A"
-                                                      strokeWidth="2"
-                                                      strokeDasharray="6 4"
-                                                    />
-                                                  ) : null}
-                                                  {cabinetBuilderMeasurePoints.map((point, index) => (
-                                                    <g key={`cab_measure_point_desktop_${index}`} pointerEvents="none">
-                                                      <circle cx={point.x} cy={point.y} r="3.5" fill="#16A34A" stroke="#FFFFFF" strokeWidth="1.5" />
-                                                      <text x={point.x + 10} y={point.y - 10} fontSize="11" fontWeight="700" fill="#14532D">
-                                                        {index === 0 ? "A" : "B"}
-                                                      </text>
-                                                    </g>
-                                                  ))}
-                                                  {cabinetBuilderMeasurePoints.length === 2 && measureLengthText ? (
-                                                    <g pointerEvents="none">
-                                                      <rect
-                                                        x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2 - 34}
-                                                        y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2 - 16}
-                                                        width="68"
-                                                        height="24"
-                                                        rx="8"
-                                                        fill="#FFFFFF"
-                                                        stroke="#16A34A"
-                                                      />
-                                                      <text
-                                                        x={(cabinetBuilderMeasurePoints[0].x + cabinetBuilderMeasurePoints[1].x) / 2}
-                                                        y={(cabinetBuilderMeasurePoints[0].y + cabinetBuilderMeasurePoints[1].y) / 2}
-                                                        textAnchor="middle"
-                                                        dominantBaseline="middle"
-                                                        fontSize="11"
-                                                        fontWeight="700"
-                                                        fill="#14532D"
-                                                      >
-                                                        {measureLengthText}
-                                                      </text>
-                                                    </g>
-                                                  ) : null}
-                                                </>
-                                              ) : null}
-                                            </svg>
-                                            {activeLabelPiece ? (
-                                              <div
-                                                className="pointer-events-none absolute z-10 rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm"
-                                                style={{
-                                                  left: `${((activeLabelPiece.x + activeLabelPiece.width / 2) / viewWidth) * 100}%`,
-                                                  top: `${(activeLabelPiece.y / viewHeight) * 100}%`,
-                                                  transform: "translate(-50%, calc(-100% - 8px))",
-                                                  borderColor: activeLabelPiece.palette.badgeBorder,
-                                                  backgroundColor: activeLabelPiece.palette.badgeBg,
-                                                  color: activeLabelPiece.palette.badgeText,
-                                                }}
-                                              >
-                                                {activeLabelPiece.row.name || "Cabinet"}
-                                              </div>
-                                            ) : null}
-                                            {selectedPiece ? (() => {
-                                              const canShowInlineLabel = selectedPiece.width >= 96 && selectedPiece.height >= 28;
-                                              const canShowStackedLabel = selectedPiece.width >= 54 && selectedPiece.height >= 86;
-                                              if (canShowInlineLabel || canShowStackedLabel) return null;
-                                              const selectedPrimaryText = numericDimensionText(selectedPiece.row.height);
-                                              const selectedSecondaryText = numericDimensionText(
-                                                selectedPiece.kind === "panel"
-                                                  ? String(selectedPiece.row.depth || "").trim() || String(selectedPiece.row.width || "").trim()
-                                                  : String(selectedPiece.row.width || "").trim(),
-                                              );
-                                              return (
-                                                <div
-                                                  className="pointer-events-none absolute z-20 rounded-[8px] border px-2 py-1 text-[11px] font-bold shadow-sm"
-                                                  style={{
-                                                    left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
-                                                    top: `${((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100}%`,
-                                                    transform: "translate(-50%, -50%)",
-                                                    borderColor: selectedPiece.palette.badgeBorder,
-                                                    backgroundColor: selectedPiece.palette.badgeBg,
-                                                    color: selectedPiece.palette.badgeText,
-                                                  }}
-                                                >
-                                                  <div className="text-center leading-[1.05]">
-                                                    <div>{selectedPrimaryText}</div>
-                                                    <div>x</div>
-                                                    <div>{selectedSecondaryText}</div>
-                                                  </div>
-                                                </div>
-                                              );
-                                            })() : null}
-                                            {!cabinetBuilderMeasureMode ? (
-                                              <div className="pointer-events-none absolute inset-0">
-                                                <div
-                                                  className="pointer-events-auto absolute z-10 flex flex-col gap-2"
-                                                  style={{
-                                                    left: `${((selectedPiece.x + selectedPiece.width / 2) / viewWidth) * 100}%`,
-                                                    top: `${(((selectedPiece.y + selectedPiece.height + 42 > viewHeight ? selectedPiece.y : selectedPiece.y + selectedPiece.height)) / viewHeight) * 100}%`,
-                                                    transform:
-                                                      selectedPiece.y + selectedPiece.height + 42 > viewHeight
-                                                        ? "translate(-50%, calc(-100% - 8px))"
-                                                        : "translate(-50%, 8px)",
-                                                  }}
-                                                >
-                                                  <button type="button" onClick={() => openCabinetBuilderEditForSelected("edit")} className="rounded-[8px] border px-2 py-1.5 text-[11px] font-bold shadow-sm" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg, color: cabinetBuilderShellText }}>{`Edit ${selectedPiece?.row.name || "Cabinet"}`}</button>
-                                                </div>
-                                              {(() => {
-                                                const selectedPieceHasDualAttachZones =
-                                                  selectedPiece.kind === "panel" && selectedPiece.panelHeightMode === "tall";
-                                                const attachmentAnchors: Array<{
-                                                  side: "left" | "right";
-                                                  align: "top" | "bottom";
-                                                  leftPercent: number;
-                                                  topPercent: number;
-                                                  transform: string;
-                                                  menuClassName: string;
-                                                }> = selectedPieceHasDualAttachZones
-                                                  ? [
-                                                      {
-                                                        side: "left",
-                                                        align: "top",
-                                                        leftPercent: (selectedPiece.x / viewWidth) * 100,
-                                                        topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
-                                                        transform: "translate(calc(-100% - 10px), -50%)",
-                                                        menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                                      },
-                                                      {
-                                                        side: "left",
-                                                        align: "bottom",
-                                                        leftPercent: (selectedPiece.x / viewWidth) * 100,
-                                                        topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
-                                                        transform: "translate(calc(-100% - 10px), -50%)",
-                                                        menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                                      },
-                                                      {
-                                                        side: "right",
-                                                        align: "top",
-                                                        leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
-                                                        topPercent: ((selectedPiece.y + 18) / viewHeight) * 100,
-                                                        transform: "translate(10px, -50%)",
-                                                        menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                                      },
-                                                      {
-                                                        side: "right",
-                                                        align: "bottom",
-                                                        leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
-                                                        topPercent: ((selectedPiece.y + selectedPiece.height - 18) / viewHeight) * 100,
-                                                        transform: "translate(10px, -50%)",
-                                                        menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                                      },
-                                                    ]
-                                                  : [
-                                                      {
-                                                        side: "left",
-                                                        align: "bottom",
-                                                        leftPercent: (selectedPiece.x / viewWidth) * 100,
-                                                        topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
-                                                        transform: "translate(calc(-100% - 10px), -50%)",
-                                                        menuClassName: "absolute left-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                                      },
-                                                      {
-                                                        side: "right",
-                                                        align: "bottom",
-                                                        leftPercent: ((selectedPiece.x + selectedPiece.width) / viewWidth) * 100,
-                                                        topPercent: ((selectedPiece.y + selectedPiece.height / 2) / viewHeight) * 100,
-                                                        transform: "translate(10px, -50%)",
-                                                        menuClassName: "absolute right-12 top-1/2 flex -translate-y-1/2 flex-col gap-2 rounded-[12px] border p-2 shadow-lg",
-                                                      },
-                                                    ];
-                                                return attachmentAnchors.map((anchor) => {
-                                                  const menuOpen =
-                                                    cabinetBuilderAttachmentMenuSide === anchor.side &&
-                                                    cabinetBuilderAttachmentMenuAlign === anchor.align;
-                                                  const showAnchor = cabinetBuilderSelectedHoverActive || menuOpen;
-                                                  return (
-                                                    <div
-                                                      key={`cab_attach_${anchor.side}_${anchor.align}`}
-                                                      className="absolute transition-opacity duration-150"
-                                                      onMouseEnter={holdCabinetBuilderSelectedHover}
-                                                      onMouseLeave={() => scheduleCabinetBuilderWallHoverClear(selectedPiece.id)}
-                                                      style={{
-                                                        left: `${anchor.leftPercent}%`,
-                                                        top: `${anchor.topPercent}%`,
-                                                        transform: anchor.transform,
-                                                        opacity: showAnchor ? 1 : 0,
-                                                        pointerEvents: showAnchor ? "auto" : "none",
-                                                      }}
-                                                    >
-                                                      <button type="button" onClick={() => {
-                                                        const isOpen =
-                                                          cabinetBuilderAttachmentMenuSide === anchor.side &&
-                                                          cabinetBuilderAttachmentMenuAlign === anchor.align;
-                                                        setCabinetBuilderAttachmentMenuSide(isOpen ? null : anchor.side);
-                                                        setCabinetBuilderAttachmentMenuAlign(anchor.align);
-                                                      }} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] hover:bg-[#CFEBDD]">
-                                                        <img src="/plus.png" alt="" className="block object-contain" style={{ width: 17, height: 17, filter: "invert(38%) sepia(31%) saturate(1592%) hue-rotate(101deg) brightness(94%) contrast(80%)" }} />
-                                                      </button>
-                                                      {menuOpen ? (
-                                                        <div className={anchor.menuClassName} style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg }}>
-                                                          <button type="button" onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "cabinet", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold" style={{ borderColor: cabinetBuilderFieldBorder, color: cabinetBuilderShellText }}>Cabinet</button>
-                                                          <button type="button" onClick={() => openCabinetBuilderAttachmentCreate(anchor.side, "panel", anchor.align)} className="rounded-[8px] border px-3 py-2 text-[11px] font-bold" style={{ borderColor: cabinetBuilderFieldBorder, color: cabinetBuilderShellText }}>Panel</button>
-                                                        </div>
-                                                      ) : null}
-                                                    </div>
-                                                  );
-                                                });
-                                              })()}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      </div>
-                                        );
-                                      })()}
-                                    </div>
-                                    </div>
-                                  {renderCabinetBuilderAttachedPartsList(cabinetBuilderDraft, {
-                                    wrapperBorder: cabinetBuilderFieldBorder,
-                                    wrapperBg: cabinetBuilderFieldBg,
-                                    buttonBorder: cabinetBuilderFieldBorder,
-                                    buttonBg: "rgba(255,255,255,0.72)",
-                                    buttonText: cabinetBuilderShellText,
-                                  }) ?? (
-                                    <div className="rounded-[14px] border p-3" style={{ borderColor: cabinetBuilderFieldBorder, backgroundColor: cabinetBuilderFieldBg }}>
-                                      <p className="text-[11px] font-extrabold uppercase tracking-[1px] text-[#111111]">Cabinet Wall Parts</p>
-                                      <p className="mt-3 text-[11px] text-[#64748B]">Use the side + buttons on the drawing to add cabinets or panels.</p>
-                                    </div>
-                                  )}
-                                  {cabinetBuilderCreateOpen && typeof document !== "undefined" ? createPortal(
-                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-                                        <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]" style={{ borderColor: projectPalette.border }}>
-                                          {(() => {
-                                            const isPanelAttachment = cabinetBuilderPendingAttachment?.kind === "panel";
-                                            const grainAllowed = productionBoardAllowsGrainForValue(String(pendingCabinetBuilderRow.board || "").trim());
-                                            return (
-                                              <>
-                                                <p className="text-[22px] font-extrabold text-[#12345B]">
-                                                  {isPanelAttachment ? "Add Panel" : cabinetBuilderPendingAttachment ? "Add Cabinet" : "New Cabinet"}
-                                                </p>
-                                                {isPanelAttachment ? (
-                                                  <div className="mt-5 space-y-4">
-                                                    <div className="flex flex-wrap items-center gap-4">
-                                                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
-                                                        <input
-                                                          type="checkbox"
-                                                          checked={cabinetBuilderPendingPanelHeightMode === "base"}
-                                                          onChange={() => {
-                                                            setCabinetBuilderPendingPanelHeightMode("base");
-                                                            setCabinetBuilderPendingPanelHeightError("");
-                                                            setPendingCabinetBuilderRow((prev) => ({
-                                                              ...prev,
-                                                              height: getCabinetBuilderPanelHeightBaselineText("base", cabinetBuilderPendingPanelSpanMode),
-                                                            }));
-                                                          }}
-                                                        />
-                                                        Base
-                                                      </label>
-                                                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
-                                                        <input
-                                                          type="checkbox"
-                                                          checked={cabinetBuilderPendingPanelHeightMode === "tall"}
-                                                          onChange={() => {
-                                                            setCabinetBuilderPendingPanelHeightMode("tall");
-                                                            setCabinetBuilderPendingPanelHeightError("");
-                                                            setPendingCabinetBuilderRow((prev) => ({
-                                                              ...prev,
-                                                              height: getCabinetBuilderPanelHeightBaselineText("tall", cabinetBuilderPendingPanelSpanMode),
-                                                            }));
-                                                          }}
-                                                        />
-                                                        Tall
-                                                      </label>
-                                                      <div className="min-w-[220px] flex-1 space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Panel Span</p>
-                                                        <BoardPillDropdown
-                                                          value={cabinetBuilderPendingPanelSpanMode}
-                                                          options={["floorToCeiling", "floorToTopOfCab", "bottomToCeiling", "bottomToTopOfCab"]}
-                                                          disabled={productionReadOnly}
-                                                          bg="#FFFFFF"
-                                                          border="#D8DEE8"
-                                                          text="#0F172A"
-                                                          size="default"
-                                                          getSize={() => ""}
-                                                          getLabel={(value) =>
-                                                            value === "floorToCeiling"
-                                                              ? "Floor to ceiling"
-                                                              : value === "floorToTopOfCab"
-                                                                ? "Floor to top of cab"
-                                                                : value === "bottomToCeiling"
-                                                                  ? "Bottom of cab to ceiling"
-                                                                  : "Bottom of cab to top of cab"
-                                                          }
-                                                          onChange={(value) => {
-                                                            const nextSpanMode =
-                                                              value === "floorToCeiling" || value === "floorToTopOfCab" || value === "bottomToCeiling" || value === "bottomToTopOfCab"
-                                                                ? value
-                                                                : "bottomToTopOfCab";
-                                                            setCabinetBuilderPendingPanelSpanMode(nextSpanMode);
-                                                            setCabinetBuilderPendingPanelHeightError("");
-                                                            setPendingCabinetBuilderRow((prev) => ({
-                                                              ...prev,
-                                                              height: getCabinetBuilderPanelHeightBaselineText(cabinetBuilderPendingPanelHeightMode, nextSpanMode),
-                                                            }));
-                                                          }}
-                                                        />
-                                                      </div>
-                                                    </div>
-                                                    {cabinetBuilderPendingPanelNeedsExtraHeight ? (
-                                                      <p className="text-[12px] font-semibold text-[#B42318]">
-                                                        Add extra height above {cabinetBuilderPendingPanelBaselineText} before creating this panel.
-                                                      </p>
-                                                    ) : null}
-                                                    {cabinetBuilderPendingPanelHeightError ? (
-                                                      <p className="text-[12px] font-semibold text-[#B42318]">{cabinetBuilderPendingPanelHeightError}</p>
-                                                    ) : null}
-                                                    <div className="grid gap-3 md:grid-cols-2">
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                                                        <BoardPillDropdown
-                                                          value={pendingCabinetBuilderRow.board}
-                                                          options={cutlistBoardOptions}
-                                                          disabled={productionReadOnly}
-                                                          bg="#FFFFFF"
-                                                          border="#D8DEE8"
-                                                          text="#0F172A"
-                                                          getSize={boardSizeFor}
-                                                          getLabel={boardDisplayLabel}
-                                                          onChange={(value) => {
-                                                            const defaults = defaultClashingForPartType(experimentalPanelPartType, value);
-                                                            const grainAllowedForBoard = productionBoardAllowsGrainForValue(String(value || "").trim());
-                                                            setPendingCabinetBuilderRow((prev) => ({
-                                                              ...prev,
-                                                              board: value,
-                                                              clashLeft: defaults.left,
-                                                              clashRight: defaults.right,
-                                                              clashing: joinClashing(defaults.left, defaults.right),
-                                                              grain: grainAllowedForBoard ? prev.grain : false,
-                                                              grainValue: grainAllowedForBoard ? prev.grainValue : "",
-                                                            }));
-                                                          }}
-                                                        />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Part Name</p>
-                                                        <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                    </div>
-                                                    <div className="grid gap-3 md:grid-cols-4">
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                                                        <input value={pendingCabinetBuilderRow.height} onChange={(e) => { setCabinetBuilderPendingPanelHeightError(""); setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) })); }} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                                                        <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                                                        <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                                                        <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) || "" }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                    </div>
-                                                    <div className={`grid gap-3 ${grainAllowed ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Long</p>
-                                                        <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashLeft ?? "")} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashLeft: value, clashing: joinClashing(value, String(prev.clashRight ?? "")) }))} />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Short</p>
-                                                        <BoardPillDropdown value={String(pendingCabinetBuilderRow.clashRight ?? "")} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, clashRight: value, clashing: joinClashing(String(prev.clashLeft ?? ""), value) }))} />
-                                                      </div>
-                                                      {grainAllowed ? (
-                                                        <div className="space-y-1">
-                                                          <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                                                          <BoardPillDropdown value={String(pendingCabinetBuilderRow.grainValue ?? "")} options={grainDimensionOptionsForRow(pendingCabinetBuilderRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, grainValue: value, grain: Boolean(String(value).trim()) }))} />
-                                                        </div>
-                                                      ) : null}
-                                                    </div>
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                                                      {renderCabinetBuilderInformationLinesEditor({
-                                                        value: String(pendingCabinetBuilderRow.information ?? ""),
-                                                        keyPrefix: "pending_builder_info_portal",
-                                                        disabled: productionReadOnly,
-                                                        onLineChange: onPendingCabinetBuilderInformationLineChange,
-                                                        onAddLine: onPendingCabinetBuilderAddInformationLine,
-                                                        onRemoveLine: onPendingCabinetBuilderRemoveInformationLine,
-                                                      })}
-                                                    </div>
-                                                  </div>
-                                                ) : (
-                                                  <div className="mt-5 space-y-3">
-                                                    <label className="inline-flex items-center gap-2 text-[13px] font-semibold text-[#334155]">
-                                                      <input
-                                                        type="checkbox"
-                                                        checked={cabinetBuilderPendingNewCabinet}
-                                                        onChange={(e) => setCabinetBuilderPendingNewCabinet(e.target.checked)}
-                                                      />
-                                                      New Cabinet
-                                                    </label>
-                                                    <div className="grid gap-3 sm:grid-cols-3">
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Cabinet Name</p>
-                                                        <input value={pendingCabinetBuilderRow.name} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, name: e.target.value }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                                                        <input value={pendingCabinetBuilderRow.height} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                      <div className="space-y-1">
-                                                        <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                                                        <input value={pendingCabinetBuilderRow.width} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                      </div>
-                                                    </div>
-                                                    {cabinetBuilderPendingNewCabinet ? (
-                                                      <div className="space-y-4">
-                                                        <div className="grid gap-3 md:grid-cols-2">
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                                                            <BoardPillDropdown
-                                                              value={pendingCabinetBuilderRow.board}
-                                                              options={cutlistBoardOptions}
-                                                              disabled={productionReadOnly}
-                                                              bg="#FFFFFF"
-                                                              border="#D8DEE8"
-                                                              text="#0F172A"
-                                                              getSize={boardSizeFor}
-                                                              getLabel={boardDisplayLabel}
-                                                              onChange={(value) => setPendingCabinetBuilderRow((prev) => ({ ...prev, board: value }))}
-                                                            />
-                                                          </div>
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                                                            <input value={pendingCabinetBuilderRow.depth} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                          </div>
-                                                        </div>
-                                                        <div className="grid gap-3 md:grid-cols-4">
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                                                            <input value={pendingCabinetBuilderRow.quantity} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                          </div>
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
-                                                            <input value={pendingCabinetBuilderRow.fixedShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                          </div>
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
-                                                            <input value={pendingCabinetBuilderRow.adjustableShelf ?? ""} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelf: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                          </div>
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                                                            {renderCabinetBuilderInformationLinesEditor({
-                                                              value: String(pendingCabinetBuilderRow.information ?? ""),
-                                                              keyPrefix: "pending_new_cabinet_info_portal",
-                                                              disabled: productionReadOnly,
-                                                              onLineChange: onPendingCabinetBuilderInformationLineChange,
-                                                              onAddLine: onPendingCabinetBuilderAddInformationLine,
-                                                              onRemoveLine: onPendingCabinetBuilderRemoveInformationLine,
-                                                            })}
-                                                          </div>
-                                                        </div>
-                                                        <div className="grid gap-3 md:grid-cols-2">
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Drilling</p>
-                                                            <select value={pendingCabinetBuilderRow.fixedShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, fixedShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
-                                                              <option value="No">No</option>
-                                                              <option value="Yes">Yes</option>
-                                                            </select>
-                                                          </div>
-                                                          <div className="space-y-1">
-                                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Drilling</p>
-                                                            <select value={pendingCabinetBuilderRow.adjustableShelfDrilling ?? "No"} onChange={(e) => setPendingCabinetBuilderRow((prev) => ({ ...prev, adjustableShelfDrilling: normalizeDrillingValue(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]">
-                                                              <option value="No">No</option>
-                                                              <option value="Yes">Yes</option>
-                                                            </select>
-                                                          </div>
-                                                        </div>
-                                                      </div>
-                                                    ) : null}
-                                                  </div>
-                                                )}
-                                              </>
-                                            );
-                                          })()}
-                                          <div className="mt-5 flex justify-end gap-2">
-                                          <button type="button" onClick={() => { setCabinetBuilderPendingAttachment(null); setCabinetBuilderPendingPanelHeightError(""); setCabinetBuilderCreateOpen(false); }} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
-                                          <button type="button" onClick={confirmCabinetBuilderCreate} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Create</button>
-                                        </div>
-                                        </div>
-                                      </div>,
-                                      document.body,
-                                    ) : null}
-                                  {cabinetBuilderEditOpen && cabinetBuilderDraft && typeof document !== "undefined" ? createPortal(
-                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-                                        <div
-                                          className="flex w-full max-w-[960px] flex-col overflow-hidden rounded-[24px] bg-transparent px-0 pb-0 pt-0 shadow-2xl"
-                                          style={{ height: "min(86vh, 820px)" }}
-                                        >
-                                        <div className="relative border-b border-[#D8DEE8] bg-[#F8FAFC] px-12 py-3 text-center">
-                                          <button
-                                            type="button"
-                                            disabled={productionReadOnly}
-                                            onClick={promptDeleteSelectedCabinetBuilderCabinet}
-                                            className="absolute left-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] disabled:opacity-55"
-                                          >
-                                            <img src="/trash.png" alt="" className="h-4 w-4 object-contain" />
-                                          </button>
-                                          <p className="text-[22px] font-extrabold text-[#12345B]">{getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.name || "Cabinet"}</p>
-                                          <button type="button" onClick={() => setCabinetBuilderEditOpen(false)} className="absolute right-3 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
-                                        </div>
-                                        <div
-                                          className="mt-0 grid w-full grid-flow-col auto-cols-fr items-end gap-0 border-b border-[#D8DEE8] px-0"
-                                          style={{
-                                            backgroundColor: (() => {
-                                              const desktopTabs = buildCabinetBuilderEditTabs(cabinetBuilderDraft);
-                                              const desktopActiveTab = desktopTabs.find((tab) => tab.id === cabinetBuilderEditTab) ?? desktopTabs[0];
-                                              return desktopActiveTab?.color ? lightenHex(desktopActiveTab.color, 0.28) : "#FFFFFF";
-                                            })(),
-                                          }}
-                                        >
-                                          {buildCabinetBuilderEditTabs(cabinetBuilderDraft).map((tab) => {
-                                            const isActive = cabinetBuilderEditTab === tab.id;
-                                            const bg = tab.color ? (isActive ? tab.color : lightenHex(tab.color, 0.18)) : isActive ? "#DDF2E7" : "#FFFFFF";
-                                            const border = tab.color ? tab.color : isActive ? "#BFE8CF" : "#D8DEE8";
-                                            const text = tab.color ? "#000000" : isActive ? "#14532D" : "#334155";
-                                            const desktopTabs = buildCabinetBuilderEditTabs(cabinetBuilderDraft);
-                                            const isFirst = tab.id === desktopTabs[0]?.id;
-                                            const isLast = tab.id === desktopTabs[desktopTabs.length - 1]?.id;
-                                            return (
-                                              <button
-                                                key={`cab_edit_tab_desktop_${tab.id}`}
-                                                type="button"
-                                                onClick={() => setCabinetBuilderEditTab(tab.id)}
-                                                className="-mb-px -ml-px first:ml-0 w-full rounded-t-none rounded-b-none border px-4 py-2 text-center text-[12px] font-bold"
-                                                style={{
-                                                  borderTopColor: border,
-                                                  borderBottomColor: isActive ? bg : "#D8DEE8",
-                                                  borderLeftColor: border,
-                                                  borderRightColor: border,
-                                                  backgroundColor: bg,
-                                                  color: text,
-                                                  opacity: 1,
-                                                }}
-                                              >
-                                                {tab.label}
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
-                                        {(() => {
-                                          const desktopEditTabs = buildCabinetBuilderEditTabs(cabinetBuilderDraft);
-                                          const desktopActiveEditTab = desktopEditTabs.find((tab) => tab.id === cabinetBuilderEditTab) ?? desktopEditTabs[0];
-                                          const desktopEditPanelBg = desktopActiveEditTab?.color ? lightenHex(desktopActiveEditTab.color, 0.28) : "#FFFFFF";
-                                          const desktopEditPanelBorder = desktopActiveEditTab?.color ? darkenHex(desktopActiveEditTab.color, 0.08) : "#D8DEE8";
-                                            return (
-                                              <div
-                                                className="min-h-0 flex-1 overflow-y-auto rounded-b-[24px] border border-t-0 px-3 py-3 [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]"
-                                                style={{ borderColor: desktopEditPanelBorder, backgroundColor: desktopEditPanelBg }}
-                                              >
-                                        <div className={`${cabinetBuilderEditTab === "edit" ? "p-3" : "hidden"}`}>
-                                          <p className="text-center text-[13px] font-extrabold uppercase tracking-[1px] text-[#12345B]">Add parts inside this drawing</p>
-                                          <div className="mt-3 flex flex-wrap justify-center gap-3">
-                                            {buildCabinetBuilderEditPartTypePills(
-                                              getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft),
-                                              getCabinetBuilderSelectedFrontRow(cabinetBuilderDraft)?.partType,
-                                            ).map((pill) => {
-                                              const partColor = partTypeColors[pill.partType] ?? "#EEF2F7";
-                                              return (
-                                                <button
-                                                  key={`cab_child_btn_${pill.key}`}
-                                                  type="button"
-                                                  onClick={() => {
-                                                    if (pill.kind === "cabinet") {
-                                                      setCabinetBuilderEditTab("cabinet");
-                                                      return;
-                                                    }
-                                                    if (pill.kind === "fronts") {
-                                                      ensureCabinetBuilderSelectedFronts();
-                                                      return;
-                                                    }
-                                                    addCabinetBuilderChildRowAndOpenTab(pill.partType);
-                                                  }}
-                                                  className="rounded-[10px] border px-4 py-2 text-[12px] font-bold"
-                                                  style={{
-                                                    borderColor: "#D8DEE8",
-                                                    backgroundColor: partColor,
-                                                    color: isLightHex(partColor) ? "#1F2937" : "#F8FAFC",
-                                                  }}
-                                                >
-                                                  {pill.label}
-                                                </button>
-                                              );
-                                            })}
-                                          </div>
-                                        </div>
-                                        <div className={`${cabinetBuilderEditTab === "edit" ? "mt-4 p-3 grid gap-3 md:grid-cols-3" : "hidden"}`}>
-                                          <div className="space-y-1 md:col-span-3">
-                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
-                                            <input
-                                              value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.name ?? ""}
-                                              onChange={(e) => updateCabinetBuilderMainRow({ name: e.target.value })}
-                                              className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
-                                            />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                                            <input
-                                              value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.height ?? ""}
-                                              onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })}
-                                              className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
-                                            />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                                            <input
-                                              value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.width ?? ""}
-                                              onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })}
-                                              className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]"
-                                            />
-                                          </div>
-                                        </div>
-                                        <div className={`${cabinetBuilderEditTab === "cabinet" ? "mt-2 space-y-4" : "hidden"}`}>
-                                          {(() => {
-                                            const selectedCabinet = getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft);
-                                            if (!selectedCabinet?.newCabinet) return null;
-                                            return renderCabinetBuilderPartTabHeader(
-                                              selectedCabinet.row.partType || "Cabinetry",
-                                              () => {
-                                                setCabinetBuilderSelectedNewCabinet(false);
-                                                setCabinetBuilderEditTab("edit");
-                                              },
-                                            );
-                                          })()}
-                                          <div className="grid gap-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
-                                          <div className="space-y-3">
-                                            <div className="space-y-1">
-                                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                                              <BoardPillDropdown value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.board ?? ""} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderMainRow({ board: value })} />
-                                            </div>
-                                            <div className="grid grid-cols-3 gap-3">
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Name</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.name ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ name: e.target.value })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.height ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ height: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.width ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ width: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                            </div>
-                                            <div className="grid grid-cols-4 gap-3">
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Depth</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.depth ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ depth: numericDimensionText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Qty</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.quantity ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ quantity: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Fixed Shelves</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.fixedShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ fixedShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                              <div className="space-y-1">
-                                                <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Adjustable Shelves</p>
-                                                <input value={getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.adjustableShelf ?? ""} onChange={(e) => updateCabinetBuilderMainRow({ adjustableShelf: numericOnlyText(e.target.value) })} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                              </div>
-                                            </div>
-                                            <div className="space-y-1">
-                                              <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                                              {renderCabinetBuilderInformationLinesEditor({
-                                                value: String(getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.information ?? ""),
-                                                keyPrefix: `selected_cabinet_info_portal_${getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.id ?? "none"}`,
-                                                disabled: productionReadOnly,
-                                                onLineChange: (index, value) => {
-                                                  const next = informationLinesFromValue(String(getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.information ?? ""));
-                                                  while (next.length <= index) next.push("");
-                                                  next[index] = value;
-                                                  updateCabinetBuilderMainRow({ information: informationValueFromLines(next) });
-                                                },
-                                                onAddLine: () =>
-                                                  updateCabinetBuilderMainRow({
-                                                    information: informationValueFromLines([
-                                                      ...informationLinesFromValue(String(getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.information ?? "")),
-                                                      "",
-                                                    ]),
-                                                  }),
-                                                onRemoveLine: (index) => {
-                                                  const lines = informationLinesFromValue(String(getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft)?.row.information ?? ""));
-                                                  const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                                                  updateCabinetBuilderMainRow({ information: informationValueFromLines(next.length ? next : [""]) });
-                                                },
-                                              })}
-                                            </div>
-                                          </div>
-                                          </div>
-                                        </div>
-                                        {(() => {
-                                          const portalSelectedEditableCabinet = getCabinetBuilderSelectedEditableCabinet(cabinetBuilderDraft);
-                                          const portalSelectedEditChildPartType =
-                                            portalSelectedEditableCabinet
-                                              ? (() => {
-                                                  const parsedPartType = parseCabinetBuilderChildTabPartType(cabinetBuilderEditTab);
-                                                  if (parsedPartType) return parsedPartType;
-                                                  if (cabinetBuilderEditTab.startsWith("child:")) {
-                                                    const legacyChild = portalSelectedEditableCabinet.childRows.find((child) => child.id === cabinetBuilderEditTab.slice(6)) ?? null;
-                                                    return legacyChild ? normalizeCabinetBuilderChildTabPartType(legacyChild.row.partType || "Part") : "";
-                                                  }
-                                                  return "";
-                                                })()
-                                              : "";
-                                          const portalSelectedEditChildren =
-                                            portalSelectedEditableCabinet && portalSelectedEditChildPartType
-                                              ? portalSelectedEditableCabinet.childRows.filter(
-                                                  (child) =>
-                                                    normalizeCabinetBuilderChildTabPartType(child.row.partType || "Part").toLowerCase() ===
-                                                    portalSelectedEditChildPartType.toLowerCase(),
-                                                )
-                                              : [];
-                                          return portalSelectedEditChildren.length
-                                            ? renderCabinetBuilderChildEditorGroupShared(portalSelectedEditChildren)
-                                            : null;
-                                        })()}
-                                        {cabinetBuilderEditTab === "fronts"
-                                          ? (() => {
-                                              const selectedFrontRow = getCabinetBuilderSelectedFrontRow(cabinetBuilderDraft);
-                                              const frontKind = getCabinetBuilderSelectedFrontKind(cabinetBuilderDraft);
-                                              if (!selectedFrontRow || !frontKind) return null;
-                                              const grainAllowed = productionBoardAllowsGrainForValue(String(selectedFrontRow.board || "").trim());
-                                              return (
-                                                <div className="mt-2 space-y-4">
-                                                  {renderCabinetBuilderPartTabHeader(selectedFrontRow.partType || "Front", () => {
-                                                    clearCabinetBuilderSelectedFronts();
-                                                    setCabinetBuilderEditTab("edit");
-                                                  })}
-                                                  {renderDoorModeConfigurator({
-                                                    mode: normalizeDoorModeValue(selectedFrontRow.doorMode),
-                                                    frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
-                                                    onModeChange: (mode) =>
-                                                      setCabinetBuilderSelectedFrontMode(mode),
-                                                    onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(frontKind, value),
-                                                    disabled: productionReadOnly,
-                                                    textColor: "#0F172A",
-                                                    borderColor: "#D8DEE8",
-                                                    fieldBg: "#FFFFFF",
-                                                    fieldText: "#0F172A",
-                                                    layout: "split-tabs",
-                                                  })}
-                                                  <div className={`grid w-full gap-3 ${grainAllowed ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                                                      <BoardPillDropdown
-                                                        value={selectedFrontRow.board}
-                                                        options={cutlistBoardOptions}
-                                                        disabled={productionReadOnly}
-                                                        bg="#FFFFFF"
-                                                        border="#D8DEE8"
-                                                        text="#0F172A"
-                                                        getSize={boardSizeFor}
-                                                        getLabel={boardDisplayLabel}
-                                                        onChange={(value) =>
-                                                          updateCabinetBuilderConfiguredRow(frontKind, (row) => {
-                                                            const nextGrainAllowed = productionBoardAllowsGrainForValue(String(value || "").trim());
-                                                            return {
-                                                              ...row,
-                                                              board: value,
-                                                              grain: nextGrainAllowed ? row.grain : false,
-                                                              grainValue: nextGrainAllowed ? row.grainValue : "",
-                                                            };
-                                                          })
-                                                        }
-                                                      />
-                                                    </div>
-                                                  {grainAllowed ? (
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                                                      <BoardPillDropdown value={String(selectedFrontRow.grainValue ?? "")} options={grainDimensionOptionsForRow(selectedFrontRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(frontKind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
-                                                    </div>
-                                                  ) : null}
-                                                </div>
-                                                <div className="w-full space-y-1">
-                                                  <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Information</p>
-                                                  {renderCabinetBuilderInformationLinesEditor({
-                                                    value: String(selectedFrontRow.information ?? ""),
-                                                    keyPrefix: `selected_front_info_portal_${frontKind}`,
-                                                    disabled: productionReadOnly,
-                                                    onLineChange: (index, value) =>
-                                                      updateCabinetBuilderConfiguredRow(frontKind, (row) => {
-                                                        const next = informationLinesFromValue(String(row.information ?? ""));
-                                                        while (next.length <= index) next.push("");
-                                                        next[index] = value;
-                                                        return { ...row, information: informationValueFromLines(next) };
-                                                      }),
-                                                    onAddLine: () =>
-                                                      updateCabinetBuilderConfiguredRow(frontKind, (row) => ({
-                                                        ...row,
-                                                        information: informationValueFromLines([
-                                                          ...informationLinesFromValue(String(row.information ?? "")),
-                                                          "",
-                                                        ]),
-                                                      })),
-                                                    onRemoveLine: (index) =>
-                                                      updateCabinetBuilderConfiguredRow(frontKind, (row) => {
-                                                        const lines = informationLinesFromValue(String(row.information ?? ""));
-                                                        const next = lines.length <= 1 ? [""] : lines.filter((_, i) => i !== index);
-                                                        return { ...row, information: informationValueFromLines(next.length ? next : [""]) };
-                                                      }),
-                                                  })}
-                                                </div>
-                                                <div className="flex justify-center">
-                                                    {renderDoorSetupDesigner({
-                                                        mode: normalizeDoorModeValue(selectedFrontRow.doorMode) === "drawer" ? "drawer" : "door",
-                                                        frontCount: normalizeDoorFrontCountValue(selectedFrontRow.doorFrontCount),
-                                                        overallHeight: String(selectedFrontRow.height ?? ""),
-                                                        overallWidth: String(selectedFrontRow.width ?? ""),
-                                                        topGap: String(selectedFrontRow.doorTopGap ?? ""),
-                                                        betweenGap: String(selectedFrontRow.doorBetweenGap ?? ""),
-                                                        sideLeft: normalizeDoorSideValue(selectedFrontRow.doorSideLeft),
-                                                        sideRight: normalizeDoorSideValue(selectedFrontRow.doorSideRight),
-                                                        sideLeftGap: String(selectedFrontRow.doorSideLeftGap ?? ""),
-                                                        sideRightGap: String(selectedFrontRow.doorSideRightGap ?? ""),
-                                                        frontWidths: normalizeDoorFrontWidths(selectedFrontRow.doorFrontWidths, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                                                        frontWidthManual: normalizeDoorFrontWidthManual(selectedFrontRow.doorFrontWidthManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                                                        frontHeights: normalizeDoorFrontHeights(selectedFrontRow.doorFrontHeights, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                                                        frontHeightManual: normalizeDoorFrontHeightManual(selectedFrontRow.doorFrontHeightManual, Number.parseInt(selectedFrontRow.doorFrontCount || "", 10) || 0),
-                                                        onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorTopGap", value),
-                                                        onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(frontKind, "doorBetweenGap", value),
-                                                        onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(frontKind, key, value),
-                                                        onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(frontKind, key, value),
-                                                        onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
-                                                        onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(frontKind, index, value),
-                                                        onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
-                                                        onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(frontKind, index),
-                                                        disabled: productionReadOnly,
-                                                        textColor: "#0F172A",
-                                                        borderColor: "#D8DEE8",
-                                                        fieldBg: "#FFFFFF",
-                                                        fieldText: "#0F172A",
-                                                        grainValue: String(selectedFrontRow.grainValue ?? ""),
-                                                        fillAvailableSpace: true,
-                                                      })}
-                                                  </div>
-                                                </div>
-                                              );
-                                            })()
-                                          : null}
-                                            </div>
-                                          );
-                                        })()}
-                                        </div>
-                                      </div>,
-                                      document.body,
-                                    ) : null}
-                                  {cabinetBuilderDeleteConfirmOpen && cabinetBuilderActiveDeleteMeta && typeof document !== "undefined" ? createPortal(
-                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-                                        <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
-                                          <p className="text-[22px] font-extrabold text-[#12345B]">Are you sure?</p>
-                                          <p className="mt-3 text-[14px] text-[#475467]">
-                                            {cabinetBuilderActiveDeleteMeta.connectedPartsCount > 0
-                                              ? `Deleting ${cabinetBuilderActiveDeleteMeta.name} will also remove ${cabinetBuilderActiveDeleteMeta.connectedPartsCount} connected part${cabinetBuilderActiveDeleteMeta.connectedPartsCount === 1 ? "" : "s"}.`
-                                              : `Delete ${cabinetBuilderActiveDeleteMeta.name}?`}
-                                          </p>
-                                          <div className="mt-5 flex justify-end gap-2">
-                                            <button
-                                              type="button"
-                                              onClick={() => { setCabinetBuilderDeleteConfirmOpen(false); setCabinetBuilderDeleteTargetOverride(null); }}
-                                              className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
-                                            >
-                                              Cancel
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={deleteSelectedCabinetBuilderCabinet}
-                                              className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
-                                            >
-                                              Confirm
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>,
-                                      document.body,
-                                    ) : null}
-                                  {cabinetBuilderDeleteWallConfirmOpen && typeof document !== "undefined" ? createPortal(
-                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-                                        <div className="w-full max-w-[520px] rounded-[24px] border bg-white p-6 shadow-2xl" style={{ borderColor: projectPalette.border }}>
-                                          <p className="text-[22px] font-extrabold text-[#12345B]">Delete Wall</p>
-                                          <p className="mt-3 text-[14px] text-[#475467]">Are you sure you want to delete this wall drawing?</p>
-                                          <div className="mt-5 flex justify-end gap-2">
-                                            <button
-                                              type="button"
-                                              onClick={() => setCabinetBuilderDeleteWallConfirmOpen(false)}
-                                              className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]"
-                                            >
-                                              Cancel
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => void deleteCurrentCabinetBuilderWall()}
-                                              className="rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] px-4 py-2 text-[13px] font-bold text-[#C62828]"
-                                            >
-                                              Delete Wall
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>,
-                                      document.body,
-                                    ) : null}
-                                  {(cabinetBuilderDoorsOpen || cabinetBuilderDrawersOpen) && cabinetBuilderDraft && typeof document !== "undefined" ? createPortal(
-                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-                                        <div className="w-full max-w-[1100px] rounded-[24px] border bg-white p-6 shadow-2xl [&_input:not([type=checkbox])]:h-8 [&_input:not([type=checkbox])]:rounded-[8px] [&_input:not([type=checkbox])]:px-2 [&_input:not([type=checkbox])]:text-[12px] [&_select]:h-8 [&_select]:rounded-[8px] [&_select]:px-2 [&_select]:text-[12px]" style={{ borderColor: projectPalette.border }}>
-                                        {(() => {
-                                          const kind = cabinetBuilderDoorsOpen ? "doorsRow" : "drawersRow";
-                                          const currentRow = getCabinetBuilderSelectedConfiguredRow(cabinetBuilderDraft, kind);
-                                          if (!currentRow) return null;
-                                          const close = () => {
-                                            setCabinetBuilderDoorsOpen(false);
-                                            setCabinetBuilderDrawersOpen(false);
-                                          };
-                                          const grainAllowed = productionBoardAllowsGrainForValue(String(currentRow.board || "").trim());
-                                          return (
-                                            <>
-                                              <div className="flex items-center justify-between">
-                                                <p className="text-[22px] font-extrabold text-[#12345B]">{kind === "doorsRow" ? "Doors" : "Drawers"}</p>
-                                                <button type="button" onClick={close} className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={16} /></button>
-                                              </div>
-                                              <div className="mt-5 grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-                                                <div className="space-y-3">
-                                                  {renderDoorModeConfigurator({
-                                                    mode: normalizeDoorModeValue(currentRow.doorMode),
-                                                    frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
-                                                    onModeChange: (mode) =>
-                                                      updateCabinetBuilderConfiguredRow(kind, (row) =>
-                                                        createConfiguredCabinetFrontRow(mode === "manual" ? "door" : mode, {
-                                                          ...row,
-                                                          board: row.board,
-                                                          name: row.name,
-                                                          height: row.height,
-                                                          width: row.width,
-                                                          clashLeft: row.clashLeft,
-                                                          clashRight: row.clashRight,
-                                                          quantity: row.quantity,
-                                                          grainValue: row.grainValue,
-                                                          information: row.information,
-                                                        }),
-                                                      ),
-                                                    onFrontCountChange: (value) => updateCabinetBuilderConfiguredFrontCount(kind, value),
-                                                    disabled: productionReadOnly,
-                                                    textColor: "#0F172A",
-                                                    borderColor: "#D8DEE8",
-                                                    fieldBg: "#FFFFFF",
-                                                    fieldText: "#0F172A",
-                                                  })}
-                                                  <div className="space-y-1">
-                                                    <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Board Type</p>
-                                                    <BoardPillDropdown value={currentRow.board} options={cutlistBoardOptions} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" getSize={boardSizeFor} getLabel={boardDisplayLabel} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, board: value }))} />
-                                                  </div>
-                                                  <div className="grid grid-cols-3 gap-3">
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Height</p>
-                                                      <input value={currentRow.height} onChange={(e) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, height: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                    </div>
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Width</p>
-                                                      <input value={currentRow.width} onChange={(e) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, width: numericDimensionText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                    </div>
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Quantity</p>
-                                                      <input value={currentRow.quantity} onChange={(e) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, quantity: numericOnlyText(e.target.value) }))} className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[13px]" />
-                                                    </div>
-                                                  </div>
-                                                  <div className="grid grid-cols-2 gap-3">
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Left</p>
-                                                      <BoardPillDropdown value={currentRow.clashLeft ?? ""} options={CLASH_LEFT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, clashLeft: value, clashing: joinClashing(value, String(row.clashRight ?? "")) }))} />
-                                                    </div>
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Clash Right</p>
-                                                      <BoardPillDropdown value={currentRow.clashRight ?? ""} options={CLASH_RIGHT_OPTIONS} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, clashRight: value, clashing: joinClashing(String(row.clashLeft ?? ""), value) }))} />
-                                                    </div>
-                                                  </div>
-                                                  {grainAllowed ? (
-                                                    <div className="space-y-1">
-                                                      <p className="text-[11px] font-bold uppercase tracking-[0.8px] text-[#475467]">Grain</p>
-                                                      <BoardPillDropdown value={String(currentRow.grainValue ?? "")} options={grainDimensionOptionsForRow(currentRow)} disabled={productionReadOnly} bg="#FFFFFF" border="#D8DEE8" text="#0F172A" size="default" getSize={() => ""} getLabel={(v) => v || "Select"} onChange={(value) => updateCabinetBuilderConfiguredRow(kind, (row) => ({ ...row, grainValue: value, grain: Boolean(String(value).trim()) }))} />
-                                                    </div>
-                                                  ) : null}
-                                                </div>
-                                                <div>
-                                                  {renderDoorSetupDesigner({
-                                                    mode: normalizeDoorModeValue(currentRow.doorMode) === "drawer" ? "drawer" : "door",
-                                                    frontCount: normalizeDoorFrontCountValue(currentRow.doorFrontCount),
-                                                    overallHeight: String(currentRow.height ?? ""),
-                                                    overallWidth: String(currentRow.width ?? ""),
-                                                    topGap: String(currentRow.doorTopGap ?? ""),
-                                                    betweenGap: String(currentRow.doorBetweenGap ?? ""),
-                                                    sideLeft: normalizeDoorSideValue(currentRow.doorSideLeft),
-                                                    sideRight: normalizeDoorSideValue(currentRow.doorSideRight),
-                                                    sideLeftGap: String(currentRow.doorSideLeftGap ?? ""),
-                                                    sideRightGap: String(currentRow.doorSideRightGap ?? ""),
-                                                    frontWidths: normalizeDoorFrontWidths(currentRow.doorFrontWidths, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                                                    frontWidthManual: normalizeDoorFrontWidthManual(currentRow.doorFrontWidthManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                                                    frontHeights: normalizeDoorFrontHeights(currentRow.doorFrontHeights, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                                                    frontHeightManual: normalizeDoorFrontHeightManual(currentRow.doorFrontHeightManual, Number.parseInt(currentRow.doorFrontCount || "", 10) || 0),
-                                                    onTopGapChange: (value) => updateCabinetBuilderConfiguredGap(kind, "doorTopGap", value),
-                                                    onBetweenGapChange: (value) => updateCabinetBuilderConfiguredGap(kind, "doorBetweenGap", value),
-                                                    onSideChange: (key, value) => updateCabinetBuilderConfiguredSide(kind, key, value),
-                                                    onSideGapChange: (key, value) => updateCabinetBuilderConfiguredSideGap(kind, key, value),
-                                                    onFrontWidthChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(kind, index, value),
-                                                    onFrontHeightChange: (index, value) => updateCabinetBuilderConfiguredFrontValue(kind, index, value),
-                                                    onFrontWidthBlur: (index) => blurCabinetBuilderConfiguredFrontValue(kind, index),
-                                                    onFrontHeightBlur: (index) => blurCabinetBuilderConfiguredFrontValue(kind, index),
-                                                    disabled: productionReadOnly,
-                                                    textColor: "#0F172A",
-                                                    borderColor: "#D8DEE8",
-                                                    fieldBg: "#FFFFFF",
-                                                    fieldText: "#0F172A",
-                                                    grainValue: String(currentRow.grainValue ?? ""),
-                                                  })}
-                                                </div>
-                                              </div>
-                                              <div className="mt-5 flex justify-end gap-2">
-                                                <button type="button" onClick={close} className="rounded-[10px] border border-[#D8DEE8] px-4 py-2 text-[13px] font-bold text-[#475467]">Cancel</button>
-                                                <button type="button" onClick={close} className="rounded-[10px] border border-[#BFE8CF] bg-[#DDF2E7] px-4 py-2 text-[13px] font-bold text-[#14532D]">Save</button>
-                                              </div>
-                                            </>
-                                          );
-                                        })()}
-                                        </div>
-                                      </div>,
-                                      document.body,
-                                    ) : null}
-                                  {cabinetBuilderEditingAttachmentId && cabinetBuilderDraft && typeof document !== "undefined" ? createPortal(
-                                      <div className="fixed inset-0 flex items-center justify-center bg-black/35 px-4" style={{ zIndex: 2147483647 }}>
-                                        {(() => {
-                                          const attachment = cabinetBuilderDraft.attachments.find((item) => item.id === cabinetBuilderEditingAttachmentId) ?? null;
-                                          if (!attachment) return null;
-                                          return renderCabinetBuilderAttachmentEditPopup(attachment);
-                                        })()}
-                                      </div>,
-                                      document.body,
-                                    ) : null}
-                                  </div>
-                              )}
-                            </div>
-                          ) : !manualCutlistUsesPlainDoorRows && isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode === "" ? (
+                          {!manualCutlistUsesPlainDoorRows && isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode === "" ? (
                             <div className="border-y px-3 py-3" style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                               <div className="max-w-[360px]">
                                 {renderDoorModeConfigurator({
@@ -43075,7 +37346,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     fieldBg: activeCutlistEntryFieldBg,
                                     fieldText: activeCutlistEntryTextColor,
                                   })}
-                                  <div className="space-y-1">
+                                  <div ref={registerCutlistWarnCellRef("single", "board")} className="space-y-1">
                                     <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Board Type</p>
                                     <BoardPillDropdown
                                       value={cutlistEntry.board}
@@ -43092,7 +37363,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     />
                                   </div>
                                   <div className={`grid gap-2 ${showSingleCutlistEntryGrain && selectedCutlistEntryBoardAllowsGrain ? "grid-cols-[minmax(0,1fr)_120px]" : "grid-cols-1"}`}>
-                                    <div className="space-y-1">
+                                    <div ref={registerCutlistWarnCellRef("single", "name")} className="space-y-1">
                                       <p className="text-[11px] font-bold" style={{ color: "#111111" }}>Part Name</p>
                                       <PartNameSuggestionInput
                                         disabled={productionReadOnly}
@@ -43131,15 +37402,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <div className="grid grid-cols-5 gap-2">
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Height</p>
-                                      <input disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "height")} disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Width</p>
-                                      <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "width")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}) }} />
                                     </div>
                                     <div className="space-y-1">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Quantity</p>
-                                      <input disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
+                                      <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 w-full rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }) }} />
                                     </div>
                                     <div className="space-y-1 col-span-2">
                                       <p className="text-center text-[11px] font-bold" style={{ color: "#111111" }}>Clashing</p>
@@ -43271,7 +37542,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ) : (
                             <div className={`grid gap-2 border-y px-1 py-1 ${isDoorPartType(cutlistEntry.partType) ? "items-start" : ""}`} style={{ gridTemplateColumns: cutlistEntryGridTemplate, backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                             <p></p>
-                            <div style={cutlistEntryCellStyle("board")}>
+                            <div ref={registerCutlistWarnCellRef("single", "board")} style={cutlistEntryCellStyle("board")}>
                               <BoardPillDropdown
                                 value={cutlistEntry.board}
                                 options={cutlistBoardOptions}
@@ -43287,6 +37558,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               />
                             </div>
                             <div
+                              ref={registerCutlistWarnCellRef("single", "name")}
                               className="relative z-[20] grid gap-[4px] overflow-visible"
                               style={cutlistEntryCellStyle("name")}
                             >
@@ -43379,7 +37651,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               ) : null}
                             </div>
                             {isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType) ? (
-                              <div style={cutlistEntryCellStyle("height")}>
+                              <div ref={registerCutlistWarnCellRef("single", "height")} style={{ ...cutlistEntryCellStyle("height"), display: "flex", alignItems: "center" }}>
                                 <DrawerHeightDropdown
                                   value={String(cutlistEntry.height || "")}
                                   options={drawerHeightLetterOptions}
@@ -43394,11 +37666,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 />
                               </div>
                             ) : (
-                            <input disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
+                            <input ref={registerCutlistWarnCellRef("single", "height")} disabled={productionReadOnly} inputMode="decimal" title={singleEntrySuppressConfiguredHeightWarning ? undefined : (warningForCell("single", "height") || undefined)} value={cutlistEntry.height} onChange={(e) => onCutlistEntryDoorOverallHeightChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${singleEntrySuppressConfiguredHeightWarning ? "" : warningClassForCell("single", "height")}`} style={{ ...(singleEntrySuppressConfiguredHeightWarning ? { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor } : warningStyleForCell("single", "height", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor })), ...(singleEntryHeightGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("height") }} />
                             )}
-                            <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
-                            <input disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
-                              <input disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
+                            <input ref={registerCutlistWarnCellRef("single", "width")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "width") || undefined} value={cutlistEntry.width} onChange={(e) => onCutlistEntryDoorOverallWidthChange(e.target.value)} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "width")}`} style={{ ...warningStyleForCell("single", "width", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryWidthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("width") }} />
+                            <input ref={registerCutlistWarnCellRef("single", "depth")} disabled={productionReadOnly} inputMode="decimal" title={warningForCell("single", "depth") || undefined} value={cutlistEntry.depth} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, depth: numericDimensionText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center ${warningClassForCell("single", "depth")}`} style={{ ...warningStyleForCell("single", "depth", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...(singleEntryDepthGrainMatch ? { fontWeight: 700, textDecoration: "underline" } : {}), ...cutlistEntryCellStyle("depth") }} />
+                              <input ref={registerCutlistWarnCellRef("single", "quantity")} disabled={productionReadOnly || (isDrawerPartType(cutlistEntry.partType) && !isDoorPartType(cutlistEntry.partType))} inputMode="numeric" pattern="[0-9]*" title={warningForCell("single", "quantity") || undefined} value={cutlistEntry.quantity} onChange={(e) => setCutlistEntry((prev) => ({ ...prev, quantity: numericOnlyText(e.target.value) }))} className={`h-8 rounded-[8px] border bg-transparent px-2 text-[12px] text-center disabled:opacity-90 ${warningClassForCell("single", "quantity")}`} style={{ ...warningStyleForCell("single", "quantity", { backgroundColor: activeCutlistEntryFieldBg, borderColor: activeCutlistEntryFieldBorder, color: activeCutlistEntryTextColor }), ...cutlistEntryCellStyle("quantity") }} />
                             <>
                               <div style={cutlistEntrySubCellStyle("clashing", 0)}>
                                 <BoardPillDropdown
@@ -43556,6 +37828,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <button
                                         disabled={productionReadOnly}
                                         onClick={() => void removeCutlistRow(row.id)}
+                                        onDoubleClick={() => void removeCutlistRow(row.id, true)}
+                                        title="Delete row (double-click to force delete a filled-in row)"
                                         className="flex h-6 w-6 items-center justify-center rounded-[7px] border disabled:opacity-55"
                                         style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                                       >
@@ -44129,137 +38403,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   </div>
                   )
-                ) : productionNav === "drawings" && !isDrawingsFullscreen ? (
-                  <div className="space-y-4">
-                    <section
-                      className="flex min-h-[52px] flex-col gap-2 rounded-[14px] border px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-0"
-                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
-                    >
-                      <div className="inline-flex min-w-0 items-center gap-2">
-                        <ClipboardList size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
-                        <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Drawings</p>
-                        <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
-                        <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setProductionNav("cutlist");
-                            setCutlistEntryMode("wallBuilder");
-                          }}
-                          className="inline-flex h-8 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
-                        >
-                          <Plus size={13} />
-                          New Drawing
-                        </button>
-                      </div>
-                    </section>
-
-                    {(() => {
-                      const drawingDrafts = [
-                        ...(cabinetBuilderDraft &&
-                        cabinetBuilderWallCreated &&
-                        String(cabinetBuilderWallName || "").trim() &&
-                        !activeCabinetBuilderSavedDraftId
-                          ? [
-                              {
-                                id: "__current__",
-                                name: String(cabinetBuilderWallName || "").trim(),
-                                room: String(cutlistEntryRoom || cutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist",
-                                updatedAt: "",
-                                draft: cabinetBuilderDraft,
-                                isCurrent: true,
-                              },
-                            ]
-                          : []),
-                        ...savedCabinetBuilderDrafts.map((draft) => ({ ...draft, isCurrent: false })),
-                      ];
-
-                      if (!drawingDrafts.length) {
-                        return (
-                          <div className="rounded-[14px] border border-dashed px-4 py-10 text-center" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}>
-                            <p className="text-[13px] font-semibold" style={{ color: projectPalette.textSoft }}>No wall drawings saved yet.</p>
-                            <p className="mt-1 text-[12px]" style={{ color: projectPalette.textMuted }}>Create a wall in Wall Builder and it will appear here.</p>
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                          {drawingDrafts.map((savedDraft) => {
-                            const wallPieces = buildCabinetBuilderWallPieces(savedDraft.draft);
-                            const drawingPieceCount = getCabinetBuilderDrawingPieceCount(savedDraft.draft);
-                            const updatedLabel =
-                              savedDraft.updatedAt && !Number.isNaN(new Date(savedDraft.updatedAt).getTime())
-                                ? new Date(savedDraft.updatedAt).toLocaleString()
-                                : "";
-                            return (
-                              <div
-                                key={`production_drawing_${savedDraft.id}`}
-                                className="overflow-hidden rounded-[18px] border"
-                                style={{
-                                  borderColor: "var(--glass-border)",
-                                  backgroundColor: "var(--glass-bg-strong)",
-                                  backdropFilter: "blur(20px) saturate(180%)",
-                                  WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                                  boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
-                                }}
-                              >
-                                <div className="border-b px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <p className="truncate text-[14px] font-bold" style={{ color: "var(--text-main)" }}>{savedDraft.name || "Wall"}</p>
-                                      <p className="truncate text-[11px] font-medium" style={{ color: projectPalette.textMuted }}>{savedDraft.room || "Project Cutlist"}</p>
-                                      {savedDraft.isCurrent ? (
-                                        <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.8px] text-[#1D4ED8]">Current Draft</p>
-                                      ) : updatedLabel ? (
-                                        <p className="mt-1 text-[10px]" style={{ color: projectPalette.textMuted }}>Updated {updatedLabel}</p>
-                                      ) : null}
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setCabinetBuilderDrawingViewer({
-                                          id: savedDraft.id,
-                                          name: savedDraft.name,
-                                          room: savedDraft.room,
-                                          updatedAt: savedDraft.updatedAt,
-                                          draft: JSON.parse(JSON.stringify(savedDraft.draft)) as CabinetBuilderDraft,
-                                          isCurrent: savedDraft.isCurrent,
-                                        });
-                                      }}
-                                      className="inline-flex h-8 shrink-0 items-center gap-2 rounded-[8px] border border-[#D5DEE8] bg-white px-3 text-[12px] font-bold text-[#334155] hover:bg-[#F8FAFC]"
-                                    >
-                                      <Pencil size={12} />
-                                      Open
-                                    </button>
-                                  </div>
-                                </div>
-                                <div className="px-3 py-3">
-                                  <div className="overflow-hidden rounded-[12px] border" style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}>
-                                    {renderCabinetBuilderWallDrawingPreview({
-                                      draft: savedDraft.draft,
-                                      viewWidth: 420,
-                                      viewHeight: 220,
-                                      paddingX: 20,
-                                      paddingY: 18,
-                                      className: "block h-auto w-full bg-white",
-                                      showGapGuides: false,
-                                    })}
-                                  </div>
-                                  <div className="mt-3 flex items-center justify-between text-[11px]" style={{ color: projectPalette.textMuted }}>
-                                    <span>{drawingPieceCount} pieces</span>
-                                    <span>{wallPieces.filter((item) => item.kind === "panel").length} panels</span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
-                  </div>
                 ) : productionNav === "nesting" && !isNestingFullscreen ? (
                   <div className="grid min-h-0 gap-3 lg:min-h-[calc(100dvh-235px)] lg:grid-cols-[minmax(0,1fr)_340px]">
                     <div className="lg:hidden">
@@ -46902,65 +41045,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               }
               showPrevNext={projectImageItemsResolved.length > 1}
             />
-          ) : null}
-          {cabinetBuilderDrawingViewer ? (
-            (() => {
-              const viewerWallPieces = buildCabinetBuilderWallPieces(cabinetBuilderDrawingViewer.draft);
-              const viewerPieceCount = getCabinetBuilderDrawingPieceCount(cabinetBuilderDrawingViewer.draft);
-              const viewerConfiguredFrontCount = getCabinetBuilderDrawingDisplayRows(cabinetBuilderDrawingViewer.draft).filter(
-                (displayRow) => displayRow.source.kind === "configuredFront",
-              ).length;
-              return (
-            <div className="fixed inset-0 z-[1700] flex items-center justify-center bg-[#0F172A]/45 px-4 py-5">
-              <div
-                className="flex max-h-[92vh] w-[min(1400px,calc(100vw-32px))] flex-col overflow-hidden rounded-[18px] border bg-white shadow-[0_28px_60px_rgba(15,23,42,0.24)]"
-                style={{ borderColor: projectPalette.border }}
-              >
-                <div className="flex items-start justify-between gap-4 border-b px-5 py-4" style={{ borderColor: projectPalette.border, backgroundColor: productionContainerHeaderBg }}>
-                  <div className="min-w-0">
-                    <p className="truncate text-[20px] font-bold" style={{ color: isDarkMode ? "#F8FAFC" : "#12345B" }}>
-                      {cabinetBuilderDrawingViewer.name || "Wall"}
-                    </p>
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]" style={{ color: projectPalette.textMuted }}>
-                      <span>{cabinetBuilderDrawingViewer.room || "Project Cutlist"}</span>
-                      {cabinetBuilderDrawingViewer.isCurrent ? (
-                        <span className="font-semibold uppercase tracking-[0.8px] text-[#1D4ED8]">Current Draft</span>
-                      ) : cabinetBuilderDrawingViewer.updatedAt && !Number.isNaN(new Date(cabinetBuilderDrawingViewer.updatedAt).getTime()) ? (
-                        <span>Updated {new Date(cabinetBuilderDrawingViewer.updatedAt).toLocaleString()}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setCabinetBuilderDrawingViewer(null)}
-                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border border-[#F2B8B5] bg-[#FFF5F5] text-[#D92D20] hover:bg-[#FEECEC]"
-                    aria-label="Close wall viewer"
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
-                <div className="overflow-auto px-5 py-5" style={{ backgroundColor: projectPalette.panelBg }}>
-                  <div className="overflow-hidden rounded-[16px] border bg-white" style={{ borderColor: projectPalette.border }}>
-                    {renderCabinetBuilderWallDrawingPreview({
-                      draft: cabinetBuilderDrawingViewer.draft,
-                      viewWidth: 1400,
-                      viewHeight: 760,
-                      paddingX: 32,
-                      paddingY: 28,
-                      className: "block h-auto w-full bg-white",
-                      showGapGuides: false,
-                    })}
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-center gap-4 text-[12px]" style={{ color: projectPalette.textMuted }}>
-                    <span>{viewerPieceCount} pieces</span>
-                    <span>{viewerWallPieces.filter((item) => item.kind === "panel").length} panels</span>
-                    <span>{viewerConfiguredFrontCount} fronts configured</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-              );
-            })()
           ) : null}
           {productionPrintModalPortal}
           {unlockEditModalPortal}

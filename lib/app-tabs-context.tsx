@@ -1,7 +1,6 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
 
 export type AppWorkspaceTab = {
   key: string;
@@ -35,35 +34,11 @@ type AppTabsContextValue = {
   suppressTab: (key: string) => void;
   chromeHidden: boolean;
   setChromeHidden: (hidden: boolean) => void;
-  readyPathname: string | null;
-  setReadyPathname: (pathname: string) => void;
+  fillMainViewport: boolean;
+  setFillMainViewport: (fill: boolean) => void;
 };
 
 const APP_TABS_STORAGE_KEY = "cutsmart_global_app_tabs_v1";
-
-// Routes whose page calls useTabBarReady() below. Matched purely against the
-// pathname string so the bar's visibility gate can be computed synchronously
-// during render — never dependent on a page's own effect having run yet,
-// which is what caused a visible flash-in-then-hide-then-show on navigation.
-// A route NOT in this list is never gated, so pages that don't call the hook
-// keep today's always-visible behavior with zero regression risk.
-const TAB_BAR_READINESS_GATED_ROUTES = [
-  /^\/$/,
-  /^\/dashboard(?:\/|$)/,
-  /^\/clients(?:\/|$)/,
-  /^\/leads(?:\/|$)/,
-  /^\/company-settings$/,
-  /^\/projects\//,
-  /^\/changelog(?:\/|$)/,
-  /^\/recently-deleted(?:\/|$)/,
-  /^\/calendar(?:\/|$)/,
-  /^\/user-settings(?:\/|$)/,
-];
-
-export function isTabBarReadinessGatedRoute(pathname: string) {
-  const clean = String(pathname || "").trim();
-  return TAB_BAR_READINESS_GATED_ROUTES.some((pattern) => pattern.test(clean));
-}
 
 type AppTabOrderRegistry = {
   tabOrders: Record<string, number>;
@@ -93,7 +68,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [tabs, setTabs] = useState<AppWorkspaceTab[]>([]);
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
-  const [readyPathname, setReadyPathname] = useState<string | null>(null);
+  const [fillMainViewport, setFillMainViewport] = useState(false);
   const suppressedScopeKeysRef = useRef<Set<string>>(new Set());
   const suppressedTabKeysRef = useRef<Set<string>>(new Set());
   const orderRegistryRef = useRef<AppTabOrderRegistry>({
@@ -395,14 +370,14 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       suppressTab,
       chromeHidden,
       setChromeHidden,
-      readyPathname,
-      setReadyPathname,
+      fillMainViewport,
+      setFillMainViewport,
     }),
     [
       actionsByKey,
       chromeHidden,
       closeTab,
-      readyPathname,
+      fillMainViewport,
       registerScopeTabs,
       reorderGroupToIndex,
       restoreScope,
@@ -421,25 +396,4 @@ export function useAppTabs() {
     throw new Error("useAppTabs must be used within AppTabsProvider");
   }
   return context;
-}
-
-// Lets a page report "I have real content to show" for its own pathname.
-// The bar's own visibility gate (in global-app-tabs-bar.tsx) derives whether
-// to hide purely from comparing `readyPathname` to the current pathname on
-// every render — it never waits on this hook's effect to fire, so there's no
-// window where the bar can flash in with stale state before hiding. This
-// hook's only job is to move `readyPathname` forward once real content
-// exists; it never needs to move it backward.
-export function useTabBarReady(isReady: boolean) {
-  const pathname = usePathname();
-  const { setReadyPathname } = useAppTabs();
-  useEffect(() => {
-    if (isReady) {
-      setReadyPathname(pathname);
-      return;
-    }
-    // Failsafe: never let a stuck/broken readiness signal hide the bar forever.
-    const failSafe = window.setTimeout(() => setReadyPathname(pathname), 5000);
-    return () => window.clearTimeout(failSafe);
-  }, [isReady, pathname, setReadyPathname]);
 }

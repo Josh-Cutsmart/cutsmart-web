@@ -321,6 +321,18 @@ body[data-theme="dark"] .cs-app textarea::placeholder {
   color: #aaaaaa !important;
 }
 
+.cs-app input.cs-frontbank-ghost::placeholder {
+  color: var(--text-muted);
+  opacity: 0.65;
+  font-style: italic;
+}
+
+body[data-theme="dark"] .cs-app input.cs-frontbank-ghost::placeholder {
+  color: var(--text-muted) !important;
+  opacity: 0.65;
+  font-style: italic;
+}
+
 body[data-theme="dark"] .cs-app .shadow-xl,
 body[data-theme="dark"] .cs-app [class*="shadow-"] {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35) !important;
@@ -512,41 +524,51 @@ body[data-theme="dark"] .glass-nav-arrow {
 
 /* Thin, translucent overlay-style scrollbar for scrollable areas inside a
    glass modal/card, so the browser's default chunky scrollbar doesn't break
-   the glass look. */
-.glass-scroll {
+   the glass look. Also applied to .glass-modal-panel and everything inside it
+   by default, so any popup/modal box gets this scrollbar automatically
+   without needing to add .glass-scroll by hand on its scrolling child. */
+.glass-scroll,
+.glass-modal-panel {
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
 }
 
-.glass-scroll::-webkit-scrollbar {
+.glass-scroll::-webkit-scrollbar,
+.glass-modal-panel ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.glass-scroll::-webkit-scrollbar-track {
+.glass-scroll::-webkit-scrollbar-track,
+.glass-modal-panel ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.glass-scroll::-webkit-scrollbar-thumb {
+.glass-scroll::-webkit-scrollbar-thumb,
+.glass-modal-panel ::-webkit-scrollbar-thumb {
   background-color: rgba(15, 23, 42, 0.22);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
-.glass-scroll::-webkit-scrollbar-thumb:hover {
+.glass-scroll::-webkit-scrollbar-thumb:hover,
+.glass-modal-panel ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(15, 23, 42, 0.38);
 }
 
-body[data-theme="dark"] .glass-scroll {
+body[data-theme="dark"] .glass-scroll,
+body[data-theme="dark"] .glass-modal-panel {
   scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
 }
 
-body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb {
+body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb,
+body[data-theme="dark"] .glass-modal-panel ::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, 0.22);
 }
 
-body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb:hover {
+body[data-theme="dark"] .glass-scroll::-webkit-scrollbar-thumb:hover,
+body[data-theme="dark"] .glass-modal-panel ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.38);
 }
 
