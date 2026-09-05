@@ -43,6 +43,8 @@ export type CutlistRow = {
   grainValue: string;
   includeInNesting?: boolean;
   parentName?: string;
+  bankGroupId?: string;
+  bankFrontIndexes?: number[];
 };
 
 export type CutlistDraftRow = CutlistRow;

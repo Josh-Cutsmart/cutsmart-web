@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Pencil } from "lucide-react";
+import { Check, ChevronDown, MailCheck, Pencil } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
@@ -9,6 +9,8 @@ import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
 import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
+import { VerifyAccountModal } from "@/components/verify-account-modal";
+import { captureGlassModalOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
@@ -41,6 +43,8 @@ export function SidebarUserSettingsPanel({
   const [nameDraft, setNameDraft] = useState("");
   const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
   const [colorPopoverAnchor, setColorPopoverAnchor] = useState<ColorPickerAnchorRect | null>(null);
+  const [isVerifyBoxOpen, setIsVerifyBoxOpen] = useState(false);
+  const [verifyModalOrigin, setVerifyModalOrigin] = useState<GlassModalOrigin>(null);
 
   const autoSaveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef(false);
@@ -454,12 +458,41 @@ export function SidebarUserSettingsPanel({
         <div
           className="border px-3 py-2.5"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-          title="Contact an admin to change your email"
         >
-          <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Email</p>
+          <div className="flex items-center justify-between gap-2" title="Contact an admin to change your email">
+            <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Email</p>
+            {user?.verified ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.6px]"
+                style={{ backgroundColor: "#E7F6EC", color: "#1E7A34" }}
+              >
+                <Check size={9} strokeWidth={3} />
+                Verified
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={(e) => {
+                  setVerifyModalOrigin(captureGlassModalOrigin(e));
+                  setIsVerifyBoxOpen(true);
+                }}
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.6px]"
+                style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+              >
+                <MailCheck size={9} />
+                Unverified
+              </button>
+            )}
+          </div>
           <p className="mt-1 truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{user?.email || "-"}</p>
         </div>
       </div>
+
+      <VerifyAccountModal
+        open={isVerifyBoxOpen}
+        origin={verifyModalOrigin}
+        onClose={() => setIsVerifyBoxOpen(false)}
+      />
 
       <SidebarColorPickerPopover
         isOpen={isColorPopoverOpen}

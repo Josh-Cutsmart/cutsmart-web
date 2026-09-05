@@ -143,6 +143,9 @@ export default function HomePage() {
             userColor: DEFAULT_REGISTER_USER_COLOR,
             displayName: fallbackName || "CutSmart User",
           });
+          // No verification-code send here — every post-registration destination (company
+          // onboarding, or the (app) group) is now gated by VerifyEmailGate, which sends the
+          // first code itself the moment it mounts. Sending here too would just race it.
         }
         const preferredCompanyId =
           typeof window !== "undefined"

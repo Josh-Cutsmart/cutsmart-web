@@ -1,15 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
+import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import {
   Bold,
+  Underline,
   AlignLeft,
   AlignCenter,
   AlignRight,
   AlignVerticalJustifyStart,
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
+  ChevronDown,
   Image as ImageIcon,
   ImageOff,
   Plus,
@@ -23,6 +26,9 @@ import {
   Eye,
   EyeOff,
   GripVertical,
+  Redo2,
+  TableCellsMerge,
+  TableCellsSplit,
   Undo2,
 } from "lucide-react";
 import {
@@ -33,6 +39,11 @@ import {
   type SpecsRow,
   type SpecsRowGroup,
   type SpecsPageSize,
+  type SpecsTextRun,
+  type SpecsRowGroupEditableFields,
+  getCellRuns,
+  runsToPlainText,
+  normalizeTextRuns,
   getCellSpan,
   canMergeSelection,
   mergeSelection,
@@ -55,6 +66,7 @@ import {
   findRowGroupForRow,
   SPECS_PAGE_SIZES,
   SPECS_PAGE_MARGIN_MM,
+  getSpecsPageUsableWidthPx,
   MM_TO_PX,
   MIN_COL_WIDTH_PX,
   MIN_ROW_HEIGHT_PX,
@@ -90,6 +102,61 @@ export type SpecsGridEditorProps = {
   // itself (it's already shown once, in the checklist this prop adds above the sheet). The company
   // template builder leaves this unset, since it's actively laying the sheet out, not reading it.
   showGroupVisibilityPanel?: boolean;
+  // Only meaningful alongside showGroupVisibilityPanel: the host page's OWN fixed header height (px)
+  // — this editor's own toolbar is also `position: fixed` (see its own comment for why) and pins
+  // itself right below that header instead of underneath it. Defaults to 0 (no host header to clear).
+  toolbarFixedTopPx?: number;
+  // Also only meaningful alongside showGroupVisibilityPanel: how much room (px) the host page wants
+  // reserved at the RIGHT edge of THIS EDITOR'S OWN TOOLBAR specifically — e.g. the width of a title
+  // label the host page renders at that same fixed height, alongside its own toolbar content — so
+  // the toolbar's own buttons don't render underneath it. Static/prop-driven, not measured, and
+  // deliberately does NOT affect the canvas/mock-page below (which stays at its own natural,
+  // centered width regardless) — only the toolbar's own bounds move.
+  toolbarFixedRightPx?: number;
+  // Same idea as toolbarFixedRightPx, mirrored to the LEFT.
+  toolbarFixedLeftPx?: number;
+  // Turns a named row-group into a priced, toggleable "Quote Extra" — the group create/rename
+  // popover (right-click a row → "Link Rows as Group"/"Rename Group") gains a Price field and an
+  // "Included by default" checkbox alongside the existing Name field, and the "Sections" checklist
+  // shows each group's price next to its name. Off by default (Specifications has no pricing concept
+  // at all) — purely additive, no behavior change for any existing caller that doesn't pass this.
+  groupsSupportPricing?: boolean;
+  // Suppresses the inline "Sections:" toolbar row entirely — used when the host page renders its own
+  // dedicated sidebar for the same show/hide toggles (the Quote tab's extras sidebar) so the two
+  // don't duplicate each other. The company template builder ignores this (it has no sidebar of its
+  // own to defer to) and always shows the inline bar.
+  hideSectionsBar?: boolean;
+  // Company roles offered in the group editor modal's "Allow editable by" checklist — omit (or pass
+  // []) to hide that section entirely, e.g. in the company-settings template builder, where there's
+  // no per-viewer permission concept yet (it only starts mattering once cloned into a real project).
+  companyRoleOptions?: { id: string; name: string }[];
+  // Whether the CURRENT viewer is allowed to edit a given group's own rows — omit to leave every
+  // group fully editable (the default, and the only behavior for every existing caller). The host
+  // page owns the actual policy (role lookup, owner/admin bypass, etc.); this component only ever
+  // asks "yes or no" and, when the answer is no, makes that group's cells read-only.
+  canEditSpecsGroup?: (group: SpecsRowGroup) => boolean;
+  // A blank cell (no text, no image) whose row isn't part of any group becomes fully inert for
+  // EVERY viewer when this is on — not just read-only like canEditSpecsGroup's per-role lock (which
+  // owner/admin always bypass), genuinely unclickable/unselectable for anyone, since it isn't a
+  // role-based permission at all: it's a structural rule about the template's own layout (only
+  // Quote's live project sheet sets this — see its own mount in app/(app)/projects/[projectId]/page.tsx).
+  // A cell that already has content, or sits in a group's rows, is completely unaffected either way.
+  lockUngroupedBlankCells?: boolean;
+  // Draws a persistent solid border around every VISIBLE group whose rows the current viewer is
+  // allowed to edit (per canEditSpecsGroup — a group with no editableByRoleIds restriction always
+  // counts as editable) — purely a screen affordance so it's obvious at a glance which sections of a
+  // live document are actually yours to work on. Deliberately a different, quieter look than the
+  // company template builder's own dashed+labeled groupOutlines (which shows EVERY group, including
+  // locked/hidden ones, since that's a layout tool, not a "what can I touch" indicator) — and, since
+  // this only ever renders in this on-screen editor, it never shows up in Print/Download PDF, which
+  // builds its output through a completely separate code path (buildSpecsGridPdfBlob) that never
+  // touches this component at all. Only Quote's live project sheet sets this.
+  showEditableGroupBorders?: boolean;
+  // Suppresses the blue selection-ring overlay (selectionOutline) that would otherwise be drawn
+  // around whatever cell/range is currently selected — clicking/typing into a cell still works
+  // exactly the same either way, this just stops it from visibly looking "highlighted" while you do
+  // it. Only Quote's live project sheet sets this; every other caller keeps the ring.
+  hideCellSelectionOutline?: boolean;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -202,7 +269,10 @@ function resolveBorderSide(
 // only covers rather than anchors.
 type BorderSegment = { left: number; top: number; width: number; height: number; color: string };
 
-function computeBorderSegments(grid: SpecsGrid, colPrefixSums: number[], rowTops: number[], hiddenRowIndexes: Set<number>): BorderSegment[] {
+// rowBottoms is normally the exact same array as rowTops — they only ever differ once the live
+// on-screen anchor-to-bottom shift is active (see its own comment further down), where the row
+// right before the spacer needs its OWN natural bottom edge here, not the anchor row's inflated top.
+function computeBorderSegments(grid: SpecsGrid, colPrefixSums: number[], rowTops: number[], rowBottoms: number[], hiddenRowIndexes: Set<number>): BorderSegment[] {
   const segments: BorderSegment[] = [];
   const maxColIdx = colPrefixSums.length - 1;
   const maxRowIdx = rowTops.length - 1;
@@ -230,7 +300,7 @@ function computeBorderSegments(grid: SpecsGrid, colPrefixSums: number[], rowTops
       const left = colPrefixSums[c];
       const right = colPrefixSums[Math.min(c + colSpan, maxColIdx)];
       const top = rowTops[r];
-      const bottom = rowTops[Math.min(r + rowSpan, maxRowIdx)];
+      const bottom = rowBottoms[Math.min(r + rowSpan, maxRowIdx)];
 
       if (r === 0 && ownRowVisible && style.borderTop) {
         const width = style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX;
@@ -251,22 +321,32 @@ function computeBorderSegments(grid: SpecsGrid, colPrefixSums: number[], rowTops
       // neighbor that simply doesn't specify a border of its own.
       const belowNeighbor = findRowAnchorCell(grid.rows[r + rowSpan], c);
       const belowNeighborVisible = !hiddenRowIndexes.has(r + rowSpan);
+      const mineBottomOn = Boolean(ownRowVisible && style.borderBottom);
+      const neighborTopOn = Boolean(belowNeighborVisible && belowNeighbor?.style?.borderTop);
       const bottomResolved = resolveBorderSide(
-        ownRowVisible && style.borderBottom,
+        mineBottomOn,
         style.borderColor,
         style.borderWidthPx,
-        belowNeighborVisible && belowNeighbor?.style?.borderTop,
+        neighborTopOn,
         belowNeighbor?.style?.borderColor,
         belowNeighbor?.style?.borderWidthPx,
       );
       if (bottomResolved) {
+        // Which edge this boundary actually belongs to matters once rowTops/rowBottoms can differ
+        // (see their own comment) — a border satisfied by THIS row's own borderBottom is this row's
+        // own decoration and wants its natural (non-stretching) bottom edge, but one satisfied ONLY
+        // by the row BELOW's own borderTop (mineBottomOn false here) is really THAT row's own top
+        // edge — e.g. an anchored row's own top border — and needs ITS top position instead, which
+        // is what actually tracks the anchor shift. Falls back to `bottom` when neither/both are set
+        // (resolveBorderSide already prefers "mine" there, so this matches that same preference).
+        const edgeAtBottom = mineBottomOn || !neighborTopOn ? bottom : rowTops[Math.min(r + rowSpan, maxRowIdx)];
         // When every row before this one has collapsed to zero height (this cell's own row is
-        // hidden and sits right at the start of the table), `bottom` can be smaller than the
-        // border's own width, pushing `top` negative — off the top edge of the scrollable area and
-        // therefore invisible even though the border is otherwise correctly meant to show here (as
-        // the resumed visible content's own leading edge). Clamp to 0 so it still renders, flush
+        // hidden and sits right at the start of the table), the resolved edge can land smaller than
+        // the border's own width, pushing `top` negative — off the top edge of the scrollable area
+        // and therefore invisible even though the border is otherwise correctly meant to show here
+        // (as the resumed visible content's own leading edge). Clamp to 0 so it still renders, flush
         // against the table's actual top.
-        segments.push({ left, top: Math.max(0, bottom - bottomResolved.width), width: right - left, height: bottomResolved.width, color: bottomResolved.color });
+        segments.push({ left, top: Math.max(0, edgeAtBottom - bottomResolved.width), width: right - left, height: bottomResolved.width, color: bottomResolved.color });
       }
       const rightNeighbor = findRowAnchorCell(grid.rows[r], c + colSpan);
       const rightResolved = resolveBorderSide(
@@ -292,7 +372,9 @@ type GroupOutline = { id: string; name: string; hidden: boolean; top: number; he
 // (where groups are created) and a project's own copy (where they're only shown/hidden). Takes an
 // already-expanded groups list (getExpandedRowGroups) so the outline never cuts through a merge.
 // Width/left are the table's own full width, applied by the caller — row groups always span it.
-function computeGroupOutlines(groups: SpecsRowGroup[], rowTops: number[]): GroupOutline[] {
+// rowBottoms is normally the exact same array as rowTops — see computeBorderSegments' own comment
+// on the same parameter for why they can differ, and when.
+function computeGroupOutlines(groups: SpecsRowGroup[], rowTops: number[], rowBottoms: number[]): GroupOutline[] {
   return groups
     .filter((g) => g.endRow + 1 < rowTops.length)
     .map((g) => ({
@@ -300,7 +382,7 @@ function computeGroupOutlines(groups: SpecsRowGroup[], rowTops: number[]): Group
       name: g.name,
       hidden: Boolean(g.hidden),
       top: rowTops[g.startRow],
-      height: rowTops[g.endRow + 1] - rowTops[g.startRow],
+      height: rowBottoms[g.endRow + 1] - rowTops[g.startRow],
     }));
 }
 
@@ -318,6 +400,20 @@ function getColumnLetter(index: number): string {
 
 const ROW_HEADER_WIDTH_PX = 36;
 const COL_HEADER_HEIGHT_PX = 24;
+// The project-view toolbar's own real rendered height — matches the plain static spacer div that
+// reserves its flow space further down (position:fixed elements take up zero space on their own),
+// and the host page's own shared blur backdrop height (see its comment — "56 + 48" there needs to
+// stay in sync with this number). 48 (its p-2 padding + h-8 buttons) undercounted its own
+// borderBottom: for an auto-height element (no explicit height set), a border always adds to the
+// rendered size on top of content+padding regardless of box-sizing — box-sizing only changes how an
+// EXPLICIT height gets allocated, and this one has none — so the real height is 49, and reserving
+// only 48 left a 1px sliver of the page's own base background showing through as a visible seam
+// between the toolbar and the canvas below it.
+const PROJECT_TOOLBAR_HEIGHT_PX = 49;
+// See growRowForCellHeight's own comment — filters out sub-pixel measurement noise (e.g. from a cell
+// merely losing focus) so a row only actually grows for a genuine extra wrapped line, not a rounding
+// fluctuation of a couple px.
+const GROW_ROW_TOLERANCE_PX = 4;
 const GRIDLINE_COLOR = "#D4D4D4";
 const HEADER_BG = "#F3F3F3";
 const HEADER_TEXT = "#666666";
@@ -326,11 +422,18 @@ const HEADER_TEXT = "#666666";
 // hangs off the left edge of the sheet instead (see the row-actions overlay in the render body), so
 // the data columns always start flush at x=0 and line up evenly with the mock page's own left edge
 // rather than being pushed over by a reserved gutter column. This is just that overlay strip's width.
-const ADD_ROW_GUTTER_PX = 36;
-// The group drag-handle strip sits flush against the +/- strip's own left edge (further out still),
-// same reasoning as ADD_ROW_GUTTER_PX itself — a real reserved column would misalign the sheet's data
-// columns from the mock page's print margins.
+// Wide enough to fully contain both 16px buttons + their gap/margin (41px of real content) without
+// justify-content:center overflowing past the strip's own edge — a narrower value here previously let
+// the "-" button's rendered box spill a couple px past this strip and into the drag handle's own
+// zone just to its left, which is exactly what looked like the two overlapping.
+const ADD_ROW_GUTTER_PX = 44;
+// The group drag-handle strip sits just outside the +/- strip's own left edge, same reasoning as
+// ADD_ROW_GUTTER_PX itself — a real reserved column would misalign the sheet's data columns from the
+// mock page's print margins. A small explicit gap (GROUP_DRAG_HANDLE_GAP_PX) is kept between the two,
+// on top of ADD_ROW_GUTTER_PX now being sized to not overflow, so the handle never visually touches
+// the "-" button even at the strip's own rendered edge.
 const GROUP_DRAG_HANDLE_WIDTH_PX = 20;
+const GROUP_DRAG_HANDLE_GAP_PX = 4;
 
 // Plain 1px gridlines are drawn as inset box-shadows, never a real `border` — a real border (even
 // under `border-collapse: collapse`) makes the browser's table layout algorithm round each cell's
@@ -365,9 +468,140 @@ function mapSelectedCells(grid: SpecsGrid, sel: SpecsGridSelection, mutate: (sty
   return { pageSize: grid.pageSize, columnWidths: grid.columnWidths, groups: grid.groups, deletedGroups: grid.deletedGroups, rows };
 }
 
+// Bold/underline's own whole-CELL(s) analogue of mapSelectedCells above — every cell touched by the
+// selection gets ALL of its runs flipped together (not just whatever's highlighted, since a grid
+// selection isn't a text selection). "Turn on" vs "turn off" is decided once for the whole selection
+// (on unless every touched run already has it) rather than per-cell, so a multi-cell selection lands
+// in one consistent end state instead of some cells landing on and others off.
+function mapSelectedCellsRunFormat(grid: SpecsGrid, sel: SpecsGridSelection, key: "bold" | "underline"): SpecsGrid {
+  const rect = normalizeRect(sel);
+  let allAlreadyOn = true;
+  outer: for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
+    for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
+      const cell = grid.rows[r]?.cells[c];
+      if (!cell) continue;
+      if (!getCellRuns(cell).every((run) => Boolean(run[key]))) {
+        allAlreadyOn = false;
+        break outer;
+      }
+    }
+  }
+  const nextValue = !allAlreadyOn;
+  const rows = grid.rows.map((row, r) => {
+    if (r < rect.minRow || r > rect.maxRow) return row;
+    const cells = row.cells.map((cell, c) => {
+      if (!cell || c < rect.minCol || c > rect.maxCol) return cell;
+      const runs = normalizeTextRuns(getCellRuns(cell).map((run) => ({ ...run, [key]: nextValue })));
+      return { ...cell, runs, text: runsToPlainText(runs) };
+    });
+    return { ...row, cells };
+  });
+  return { pageSize: grid.pageSize, columnWidths: grid.columnWidths, groups: grid.groups, deletedGroups: grid.deletedGroups, rows };
+}
+
+function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Runs -> the actual DOM a cell's contentEditable div holds, both for display (unfocused) and as the
+// starting point once editing begins. `<b>`/`<u>` (not CSS) so the browser's own native bold/underline
+// commands (execCommand, used below) recognize and can toggle them, and so parseHtmlToRuns' own
+// tag-based reading stays the exact inverse of this. A run's embedded `\n` becomes a literal <br> —
+// see SpecsCellTextArea's own onKeyDown for why every line break ends up represented that way rather
+// than the browser's own inconsistent (and, for reading back out, much messier) per-paragraph <div>
+// wrapping.
+function runsToHtml(runs: SpecsTextRun[]): string {
+  return runs
+    .map((run) => {
+      const escaped = escapeHtmlText(run.text).replace(/\n/g, "<br>");
+      let html = escaped;
+      if (run.underline) html = `<u>${html}</u>`;
+      if (run.bold) html = `<b>${html}</b>`;
+      return html;
+    })
+    .join("");
+}
+
+// The exact inverse of runsToHtml — walks a cell's own contentEditable DOM (after the browser's own
+// execCommand/typing has potentially changed it) back into plain SpecsTextRun data. Recognizes <b>/
+// <strong>/<u> tags plus the equivalent inline CSS (execCommand implementations differ slightly by
+// browser/version) rather than trusting only one form, and treats <br> as a literal line break —
+// matching what runsToHtml produced them from in the first place.
+function parseHtmlToRuns(html: string): SpecsTextRun[] {
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  const runs: SpecsTextRun[] = [];
+  const walk = (node: Node, bold: boolean, underline: boolean) => {
+    node.childNodes.forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = child.textContent ?? "";
+        if (text) runs.push({ text, ...(bold ? { bold: true } : {}), ...(underline ? { underline: true } : {}) });
+        return;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) return;
+      const el = child as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      if (tag === "br") {
+        runs.push({ text: "\n" });
+        return;
+      }
+      const fontWeight = el.style?.fontWeight;
+      const isBoldTag = tag === "b" || tag === "strong" || fontWeight === "bold" || fontWeight === "700" || Number(fontWeight) >= 700;
+      const isUnderlineTag = tag === "u" || Boolean(el.style?.textDecoration?.includes("underline"));
+      walk(el, bold || isBoldTag, underline || isUnderlineTag);
+    });
+  };
+  walk(container, false, false);
+  return normalizeTextRuns(runs);
+}
+
+// Applies a native bold/underline toggle to whatever's currently highlighted inside `node` — returns
+// false (doing nothing) when there's no real, non-collapsed selection inside it, so the caller can
+// fall back to the whole-cell(s) toggle instead. This is what makes "select entire cell -> affects
+// everything, highlight part of it -> affects only that part" work: same button, different browser
+// selection state at the moment it's clicked. execCommand is deprecated but remains the only way to
+// get the browser's own selection-aware bold/underline splitting (partial-run wrapping/unwrapping,
+// merging adjacent identical tags, etc.) without reimplementing that logic by hand.
+function applyFormatCommandToSelection(node: HTMLElement, key: "bold" | "underline"): boolean {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  const range = sel.getRangeAt(0);
+  if (!node.contains(range.commonAncestorContainer)) return false;
+  document.execCommand(key === "bold" ? "bold" : "underline");
+  return true;
+}
+
 const toolbarButtonStyle = { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" } as const;
 const toolbarButtonActiveStyle = { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" } as const;
 const toolbarDangerStyle = { borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" } as const;
+
+// A tiny square glyph standing in for the old 4-letter T/R/B/L toggle row on the toolbar's own
+// "Border" button — each side of the square renders darker only while that side is actually turned
+// on for the active cell, so the button itself doubles as a live preview of the current border
+// state without needing to open the popover just to check.
+function BorderStateIcon({ style }: { style: SpecsCellStyle }) {
+  const on = "var(--text-main)";
+  const off = "var(--glass-border)";
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" className="shrink-0" aria-hidden>
+      <line x1="1" y1="1" x2="13" y2="1" stroke={style.borderTop ? on : off} strokeWidth="2" />
+      <line x1="13" y1="1" x2="13" y2="13" stroke={style.borderRight ? on : off} strokeWidth="2" />
+      <line x1="1" y1="13" x2="13" y2="13" stroke={style.borderBottom ? on : off} strokeWidth="2" />
+      <line x1="1" y1="1" x2="1" y2="13" stroke={style.borderLeft ? on : off} strokeWidth="2" />
+    </svg>
+  );
+}
+
+const ALIGN_OPTIONS = [
+  { value: "left" as const, label: "Align left", Icon: AlignLeft },
+  { value: "center" as const, label: "Align center", Icon: AlignCenter },
+  { value: "right" as const, label: "Align right", Icon: AlignRight },
+];
+const VALIGN_OPTIONS = [
+  { value: "top" as const, label: "Align top", Icon: AlignVerticalJustifyStart },
+  { value: "middle" as const, label: "Align middle", Icon: AlignVerticalJustifyCenter },
+  { value: "bottom" as const, label: "Align bottom", Icon: AlignVerticalJustifyEnd },
+];
 
 export default function SpecsGridEditor({
   value,
@@ -377,6 +611,16 @@ export default function SpecsGridEditor({
   companyLogoUrl,
   companyColor,
   showGroupVisibilityPanel,
+  toolbarFixedTopPx,
+  toolbarFixedRightPx,
+  toolbarFixedLeftPx,
+  groupsSupportPricing,
+  hideSectionsBar,
+  companyRoleOptions,
+  canEditSpecsGroup,
+  lockUngroupedBlankCells,
+  showEditableGroupBorders,
+  hideCellSelectionOutline,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -434,6 +678,27 @@ export default function SpecsGridEditor({
   const [colorPopover, setColorPopover] = useState<{ kind: "bg" | "border" | "text"; anchorRect: SpecsColorPopoverAnchorRect } | null>(null);
   const [headerContextMenu, setHeaderContextMenu] = useState<{ axis: "row" | "col"; index: number; x: number; y: number } | null>(null);
   const headerContextMenuRef = useRef<HTMLDivElement | null>(null);
+  // Right-click near the bottom of the viewport (a real risk in the template builders — this menu can
+  // grow tall: row/col actions, the Group button, "Add to Existing Group" listing every other group,
+  // Remove Group) would otherwise render mostly or entirely off-screen below the click point. Measured
+  // and flipped upward (anchored to the click's Y instead of growing down from it) whenever the menu's
+  // OWN rendered height wouldn't fit in the remaining space below. Done via a ref callback (fired by
+  // React the instant the portal's div is actually attached to the DOM, i.e. already has real layout
+  // to measure) rather than a useEffect+setState pair, so the corrected position is applied within the
+  // very same commit the element first mounts in — no visible jump a moment after an unflipped
+  // position briefly shows.
+  const [headerContextMenuTop, setHeaderContextMenuTop] = useState<number | null>(null);
+  const setHeaderContextMenuNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      headerContextMenuRef.current = node;
+      if (!node || !headerContextMenu) return;
+      const menuHeight = node.getBoundingClientRect().height;
+      const margin = 4;
+      const overflowsBottom = headerContextMenu.y + menuHeight > window.innerHeight - margin;
+      setHeaderContextMenuTop(overflowsBottom ? Math.max(margin, headerContextMenu.y - menuHeight) : headerContextMenu.y);
+    },
+    [headerContextMenu],
+  );
 
   useEffect(() => {
     if (!headerContextMenu) return;
@@ -444,6 +709,39 @@ export default function SpecsGridEditor({
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [headerContextMenu]);
+
+  // Horizontal/vertical alignment are each collapsed into a single toolbar button that shows only
+  // whichever option is currently active plus a chevron — clicking it opens a small dropdown of the
+  // other two options instead of showing all three as separate always-visible buttons.
+  const [alignDropdown, setAlignDropdown] = useState<{ axis: "h" | "v"; anchorRect: { left: number; top: number; width: number; height: number } } | null>(null);
+  const alignDropdownRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!alignDropdown) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (alignDropdownRef.current?.contains(e.target as Node)) return;
+      setAlignDropdown(null);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [alignDropdown]);
+
+  // The old separate T/R/B/L toggles + border-color swatch + width field are now all reachable from
+  // this one popover, opened from the toolbar's single "Border" button. The nested color picker
+  // (colorPopover, kind: "border") is a genuinely separate portal — outside-clicks on it must NOT
+  // count as "outside" this popover, or picking a color would immediately close the whole thing.
+  const [borderPopoverAnchorRect, setBorderPopoverAnchorRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const borderPopoverRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!borderPopoverAnchorRect) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (borderPopoverRef.current?.contains(target)) return;
+      if (target.closest('[data-specs-color-popover="true"]')) return;
+      setBorderPopoverAnchorRect(null);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [borderPopoverAnchorRect]);
 
   const applyHeaderResize = (axis: "row" | "col", index: number, valuePx: number) => {
     if (axis === "col") {
@@ -488,11 +786,55 @@ export default function SpecsGridEditor({
     setLiveGrid(value);
   }, [value]);
 
+  // Undo/redo history — the actual snapshot stacks live in refs (only ever read at click-time, never
+  // rendered directly), but React forbids reading a ref's `.current` during render (it can't track
+  // that as a render input, so the component wouldn't reliably re-render when it changes) — so a
+  // small `historyCounts` STATE mirrors just the two stacks' lengths, updated alongside every push/
+  // pop, and canUndo/canRedo below read that instead.
+  const undoStackRef = useRef<SpecsGrid[]>([]);
+  const redoStackRef = useRef<SpecsGrid[]>([]);
+  const [historyCounts, setHistoryCounts] = useState({ undo: 0, redo: 0 });
+  const MAX_HISTORY_ENTRIES = 100;
+
+  // Every genuine, committed edit (persist === true) pushes the grid as it stood right BEFORE that
+  // edit — never the edit itself — so undo always means "go back to what it looked like a moment
+  // ago." A fresh edit always clears the redo stack: once you've branched off in a new direction,
+  // whatever was "ahead" on the old timeline no longer applies.
+  const pushHistory = (beforeGrid: SpecsGrid) => {
+    undoStackRef.current.push(beforeGrid);
+    if (undoStackRef.current.length > MAX_HISTORY_ENTRIES) undoStackRef.current.shift();
+    redoStackRef.current = [];
+    setHistoryCounts({ undo: undoStackRef.current.length, redo: 0 });
+  };
+
   const applyChange = (next: SpecsGrid, persist: boolean) => {
+    if (persist) pushHistory(liveGridRef.current);
     liveGridRef.current = next;
     setLiveGrid(next);
     if (persist) onChange(next);
   };
+
+  const undo = () => {
+    const prev = undoStackRef.current.pop();
+    if (!prev) return;
+    redoStackRef.current.push(liveGridRef.current);
+    liveGridRef.current = prev;
+    setLiveGrid(prev);
+    onChange(prev);
+    setHistoryCounts({ undo: undoStackRef.current.length, redo: redoStackRef.current.length });
+  };
+
+  const redo = () => {
+    const next = redoStackRef.current.pop();
+    if (!next) return;
+    undoStackRef.current.push(liveGridRef.current);
+    liveGridRef.current = next;
+    setLiveGrid(next);
+    onChange(next);
+    setHistoryCounts({ undo: undoStackRef.current.length, redo: redoStackRef.current.length });
+  };
+  const canUndo = historyCounts.undo > 0;
+  const canRedo = historyCounts.redo > 0;
 
   const activeCell = (() => {
     if (!selection) return null;
@@ -500,25 +842,111 @@ export default function SpecsGridEditor({
     return { row: rect.minRow, col: rect.minCol, cell: liveGrid.rows[rect.minRow]?.cells[rect.minCol] ?? null };
   })();
 
+  const currentAlign = activeCell?.cell?.style?.align ?? (activeCell?.cell?.imageUrl ? "center" : "left");
+  const currentValign = activeCell?.cell?.style?.verticalAlign ?? (activeCell?.cell?.imageUrl ? "middle" : "top");
+
   const canMerge = selection ? canMergeSelection(liveGrid, selection) : false;
   const canUnmerge = activeCell?.cell ? (() => {
     const { rowSpan, colSpan } = getCellSpan(activeCell.cell);
     return rowSpan > 1 || colSpan > 1;
   })() : false;
 
-  const commitCellText = (row: number, col: number, text: string) => {
+  // Commits a cell's rich text directly — used both on blur (a plain edit) and immediately after an
+  // in-cell Ctrl+B/Ctrl+U or toolbar click applies a partial-selection format (which doesn't blur the
+  // cell, so there's no other moment this would otherwise get saved).
+  const commitCellRuns = (row: number, col: number, runs: SpecsTextRun[]) => {
     const cell = liveGrid.rows[row]?.cells[col];
-    if (!cell || cell.text === text) return;
+    if (!cell) return;
+    const normalized = normalizeTextRuns(runs);
+    const text = runsToPlainText(normalized);
     const rows = liveGrid.rows.map((r, ri) => {
       if (ri !== row) return r;
-      const cells = r.cells.map((c, ci) => (ci === col ? { ...c!, text } : c));
+      const cells = r.cells.map((c, ci) => (ci === col ? { ...c!, text, runs: normalized } : c));
       return { ...r, cells };
     });
     applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
   };
 
+  // Whole-cell bold/underline toggle for exactly one cell — used when Ctrl+B/Ctrl+U fires with
+  // nothing highlighted (the "entire cell controls all of the text within it" case), targeting the
+  // cell being typed in directly rather than going through the grid's own `selection` state.
+  const toggleCellRunsAt = (row: number, col: number, key: "bold" | "underline") => {
+    const cell = liveGrid.rows[row]?.cells[col];
+    if (!cell) return;
+    const currentRuns = getCellRuns(cell);
+    const allOn = currentRuns.every((r) => Boolean(r[key]));
+    commitCellRuns(row, col, currentRuns.map((r) => ({ ...r, [key]: !allOn })));
+  };
+
+  // Toolbar Bold/Underline: if the cell currently focused for editing has real highlighted text,
+  // format just that (native execCommand, committed immediately since no blur will fire); otherwise
+  // fall back to the existing grid-selection-based whole-cell(s) toggle.
+  const applyFormatCommand = (key: "bold" | "underline") => {
+    const active = document.activeElement;
+    if (focusedKey && active instanceof HTMLElement && active.isContentEditable && applyFormatCommandToSelection(active, key)) {
+      const [row, col] = focusedKey.split(":").map(Number);
+      commitCellRuns(row, col, parseHtmlToRuns(active.innerHTML));
+      return;
+    }
+    if (!selection || isSelectionLocked(selection)) return;
+    applyChange(mapSelectedCellsRunFormat(liveGrid, selection, key), true);
+  };
+
+  // Grows a row LIVE (no undo entry, no onChange/persist — same "cheap local-only preview, commit
+  // later" pattern already used for column/row drag-resize) whenever a cell's text needs more room
+  // than the row currently has, i.e. it's wrapped onto another line past the cell's right edge. Never
+  // shrinks a row back down on its own — only ever grows, same one-directional convention already used
+  // elsewhere in this editor (a row also never auto-shrinks just because text was deleted). Only
+  // applies to single-row cells: a merged (rowSpan > 1) cell's rendered height is the SUM of several
+  // rows, and there's no single one of them that's obviously "the" row to grow, so merges keep their
+  // existing fixed-height/clipped behavior rather than guessing which row should take the extra space.
+  // The actual persisted commit happens separately, on blur (commitCellRuns → applyChange), which
+  // naturally carries whatever height this already grew `liveGrid` to, since it preserves the row's
+  // existing heightPx via its own `{ ...r, cells }` spread.
+  const growRowForCellHeight = (row: number, cell: SpecsCell | null, naturalHeightPx: number) => {
+    const { rowSpan } = getCellSpan(cell);
+    if (rowSpan !== 1) return;
+    const current = liveGridRef.current.rows[row];
+    if (!current) return;
+    const currentHeight =
+      typeof current.heightPx === "number" && Number.isFinite(current.heightPx) && current.heightPx > 0
+        ? current.heightPx
+        : DEFAULT_ROW_HEIGHT_PX;
+    // A few px of slack absorbs ordinary browser measurement noise (sub-pixel layout rounding,
+    // slightly different rendering while focused vs. not) — without it, merely clicking into a cell
+    // (which re-measures the PREVIOUSLY-focused cell as it loses focus) could nudge a row a pixel or
+    // two taller on every first click, even though nothing about its content actually needed more
+    // room. A genuinely wrapped extra line is a much bigger jump than this (a full line height, easily
+    // 14px+), so real wrapping still grows the row correctly.
+    if (naturalHeightPx <= currentHeight + GROW_ROW_TOLERANCE_PX) return;
+    const rows = liveGridRef.current.rows.map((r, ri) => (ri === row ? { ...r, heightPx: Math.ceil(naturalHeightPx) } : r));
+    const next: SpecsGrid = {
+      pageSize: liveGridRef.current.pageSize,
+      columnWidths: liveGridRef.current.columnWidths,
+      groups: liveGridRef.current.groups,
+      deletedGroups: liveGridRef.current.deletedGroups,
+      rows,
+    };
+    liveGridRef.current = next;
+    setLiveGrid(next);
+  };
+
+  // True when ANY row touched by `sel` belongs to a group the current viewer isn't allowed to edit
+  // (see SpecsGridEditorProps.canEditSpecsGroup) — guards the toolbar's own style/format toggles the
+  // same way SpecsCellTextArea's own readOnly rendering guards direct typing, so "read-only for
+  // restricted rows" isn't just typing being blocked while formatting still goes through.
+  const isSelectionLocked = (sel: SpecsGridSelection): boolean => {
+    if (!canEditSpecsGroup) return false;
+    const rect = normalizeRect(sel);
+    for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
+      const g = findRowGroupForRow(expandedGroups, r);
+      if (g?.editableByRoleIds && g.editableByRoleIds.length > 0 && !canEditSpecsGroup(g)) return true;
+    }
+    return false;
+  };
+
   const toggleStyle = (mutate: (style: SpecsCellStyle) => SpecsCellStyle) => {
-    if (!selection) return;
+    if (!selection || isSelectionLocked(selection)) return;
     applyChange(mapSelectedCells(liveGrid, selection, mutate), true);
   };
 
@@ -578,17 +1006,21 @@ export default function SpecsGridEditor({
   // itself be torn down and re-attached.
   const copySelectionRef = useRef(copySelection);
   const pasteAtSelectionRef = useRef(pasteAtSelection);
+  const undoRef = useRef(undo);
+  const redoRef = useRef(redo);
   useEffect(() => {
     copySelectionRef.current = copySelection;
     pasteAtSelectionRef.current = pasteAtSelection;
+    undoRef.current = undo;
+    redoRef.current = redo;
   });
 
-  // Ctrl/Cmd+C / Ctrl/Cmd+V at the grid level — skipped while actually editing a cell's text (its
-  // own contentEditable is focused) so normal in-cell text copy/paste keeps working untouched.
-  // Mounted exactly once: re-subscribing this on every render (it previously had no dependency
-  // array) meant tearing down and re-attaching a window listener on every render — including every
-  // tick of a drag-select or drag-resize, both of which already re-render frequently — which was
-  // visible as stutter/"glitching" while editing.
+  // Ctrl/Cmd+C / Ctrl/Cmd+V / Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z (or +Y) at the grid level — skipped while
+  // actually editing a cell's text (its own contentEditable is focused) so normal in-cell text
+  // copy/paste/undo keeps working untouched. Mounted exactly once: re-subscribing this on every
+  // render (it previously had no dependency array) meant tearing down and re-attaching a window
+  // listener on every render — including every tick of a drag-select or drag-resize, both of which
+  // already re-render frequently — which was visible as stutter/"glitching" while editing.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement | null)?.isContentEditable) return;
@@ -602,6 +1034,13 @@ export default function SpecsGridEditor({
         if (!clipboardRef.current || !selectionRef.current) return;
         e.preventDefault();
         pasteAtSelectionRef.current();
+      } else if (key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redoRef.current();
+        else undoRef.current();
+      } else if (key === "y") {
+        e.preventDefault();
+        redoRef.current();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -630,19 +1069,49 @@ export default function SpecsGridEditor({
     applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
   };
 
-  // Links a row range into a new named group. `startRow`/`endRow` normally come from the current
-  // selection's row span (so highlighting cells across several rows, then right-clicking a row
-  // number, links that whole span) — falls back to just the right-clicked row if nothing's selected.
-  const linkRowsAsGroup = (startRow: number, endRow: number, name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    applyChange(createRowGroup(liveGrid, startRow, endRow, trimmed), true);
+  // The group-editor modal — a single controlled form (Name/Default/Anchor/roles/Cost all at once)
+  // replacing the old inline "Link Rows as Group"/"Rename Group" popover, which built its result up
+  // field-by-field from several separately-defaulted uncontrolled inputs. That design was the actual
+  // source of "I tick a box and it doesn't stay ticked": re-opening the popover for a group that was
+  // already open a moment earlier (right-clicking a second target without the menu ever fully
+  // closing/remounting in between) could leave a checkbox showing an uncontrolled <input>'s leftover
+  // DOM state from whatever was last open, not this group's own real data — a controlled draft reset
+  // fresh every time this modal opens for a specific target can't drift out of sync that way.
+  // `groupId: null` means creating a brand-new group from `startRow`/`endRow` (the selection's row
+  // span at the moment "Group" was clicked); a real id means editing that existing group in place.
+  const [groupModalTarget, setGroupModalTarget] = useState<{ groupId: string | null; startRow: number; endRow: number } | null>(null);
+  const [groupDraft, setGroupDraft] = useState<SpecsRowGroupEditableFields>({
+    name: "",
+    price: "",
+    defaultIncluded: true,
+    anchorFirstPageBottom: false,
+    editableByRoleIds: [],
+    category: "",
+  });
+  const openGroupModal = (groupId: string | null, startRow: number, endRow: number, existingGroup: SpecsRowGroup | undefined) => {
+    setGroupDraft({
+      name: existingGroup?.name ?? "",
+      price: existingGroup?.price ?? "",
+      // "Default it to on" for a brand-new group (existingGroup undefined) — an existing group keeps
+      // whatever it already had, including a deliberate off.
+      defaultIncluded: existingGroup ? Boolean(existingGroup.defaultIncluded) : true,
+      anchorFirstPageBottom: Boolean(existingGroup?.anchorFirstPageBottom),
+      editableByRoleIds: existingGroup?.editableByRoleIds ?? [],
+      category: existingGroup?.category ?? "",
+    });
+    setGroupModalTarget({ groupId, startRow, endRow });
   };
-
-  const renameGroup = (groupId: string, name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    applyChange(renameRowGroup(liveGrid, groupId, trimmed), true);
+  const saveGroupModal = () => {
+    if (!groupModalTarget) return;
+    const trimmedName = groupDraft.name.trim();
+    if (!trimmedName) return;
+    const fields: SpecsRowGroupEditableFields = { ...groupDraft, name: trimmedName, category: groupDraft.category.trim() };
+    if (groupModalTarget.groupId) {
+      applyChange(renameRowGroup(liveGrid, groupModalTarget.groupId, fields), true);
+    } else {
+      applyChange(createRowGroup(liveGrid, groupModalTarget.startRow, groupModalTarget.endRow, fields), true);
+    }
+    setGroupModalTarget(null);
   };
 
   const unlinkGroup = (groupId: string) => {
@@ -661,6 +1130,9 @@ export default function SpecsGridEditor({
 
   const onColumnResizeStart = (index: number, clientX: number) => {
     isDraggingRef.current = true;
+    // Captured once, at the moment the drag starts, so the undo entry pushed on release is "what it
+    // looked like before this whole drag" — not a step partway through it.
+    const beforeGrid = liveGrid;
     dragRef.current = { axis: "col", index, startPos: clientX, startSize: liveGrid.columnWidths[index] };
     const onMove = (e: MouseEvent) => {
       const drag = dragRef.current;
@@ -680,6 +1152,7 @@ export default function SpecsGridEditor({
       window.removeEventListener("mouseup", onUp);
       dragRef.current = null;
       isDraggingRef.current = false;
+      if (liveGridRef.current !== beforeGrid) pushHistory(beforeGrid);
       onChange(liveGridRef.current);
     };
     window.addEventListener("mousemove", onMove);
@@ -688,6 +1161,7 @@ export default function SpecsGridEditor({
 
   const onRowResizeStart = (index: number, clientY: number) => {
     isDraggingRef.current = true;
+    const beforeGrid = liveGrid;
     dragRef.current = { axis: "row", index, startPos: clientY, startSize: liveGrid.rows[index].heightPx };
     const onMove = (e: MouseEvent) => {
       const drag = dragRef.current;
@@ -706,6 +1180,7 @@ export default function SpecsGridEditor({
       window.removeEventListener("mouseup", onUp);
       dragRef.current = null;
       isDraggingRef.current = false;
+      if (liveGridRef.current !== beforeGrid) pushHistory(beforeGrid);
       onChange(liveGridRef.current);
     };
     window.addEventListener("mousemove", onMove);
@@ -769,17 +1244,9 @@ export default function SpecsGridEditor({
   const rowPrefixSums: number[] = [0];
   for (const h of safeRowHeights) rowPrefixSums.push(rowPrefixSums[rowPrefixSums.length - 1] + h);
 
-  const borderSegments = computeBorderSegments(liveGrid, colPrefixSums, rowPrefixSums, hiddenRowIndexes);
-  const groupOutlines = computeGroupOutlines(expandedGroups, rowPrefixSums);
-  const tableTotalWidthPx = colPrefixSums[colPrefixSums.length - 1] ?? 0;
-
-  // The "mock page" the sheet sits in — a white rectangle sized to the actual paper dimensions
-  // (so print can be visualized), surrounded by a grey canvas. Only ever grown, never shrunk, past
-  // the paper size: if the table itself (say, after someone widens columns or adds many rows) ends
-  // up bigger than one physical page, letting the white area grow with it keeps the table fully on
-  // white rather than clipping it or spilling content onto the grey — the paper-size box is a visual
-  // reference, not a hard crop.
-  const mockPageWidthPx = Math.round(SPECS_PAGE_SIZES[liveGrid.pageSize].widthMm * MM_TO_PX);
+  // Computed here (earlier than the rest of the "mock page" sizing below) purely so the
+  // anchor-to-bottom shift right after this can use them — everything else about the mock page's
+  // sizing stays where it was.
   const mockPageHeightPx = Math.round(SPECS_PAGE_SIZES[liveGrid.pageSize].heightMm * MM_TO_PX);
   // A project's own copy insets its content by the real print margin on every side (so the sheet
   // reads centered on the mock page, matching where it'll actually sit once printed) — the builder
@@ -789,9 +1256,90 @@ export default function SpecsGridEditor({
   // overlays draw relative to it — and it deliberately does NOT touch the table's own `width` (still
   // just the columns' real total), otherwise the last column would stretch to fill the inset.
   const mockPageMarginPx = isProjectSheetView ? Math.round(SPECS_PAGE_MARGIN_MM * MM_TO_PX) : 0;
+
+  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) — the live on-screen analogue of
+  // buildSpecsGridPdfBlob's own print-time version of this calc: if everything before the earliest
+  // anchored group, plus that group and everything after it, together still fit within one physical
+  // page's usable height, every row from that group onward is pushed down to land flush against the
+  // bottom of the page. Done by inflating rowPrefixSums IN PLACE, before any of its many consumers
+  // below (borders, group outlines, the mock page's own height, drag/resize hit-testing, the
+  // selection outline) ever read it — every one of them just sees the already-shifted coordinate
+  // space and stays visually consistent with it automatically, with no need to touch each of them
+  // individually. A real blank spacer <tr> (rendered further down) makes the same gap in the actual
+  // table's native row flow, not just in these derived overlay coordinates. Only meaningful for a
+  // project's own sheet (isProjectSheetView) — the company template builder has no per-project
+  // hidden/included group state for this to react to, and always shows every row uncollapsed.
+  let anchorSpacerPx = 0;
+  let anchorSpacerBeforeRowIdx = -1;
+  // rowPrefixSums[anchorStartRow] itself is read TWO different ways once a spacer's inserted: as the
+  // top of the anchor row (wants the shift) and as the BOTTOM edge of whatever row/group ends right
+  // before it (wants the row's own NATURAL boundary, not one inflated by a gap that isn't actually
+  // part of it) — a single shared array can't hold both values at once. Defaults to rowPrefixSums
+  // itself (same reference) so every consumer below is completely unaffected when no spacer applies.
+  let rowBottomEdgeSums = rowPrefixSums;
+  if (isProjectSheetView) {
+    const anchoredGroups = expandedGroups.filter((g) => g.anchorFirstPageBottom && !g.hidden);
+    if (anchoredGroups.length > 0) {
+      const anchorStartRow = Math.min(...anchoredGroups.map((g) => g.startRow));
+      const usableHeightPx = mockPageHeightPx - mockPageMarginPx * 2;
+      const heightBeforeAnchorPx = rowPrefixSums[anchorStartRow] ?? 0;
+      const heightFromAnchorPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) - heightBeforeAnchorPx;
+      const requiredSpacerPx = usableHeightPx - heightBeforeAnchorPx - heightFromAnchorPx;
+      if (requiredSpacerPx > 0.5) {
+        // Captured before the shift below overwrites it — this row/group's own natural (un-inflated)
+        // boundary, for anything that ends exactly here to measure its OWN bottom edge against.
+        const naturalAnchorTop = rowPrefixSums[anchorStartRow];
+        for (let i = anchorStartRow; i < rowPrefixSums.length; i += 1) rowPrefixSums[i] += requiredSpacerPx;
+        rowBottomEdgeSums = rowPrefixSums.slice();
+        rowBottomEdgeSums[anchorStartRow] = naturalAnchorTop;
+        anchorSpacerPx = requiredSpacerPx;
+        anchorSpacerBeforeRowIdx = anchorStartRow;
+      }
+    }
+  }
+
+  const borderSegments = computeBorderSegments(liveGrid, colPrefixSums, rowPrefixSums, rowBottomEdgeSums, hiddenRowIndexes);
+  const groupOutlines = computeGroupOutlines(expandedGroups, rowPrefixSums, rowBottomEdgeSums);
+  // Same visible-group outlines, filtered down to the ones showEditableGroupBorders actually wants
+  // drawn: hidden groups have no rows on screen at all in a project's own view already (nothing to
+  // box), and a group the viewer can't edit (same check as isRowLockedForViewer, just per-group here
+  // instead of per-row) is deliberately left unboxed — the whole point is showing which sections are
+  // actually theirs to work on.
+  const editableGroupOutlines = showEditableGroupBorders
+    ? groupOutlines.filter((g) => {
+        if (g.hidden) return false;
+        const group = expandedGroups.find((eg) => eg.id === g.id);
+        const isLocked = Boolean(
+          canEditSpecsGroup && group?.editableByRoleIds && group.editableByRoleIds.length > 0 && !canEditSpecsGroup(group),
+        );
+        return !isLocked;
+      })
+    : [];
+  const tableTotalWidthPx = colPrefixSums[colPrefixSums.length - 1] ?? 0;
+
+  // The "mock page" the sheet sits in — a white rectangle sized to the actual paper dimensions
+  // (so print can be visualized), surrounded by a grey canvas. Only ever grown, never shrunk, past
+  // the paper size: if the table itself (say, after someone widens columns or adds many rows) ends
+  // up bigger than one physical page, letting the white area grow with it keeps the table fully on
+  // white rather than clipping it or spilling content onto the grey — the paper-size box is a visual
+  // reference, not a hard crop.
+  const mockPageWidthPx = Math.round(SPECS_PAGE_SIZES[liveGrid.pageSize].widthMm * MM_TO_PX);
   const tableRenderedWidthPx = rowHeaderWidthPx + tableTotalWidthPx + mockPageMarginPx * 2;
   const tableRenderedHeightPx = colHeaderHeightPx + (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) + mockPageMarginPx * 2;
-  const mockPageBoxWidthPx = Math.max(mockPageWidthPx, tableRenderedWidthPx);
+  // The floor this box is never allowed to shrink below (see the comment above) has to be expressed
+  // in the SAME units as tableRenderedWidthPx for each view to actually agree once a sheet's columns
+  // exactly fill the page. Project view already does, since its margin insets (added above) exactly
+  // make up the difference between a full physical page and the printable area inside it — but the
+  // builder swaps that margin for its row-header gutter instead (a DIFFERENT, unrelated width, per
+  // the comment above), so comparing its narrower table against the raw physical page width left a
+  // permanent gap on the right even for a sheet whose columns already fill their printable area.
+  // Comparing against the same printable-area-plus-gutter figure the builder actually renders to
+  // fixes that, while a genuinely-narrower-than-that sheet (columns resized down) still shows a
+  // real, correctly-informative gap.
+  const mockPageTargetWidthPx = isProjectSheetView
+    ? mockPageWidthPx
+    : getSpecsPageUsableWidthPx(liveGrid.pageSize) + rowHeaderWidthPx;
+  const mockPageBoxWidthPx = Math.max(mockPageTargetWidthPx, tableRenderedWidthPx);
   const mockPageBoxHeightPx = Math.max(mockPageHeightPx, tableRenderedHeightPx);
 
   // The grip handle's own hover keeps a group "active" even once the pointer has moved off its rows
@@ -799,6 +1347,19 @@ export default function SpecsGridEditor({
   // group the currently-hovered ROW belongs to otherwise.
   const hoveredGroupId = manuallyHoveredGroupId ?? (hoveredRowIndex !== null ? (findRowGroupForRow(expandedGroups, hoveredRowIndex)?.id ?? null) : null);
   const restorableDeletedGroups = (liveGrid.deletedGroups ?? []).filter((dg) => !liveGrid.groups.some((g) => g.id === dg.id));
+  // Every distinct category already used by another group in this sheet, in first-seen order — fed
+  // into the group modal's own Category field as a <datalist> so picking the SAME category on a
+  // second group is a matter of reusing a suggestion, not retyping it exactly (a mistyped duplicate,
+  // e.g. "Handles" vs "handles ", would otherwise silently split into two headings in the sidebar
+  // instead of the one the person meant to build).
+  const groupCategoryOptions = Array.from(
+    new Map(
+      liveGrid.groups
+        .map((g) => g.category?.trim())
+        .filter((c): c is string => Boolean(c))
+        .map((c) => [c.toLowerCase(), c] as const),
+    ).values(),
+  );
 
   // Valid places a drag can drop: the very top/bottom of the sheet, plus the start and end of every
   // OTHER group — never an arbitrary row line. A group is a single unit to drop above or below, not a
@@ -906,7 +1467,55 @@ export default function SpecsGridEditor({
 
   return (
     <div className={className ?? "flex h-full w-full flex-col"}>
-      <div className="flex flex-wrap items-center gap-1.5 border-b p-2" style={{ borderColor: "var(--glass-border)" }}>
+      {isProjectSheetView ? (
+        // Reserves the fixed toolbar's own flow space (see its own comment below for why it's
+        // `position: fixed`) — without this, the canvas below would render up underneath it, since a
+        // fixed element takes up zero space in normal flow. A plain static height (not measured) —
+        // see the host page's own matching comment on why nothing here is JS-measured.
+        <div style={{ height: PROJECT_TOOLBAR_HEIGHT_PX }} />
+      ) : null}
+      <div
+        className="flex flex-wrap items-center justify-center gap-1.5 p-2"
+        style={
+          isProjectSheetView
+            ? {
+                // No background/blur of its own — the host page renders ONE shared blurred backdrop
+                // spanning from its own header down through this toolbar's own bottom edge, so the two
+                // fixed bars read as a single continuous glass sheet with no seam between them. See
+                // the host page's own comment (right above that shared backdrop) for the full
+                // reasoning — every attempt at giving this toolbar its OWN independent blur, at any
+                // position, produced a visible flashing/seam artifact in Chromium.
+                position: "fixed",
+                top: toolbarFixedTopPx ?? 0,
+                left: toolbarFixedLeftPx ?? 0,
+                right: toolbarFixedRightPx ?? 0,
+                zIndex: 95,
+                borderBottom: "1px solid var(--glass-border)",
+              }
+            : { borderBottom: "1px solid var(--glass-border)" }
+        }
+      >
+        <button
+          type="button"
+          disabled={!canUndo}
+          onClick={undo}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border disabled:opacity-40"
+          style={toolbarButtonStyle}
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 size={14} />
+        </button>
+        <button
+          type="button"
+          disabled={!canRedo}
+          onClick={redo}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border disabled:opacity-40"
+          style={toolbarButtonStyle}
+          title="Redo (Ctrl+Y)"
+        >
+          <Redo2 size={14} />
+        </button>
+        <div className="mx-0.5 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
         {showPageSizeSelector ? (
           <>
             <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold" style={toolbarButtonStyle}>
@@ -914,8 +1523,8 @@ export default function SpecsGridEditor({
               <select
                 value={liveGrid.pageSize}
                 onChange={(e) => applyChange(resizeGridToPageSize(liveGrid, e.target.value as SpecsPageSize), true)}
-                className="bg-transparent text-[11px] font-bold outline-none"
-                style={{ color: "var(--text-main)" }}
+                className="appearance-none text-[11px] font-bold outline-none"
+                style={{ color: "var(--text-main)", border: "none", background: "transparent" }}
               >
                 {(Object.keys(SPECS_PAGE_SIZES) as SpecsPageSize[]).map((size) => (
                   <option key={size} value={size}>
@@ -923,13 +1532,67 @@ export default function SpecsGridEditor({
                   </option>
                 ))}
               </select>
+              <ChevronDown size={12} />
             </label>
             <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
           </>
         ) : null}
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, bold: !s.bold }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={toolbarButtonStyle} title="Bold">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => applyFormatCommand("bold")}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
+          style={toolbarButtonStyle}
+          title="Bold (Ctrl+B) — highlight text to bold just that part, or select the whole cell to bold everything in it"
+        >
           <Bold size={14} />
         </button>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => applyFormatCommand("underline")}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
+          style={toolbarButtonStyle}
+          title="Underline (Ctrl+U) — highlight text to underline just that part, or select the whole cell to underline everything in it"
+        >
+          <Underline size={14} />
+        </button>
+        <label className="inline-flex h-8 items-center gap-1 rounded-[8px] border pl-2 pr-1.5 text-[11px] font-bold" style={toolbarButtonStyle} title="Font">
+          <select
+            key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
+            defaultValue={activeCell?.cell?.style?.fontFamily ?? ""}
+            onChange={(e) => {
+              const value = e.target.value;
+              // Firestore's setDoc rejects a literal `undefined` property value outright — "Default"
+              // has to be an absent key, not a present one holding `undefined`.
+              toggleStyle((s) => {
+                if (value) return { ...s, fontFamily: value };
+                const next = { ...s };
+                delete next.fontFamily;
+                return next;
+              });
+            }}
+            // appearance-none strips the browser's own native form-control chrome so this reads as
+            // plain text filling the label itself, not a separate control sitting inside it — the
+            // label's own border is the only visible boundary; the manual ChevronDown right after
+            // replaces the native arrow appearance-none also removes. border/background are set
+            // INLINE, not just via the border-0/bg-transparent classes — a global `.cs-app select`
+            // rule (app/globals.css) gives every <select> a real border + white background with
+            // higher specificity than a single Tailwind utility class, so those classes alone
+            // couldn't actually win against it; an inline style always overrides an external
+            // stylesheet rule regardless of specificity.
+            className="max-w-[100px] appearance-none text-[11px] font-bold outline-none"
+            style={{ color: "var(--text-main)", border: "none", background: "transparent" }}
+          >
+            <option value="">Default</option>
+            {SYSTEM_QUOTE_FONT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value} style={{ fontFamily: opt.value }}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={12} />
+        </label>
         <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold" style={toolbarButtonStyle} title="Text size">
           Size
           <input
@@ -953,25 +1616,44 @@ export default function SpecsGridEditor({
           />
         </label>
         <div className="mx-0.5 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, align: "left" }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={(activeCell?.cell?.style?.align ?? (activeCell?.cell?.imageUrl ? "center" : "left")) === "left" ? toolbarButtonActiveStyle : toolbarButtonStyle} title="Align left">
-          <AlignLeft size={14} />
-        </button>
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, align: "center" }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={(activeCell?.cell?.style?.align ?? (activeCell?.cell?.imageUrl ? "center" : "left")) === "center" ? toolbarButtonActiveStyle : toolbarButtonStyle} title="Align center">
-          <AlignCenter size={14} />
-        </button>
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, align: "right" }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={activeCell?.cell?.style?.align === "right" ? toolbarButtonActiveStyle : toolbarButtonStyle} title="Align right">
-          <AlignRight size={14} />
-        </button>
+        {(() => {
+          const CurrentAlignIcon = ALIGN_OPTIONS.find((o) => o.value === currentAlign)?.Icon ?? AlignLeft;
+          return (
+            <button
+              type="button"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setAlignDropdown({ axis: "h", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
+              }}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-1.5"
+              style={toolbarButtonStyle}
+              title="Horizontal alignment"
+            >
+              <CurrentAlignIcon size={14} />
+              <ChevronDown size={12} />
+            </button>
+          );
+        })()}
         <div className="mx-0.5 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, verticalAlign: "top" }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={(activeCell?.cell?.style?.verticalAlign ?? (activeCell?.cell?.imageUrl ? "middle" : "top")) === "top" ? toolbarButtonActiveStyle : toolbarButtonStyle} title="Align top">
-          <AlignVerticalJustifyStart size={14} />
-        </button>
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, verticalAlign: "middle" }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={(activeCell?.cell?.style?.verticalAlign ?? (activeCell?.cell?.imageUrl ? "middle" : "top")) === "middle" ? toolbarButtonActiveStyle : toolbarButtonStyle} title="Align middle">
-          <AlignVerticalJustifyCenter size={14} />
-        </button>
-        <button type="button" onClick={() => toggleStyle((s) => ({ ...s, verticalAlign: "bottom" }))} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border" style={activeCell?.cell?.style?.verticalAlign === "bottom" ? toolbarButtonActiveStyle : toolbarButtonStyle} title="Align bottom">
-          <AlignVerticalJustifyEnd size={14} />
-        </button>
+        {(() => {
+          const CurrentValignIcon = VALIGN_OPTIONS.find((o) => o.value === currentValign)?.Icon ?? AlignVerticalJustifyStart;
+          return (
+            <button
+              type="button"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setAlignDropdown({ axis: "v", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
+              }}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-1.5"
+              style={toolbarButtonStyle}
+              title="Vertical alignment"
+            >
+              <CurrentValignIcon size={14} />
+              <ChevronDown size={12} />
+            </button>
+          );
+        })()}
+        <div className="mx-0.5 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
         <button
           type="button"
           onClick={(e) => {
@@ -1001,57 +1683,20 @@ export default function SpecsGridEditor({
           </span>
           Text
         </button>
-        {(["Top", "Right", "Bottom", "Left"] as const).map((side) => {
-          const key = (`border${side}` as const);
-          const isOn = Boolean(activeCell?.cell?.style?.[key]);
-          return (
-            <button
-              key={side}
-              type="button"
-              onClick={() => toggleStyle((s) => ({ ...s, [key]: !s[key] }))}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold"
-              style={isOn ? toolbarButtonActiveStyle : toolbarButtonStyle}
-              title={`Toggle ${side.toLowerCase()} border`}
-            >
-              {side[0]}
-            </button>
-          );
-        })}
         <button
           type="button"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            setColorPopover({ kind: "border", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
+            setBorderPopoverAnchorRect({ left: rect.left, top: rect.bottom, width: rect.width, height: 0 });
           }}
           className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
           style={toolbarButtonStyle}
+          title="Border settings"
         >
-          <span className="inline-block h-4 w-4 rounded-[4px] border-2" style={{ borderColor: activeCell?.cell?.style?.borderColor ?? "var(--text-main)" }} />
+          <BorderStateIcon style={activeCell?.cell?.style ?? {}} />
           Border
         </button>
-        <label className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold" style={toolbarButtonStyle} title="Border width">
-          Width
-          <input
-            key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
-            type="number"
-            min={MIN_BORDER_WIDTH_PX}
-            max={MAX_BORDER_WIDTH_PX}
-            defaultValue={activeCell?.cell?.style?.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX}
-            onChange={(e) => {
-              const value = Number.parseInt(e.target.value, 10);
-              if (Number.isFinite(value) && value > 0) toggleStyle((s) => ({ ...s, borderWidthPx: value }));
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                e.currentTarget.blur();
-              }
-            }}
-            className="w-10 bg-transparent text-[11px] font-bold outline-none"
-            style={{ color: "var(--text-main)" }}
-          />
-        </label>
-        {companyLogoUrl ? (
+        {companyLogoUrl && !isProjectSheetView ? (
           <>
             <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <button
@@ -1082,85 +1727,173 @@ export default function SpecsGridEditor({
         <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
         <button
           type="button"
-          disabled={!selection}
-          onClick={copySelection}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
-          style={toolbarButtonStyle}
-          title="Copy (Ctrl+C)"
-        >
-          <Copy size={14} /> Copy
-        </button>
-        <button
-          type="button"
-          disabled={!hasClipboard || !activeCell}
-          onClick={pasteAtSelection}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
-          style={toolbarButtonStyle}
-          title="Paste (Ctrl+V) — reproduces copied merges too"
-        >
-          <ClipboardPaste size={14} /> Paste
-        </button>
-        <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
-        <button
-          type="button"
-          disabled={!canMerge}
+          disabled={!canMerge && !canUnmerge}
           onClick={() => {
-            if (!selection) return;
-            applyChange(mergeSelection(liveGrid, selection), true);
+            if (canUnmerge && activeCell) {
+              applyChange(unmergeCell(liveGrid, activeCell.row, activeCell.col), true);
+            } else if (canMerge && selection) {
+              applyChange(mergeSelection(liveGrid, selection), true);
+            }
           }}
           className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
           style={toolbarButtonStyle}
+          title={canUnmerge ? "Unmerge cells" : "Merge cells"}
         >
-          Merge
+          {canUnmerge ? <TableCellsSplit size={14} /> : <TableCellsMerge size={14} />}
+          {canUnmerge ? "Unmerge" : "Merge"}
         </button>
-        <button
-          type="button"
-          disabled={!canUnmerge}
-          onClick={() => {
-            if (!activeCell) return;
-            applyChange(unmergeCell(liveGrid, activeCell.row, activeCell.col), true);
-          }}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
-          style={toolbarButtonStyle}
-        >
-          Split
-        </button>
-        <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
-        <button
-          type="button"
-          onClick={() => applyChange(insertRow(liveGrid, (activeCell?.row ?? liveGrid.rows.length - 1) + 1), true)}
-          className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
-          style={toolbarButtonStyle}
-        >
-          <Plus size={12} /> Row
-        </button>
-        <button
-          type="button"
-          onClick={() => activeCell && applyChange(removeRow(liveGrid, activeCell.row), true)}
-          className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
-          style={toolbarDangerStyle}
-        >
-          <Trash2 size={12} /> Row
-        </button>
-        <button
-          type="button"
-          onClick={() => applyChange(insertColumn(liveGrid, (activeCell?.col ?? liveGrid.columnWidths.length - 1) + 1), true)}
-          className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
-          style={toolbarButtonStyle}
-        >
-          <Plus size={12} /> Col
-        </button>
-        <button
-          type="button"
-          onClick={() => activeCell && applyChange(removeColumn(liveGrid, activeCell.col), true)}
-          className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
-          style={toolbarDangerStyle}
-        >
-          <Trash2 size={12} /> Col
-        </button>
+        {isProjectSheetView ? null : (
+          <>
+            <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
+            <button
+              type="button"
+              onClick={() => applyChange(insertRow(liveGrid, (activeCell?.row ?? liveGrid.rows.length - 1) + 1), true)}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              style={toolbarButtonStyle}
+            >
+              <Plus size={12} /> Row
+            </button>
+            <button
+              type="button"
+              onClick={() => activeCell && applyChange(removeRow(liveGrid, activeCell.row), true)}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              style={toolbarDangerStyle}
+            >
+              <Trash2 size={12} /> Row
+            </button>
+            <button
+              type="button"
+              onClick={() => applyChange(insertColumn(liveGrid, (activeCell?.col ?? liveGrid.columnWidths.length - 1) + 1), true)}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              style={toolbarButtonStyle}
+            >
+              <Plus size={12} /> Col
+            </button>
+            <button
+              type="button"
+              onClick={() => activeCell && applyChange(removeColumn(liveGrid, activeCell.col), true)}
+              className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-2 text-[11px] font-bold"
+              style={toolbarDangerStyle}
+            >
+              <Trash2 size={12} /> Col
+            </button>
+          </>
+        )}
       </div>
+      {alignDropdown && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={alignDropdownRef}
+              className="fixed z-[2000] overflow-hidden rounded-[10px] border p-1"
+              style={{
+                left: alignDropdown.anchorRect.left,
+                top: alignDropdown.anchorRect.top + 4,
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(24px) saturate(180%)",
+                WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                boxShadow: "var(--shadow-glass)",
+              }}
+            >
+              {(alignDropdown.axis === "h" ? ALIGN_OPTIONS : VALIGN_OPTIONS).map((opt) => {
+                const isActive = alignDropdown.axis === "h" ? currentAlign === opt.value : currentValign === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => {
+                      if (alignDropdown.axis === "h") toggleStyle((s) => ({ ...s, align: opt.value as "left" | "center" | "right" }));
+                      else toggleStyle((s) => ({ ...s, verticalAlign: opt.value as "top" | "middle" | "bottom" }));
+                      setAlignDropdown(null);
+                    }}
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] hover:brightness-95"
+                    style={isActive ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" } : { color: "var(--text-main)" }}
+                  >
+                    <opt.Icon size={14} />
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )
+        : null}
+      {borderPopoverAnchorRect && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={borderPopoverRef}
+              data-specs-layout-modal="true"
+              className="fixed z-[2000] w-[230px] overflow-hidden rounded-[12px] border p-3"
+              style={{
+                left: borderPopoverAnchorRect.left,
+                top: borderPopoverAnchorRect.top + 4,
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(24px) saturate(180%)",
+                WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                boxShadow: "var(--shadow-glass)",
+              }}
+            >
+              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>Sides</p>
+              <div className="mb-3 flex items-center gap-1.5">
+                {(["Top", "Right", "Bottom", "Left"] as const).map((side) => {
+                  const key = (`border${side}` as const);
+                  const isOn = Boolean(activeCell?.cell?.style?.[key]);
+                  return (
+                    <button
+                      key={side}
+                      type="button"
+                      onClick={() => toggleStyle((s) => ({ ...s, [key]: !s[key] }))}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold"
+                      style={isOn ? toolbarButtonActiveStyle : toolbarButtonStyle}
+                      title={`Toggle ${side.toLowerCase()} border`}
+                    >
+                      {side[0]}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>Color</p>
+              <button
+                type="button"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setColorPopover({ kind: "border", anchorRect: { left: rect.left, top: rect.bottom, width: rect.width, height: 0 } });
+                }}
+                className="mb-3 inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
+                style={toolbarButtonStyle}
+              >
+                <span className="inline-block h-4 w-4 rounded-[4px] border-2" style={{ borderColor: activeCell?.cell?.style?.borderColor ?? "var(--text-main)" }} />
+                Choose color
+              </button>
+              <label className="flex items-center justify-between gap-1.5 text-[11px] font-bold" style={{ color: "var(--text-main)" }} title="Border width">
+                Width
+                <input
+                  key={activeCell ? `${activeCell.row}:${activeCell.col}` : "none"}
+                  type="number"
+                  min={MIN_BORDER_WIDTH_PX}
+                  max={MAX_BORDER_WIDTH_PX}
+                  defaultValue={activeCell?.cell?.style?.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX}
+                  onChange={(e) => {
+                    const value = Number.parseInt(e.target.value, 10);
+                    if (Number.isFinite(value) && value > 0) toggleStyle((s) => ({ ...s, borderWidthPx: value }));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  className="h-8 w-16 rounded-[8px] border bg-transparent px-2 text-[11px] font-bold outline-none"
+                  style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                />
+              </label>
+            </div>,
+            document.body,
+          )
+        : null}
 
-      {isProjectSheetView && (liveGrid.groups.length > 0 || restorableDeletedGroups.length > 0) ? (
+      {isProjectSheetView && !hideSectionsBar && (liveGrid.groups.length > 0 || restorableDeletedGroups.length > 0) ? (
         <div className="flex flex-wrap items-center gap-1.5 border-b p-2" style={{ borderColor: "var(--glass-border)" }}>
           <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>
             Sections:
@@ -1187,6 +1920,9 @@ export default function SpecsGridEditor({
               >
                 {hidden ? <EyeOff size={12} /> : <Eye size={12} />}
                 {g.name}
+                {groupsSupportPricing && g.price ? (
+                  <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>{g.price}</span>
+                ) : null}
               </button>
             );
           })}
@@ -1222,8 +1958,21 @@ export default function SpecsGridEditor({
           used for the Quote tab's own paged print preview (quote-preview-stage) — the mock page below
           is the only white surface in here, so print layout (what's actually on the page vs. spilling
           past it) reads clearly at a glance. Hardcoded, not theme tokens: this represents a physical
-          sheet of paper, which doesn't have a dark mode. */}
-      <div className="relative min-h-0 flex-1 overflow-auto p-6" style={{ backgroundColor: "#EDEFF4" }}>
+          sheet of paper, which doesn't have a dark mode.
+          A project's own copy does NOT scroll internally (no overflow-auto/flex-1 here) — its host
+          page owns the one shared scroll instead, so the fixed toolbar above (and the page's own
+          fixed header, further up the DOM) can actually show this sheet's content passing behind them
+          via the shared blur backdrop as the page scrolls. The company template builder keeps its own
+          self-contained scroll (still bounded inside its own modal), unchanged. */}
+      <div
+        className={isProjectSheetView ? "relative p-6" : "relative min-h-0 flex-1 overflow-auto p-6"}
+        // Deliberately NOT inset by toolbarFixedLeftPx/RightPx — those two only steer the fixed
+        // TOOLBAR's own bounds now (so its buttons stay clear of the host page's title labels/
+        // bubbles sitting at the same height), not the canvas below it. The sheet stays centered at
+        // its own natural width; any floating bubble the host page renders alongside it sits OVER
+        // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
+        style={{ backgroundColor: "#EDEFF4" }}
+      >
         <div className="relative mx-auto" style={{ width: mockPageBoxWidthPx, minHeight: mockPageBoxHeightPx, backgroundColor: "#ffffff", boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)" }}>
         {/* Insets the table + every overlay below it (borders, selection, resize handles, the row
             +/- buttons) by the real print margin as ONE unit, so a project's own copy reads centered
@@ -1280,17 +2029,34 @@ export default function SpecsGridEditor({
               // slides to where rowShiftOffsetById says its drop-preview position is, with no need to
               // actually restructure the table while a drag is in progress.
               const dragShiftPx = rowShiftOffsetById.get(row.id) ?? 0;
+              // Only ever meaningful once canEditSpecsGroup is actually supplied (the live project
+              // window — see its own comment on SpecsGridEditorProps) and this row's group actually
+              // restricts editing to specific roles; every other row/host stays fully editable.
+              const rowGroupForRow = findRowGroupForRow(expandedGroups, rowIdx);
+              const isRowLockedForViewer = Boolean(
+                canEditSpecsGroup && rowGroupForRow?.editableByRoleIds && rowGroupForRow.editableByRoleIds.length > 0 && !canEditSpecsGroup(rowGroupForRow),
+              );
               return (
-              <tr
-                key={row.id}
-                style={{
-                  height: safeRowHeights[rowIdx],
-                  transform: dragShiftPx ? `translateY(${dragShiftPx}px)` : undefined,
-                  transition: draggingGroupId || draggingDeletedGroupId ? "transform 150ms ease" : undefined,
-                }}
-                onMouseEnter={isProjectSheetView ? () => setHoveredRowIndex(rowIdx) : undefined}
-                onMouseLeave={isProjectSheetView ? () => setHoveredRowIndex((prev) => (prev === rowIdx ? null : prev)) : undefined}
-              >
+              <Fragment key={row.id}>
+                {rowIdx === anchorSpacerBeforeRowIdx ? (
+                  // The real, native-table-flow counterpart to the rowPrefixSums shift computed
+                  // above — that shift alone only moves the OVERLAYS (borders, outlines, selection)
+                  // and this row's own visual `top`; the table's actual row stacking still needs an
+                  // actual blank row to open up the same gap, or every row from here on would just
+                  // sit directly under the previous one regardless of the shifted coordinate space.
+                  <tr aria-hidden="true">
+                    <td colSpan={liveGrid.columnWidths.length} style={{ height: anchorSpacerPx, padding: 0, border: "none", background: "transparent" }} />
+                  </tr>
+                ) : null}
+                <tr
+                  style={{
+                    height: safeRowHeights[rowIdx],
+                    transform: dragShiftPx ? `translateY(${dragShiftPx}px)` : undefined,
+                    transition: draggingGroupId || draggingDeletedGroupId ? "transform 150ms ease" : undefined,
+                  }}
+                  onMouseEnter={isProjectSheetView ? () => setHoveredRowIndex(rowIdx) : undefined}
+                  onMouseLeave={isProjectSheetView ? () => setHoveredRowIndex((prev) => (prev === rowIdx ? null : prev)) : undefined}
+                >
                 {isProjectSheetView ? null : (
                 <td
                   onMouseDown={(e) => {
@@ -1354,12 +2120,19 @@ export default function SpecsGridEditor({
                       spannedHeightPx += safeRowHeights[idx];
                     }
                   }
+                  // See SpecsGridEditorProps.lockUngroupedBlankCells's own comment — this is a
+                  // structural rule (blank content + outside any group), not a per-role permission,
+                  // so it applies to every viewer regardless of canEditSpecsGroup/owner/admin.
+                  const isUngroupedBlankCell = Boolean(
+                    lockUngroupedBlankCells && !rowGroupForRow && !cell.imageUrl && !cell.text.trim(),
+                  );
                   return (
                     <td
                       key={key}
                       colSpan={colSpan > 1 ? colSpan : undefined}
                       rowSpan={rowSpan > 1 ? rowSpan : undefined}
                       onMouseDown={(e) => {
+                        if (isUngroupedBlankCell) return;
                         // Right-click is a mousedown too, and fires before onContextMenu — without
                         // this check, right-clicking anywhere would collapse a multi-cell selection
                         // down to just the clicked cell before the context menu ever saw it. Keep an
@@ -1382,16 +2155,18 @@ export default function SpecsGridEditor({
                         setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
                       }}
                       onMouseEnter={() => {
+                        if (isUngroupedBlankCell) return;
                         if (!isSelectingRef.current) return;
                         setSelection((prev) => (prev ? { ...prev, focusRow: rowIdx, focusCol: colIdx } : prev));
                       }}
                       onContextMenu={(e) => {
+                        e.preventDefault();
+                        if (isUngroupedBlankCell) return;
                         // Right-clicking a data cell opens the exact same row-grouping menu as
                         // right-clicking the row number — "highlight any row OR individual cell and
                         // add it to a group" — reusing headerContextMenu's row-axis rendering, which
                         // already derives the row range from the current selection when it's
                         // multi-row, falling back to just this cell's own row otherwise.
-                        e.preventDefault();
                         setHeaderContextMenu({ axis: "row", index: rowIdx, x: e.clientX, y: e.clientY });
                       }}
                       className={cell.imageUrl ? "group p-0" : "p-0"}
@@ -1399,6 +2174,7 @@ export default function SpecsGridEditor({
                         position: "relative",
                         height: spannedHeightPx,
                         overflow: "hidden",
+                        cursor: isUngroupedBlankCell ? "default" : undefined,
                         // Vertical alignment for TEXT cells is handled by the flex wrapper around
                         // SpecsCellTextArea below, not by this `vertical-align` — a table cell only
                         // hands its content the space it doesn't already claim for itself, and a
@@ -1476,21 +2252,27 @@ export default function SpecsGridEditor({
                         >
                           <SpecsCellTextArea
                             cellKey={key}
-                            text={cell.text}
+                            runs={getCellRuns(cell)}
                             style={style}
                             isFocused={focusedKey === key}
                             onFocusCell={() => setFocusedKey(key)}
-                            onBlurCommit={(text) => {
+                            onBlurCommitRuns={(runs) => {
                               setFocusedKey((prev) => (prev === key ? null : prev));
-                              commitCellText(rowIdx, colIdx, text);
+                              commitCellRuns(rowIdx, colIdx, runs);
                             }}
+                            onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
+                            onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
+                            onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, cell, px)}
+                            readOnly={isRowLockedForViewer || isUngroupedBlankCell}
+                            readOnlyReason={isUngroupedBlankCell && !isRowLockedForViewer ? "Blank cells outside a section can't be edited" : undefined}
                           />
                         </div>
                       )}
                     </td>
                   );
                 })}
-              </tr>
+                </tr>
+              </Fragment>
               );
             })}
           </tbody>
@@ -1564,10 +2346,14 @@ export default function SpecsGridEditor({
 
         {/* Per-group drag handle — grabbing it and dropping elsewhere in the sheet moves that WHOLE
             group (moveRowGroup always carries its full contiguous row range as one block, so there's
-            no way to drop only part of it). Positioned flush against the row +/- strip's own left
-            edge (touching it, zero gap) for the same reason that strip is flush against the table —
-            so hovering a row, sliding onto the +/- strip, then onto this handle never crosses a dead
-            zone that would fade either one out early. */}
+            no way to drop only part of it). The HOVERABLE/DRAGGABLE hit area (this outer div) is
+            flush against the row +/- strip's own left edge — touching it, zero gap — so hovering a
+            row, sliding onto the +/- strip, then onto this handle never crosses a dead zone that
+            would fade either one out (and hide the button) before the pointer actually reaches it.
+            Only the drawn PILL inside it (border/background/icon) is inset from that shared edge by
+            GROUP_DRAG_HANDLE_GAP_PX, so it reads as visually separated from the +/- buttons without
+            that gap being a real dead zone for hover/grab purposes — you can grab anywhere from the
+            group's own rows all the way to the pill's near edge. */}
         {isProjectSheetView
           ? expandedGroups.map((g) => {
               const isActive = hoveredGroupId === g.id || draggingGroupId === g.id;
@@ -1586,19 +2372,22 @@ export default function SpecsGridEditor({
                   onMouseEnter={() => setManuallyHoveredGroupId(g.id)}
                   onMouseLeave={() => setManuallyHoveredGroupId((prev) => (prev === g.id ? null : prev))}
                   title={`Drag to move "${g.name}"`}
-                  className="absolute flex cursor-grab items-center justify-center rounded-[6px] border transition-opacity duration-150 active:cursor-grabbing"
+                  className="absolute flex cursor-grab items-center justify-start transition-opacity duration-150 active:cursor-grabbing"
                   style={{
-                    left: -(ADD_ROW_GUTTER_PX + GROUP_DRAG_HANDLE_WIDTH_PX),
+                    left: -(ADD_ROW_GUTTER_PX + GROUP_DRAG_HANDLE_GAP_PX + GROUP_DRAG_HANDLE_WIDTH_PX),
                     top: colHeaderHeightPx + rowPrefixSums[g.startRow],
-                    width: GROUP_DRAG_HANDLE_WIDTH_PX,
+                    width: GROUP_DRAG_HANDLE_WIDTH_PX + GROUP_DRAG_HANDLE_GAP_PX,
                     height: rowPrefixSums[g.endRow + 1] - rowPrefixSums[g.startRow],
                     opacity: isActive ? 1 : 0,
                     pointerEvents: isActive ? "auto" : "none",
-                    backgroundColor: "var(--panel-muted)",
-                    borderColor: "var(--glass-border)",
                   }}
                 >
-                  <GripVertical size={12} color="var(--text-muted)" />
+                  <div
+                    className="flex h-full items-center justify-center rounded-[6px] border"
+                    style={{ width: GROUP_DRAG_HANDLE_WIDTH_PX, backgroundColor: "var(--panel-muted)", borderColor: "var(--glass-border)" }}
+                  >
+                    <GripVertical size={12} color="var(--text-muted)" />
+                  </div>
                 </div>
               );
             })
@@ -1669,7 +2458,27 @@ export default function SpecsGridEditor({
               </div>
             ))}
 
-        {selectionOutline ? (
+        {/* showEditableGroupBorders' own overlay — see its comment on SpecsGridEditorProps. A plain
+            inset border (no label, no dashing) rather than reusing groupOutlines' own look: this is
+            meant to read as a quiet, permanent part of the live document (only Quote's own project
+            sheet turns it on), not as a layout-tool wireframe like the builder's version above. An
+            inset box-shadow (same technique as selectionOutline just below) draws the border without
+            affecting this div's own box/layout, so adjacent groups' borders never fight for space. */}
+        {editableGroupOutlines.map((g) => (
+          <div
+            key={`editable-border-${g.id}`}
+            className="pointer-events-none absolute"
+            style={{
+              left: rowHeaderWidthPx,
+              top: colHeaderHeightPx + g.top,
+              width: tableTotalWidthPx,
+              height: g.height,
+              boxShadow: "inset 0 0 0 1.5px var(--brand-strong)",
+            }}
+          />
+        ))}
+
+        {selectionOutline && !hideCellSelectionOutline ? (
           <div
             className="pointer-events-none absolute"
             style={{
@@ -1758,11 +2567,11 @@ export default function SpecsGridEditor({
       {headerContextMenu && typeof document !== "undefined"
         ? createPortal(
             <div
-              ref={headerContextMenuRef}
+              ref={setHeaderContextMenuNode}
               className="fixed z-[2000] w-[180px] overflow-hidden rounded-[8px] border py-1"
               style={{
                 left: headerContextMenu.x,
-                top: headerContextMenu.y,
+                top: headerContextMenuTop ?? headerContextMenu.y,
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(24px) saturate(180%)",
@@ -1770,6 +2579,33 @@ export default function SpecsGridEditor({
                 boxShadow: "var(--shadow-glass)",
               }}
             >
+              <button
+                type="button"
+                disabled={!selection}
+                onClick={() => {
+                  copySelection();
+                  setHeaderContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] hover:brightness-95 disabled:opacity-40"
+                style={{ color: "var(--text-main)" }}
+              >
+                <Copy size={13} />
+                Copy
+              </button>
+              <button
+                type="button"
+                disabled={!hasClipboard || !activeCell}
+                onClick={() => {
+                  pasteAtSelection();
+                  setHeaderContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] hover:brightness-95 disabled:opacity-40"
+                style={{ color: "var(--text-main)" }}
+              >
+                <ClipboardPaste size={13} />
+                Paste
+              </button>
+              <div className="my-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
               <div className="px-3 py-2">
                 <label className="block text-[10px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
                   {headerContextMenu.axis === "row" ? "Row Height (px)" : "Column Width (px)"}
@@ -1848,39 +2684,18 @@ export default function SpecsGridEditor({
                     return (
                       <>
                         <div className="my-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-                        <div className="px-3 py-2">
-                          <label className="block text-[10px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-                            {existingGroup ? "Rename Group" : "Link Rows as Group"}
-                          </label>
-                          <form
-                            className="mt-1 flex items-center gap-1.5"
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              const input = e.currentTarget.elements.namedItem("groupName") as HTMLInputElement | null;
-                              const name = input?.value ?? "";
-                              if (existingGroup) renameGroup(existingGroup.id, name);
-                              else linkRowsAsGroup(rangeStart, rangeEnd, name);
-                              setHeaderContextMenu(null);
-                            }}
-                          >
-                            <input
-                              name="groupName"
-                              type="text"
-                              autoFocus
-                              defaultValue={existingGroup?.name ?? ""}
-                              placeholder="e.g. Handle Details"
-                              className="h-7 w-full min-w-0 rounded-[6px] border px-2 text-[12px] outline-none"
-                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                            />
-                            <button
-                              type="submit"
-                              className="h-7 shrink-0 rounded-[6px] border px-2 text-[11px] font-bold hover:brightness-95"
-                              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                            >
-                              {existingGroup ? <Link2 size={12} /> : "Link"}
-                            </button>
-                          </form>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            openGroupModal(existingGroup?.id ?? null, rangeStart, rangeEnd, existingGroup);
+                            setHeaderContextMenu(null);
+                          }}
+                          className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] hover:brightness-95"
+                          style={{ color: "var(--text-main)" }}
+                        >
+                          <Link2 size={13} />
+                          Group
+                        </button>
                         {(() => {
                           // Lets a highlighted row/range be folded into a DIFFERENT group that
                           // already exists, instead of only ever creating a new one — the row's
@@ -1955,36 +2770,249 @@ export default function SpecsGridEditor({
             document.body,
           )
         : null}
+      {groupModalTarget && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+              <button
+                type="button"
+                aria-label="Close group settings backdrop"
+                onClick={() => setGroupModalTarget(null)}
+                className="glass-modal-backdrop absolute inset-0"
+              />
+              <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                <div className="glass-modal-header px-5 py-4">
+                  <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    {groupModalTarget.groupId ? "Group Settings" : "New Group"}
+                  </p>
+                </div>
+                <form
+                  className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveGroupModal();
+                  }}
+                >
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                      Group Name
+                    </label>
+                    <input
+                      autoFocus
+                      value={groupDraft.name}
+                      onChange={(e) => setGroupDraft((d) => ({ ...d, name: e.target.value }))}
+                      placeholder="e.g. Handle Details"
+                      className="h-9 w-full rounded-[9px] border px-3 text-[13px] outline-none"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                    />
+                  </div>
+                  {groupsSupportPricing ? (
+                    <div>
+                      <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                        Category
+                      </label>
+                      <p className="mb-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                        Groups sharing the same category are clustered together under one heading in the Quote Extras sidebar. Leave blank to leave this one uncategorized.
+                      </p>
+                      <input
+                        list="specs-group-category-options"
+                        value={groupDraft.category}
+                        onChange={(e) => setGroupDraft((d) => ({ ...d, category: e.target.value }))}
+                        placeholder="e.g. Benchtops"
+                        className="h-9 w-full rounded-[9px] border px-3 text-[13px] outline-none"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      />
+                      <datalist id="specs-group-category-options">
+                        {groupCategoryOptions.map((c) => (
+                          <option key={c} value={c} />
+                        ))}
+                      </datalist>
+                    </div>
+                  ) : null}
+                  {groupsSupportPricing ? (
+                    <label className="flex items-center justify-between gap-2 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                      Default
+                      <span className="inline-flex items-center gap-2">
+                        <span style={{ color: "var(--text-muted)" }}>{groupDraft.defaultIncluded ? "On" : "Off"}</span>
+                        <input
+                          type="checkbox"
+                          checked={groupDraft.defaultIncluded}
+                          onChange={(e) => setGroupDraft((d) => ({ ...d, defaultIncluded: e.target.checked }))}
+                          className="h-4 w-4"
+                        />
+                      </span>
+                    </label>
+                  ) : null}
+                  {groupsSupportPricing ? (
+                    <label
+                      className="flex items-center justify-between gap-2 text-[12px] font-semibold"
+                      style={{ color: "var(--text-main)" }}
+                      title="If the content above it doesn't already fill the first page, this group (and anything after it) is pushed down to sit flush with the bottom of that page in Print/Download PDF"
+                    >
+                      Anchor to bottom of first page
+                      <span className="inline-flex items-center gap-2">
+                        <span style={{ color: "var(--text-muted)" }}>{groupDraft.anchorFirstPageBottom ? "On" : "Off"}</span>
+                        <input
+                          type="checkbox"
+                          checked={groupDraft.anchorFirstPageBottom}
+                          onChange={(e) => setGroupDraft((d) => ({ ...d, anchorFirstPageBottom: e.target.checked }))}
+                          className="h-4 w-4"
+                        />
+                      </span>
+                    </label>
+                  ) : null}
+                  {companyRoleOptions && companyRoleOptions.length > 0 ? (
+                    <div>
+                      <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                        Allow Editable By
+                      </label>
+                      <p className="mb-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                        Leave everything unchecked to allow anyone with sheet access to edit this group&apos;s rows.
+                      </p>
+                      <div className="max-h-[140px] space-y-1 overflow-y-auto rounded-[9px] border p-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
+                        {companyRoleOptions.map((role) => {
+                          const checked = groupDraft.editableByRoleIds.includes(role.id);
+                          return (
+                            <label key={role.id} className="flex items-center gap-2 rounded-[6px] px-1.5 py-1 text-[12px] hover:brightness-95" style={{ color: "var(--text-main)" }}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) =>
+                                  setGroupDraft((d) => ({
+                                    ...d,
+                                    editableByRoleIds: e.target.checked
+                                      ? [...d.editableByRoleIds, role.id]
+                                      : d.editableByRoleIds.filter((id) => id !== role.id),
+                                  }))
+                                }
+                                className="h-3.5 w-3.5"
+                              />
+                              {role.name}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                  {groupsSupportPricing ? (
+                    <div>
+                      <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                        Cost
+                      </label>
+                      <input
+                        value={groupDraft.price}
+                        onChange={(e) => setGroupDraft((d) => ({ ...d, price: e.target.value }))}
+                        placeholder="e.g. $150.00"
+                        inputMode="decimal"
+                        className="h-9 w-full rounded-[9px] border px-3 text-[13px] outline-none"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      />
+                    </div>
+                  ) : null}
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setGroupModalTarget(null)}
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                      style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
 
-// Only re-syncs its DOM content from `text` when it doesn't currently hold real focus — a
+// Only re-syncs its DOM content from `runs` when it doesn't currently hold real focus — a
 // contentEditable div whose children are re-driven on every keystroke fights the browser's own
-// cursor position (a well-known React+contentEditable problem). Committing happens on blur
-// (clicking away), not per keystroke.
+// cursor position (a well-known React+contentEditable problem). Plain-text edits commit on blur
+// (clicking away), not per keystroke; a bold/underline change commits immediately instead (see
+// onCommitRuns' own comment), since applying one doesn't blur the cell.
 function SpecsCellTextArea({
-  text,
+  runs,
   style,
   isFocused,
   onFocusCell,
-  onBlurCommit,
+  onBlurCommitRuns,
+  onLiveCommitRuns,
+  onToggleWholeCellFormat,
+  onNaturalHeightChange,
+  readOnly,
+  readOnlyReason,
 }: {
   cellKey: string;
-  text: string;
+  runs: SpecsTextRun[];
   style: SpecsCellStyle;
   isFocused: boolean;
   onFocusCell: () => void;
-  onBlurCommit: (text: string) => void;
+  onBlurCommitRuns: (runs: SpecsTextRun[]) => void;
+  // Fired right after a Ctrl+B/Ctrl+U (or the toolbar, via applyFormatCommand) formats a highlighted
+  // selection inside this same cell — that never blurs it, so without a separate commit path here the
+  // change would only get saved if the user happened to click away afterward.
+  onLiveCommitRuns: (runs: SpecsTextRun[]) => void;
+  // Ctrl+B/Ctrl+U with nothing highlighted — "entire cell controls all of the text within it".
+  onToggleWholeCellFormat: (key: "bold" | "underline") => void;
+  // Reports this cell's own natural (unclipped) content height in px — via `scrollHeight`, which
+  // always reflects the div's real content size regardless of the parent wrapper's own overflow:hidden
+  // clipping — every time it might have changed: on every keystroke while typing, and once whenever
+  // the committed `runs` (re)sync in from outside. The parent grows the row to fit whenever this
+  // exceeds its current height (never shrinks it back down on its own).
+  onNaturalHeightChange?: (px: number) => void;
+  // True when the current viewer's role isn't in this cell's group's editableByRoleIds (see
+  // SpecsGridEditorProps.canEditSpecsGroup's own comment) OR when it's a blank cell outside any
+  // group with lockUngroupedBlankCells on (see that prop's own comment) — either way, renders the
+  // text normally, just not editable: no contentEditable, no focus/format handlers to short-circuit.
+  readOnly?: boolean;
+  // Shown as the read-only div's title tooltip — defaults to the permission-based message, since
+  // that's readOnly's only reason historically; pass this when readOnly is true for a DIFFERENT
+  // reason (e.g. lockUngroupedBlankCells), so the tooltip doesn't claim a permissions issue that
+  // isn't the actual cause.
+  readOnlyReason?: string;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (isFocused) return;
-    if (ref.current && ref.current.textContent !== text) {
-      ref.current.textContent = text;
+    const html = runsToHtml(runs);
+    if (ref.current && ref.current.innerHTML !== html) {
+      ref.current.innerHTML = html;
     }
-  }, [text, isFocused]);
+    if (ref.current) onNaturalHeightChange?.(ref.current.scrollHeight);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs, isFocused]);
+
+  if (readOnly) {
+    return (
+      <div
+        dangerouslySetInnerHTML={{ __html: runsToHtml(runs) }}
+        title={readOnlyReason ?? "You don't have permission to edit this section"}
+        className="whitespace-pre-wrap break-words px-2 py-0.5 opacity-80"
+        style={{
+          fontFamily: style.fontFamily || "inherit",
+          fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
+          textAlign: style.align ?? "left",
+          color: style.textColor ?? "var(--text-main)",
+          // "not-allowed" (a permissions-style cross) only reads correctly for the role-based lock —
+          // a blank cell outside any group isn't being denied permission, it's just structurally
+          // uninteractive, so it gets the plain pointer/default cursor instead (readOnlyReason is
+          // only ever set for that second case — see its own comment).
+          cursor: readOnlyReason ? "default" : "not-allowed",
+        }}
+      />
+    );
+  }
 
   return (
     <div
@@ -1992,19 +3020,54 @@ function SpecsCellTextArea({
       contentEditable
       suppressContentEditableWarning
       onFocus={onFocusCell}
-      onBlur={(e) => onBlurCommit(e.currentTarget.textContent ?? "")}
-      // Enter always inserts a new line (same as Shift+Enter) — the cell only commits/exits on blur
-      // (clicking away), so no keyboard shortcut is needed or wired here to leave the cell.
-      // The row height never grows to fit typed content — this div's parent wrapper (in the parent
-      // render) is a fixed-height flex column with overflow:hidden, so text that overflows the row's
-      // configured height simply clips instead of pushing the row taller. That wrapper also owns
-      // vertically aligning this div within the cell (see its own comment for why capping a
-      // table-cell's block child with maxHeight alone doesn't reliably work in Chrome) — leaving this
-      // div's own height fully natural is what lets that wrapper's flexbox centering/bottom-alignment
-      // actually see a smaller-than-the-cell size to align.
+      onBlur={(e) => onBlurCommitRuns(parseHtmlToRuns(e.currentTarget.innerHTML))}
+      onKeyDown={(e) => {
+        // Enter always forces a plain <br> rather than letting the browser wrap the next line in its
+        // own block element (a <div> in Chrome, sometimes different elsewhere) — parseHtmlToRuns only
+        // has to understand <br>/<b>/<u> this way, not reverse-engineer whatever inconsistent
+        // paragraph-wrapping shape a given browser happened to produce. Still exits/leaves the cell on
+        // blur only (clicking away), same as before — no keyboard shortcut is needed or wired for that.
+        if (e.key === "Enter") {
+          e.preventDefault();
+          document.execCommand("insertLineBreak");
+          return;
+        }
+        const key = e.key.toLowerCase();
+        if (((e.ctrlKey || e.metaKey) && key === "b") || ((e.ctrlKey || e.metaKey) && key === "u")) {
+          e.preventDefault();
+          const formatKey = key === "b" ? "bold" : "underline";
+          // Same "highlighted -> just that part, nothing highlighted -> the whole cell" rule the
+          // toolbar buttons use (applyFormatCommand) — this is the in-cell keyboard equivalent of it.
+          if (ref.current && applyFormatCommandToSelection(ref.current, formatKey)) {
+            onLiveCommitRuns(parseHtmlToRuns(ref.current.innerHTML));
+          } else {
+            onToggleWholeCellFormat(formatKey);
+          }
+        }
+      }}
+      // Pasted content (from Word/Excel/a web page) carries its own formatting as real HTML — forcing
+      // plain text at paste time means it's never silently richer than what getCellRuns/parseHtmlToRuns
+      // actually understand; select the pasted text afterward and use Bold/Underline if you want it
+      // formatted.
+      onPaste={(e) => {
+        e.preventDefault();
+        const plain = e.clipboardData.getData("text/plain");
+        document.execCommand("insertText", false, plain);
+      }}
+      // Reports natural height live, on every keystroke, so a row grows the moment typed text
+      // actually wraps past the cell's current height — not just once you click away. `scrollHeight`
+      // is layout-only (unlike getBoundingClientRect), so it's unaffected by the page's own scroll
+      // position — safe to read on every input without reintroducing the scroll-offset drift this
+      // file's overlay math deliberately avoids elsewhere.
+      onInput={(e) => onNaturalHeightChange?.(e.currentTarget.scrollHeight)}
+      // This div's own height is left fully natural (no fixed height/overflow of its own) — the
+      // PARENT wrapper (in the parent render) owns vertically aligning it within the cell (see its own
+      // comment for why capping a table-cell's block child with maxHeight alone doesn't reliably work
+      // in Chrome) and, for a single-row cell, grows to match whatever height this div actually needs
+      // (see onNaturalHeightChange above) rather than clipping it.
       className="whitespace-pre-wrap break-words px-2 py-0.5 outline-none"
       style={{
-        fontWeight: style.bold ? 700 : 400,
+        fontFamily: style.fontFamily || "inherit",
         fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
         textAlign: style.align ?? "left",
         color: style.textColor ?? "var(--text-main)",

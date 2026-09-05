@@ -614,7 +614,17 @@ export function GlobalAppTabsBar() {
   // own persistence) would survive a logout/session-expiry and render right over the login screen —
   // this component has no other way to know whether the app underneath it is actually open versus
   // just showing the login form.
-  if (!user || !groupedGlobalTabs.length || chromeHidden) {
+  //
+  // The pathname check covers a narrower, confirmed gap that check alone doesn't: app/page.tsx keeps
+  // showing its own "Opening your workspace..." splash (shouldHoldLoginScreen) for a beat AFTER `user`
+  // already resolves truthy, while it resolves which company to route to — during exactly that window,
+  // `!user` is already false, so leftover tabs rehydrated from a previous session would otherwise pop
+  // this bar in right over that splash screen, before the app (and its sidebar) has actually opened.
+  // The tab bar is only ever meaningful inside the authenticated (app) routes to begin with, so simply
+  // never showing it on the pre-app "/" (or "/company-onboarding") routes closes that gap directly,
+  // without needing any new readiness signal threaded in from those pages.
+  const isPreAppRoute = pathname === "/" || pathname === "/company-onboarding";
+  if (!user || !groupedGlobalTabs.length || chromeHidden || isPreAppRoute) {
     return null;
   }
 

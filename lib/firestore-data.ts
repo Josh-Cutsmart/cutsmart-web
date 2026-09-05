@@ -3179,10 +3179,18 @@ export async function saveCompanyDocPatchDetailed(
     return { ok: false, error: "missing-firebase-or-company-id" };
   }
   try {
+    // A literal `undefined` anywhere in the patch (even nested several levels deep, e.g. inside a
+    // template grid's row groups) makes setDoc throw "invalid-argument" for the WHOLE write, not just
+    // that field — a stray optional field some caller forgot to omit-rather-than-set-undefined kills
+    // an otherwise-unrelated save. JSON round-tripping the patch alone (never the full payload below,
+    // since serverTimestamp()'s sentinel object would not survive that) drops any such key the same
+    // way JSON.stringify already silently does, as a blanket safety net beneath each field's own
+    // normalization.
+    const sanitizedPatch = JSON.parse(JSON.stringify(patch)) as Record<string, unknown>;
     await setDoc(
       doc(db, "companies", cid),
       {
-        ...patch,
+        ...sanitizedPatch,
         updatedAt: serverTimestamp(),
         updatedAtIso: new Date().toISOString(),
       },

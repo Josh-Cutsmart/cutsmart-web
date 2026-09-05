@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { ArrowLeft, Bell, Building2, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
@@ -24,6 +23,7 @@ import {
 import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import SpecsGridEditor from "@/components/specs-grid-editor";
@@ -36,7 +36,6 @@ type SettingsSection =
 type StatusRow = { name: string; color: string };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
 type BoardColourMemoryRow = { value: string; count: string };
-type RoleRow = { id: string; name: string; color: string; permissions: string[] };
 type DashboardLegendRow = { id: string; name: string; color: string };
 type TagUsageRow = { value: string; count: string };
 type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
@@ -301,13 +300,6 @@ function toStr(v: unknown, fallback = "") {
   return t || fallback;
 }
 
-function normalizeRoleKey(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_");
-}
-
 function isProtectedStarterRole(value: unknown): boolean {
   const roleKey = normalizeRoleKey(value);
   return roleKey === "owner" || roleKey === "admin" || roleKey === "staff";
@@ -471,51 +463,6 @@ function normalizeSheetSizes(raw: unknown): SheetSizeRow[] {
     })
     .filter((r) => r.h && r.w);
   return rows.length ? rows : [{ h: "2440", w: "1220", isDefault: true }];
-}
-
-function normalizeRoles(raw: unknown): RoleRow[] {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const out = raw
-    .filter((item) => item && typeof item === "object")
-    .map((item, idx) => {
-      const row = item as Record<string, unknown>;
-      const permissionsArray = Array.isArray(row.permissions)
-        ? row.permissions.map((value) => toStr(value)).filter(Boolean)
-        : [];
-      const permissionsObj = row.permissions && typeof row.permissions === "object" && !Array.isArray(row.permissions)
-        ? (row.permissions as Record<string, unknown>)
-        : {};
-      const permissions = permissionsArray.length
-        ? permissionsArray
-        : Object.entries(permissionsObj).filter(([, v]) => Boolean(v)).map(([k]) => String(k));
-      const normalizedPermissions = Array.from(
-        new Set(
-          permissions.flatMap((permission) => {
-            const clean = toStr(permission);
-            if (!clean) return [];
-            if (clean === "leads.*") {
-              return ["leads.view", "leads.view.others"];
-            }
-            if (clean === "company.clients") {
-              return ["clients.view", "clients.view.all"];
-            }
-            if (clean === "projects.create.others") {
-              return [clean, "projects.create.other", "projects.assign.other"];
-            }
-            return [clean];
-          }),
-        ),
-      );
-      return {
-        id: toStr(row.id, normalizeRoleKey(row.name) || `role_${idx + 1}`),
-        name: toStr(row.name, `Role ${idx + 1}`),
-        color: toStr(row.color, "#7D99B3"),
-        permissions: normalizedPermissions,
-      };
-    });
-  return out;
 }
 
 function normalizeDashboardLegend(raw: unknown): DashboardLegendRow[] {
@@ -1131,7 +1078,6 @@ function writeDrawerField(item: Record<string, unknown>, field: string, value: s
 
 export default function CompanySettingsPage() {
   const { user } = useAuth();
-  const router = useRouter();
   const [active, setActive] = useState<SettingsSection>("company");
   const [search, setSearch] = useState("");
   const [company, setCompany] = useState<Record<string, unknown> | null>(null);
@@ -1174,6 +1120,11 @@ export default function CompanySettingsPage() {
   const [partTypes, setPartTypes] = useState<PartTypeRow[]>([]);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
+  // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
+  // actual enforcement of it only happens in a project's own live window (see that page's own
+  // canEditSpecsGroup), not here, so this is purely so a company's own role names are pickable when
+  // setting a group's restriction while authoring a template.
+  const specsGroupRoleOptions = useMemo(() => roles.map((r) => ({ id: r.id, name: r.name })), [roles]);
   const [roleDragIndex, setRoleDragIndex] = useState<number | null>(null);
   const [roleDragOverIndex, setRoleDragOverIndex] = useState<number | null>(null);
   const [activeRoleModalIndex, setActiveRoleModalIndex] = useState<number | null>(null);
@@ -1190,6 +1141,14 @@ export default function CompanySettingsPage() {
   const [specsTemplateEditorKey, setSpecsTemplateEditorKey] = useState(0);
   const [specsTemplateGrid, setSpecsTemplateGrid] = useState<SpecsGrid | null>(null);
   const specsTemplateSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Quote Layout — same cell/grid builder as Specs Layout above, same modal-in-place pattern, just a
+  // separate template field (a project's Quote and Specifications sheets are unrelated documents).
+  const [isQuoteLayoutModalOpen, setIsQuoteLayoutModalOpen] = useState(false);
+  const [isQuoteTemplateResetConfirmOpen, setIsQuoteTemplateResetConfirmOpen] = useState(false);
+  const [quoteTemplateSaveError, setQuoteTemplateSaveError] = useState("");
+  const [quoteTemplateEditorKey, setQuoteTemplateEditorKey] = useState(0);
+  const [quoteGridTemplate, setQuoteGridTemplate] = useState<SpecsGrid | null>(null);
+  const quoteTemplateSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [itemCategoryExpanded, setItemCategoryExpanded] = useState<Record<number, boolean>>({});
   const [itemCategoryDragIndex, setItemCategoryDragIndex] = useState<number | null>(null);
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
@@ -1407,6 +1366,7 @@ export default function CompanySettingsPage() {
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
         setSpecsTemplateGrid(normalizeSpecsGrid(doc.specsTemplateGrid));
+        setQuoteGridTemplate(normalizeSpecsGrid(doc.quoteGridTemplate));
         setJobTypes(normalizeJobTypes(doc.salesJobTypes));
         setQuoteExtras(normalizeQuoteExtras(doc.quoteExtras));
         setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
@@ -1596,6 +1556,12 @@ export default function CompanySettingsPage() {
     return String(fromMembership ?? fromUser ?? "").trim().toLowerCase();
   }, [companyAccessResolved, effectiveCompanyRole, staff, user]);
 
+  // Unverified accounts never actually reach this page (see app/(app)/layout.tsx's own
+  // VerifyEmailGate), but these guards stay as a second layer of defense in case that gate is
+  // ever bypassed by a future change.
+  const isUserVerified = Boolean(user?.verified);
+  const canEditCompanySettings = isUserVerified;
+
   const canAddStaff = useMemo(() => {
     if (currentMemberRole === "owner" || currentMemberRole === "admin") {
       return true;
@@ -1722,7 +1688,7 @@ export default function CompanySettingsPage() {
   }, [pendingStaffRemoval?.uid, staff]);
 
   const inviteStaffFromTopBar = async () => {
-    if (!activeCompanyId || !canAddStaff || isInvitingStaff) {
+    if (!activeCompanyId || !canAddStaff || !canEditCompanySettings || isInvitingStaff) {
       return;
     }
     const email = window.prompt("Invite staff by email");
@@ -1753,7 +1719,7 @@ export default function CompanySettingsPage() {
     const uid = toStr(row.uid);
     const nextName = toStr(row.displayName);
     const startedWith = toStr(staffNameEditStartRef.current[uid]);
-    if (!uid || !activeCompanyId || !canChangeStaffDisplayName) return;
+    if (!uid || !activeCompanyId || !canChangeStaffDisplayName || !canEditCompanySettings) return;
     if (!nextName) {
       setStaff((prev) =>
         prev.map((member) => (member.uid === uid ? { ...member, displayName: startedWith || member.displayName } : member)),
@@ -1792,7 +1758,7 @@ export default function CompanySettingsPage() {
   const persistStaffRole = async (row: CompanyMemberOption, nextRoleIdRaw: string) => {
     const uid = toStr(row.uid);
     const nextRoleId = normalizeRoleKey(nextRoleIdRaw);
-    if (!uid || !activeCompanyId || !canChangeStaffRole) return;
+    if (!uid || !activeCompanyId || !canChangeStaffRole || !canEditCompanySettings) return;
     if (!nextRoleId) {
       setSaveLabel("Staff role cannot be empty");
       return;
@@ -1856,7 +1822,7 @@ export default function CompanySettingsPage() {
     const currentOwnerUid = toStr(pendingOwnerTransfer?.currentOwnerUid);
     const nextRoleId = normalizeRoleKey(pendingOwnerTransfer?.nextRoleId);
     const nextOwnerUid = toStr(pendingOwnerTransferTargetUid);
-    if (!currentOwnerUid || !nextRoleId || !nextOwnerUid || !activeCompanyId) {
+    if (!currentOwnerUid || !nextRoleId || !nextOwnerUid || !activeCompanyId || !canEditCompanySettings) {
       setSaveLabel("Choose the new Owner first");
       return;
     }
@@ -1954,7 +1920,7 @@ export default function CompanySettingsPage() {
   };
 
   const confirmStaffRemoval = async () => {
-    if (!pendingStaffRemoval || !activeCompanyId) return;
+    if (!pendingStaffRemoval || !activeCompanyId || !canEditCompanySettings) return;
     if (normalizeRoleKey(pendingStaffRemoval.roleId) === "owner") {
       setSaveLabel("Owner cannot be removed from the company");
       return;
@@ -2231,6 +2197,7 @@ export default function CompanySettingsPage() {
         roles,
         itemCategories,
         specsTemplateGrid,
+        quoteGridTemplate,
         salesJobTypes: jobTypes,
         quoteExtras,
         salesQuoteHelpers: quoteHelpers,
@@ -2309,7 +2276,7 @@ export default function CompanySettingsPage() {
   };
 
   const onUploadCompanyLogo = async (file: File | null) => {
-    if (!file || !activeCompanyId) return;
+    if (!file || !activeCompanyId || !canEditCompanySettings) return;
     const client = storage;
     if (!client) {
       setSaveLabel("Save failed (storage-unavailable)");
@@ -2361,7 +2328,7 @@ export default function CompanySettingsPage() {
   // `boardColourMemory` snapshot this page loaded at mount, otherwise this
   // delete could revert counts changed elsewhere since this page opened.
   const onDeleteBoardColourMemoryRow = async (value: string) => {
-    if (!activeCompanyId) return;
+    if (!activeCompanyId || !canEditCompanySettings) return;
     const targetValue = toStr(value);
     if (!targetValue) return;
     setBoardColourMemory((prev) => prev.filter((row) => row.value !== targetValue));
@@ -2398,7 +2365,7 @@ export default function CompanySettingsPage() {
   };
 
   const save = async (mode: "manual" | "auto" = "manual") => {
-    if (!activeCompanyId || isSaving) return;
+    if (!activeCompanyId || isSaving || !canEditCompanySettings) return;
     if (mode === "manual") {
       hasPendingBlurSaveRef.current = false;
       saveQueuedWhileBusyRef.current = false;
@@ -2589,6 +2556,8 @@ export default function CompanySettingsPage() {
       // specsTemplateGrid is deliberately excluded here — it has its own small, isolated,
       // independently-debounced write (onSpecsTemplateChange) so a continuously-edited template
       // doesn't force this whole (large) combined settings save to re-fire on every edit.
+      // quoteGridTemplate follows the exact same pattern (onQuoteTemplateChange) and is excluded
+      // for the same reason.
       salesJobTypes: jobTypes
         .map((row) => {
           const name = toStr(row.name);
@@ -2710,6 +2679,7 @@ export default function CompanySettingsPage() {
         roles,
         itemCategories,
         specsTemplateGrid,
+        quoteGridTemplate,
         salesJobTypes: jobTypes,
         quoteExtras,
           salesQuoteHelpers: quoteHelpers,
@@ -2757,7 +2727,7 @@ export default function CompanySettingsPage() {
   }, []);
 
   const triggerBlurAutoSave = () => {
-    if (!isHydrated || isLoading || !activeCompanyId) {
+    if (!isHydrated || isLoading || !activeCompanyId || !canEditCompanySettings) {
       return;
     }
     if (!hasPendingBlurSaveRef.current) {
@@ -2794,6 +2764,7 @@ export default function CompanySettingsPage() {
   // exhausting Firestore's write queue. Writing only this one field, on a longer 2s debounce, keeps
   // each write small and infrequent regardless of how fast someone types.
   const onSpecsTemplateChange = (data: SpecsGrid) => {
+    if (!canEditCompanySettings) return;
     setSpecsTemplateGrid(data);
     if (specsTemplateSaveTimeoutRef.current) clearTimeout(specsTemplateSaveTimeoutRef.current);
     specsTemplateSaveTimeoutRef.current = setTimeout(() => {
@@ -2812,6 +2783,7 @@ export default function CompanySettingsPage() {
   // Explicit, deliberate reset (confirmed via its own popup) — saves immediately rather than on the
   // usual 2s debounce, since there's no reason to delay persisting a state the user just confirmed.
   const resetSpecsTemplate = () => {
+    if (!canEditCompanySettings) return;
     if (specsTemplateSaveTimeoutRef.current) clearTimeout(specsTemplateSaveTimeoutRef.current);
     setSpecsTemplateGrid(null);
     setSpecsTemplateEditorKey((prev) => prev + 1);
@@ -2823,6 +2795,42 @@ export default function CompanySettingsPage() {
           setSpecsTemplateSaveError(result.error || "unknown-save-error");
         } else {
           setSpecsTemplateSaveError("");
+        }
+      });
+    }
+  };
+
+  // Quote Layout's own isolated, independently-debounced write — same reasoning as Specs Layout's
+  // above (a continuously-edited template must never ride along on the page's big combined save()).
+  const onQuoteTemplateChange = (data: SpecsGrid) => {
+    if (!canEditCompanySettings) return;
+    setQuoteGridTemplate(data);
+    if (quoteTemplateSaveTimeoutRef.current) clearTimeout(quoteTemplateSaveTimeoutRef.current);
+    quoteTemplateSaveTimeoutRef.current = setTimeout(() => {
+      if (!activeCompanyId) return;
+      void saveCompanyDocPatchDetailed(activeCompanyId, { quoteGridTemplate: data }).then((result) => {
+        if (!result.ok) {
+          console.error("Quote template save failed:", result.error);
+          setQuoteTemplateSaveError(result.error || "unknown-save-error");
+        } else {
+          setQuoteTemplateSaveError("");
+        }
+      });
+    }, 2000);
+  };
+  const resetQuoteTemplate = () => {
+    if (!canEditCompanySettings) return;
+    if (quoteTemplateSaveTimeoutRef.current) clearTimeout(quoteTemplateSaveTimeoutRef.current);
+    setQuoteGridTemplate(null);
+    setQuoteTemplateEditorKey((prev) => prev + 1);
+    setIsQuoteTemplateResetConfirmOpen(false);
+    if (activeCompanyId) {
+      void saveCompanyDocPatchDetailed(activeCompanyId, { quoteGridTemplate: null }).then((result) => {
+        if (!result.ok) {
+          console.error("Quote template reset failed:", result.error);
+          setQuoteTemplateSaveError(result.error || "unknown-save-error");
+        } else {
+          setQuoteTemplateSaveError("");
         }
       });
     }
@@ -2963,13 +2971,13 @@ export default function CompanySettingsPage() {
               onInputCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
-                // The Specs Layout modal's own cell color-popover renders real <input> elements
-                // (hex text field, native color input) — since React's blur/input event delegation
-                // catches events regardless of the modal's fixed positioning, every keystroke/commit
-                // in there would otherwise also trigger this page-wide combined-save trigger, on top
-                // of (and completely bypassing) the template's own small, isolated,
+                // The Specs Layout and Quote Layout modals' own cell color-popovers render real
+                // <input> elements (hex text field, native color input) — since React's blur/input
+                // event delegation catches events regardless of the modal's fixed positioning, every
+                // keystroke/commit in there would otherwise also trigger this page-wide combined-save
+                // trigger, on top of (and completely bypassing) each template's own small, isolated,
                 // independently-debounced save path.
-                if (el?.closest('[data-specs-layout-modal="true"]')) return;
+                if (el?.closest('[data-specs-layout-modal="true"], [data-quote-layout-modal="true"]')) return;
                 if (tag === "input" || tag === "textarea" || tag === "select") {
                   hasPendingBlurSaveRef.current = true;
                 }
@@ -2977,7 +2985,7 @@ export default function CompanySettingsPage() {
               onChangeCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
-                if (el?.closest('[data-specs-layout-modal="true"]')) return;
+                if (el?.closest('[data-specs-layout-modal="true"], [data-quote-layout-modal="true"]')) return;
                 if (tag === "input" || tag === "textarea" || tag === "select") {
                   hasPendingBlurSaveRef.current = true;
                 }
@@ -2985,13 +2993,20 @@ export default function CompanySettingsPage() {
               onBlurCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
-                if (el?.closest('[data-specs-layout-modal="true"]')) return;
+                if (el?.closest('[data-specs-layout-modal="true"], [data-quote-layout-modal="true"]')) return;
                 if (tag === "input" || tag === "textarea" || tag === "select") {
                   triggerBlurAutoSave();
                 }
               }}
             >
               {active === "company" && (
+                <div className="space-y-3">
+                  {!canEditCompanySettings && (
+                    <div className="rounded-[10px] border border-[#F7C9CC] bg-[#FDECEC] px-3 py-2 text-[12px] font-semibold text-[#B42318]">
+                      Verify your account (in User Settings) to edit Company Settings.
+                    </div>
+                  )}
+
                 <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
                   <Panel title="Application Preferences">
                     <div className="space-y-2 text-[12px]">
@@ -3082,6 +3097,7 @@ export default function CompanySettingsPage() {
                       </div>
                     </div>
                   </Panel>
+                </div>
                 </div>
               )}
 
@@ -3414,25 +3430,6 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                     </section>
-                    <Panel title="Quote Layout Builder">
-                      <div className="space-y-3 text-[12px]">
-                      <p className="text-[11px] text-[#6B7280]">
-                        Build the company quote layout once, then use that same template across every project.
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => router.push("/company-settings/quote-layout")}
-                          className="h-8 rounded-[10px] bg-[#1EA44B] px-4 text-[12px] font-bold text-white shadow-[0_1px_2px_rgba(16,24,40,0.08)]"
-                        >
-                          Open Quote Layout Builder
-                        </button>
-                        <span className="rounded-[8px] border border-[#D8DEE8] bg-white px-3 py-[6px] text-[11px] font-semibold text-[#475467]">
-                          Company-wide template
-                        </span>
-                      </div>
-                    </div>
-                  </Panel>
                 </div>
               )}
 
@@ -5030,6 +5027,20 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
+                  <Panel title="Quote Layout">
+                    <div className="space-y-2 text-[12px]">
+                      <p className="text-[11px] text-[#667085]">
+                        Design the quote template the same way — any cells, rows, columns, or formatting you like. Highlight rows and &quot;Link Rows as Group&quot; with a Price to create a toggleable quote extra directly in the sheet.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setIsQuoteLayoutModalOpen(true)}
+                        className="rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-1.5 text-[11px] font-bold text-[#344054] hover:bg-[#EEF2F7]"
+                      >
+                        Open Quote Layout Builder
+                      </button>
+                    </div>
+                  </Panel>
                   {isSpecsLayoutModalOpen ? (
                     <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
                       <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
@@ -5076,6 +5087,7 @@ export default function CompanySettingsPage() {
                                 showPageSizeSelector
                                 companyLogoUrl={form.logoPath || undefined}
                                 companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
+                                companyRoleOptions={specsGroupRoleOptions}
                               />
                             ) : (
                               <div className="flex h-full items-center justify-center text-[12px] text-[#98A2B3]">Loading template…</div>
@@ -5126,6 +5138,120 @@ export default function CompanySettingsPage() {
                             <button
                               type="button"
                               onClick={resetSpecsTemplate}
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                              style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                            >
+                              Reset Template
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {isQuoteLayoutModalOpen ? (
+                    <div data-quote-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
+                      <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
+                        <div className="inline-flex items-center gap-3">
+                          <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            <ClipboardList size={14} />
+                            <span>Quote Layout Builder</span>
+                          </div>
+                          {quoteTemplateSaveError ? (
+                            <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
+                              Save failed ({quoteTemplateSaveError}) — your last edit may not have saved
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsQuoteTemplateResetConfirmOpen(true)}
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                          >
+                            <RotateCcw size={14} />
+                            Reset
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsQuoteLayoutModalOpen(false)}
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                          >
+                            <ArrowLeft size={14} />
+                            Back
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
+                          <div className="min-h-0 overflow-hidden rounded-[10px] border border-[#D8DEE8]">
+                            {companyAccessResolved ? (
+                              <SpecsGridEditor
+                                key={quoteTemplateEditorKey}
+                                value={quoteGridTemplate ?? createEmptyGrid()}
+                                onChange={onQuoteTemplateChange}
+                                className="flex h-full w-full flex-col"
+                                showPageSizeSelector
+                                companyLogoUrl={form.logoPath || undefined}
+                                companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
+                                groupsSupportPricing
+                                companyRoleOptions={specsGroupRoleOptions}
+                              />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-[12px] text-[#98A2B3]">Loading template…</div>
+                            )}
+                          </div>
+                          <div className="overflow-y-auto rounded-[14px] border border-[#D7DEE8] bg-white p-3 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+                            <p className="text-[13px] font-semibold text-[#12345B]">Placeholders</p>
+                            <p className="mt-1 text-[11px] text-[#667085]">
+                              Type these tokens into a cell. They&apos;ll be replaced with that project&apos;s real data the first time its quote is created from this template.
+                            </p>
+                            <div className="mt-3 space-y-2">
+                              {QUOTE_TEMPLATE_PLACEHOLDERS.map((item) => (
+                                <div key={item.token} className="rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2">
+                                  <p className="text-[11px] font-semibold text-[#344054]">{item.label}</p>
+                                  <p className="mt-1 break-all font-mono text-[11px] text-[#667085]">{item.token}</p>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-4 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2">
+                              <p className="text-[11px] font-semibold text-[#344054]">Quote Extras</p>
+                              <p className="mt-1 text-[11px] text-[#667085]">
+                                Highlight some rows and right-click a row number → &quot;Link Rows as Group&quot;. Give the group a Price and it automatically becomes a toggleable quote extra — no separate setup needed.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                    </div>
+                  ) : null}
+                  {isQuoteTemplateResetConfirmOpen ? (
+                    <div className="fixed inset-0 z-[1010] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close reset confirmation backdrop"
+                        onClick={() => setIsQuoteTemplateResetConfirmOpen(false)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
+                        <div className="glass-modal-header px-5 py-4">
+                          <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset Template</p>
+                        </div>
+                        <div className="space-y-4 px-5 py-4">
+                          <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                            This will permanently clear the entire quote template — every cell, row, column, and formatting choice. This can&apos;t be undone.
+                          </p>
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setIsQuoteTemplateResetConfirmOpen(false)}
+                              className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={resetQuoteTemplate}
                               className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
                               style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                             >

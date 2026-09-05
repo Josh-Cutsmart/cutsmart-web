@@ -30,6 +30,7 @@ interface AuthContextValue {
   logout: () => Promise<void>;
   setUserColorLocal: (color: string) => void;
   setUserProfileLocal: (patch: Partial<Pick<AppUser, "displayName" | "mobile" | "userColor">>) => void;
+  setUserVerifiedLocal: (verified: boolean) => void;
 }
 
 const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
@@ -44,6 +45,7 @@ function fromFirebaseUser(
   membershipDisplayName?: string,
   userColor?: string,
   mobile?: string,
+  verified?: boolean,
 ): AppUser {
   return {
     uid: user.uid,
@@ -54,6 +56,7 @@ function fromFirebaseUser(
     role,
     companyId,
     permissions: [],
+    verified,
   };
 }
 
@@ -76,6 +79,9 @@ function createDemoUser(role: UserRole): AppUser {
     email: `${role}@cutsmart.test`,
     displayName: `Demo ${role[0].toUpperCase()}${role.slice(1)}`,
     role,
+    // Demo mode has no registration/company-creation flow to ever complete verification through —
+    // it shouldn't be locked out of a feature it structurally can't finish.
+    verified: true,
   };
 }
 
@@ -144,6 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               resolvedName,
               profile?.userColor,
               profile?.mobile,
+              Boolean(profile?.verified),
             ),
             permissions: membership?.permissionKeys ?? [],
           },
@@ -217,6 +224,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           return next;
         });
+      },
+      setUserVerifiedLocal: (verified) => {
+        setUser((prev) => (prev ? { ...prev, verified } : prev));
       },
     }),
     [isDemoMode, isLoading, user],

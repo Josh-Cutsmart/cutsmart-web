@@ -125,4 +125,5 @@ export interface AppUser {
   role: UserRole;
   companyId?: string;
   permissions?: string[];
+  verified?: boolean;
 }

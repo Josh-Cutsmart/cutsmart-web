@@ -466,6 +466,70 @@ body[data-theme="dark"] .cs-app .notes-rich li {
   }
 }
 
+/* Same springy overshoot-then-settle character as glass-comment-drop-in, just sliding in from a
+ * screen EDGE (horizontally) instead of dropping from above — used for the Quote sheet's own
+ * Version History (left) / Quote Extras (right) floating bubbles, each item staggered with its own
+ * random animationDelay the same way the comment cards are. */
+@keyframes glass-bubble-slide-in-left {
+  0% {
+    opacity: 0;
+    transform: translateX(-32px);
+  }
+  55% {
+    opacity: 1;
+    transform: translateX(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes glass-bubble-slide-out-left {
+  0% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  45% {
+    opacity: 1;
+    transform: translateX(6px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-32px);
+  }
+}
+
+@keyframes glass-bubble-slide-in-right {
+  0% {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+  55% {
+    opacity: 1;
+    transform: translateX(-6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes glass-bubble-slide-out-right {
+  0% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  45% {
+    opacity: 1;
+    transform: translateX(-6px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+}
+
 .cutlist-cell-flash-red {
   background-color: var(--danger-soft);
   box-shadow: 0 0 0 2px var(--danger-border) inset;

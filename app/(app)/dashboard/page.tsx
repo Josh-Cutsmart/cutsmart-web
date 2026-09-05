@@ -647,7 +647,7 @@ export default function DashboardPage() {
       "general",
       user?.uid,
       effectiveCompanyPermissions.length ? effectiveCompanyPermissions : user?.permissions ?? [],
-    ).edit;
+    ).edit && Boolean(user?.verified);
 
   const openProjectInDashboard = async (projectId: string, projectName?: string) => {
     const name = String(projectName || "").trim();
@@ -1207,7 +1207,7 @@ export default function DashboardPage() {
 
   const onSelectCompletedProjectDate = async (project: Project, nextDateValue: string) => {
     const nextIso = dateInputValueToCompletedIso(nextDateValue);
-    if (!nextIso) return;
+    if (!nextIso || !user?.verified) return;
     setCompletedDateUpdatingProjectId(project.id);
     const ok = await updateProjectPatch(project, { completedAtIso: nextIso });
     if (ok) {
@@ -1224,7 +1224,7 @@ export default function DashboardPage() {
 
   const onApplyCompletedProjectLegend = async (project: Project) => {
     const nextLegendId = String(activeCompletedLegendId || "").trim();
-    if (!nextLegendId) return;
+    if (!nextLegendId || !user?.verified) return;
     const rawProject = project as unknown as Record<string, unknown>;
     const currentLegendId = String(rawProject.dashboardCompleteStatusId ?? "").trim();
     if (currentLegendId === nextLegendId) return;

@@ -24,6 +24,7 @@ export interface UserProfileSummary {
   mobile?: string;
   userColor?: string;
   companyId?: string;
+  verified?: boolean;
 }
 
 export interface CompanyAccessInfo {
@@ -364,6 +365,9 @@ export async function fetchUserProfileSummary(uid: string): Promise<UserProfileS
       mobile: mobile || undefined,
       userColor: userColor || undefined,
       companyId: companyId || undefined,
+      // Absent field = unverified — never default this to true, a missing doc/field must never
+      // read as "trusted."
+      verified: Boolean(data.verified),
     };
   } catch {
     return null;

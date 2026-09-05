@@ -30,4 +30,16 @@ export const QUOTE_TEMPLATE_PLACEHOLDERS: QuoteTemplatePlaceholderOption[] = [
   { key: "project_assigned", label: "Project Assigned", token: "{{project_assigned}}" },
   { key: "project_assigned_mobile", label: "Project Assigned Mobile", token: "{{project_assigned_mobile}}" },
   { key: "project_assigned_email", label: "Project Assigned Email", token: "{{project_assigned_email}}" },
+  // These have always been usable (the runtime replacements map in the project page has always
+  // included them) but were never listed here, so no reference panel ever showed them — added so the
+  // Quote grid's placeholder panel (and any other reference panel reusing this catalog) covers every
+  // token that actually resolves to something, not just the original subset.
+  { key: "company_name", label: "Company Name", token: "{{company_name}}" },
+  { key: "quote_generated_date", label: "Quote Generated Date", token: "{{quote_generated_date}}" },
+  { key: "total_price", label: "Total Price", token: "{{total_price}}" },
+  { key: "project_notes", label: "Project Notes", token: "{{project_notes}}" },
+  { key: "included_rooms", label: "Included Rooms", token: "{{included_rooms}}" },
+  { key: "room_count", label: "Room Count", token: "{{room_count}}" },
+  { key: "selected_products", label: "Selected Products", token: "{{selected_products}}" },
+  { key: "product_count", label: "Product Count", token: "{{product_count}}" },
 ];

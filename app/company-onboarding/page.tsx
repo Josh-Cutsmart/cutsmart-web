@@ -16,6 +16,7 @@ import {
   where,
 } from "firebase/firestore";
 import { ProtectedRoute } from "@/components/protected-route";
+import { VerifyEmailGate } from "@/components/verify-email-gate";
 import { useAuth } from "@/lib/auth-context";
 import { db, hasFirebaseConfig } from "@/lib/firebase";
 
@@ -573,6 +574,17 @@ export default function CompanyOnboardingPage() {
       router.push("/");
     }
   };
+
+  // A signed-in but unverified account can't reach company creation/joining at all — this is
+  // the other of the two places (besides app/(app)/layout.tsx) an authenticated user can land,
+  // and it's exactly where a fresh registration goes first when no company resolves yet.
+  if (user && !user.verified) {
+    return (
+      <ProtectedRoute>
+        <VerifyEmailGate />
+      </ProtectedRoute>
+    );
+  }
 
   return (
     <ProtectedRoute>

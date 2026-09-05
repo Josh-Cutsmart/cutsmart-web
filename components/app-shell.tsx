@@ -53,6 +53,7 @@ import {
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
+import { VerifyAccountModal } from "@/components/verify-account-modal";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const COMPANY_BRANDING_CACHE_KEY_PREFIX = "cutsmart_company_branding_";
 const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
@@ -325,6 +326,23 @@ export function AppShell({
   const [logoutConfirmOrigin, setLogoutConfirmOrigin] = useState<GlassModalOrigin>(null);
   const logoutConfirmPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderLogoutConfirmModal = useGlassModalPopOrigin(showLogoutConfirm, logoutConfirmOrigin, logoutConfirmPanelRef);
+  const [isAutoVerifyModalOpen, setIsAutoVerifyModalOpen] = useState(false);
+  // Prompts once per freshly-signed-in session (covers both "just registered" and "just logged
+  // into an account that's still unverified") — keyed off uid so it never re-fires just because
+  // `user.verified` itself recomputes (e.g. while the profile fetch is still in flight) or because
+  // of unrelated re-renders while the user keeps browsing already-unverified in the same session.
+  const autoVerifyPromptedUidRef = useRef<string | null>(null);
+  useEffect(() => {
+    const uid = user?.uid || null;
+    if (!uid) {
+      autoVerifyPromptedUidRef.current = null;
+      return;
+    }
+    if (!user?.verified && autoVerifyPromptedUidRef.current !== uid) {
+      autoVerifyPromptedUidRef.current = uid;
+      setIsAutoVerifyModalOpen(true);
+    }
+  }, [user?.uid, user?.verified]);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
@@ -1556,6 +1574,12 @@ export function AppShell({
 
   const onCreateProject = async () => {
     if (creatingProject) return;
+    // An unverified account can browse the app but not create new records — see the same gate's
+    // comment in app/(app)/projects/[projectId]/page.tsx.
+    if (!user?.verified) {
+      setProjectFormError("Verify your account (in User Settings) before creating a project.");
+      return;
+    }
     const name = String(projectName || "").trim();
     const firstName = String(clientFirstName || "").trim();
     const lastName = String(clientLastName || "").trim();
@@ -2238,6 +2262,11 @@ export function AppShell({
             </div>
           </div>
         </div>
+
+        <VerifyAccountModal
+          open={isAutoVerifyModalOpen}
+          onClose={() => setIsAutoVerifyModalOpen(false)}
+        />
       </aside>
 
       <div

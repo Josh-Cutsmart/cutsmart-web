@@ -586,6 +586,9 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
 export default function LeadsPage() {
   const { user } = useAuth();
   const currentUserUid = String(user?.uid || "").trim();
+  // An unverified account can view leads but not edit/move/delete/assign them — see the same gate
+  // in app/(app)/projects/[projectId]/page.tsx's own comment for the fuller reasoning.
+  const isUserVerified = Boolean(user?.verified);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
   const [canAccessLeads, setCanAccessLeads] = useState(false);
@@ -1685,6 +1688,7 @@ export default function LeadsPage() {
         }))
         .filter((item) => item.url)
         .slice(0, 10);
+      if (!isUserVerified) return false;
       if (isTemporarySampleLead(lead)) {
         syncLeadImagesInState(lead, normalized);
         return true;
@@ -1705,12 +1709,12 @@ export default function LeadsPage() {
       void loadLeads(lead.companyId);
       return true;
     },
-    [loadLeads, syncLeadImagesInState],
+    [isUserVerified, loadLeads, syncLeadImagesInState],
   );
 
   const handleDeleteLead = async (lead: CompanyLeadRow) => {
     const leadId = String(lead.id || "").trim();
-    if (!leadId || deletingLeadId) return;
+    if (!leadId || deletingLeadId || !isUserVerified) return;
     setDeletingLeadId(leadId);
     let didArchive = false;
     if (isTemporarySampleLead(lead)) {
@@ -1753,7 +1757,7 @@ export default function LeadsPage() {
     setDeletingLeadId("");
   };
   const onSelectLeadStatus = async (lead: CompanyLeadRow, nextStatus: string) => {
-    if (!nextStatus || statusUpdatingLeadId) return;
+    if (!nextStatus || statusUpdatingLeadId || !isUserVerified) return;
     // getLeadById() (used by both the detail drawer and the board's drag-drop
     // handler) prefers leadDetailsById over the leads list once a lead's full
     // detail has been fetched — that cache never refetches on its own, so it
@@ -1849,7 +1853,7 @@ export default function LeadsPage() {
     async (leadId: string, companyId: string) => {
       const id = String(leadId || "").trim();
       const cid = String(companyId || "").trim();
-      if (!id || !cid) return;
+      if (!id || !cid || !isUserVerified) return;
       const lead = getLeadById(id);
       if (!lead) return;
 
@@ -1896,7 +1900,7 @@ export default function LeadsPage() {
         void loadLeads(cid);
       }
     },
-    [getLeadById, loadLeads],
+    [getLeadById, isUserVerified, loadLeads],
   );
 
   useEffect(() => {
@@ -1944,7 +1948,7 @@ export default function LeadsPage() {
   }, [assignLeadId, closeAssignLeadModal, leads]);
 
   const handleAssignLead = async () => {
-    if (!assignLead || !assignSelectedUid || assigningLeadId) return;
+    if (!assignLead || !assignSelectedUid || assigningLeadId || !isUserVerified) return;
     const member = companyMembers.find((item) => item.uid === assignSelectedUid);
     if (!member) return;
     const assignedName = String(member.displayName || member.email || "").trim();

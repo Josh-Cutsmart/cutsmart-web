@@ -37,7 +37,7 @@ export function useGlassModalPopOrigin(
   panelRef: RefObject<HTMLDivElement | null>,
   options?: GlassModalPopOriginOptions,
 ): boolean {
-  const duration = options?.duration ?? 480;
+  const duration = options?.duration ?? 320;
   const easing = options?.easing ?? "cubic-bezier(0.34, 1.56, 0.64, 1)";
   // Same shape/pace as the opening curve (matching x-control-points) but with
   // the overshoot removed (y1 taken back down to 1) — reads as the same speed

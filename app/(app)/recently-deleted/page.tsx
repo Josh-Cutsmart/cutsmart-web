@@ -626,7 +626,7 @@ function measureStatusPillWidth(options: string[]) {
   }, [leadRowFields, leadStatusPillWidth]);
 
   const onRestore = async (project: Project) => {
-    if (restoringId || deletingId) return;
+    if (restoringId || deletingId || !user?.verified) return;
     clearConfirmRestoreTimeout();
     clearConfirmDeleteTimeout();
     setRestoringId(project.id);
@@ -655,7 +655,7 @@ function measureStatusPillWidth(options: string[]) {
   };
 
   const onPermanentDelete = async (project: Project) => {
-    if (restoringId || deletingId) return;
+    if (restoringId || deletingId || !user?.verified) return;
     clearConfirmRestoreTimeout();
     clearConfirmDeleteTimeout();
     setDeletingId(project.id);

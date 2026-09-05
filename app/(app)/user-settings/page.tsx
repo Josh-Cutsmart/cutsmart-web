@@ -2,8 +2,9 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Mail, Palette, ShieldCheck, Smartphone, UserCog } from "lucide-react";
+import { Building2, Mail, MailCheck, Palette, ShieldCheck, Smartphone, UserCog } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { auth } from "@/lib/firebase";
 import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
@@ -15,7 +16,7 @@ const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_co
 
 export default function UserSettingsPage() {
   const router = useRouter();
-  const { user, setUserColorLocal, setUserProfileLocal } = useAuth();
+  const { user, setUserColorLocal, setUserProfileLocal, setUserVerifiedLocal } = useAuth();
   const [companyColor, setCompanyColor] = useState("#2F6BFF");
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [userColor, setUserColor] = useState(user?.userColor || "");
@@ -28,6 +29,12 @@ export default function UserSettingsPage() {
   const [companyRoleColor, setCompanyRoleColor] = useState("");
   const [themeSource, setThemeSource] = useState("unknown");
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [isVerifyBoxOpen, setIsVerifyBoxOpen] = useState(false);
+  const [verifyCode, setVerifyCode] = useState("");
+  const [verifyError, setVerifyError] = useState("");
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyResendCooldown, setVerifyResendCooldown] = useState(0);
+  const verifyCooldownTimerRef = useRef<number | null>(null);
   const autoSaveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef(false);
   const isSavingRef = useRef(false);
@@ -253,6 +260,97 @@ export default function UserSettingsPage() {
     saveThemeMode(mode);
   };
 
+  const startVerifyCooldown = (seconds: number) => {
+    if (verifyCooldownTimerRef.current) window.clearInterval(verifyCooldownTimerRef.current);
+    setVerifyResendCooldown(seconds);
+    verifyCooldownTimerRef.current = window.setInterval(() => {
+      setVerifyResendCooldown((prev) => {
+        if (prev <= 1) {
+          if (verifyCooldownTimerRef.current) window.clearInterval(verifyCooldownTimerRef.current);
+          verifyCooldownTimerRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (verifyCooldownTimerRef.current) window.clearInterval(verifyCooldownTimerRef.current);
+    };
+  }, []);
+
+  const onSendVerificationCode = async () => {
+    if (verifyBusy || verifyResendCooldown > 0 || !auth) return;
+    setVerifyBusy(true);
+    setVerifyError("");
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        setVerifyError("Not signed in.");
+        return;
+      }
+      const res = await fetch("/api/verify/user/send", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; retryAfterSeconds?: number };
+      if (!data.ok) {
+        if (data.error === "cooldown" && data.retryAfterSeconds) {
+          startVerifyCooldown(data.retryAfterSeconds);
+        } else {
+          setVerifyError(data.error || "Could not send verification code.");
+        }
+        return;
+      }
+      startVerifyCooldown(60);
+    } catch {
+      setVerifyError("Could not send verification code.");
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const onConfirmVerificationCode = async () => {
+    const code = verifyCode.trim();
+    if (!code || verifyBusy || !auth) return;
+    setVerifyBusy(true);
+    setVerifyError("");
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        setVerifyError("Not signed in.");
+        return;
+      }
+      const res = await fetch("/api/verify/user/confirm", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!data.ok) {
+        setVerifyError(
+          data.error === "invalid-code"
+            ? "Incorrect code."
+            : data.error === "expired"
+              ? "Code expired — resend a new one."
+              : data.error === "too-many-attempts"
+                ? "Too many attempts — resend a new code."
+                : data.error || "Could not verify your account.",
+        );
+        return;
+      }
+      setUserVerifiedLocal(true);
+      setVerifyCode("");
+      setIsVerifyBoxOpen(false);
+    } catch {
+      setVerifyError("Could not verify your account.");
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
   const isDarkMode = themeMode === "dark";
   const activeDisplayName = String(displayName || user?.displayName || "CutSmart User").trim() || "CutSmart User";
   const profileInitials =
@@ -331,7 +429,57 @@ export default function UserSettingsPage() {
             <p className="mt-1 flex items-center gap-1.5 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
               <Mail size={13} />
               {user?.email || "-"}
+              {!user?.verified && (
+                <button
+                  type="button"
+                  onClick={() => setIsVerifyBoxOpen((prev) => !prev)}
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px]"
+                  style={{ backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                >
+                  <MailCheck size={10} />
+                  Unverified
+                </button>
+              )}
             </p>
+            {!user?.verified && isVerifyBoxOpen && (
+              <div
+                className="mt-3 w-full space-y-2 rounded-[12px] border p-3 text-left"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+              >
+                <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  Enter the code emailed to you when you registered to unlock editing anywhere in the app.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={verifyCode}
+                    onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6-digit code"
+                    inputMode="numeric"
+                    className="h-8 w-[120px] rounded-[8px] border px-2 text-[12px] tracking-[2px]"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  />
+                  <button
+                    type="button"
+                    disabled={verifyBusy || verifyCode.trim().length !== 6}
+                    onClick={() => void onConfirmVerificationCode()}
+                    className="h-8 rounded-[8px] px-2.5 text-[11px] font-bold text-white disabled:opacity-55"
+                    style={{ backgroundImage: "var(--brand-gradient)" }}
+                  >
+                    Verify
+                  </button>
+                  <button
+                    type="button"
+                    disabled={verifyBusy || verifyResendCooldown > 0}
+                    onClick={() => void onSendVerificationCode()}
+                    className="h-8 rounded-[8px] border px-2.5 text-[11px] font-bold disabled:opacity-55"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  >
+                    {verifyResendCooldown > 0 ? `Resend (${verifyResendCooldown}s)` : "Resend Code"}
+                  </button>
+                </div>
+                {verifyError ? <p className="text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>{verifyError}</p> : null}
+              </div>
+            )}
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
               <span
                 className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-[0.8px]"

@@ -26,12 +26,31 @@ export function SpecsCellColorPopover({
   onClose: () => void;
 }) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const colorInputRef = useRef<HTMLInputElement | null>(null);
   const [hexDraft, setHexDraft] = useState(currentColor);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHexDraft(currentColor);
   }, [currentColor, isOpen]);
+
+  // React's `onChange` on an <input> is really wired to the native `input` event, which a native
+  // color picker fires continuously — once per pixel of drag inside the OS color wheel, easily
+  // dozens of times a second. onSelect here does real work (clones the grid, pushes an undo-history
+  // entry, and round-trips through the host page's own onChange, which can itself be an expensive
+  // re-render in a large page) — calling it on every one of those intermediate drag events, faster
+  // than React can finish committing the previous one, is exactly what was tripping React's "Maximum
+  // update depth exceeded" guard, and made the picker visibly lag while dragging. The native `change`
+  // event (listened for directly, since React exposes no prop for it) fires exactly once, when the
+  // picker is closed/the color is finalized — the same "commit once" semantics as the hex field's own
+  // onBlur below, just for the swatch picker's own native UI instead.
+  useEffect(() => {
+    const el = colorInputRef.current;
+    if (!el) return;
+    const handleNativeChange = (e: Event) => onSelect((e.target as HTMLInputElement).value);
+    el.addEventListener("change", handleNativeChange);
+    return () => el.removeEventListener("change", handleNativeChange);
+  }, [onSelect]);
 
   useEffect(() => {
     if (!isOpen || typeof document === "undefined") return;
@@ -118,9 +137,14 @@ export function SpecsCellColorPopover({
 
       <div className="mt-3 flex items-center gap-2">
         <input
+          ref={colorInputRef}
           type="color"
           value={/^#[0-9A-Fa-f]{6}$/.test(currentColor) ? currentColor : "#FFFFFF"}
-          onChange={(e) => onSelect(e.target.value)}
+          // Deliberately not calling onSelect here — see the native "change" listener above for why
+          // and where the actual commit happens. A no-op is enough to keep this a valid controlled
+          // input; without ANY onChange, React logs a warning and the OS picker's live drag stops
+          // updating the swatch at all.
+          onChange={() => {}}
           className="h-9 w-11 shrink-0 cursor-pointer rounded-[8px] border p-1"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
           aria-label="Advanced color picker"

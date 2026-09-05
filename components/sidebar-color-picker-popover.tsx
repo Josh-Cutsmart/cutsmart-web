@@ -35,12 +35,27 @@ export function SidebarColorPickerPopover({
   onClose: () => void;
 }) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const colorInputRef = useRef<HTMLInputElement | null>(null);
   const [hexDraft, setHexDraft] = useState(currentColor);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHexDraft(currentColor);
   }, [currentColor, isOpen]);
+
+  // React's `onChange` on an <input> is really wired to the native `input` event, which a native
+  // color picker fires continuously while its OS-level wheel is being dragged — see
+  // specs-cell-color-popover.tsx's identical fix for the full explanation (that copy of this same
+  // pattern was tripping React's "Maximum update depth exceeded" once its onSelect started doing
+  // heavier work). Fixed here too, preemptively, since it's the exact same latent issue. The native
+  // `change` event fires exactly once, when the picker is closed/the color is finalized.
+  useEffect(() => {
+    const el = colorInputRef.current;
+    if (!el) return;
+    const handleNativeChange = (e: Event) => onSelect((e.target as HTMLInputElement).value);
+    el.addEventListener("change", handleNativeChange);
+    return () => el.removeEventListener("change", handleNativeChange);
+  }, [onSelect]);
 
   useEffect(() => {
     if (!isOpen || typeof document === "undefined") return;
@@ -107,9 +122,11 @@ export function SidebarColorPickerPopover({
 
       <div className="mt-3 flex items-center gap-2">
         <input
+          ref={colorInputRef}
           type="color"
           value={/^#[0-9A-Fa-f]{6}$/.test(currentColor) ? currentColor : "#2F6BFF"}
-          onChange={(e) => onSelect(e.target.value)}
+          // Deliberately not calling onSelect here — see the native "change" listener above.
+          onChange={() => {}}
           className="h-9 w-11 shrink-0 cursor-pointer rounded-[8px] border p-1"
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
           aria-label="Advanced color picker"

@@ -2,6 +2,13 @@ import { interpolateQuoteTemplateText } from "@/lib/quote-template-placeholders"
 
 export type SpecsCellStyle = {
   bold?: boolean;
+  underline?: boolean;
+  // A CSS font-family value, e.g. `"\"Signature\", cursive"` or `"Georgia"` — see
+  // lib/quote-font-options.ts's SYSTEM_QUOTE_FONT_OPTIONS for the toolbar's own list (values there
+  // are already in this exact CSS-ready form). Whole-cell, same as fontSize/align below — not
+  // per-run like bold/underline, since a font picker mid-sentence is a rare enough need not to be
+  // worth the same complexity.
+  fontFamily?: string;
   align?: "left" | "center" | "right";
   verticalAlign?: "top" | "middle" | "bottom";
   fontSize?: number;
@@ -15,8 +22,27 @@ export type SpecsCellStyle = {
   borderWidthPx?: number;
 };
 
+// A run of text sharing one formatting state — what makes "some bold, some not, in the same cell"
+// possible. `text` can itself contain literal `\n` characters (a line break the user typed doesn't
+// end a run by itself). See getCellRuns' own comment for how this coexists with the older, simpler
+// whole-cell `SpecsCellStyle.bold`/`underline` flags on cells that predate this or were never
+// touched by the rich-text editing path.
+export type SpecsTextRun = {
+  text: string;
+  bold?: boolean;
+  underline?: boolean;
+};
+
 export type SpecsCell = {
   text: string;
+  // Authoritative for rendering/PDF export once present — `text` above is kept in sync as its plain
+  // (formatting-stripped) concatenation purely so every OTHER reader that only ever needed plain text
+  // (placeholder search/replace, the empty-row check, row pruning) keeps working unchanged. Absent on
+  // a cell that has never been touched by the rich-text editor, or that was last committed as
+  // uniformly one style — see getCellRuns, which synthesizes an equivalent single run from `text` +
+  // the legacy `style.bold`/`style.underline` flags for exactly that case, so every reader can just
+  // call getCellRuns(cell) and never need to check which representation a given cell happens to use.
+  runs?: SpecsTextRun[];
   colSpan?: number;
   rowSpan?: number;
   style?: SpecsCellStyle;
@@ -25,6 +51,37 @@ export type SpecsCell = {
   // image restores whatever text was there before.
   imageUrl?: string;
 };
+
+// The one canonical way to read "the runs for this cell" — every renderer (on-screen editor, PDF
+// export) should go through this rather than branching on whether `runs` happens to be populated.
+export function getCellRuns(cell: SpecsCell): SpecsTextRun[] {
+  if (cell.runs && cell.runs.length > 0) return cell.runs;
+  const style = cell.style ?? {};
+  return [{ text: cell.text, ...(style.bold ? { bold: true as const } : {}), ...(style.underline ? { underline: true as const } : {}) }];
+}
+
+export function runsToPlainText(runs: SpecsTextRun[]): string {
+  return runs.map((r) => r.text).join("");
+}
+
+// Merges adjacent runs that ended up sharing the same bold/underline state (routine after DOM-based
+// rich-text edits, which can otherwise produce many redundant same-styled fragments) and drops
+// genuinely empty ones — keeps the stored array from growing without bound across repeated edits.
+// Never returns an empty array: a cell with no text at all still gets one empty run, matching what
+// getCellRuns would have synthesized anyway, so callers never need a separate empty-cell case.
+export function normalizeTextRuns(runs: SpecsTextRun[]): SpecsTextRun[] {
+  const merged: SpecsTextRun[] = [];
+  for (const run of runs) {
+    if (!run.text) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && Boolean(prev.bold) === Boolean(run.bold) && Boolean(prev.underline) === Boolean(run.underline)) {
+      prev.text += run.text;
+    } else {
+      merged.push({ text: run.text, ...(run.bold ? { bold: true } : {}), ...(run.underline ? { underline: true } : {}) });
+    }
+  }
+  return merged.length > 0 ? merged : [{ text: "" }];
+}
 
 export type SpecsRow = {
   id: string;
@@ -45,6 +102,36 @@ export type SpecsRowGroup = {
   startRow: number;
   endRow: number;
   hidden?: boolean;
+  // The next two fields are only ever meaningful for the Quote grid (see components/
+  // specs-grid-editor.tsx's `groupsSupportPricing` prop) — left undefined everywhere else,
+  // including every existing Specifications grid, so this is a fully backward-compatible addition.
+  // A priced group doubles as a toggleable "Quote Extra": `getExpandedRowGroups(grid).filter(g =>
+  // g.price)` IS the project's quote-extras list, and `hidden` on that same group IS its per-project
+  // included/excluded state — there is no separate extras list to keep in sync.
+  price?: string; // currency-formatted string, e.g. "$150.00" — parsed the same way SalesQuoteExtraRow.price already is
+  defaultIncluded?: boolean; // whether a brand-new project starts with this group's rows shown (hidden: false)
+  // PDF/print only (see buildSpecsGridPdfBlob's own comment on anchorFirstPageBottomStartRow) — has
+  // no effect on the live on-screen editor, which never paginates. When the content preceding this
+  // group doesn't already fill the first physical page, its rows (and everything after it) are
+  // pushed down to end flush with the bottom of that page instead of sitting wherever they'd
+  // naturally fall right after the preceding content; if the first page is already full, this is a
+  // no-op and the group just overflows onto the next page like anything else would.
+  anchorFirstPageBottom?: boolean;
+  // Company role ids (RoleRow.id from lib/company-roles.ts) allowed to edit this group's own rows in
+  // a PROJECT's live Quote/Specifications window — absent/empty means unrestricted (everyone with
+  // edit access to the sheet at all can edit these rows), matching every group before this field
+  // existed. Enforced by the HOST page (see app/(app)/projects/[projectId]/page.tsx's own
+  // canEditSpecsGroup), never by this shared type/component — a company's owner/admin always bypass
+  // it there regardless of what's listed here, so a misconfigured list can't lock out the account
+  // itself. Meaningless in the company-settings template builder, where there's no "current viewer"
+  // to restrict — it only does anything once cloned into a real project.
+  editableByRoleIds?: string[];
+  // Free-text label used purely to CLUSTER groups together in the Quote Extras sidebar (see
+  // app/(app)/projects/[projectId]/page.tsx's liveQuoteGridExtras/displayedQuoteGridExtras) — several
+  // groups sharing the exact same category string (case-insensitively) render under one heading
+  // there, in whatever order they appear in the sheet. Purely cosmetic/organizational: it has no
+  // effect on hidden/pricing/anchoring behavior, and an absent category just means "uncategorized".
+  category?: string;
 };
 
 // A group whose rows were entirely deleted (one at a time, via the row "-" button, or all at once)
@@ -79,7 +166,7 @@ export type SpecsGridSelection = {
 
 export const DEFAULT_COL_WIDTH_PX = 120;
 export const TARGET_STARTING_COL_WIDTH_PX = 50;
-export const DEFAULT_ROW_HEIGHT_PX = 32;
+export const DEFAULT_ROW_HEIGHT_PX = 20;
 export const MIN_COL_WIDTH_PX = 5;
 export const MIN_ROW_HEIGHT_PX = 5;
 export const DEFAULT_CELL_FONT_SIZE_PX = 12;
@@ -221,11 +308,30 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
       // rather than mutating the loaded data in place.
       const clampedRowSpan = typeof cell.rowSpan === "number" && rowIdx + cell.rowSpan > rows.length ? Math.max(1, rows.length - rowIdx) : cell.rowSpan;
       const clampedColSpan = typeof cell.colSpan === "number" && colIdx + cell.colSpan > columnWidths.length ? Math.max(1, columnWidths.length - colIdx) : cell.colSpan;
-      normalizedCells.push(
-        clampedRowSpan !== cell.rowSpan || clampedColSpan !== cell.colSpan
-          ? { ...cell, rowSpan: clampedRowSpan, colSpan: clampedColSpan }
-          : cell,
-      );
+      // A malformed `runs` entry (wrong shape, or from some unrelated future format) would otherwise
+      // crash rendering the moment getCellRuns() hands it to a `.map` expecting real SpecsTextRun
+      // objects — dropped here rather than rejecting the whole grid over one cell, same leniency as
+      // groups/deletedGroups below. getCellRuns already synthesizes an equivalent run from plain
+      // `text` for any cell that ends up without one.
+      const validRuns = Array.isArray(cell.runs)
+        ? cell.runs.filter((r): r is SpecsTextRun => Boolean(r) && typeof r === "object" && typeof (r as Record<string, unknown>).text === "string")
+        : null;
+      const sanitizedRuns = validRuns && validRuns.length > 0 ? validRuns : undefined;
+      if (clampedRowSpan !== cell.rowSpan || clampedColSpan !== cell.colSpan || sanitizedRuns !== cell.runs) {
+        // Firestore's setDoc rejects a literal `undefined` property value outright — `runs` has to be
+        // an absent key when there's nothing valid to keep, not a present key holding `undefined`, so
+        // this is built field-by-field rather than `{ ...cell, runs: undefined }`.
+        normalizedCells.push({
+          text: cell.text,
+          rowSpan: clampedRowSpan,
+          colSpan: clampedColSpan,
+          ...(cell.style ? { style: cell.style } : {}),
+          ...(cell.imageUrl ? { imageUrl: cell.imageUrl } : {}),
+          ...(sanitizedRuns ? { runs: sanitizedRuns } : {}),
+        });
+      } else {
+        normalizedCells.push(cell);
+      }
     }
     normalizedRows.push({ id: row.id, heightPx: row.heightPx, cells: normalizedCells });
   }
@@ -234,18 +340,39 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
       ? (candidate.pageSize as SpecsPageSize)
       : "A4";
   // Groups are a nice-to-have, not structural — a malformed entry is just dropped rather than
-  // rejecting an otherwise-valid grid over it.
+  // rejecting an otherwise-valid grid over it. Rebuilt field-by-field (not passed through as the raw
+  // object) so a group that picked up a literal `price: undefined`/`defaultIncluded: undefined` from
+  // some earlier bug — an in-memory-only state, since Firestore itself never stores `undefined` — gets
+  // silently healed the next time this grid loads, rather than that stray key riding along forever
+  // and failing every future save regardless of what was actually edited.
   const rawGroups = Array.isArray(candidate.groups) ? candidate.groups : [];
-  const groups: SpecsRowGroup[] = rawGroups.filter((g): g is SpecsRowGroup => {
-    if (!g || typeof g !== "object") return false;
+  const groups: SpecsRowGroup[] = [];
+  for (const g of rawGroups) {
+    if (!g || typeof g !== "object") continue;
     const group = g as Record<string, unknown>;
-    return (
-      typeof group.id === "string" &&
-      typeof group.name === "string" &&
-      typeof group.startRow === "number" && Number.isFinite(group.startRow) &&
-      typeof group.endRow === "number" && Number.isFinite(group.endRow)
-    );
-  });
+    if (
+      typeof group.id !== "string" ||
+      typeof group.name !== "string" ||
+      typeof group.startRow !== "number" || !Number.isFinite(group.startRow) ||
+      typeof group.endRow !== "number" || !Number.isFinite(group.endRow)
+    ) {
+      continue;
+    }
+    groups.push({
+      id: group.id,
+      name: group.name,
+      startRow: group.startRow,
+      endRow: group.endRow,
+      ...(typeof group.hidden === "boolean" ? { hidden: group.hidden } : {}),
+      ...(typeof group.price === "string" && group.price ? { price: group.price } : {}),
+      ...(typeof group.defaultIncluded === "boolean" ? { defaultIncluded: group.defaultIncluded } : {}),
+      ...(typeof group.anchorFirstPageBottom === "boolean" ? { anchorFirstPageBottom: group.anchorFirstPageBottom } : {}),
+      ...(Array.isArray(group.editableByRoleIds)
+        ? { editableByRoleIds: group.editableByRoleIds.filter((id): id is string => typeof id === "string" && id.length > 0) }
+        : {}),
+      ...(typeof group.category === "string" && group.category ? { category: group.category } : {}),
+    });
+  }
   // Same leniency as groups above — a deleted group is recoverable convenience, not structural, so a
   // malformed entry is just dropped. Rows inside it aren't re-clamped the way live rows are (no
   // `rows.length`/column context to clamp a merge span against until it's actually restored), only
@@ -266,6 +393,62 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
     );
   });
   return { pageSize, columnWidths: columnWidths as number[], rows: normalizedRows, groups, deletedGroups };
+}
+
+// A manually-named, point-in-time snapshot of a project's own specifications sheet — created only
+// via an explicit "Save Version" action (never automatically), so the list only ever grows when a
+// user deliberately wants a checkpoint to come back to. `version` is a simple incrementing counter
+// (not a timestamp) purely so the history's own save order is unambiguous even if two versions are
+// saved within the same second.
+export type SpecsGridVersion = {
+  id: string;
+  name: string;
+  version: number;
+  savedAtIso: string;
+  savedByName?: string;
+  grid: SpecsGrid;
+  // Only ever set on the Quote grid's auto-captured "last closed" baseline (see
+  // fetchProjectUpdatedAtMarker's own callers) — unused by Specs, which has no automatic/outdated-
+  // detection concept, only the plain manual "Save Version" flow above.
+  capturedProjectMarker?: string;
+};
+
+export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SpecsGridVersion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const grid = normalizeSpecsGrid(row.grid);
+    if (!grid) continue;
+    const savedByName = typeof row.savedByName === "string" && row.savedByName ? row.savedByName : "";
+    const capturedProjectMarker = typeof row.capturedProjectMarker === "string" && row.capturedProjectMarker ? row.capturedProjectMarker : "";
+    out.push({
+      id: typeof row.id === "string" && row.id ? row.id : genSpecsRowId(),
+      name: typeof row.name === "string" ? row.name : "",
+      version: typeof row.version === "number" && Number.isFinite(row.version) ? row.version : 0,
+      savedAtIso: typeof row.savedAtIso === "string" ? row.savedAtIso : "",
+      // Firestore's setDoc rejects a literal `undefined` property value outright (throws
+      // "invalid-argument") — these two optional fields have to be genuinely ABSENT keys when
+      // there's no value, not present keys holding `undefined`, since a normalized version like this
+      // one routinely gets spread into a new array and written straight back (every "Save Version" /
+      // "Update" flow that appends to an existing history list).
+      ...(savedByName ? { savedByName } : {}),
+      ...(capturedProjectMarker ? { capturedProjectMarker } : {}),
+      grid,
+    });
+  }
+  return out;
+}
+
+// A single, standalone version entry (not the whole array) — used for the Quote grid's ephemeral
+// "last closed" baseline, which is stored as one object (not a list) at
+// salesPayload.quoteGridLastClosedVersion. Reuses the exact same shape/validation as an entry inside
+// normalizeSpecsGridVersions' own array, just for a lone value instead of a list.
+export function normalizeSpecsGridVersion(raw: unknown): SpecsGridVersion | null {
+  if (!raw || typeof raw !== "object") return null;
+  const [only] = normalizeSpecsGridVersions([raw]);
+  return only ?? null;
 }
 
 // A row carries no visible content when every one of its own cells has empty text, no image, no
@@ -304,8 +487,12 @@ export function pruneEmptySpecsRows(grid: SpecsGrid): SpecsGrid {
     }
   }
   if (lastContentRow === -1) return grid;
+  // Skip the FIRST empty row past the last content row — it's kept as a small trailing buffer so
+  // the sheet doesn't end abruptly right against the last filled line. Only empty rows beyond that
+  // one are actually dropped.
+  const keepThroughRow = Math.min(lastContentRow + 1, grid.rows.length - 1);
   let working = grid;
-  for (let r = working.rows.length - 1; r > lastContentRow; r -= 1) {
+  for (let r = working.rows.length - 1; r > keepThroughRow; r -= 1) {
     working = removeRow(working, r);
   }
   return working;
@@ -320,8 +507,15 @@ export function resolveSpecsGridTokens(template: SpecsGrid, replacements: Record
   for (const row of cloned.rows) {
     row.id = genSpecsRowId();
     for (const cell of row.cells) {
-      if (cell && typeof cell.text === "string") {
+      if (!cell) continue;
+      if (typeof cell.text === "string") {
         cell.text = interpolateQuoteTemplateText(cell.text, replacements);
+      }
+      // A {{token}} is assumed to sit entirely within one run — a placeholder deliberately split
+      // across a bold/plain boundary is a rare enough authoring choice that resolving it per-run
+      // (simple, and correct for every normal case) is worth not chasing that edge case.
+      if (cell.runs) {
+        cell.runs = cell.runs.map((run) => ({ ...run, text: interpolateQuoteTemplateText(run.text, replacements) }));
       }
     }
   }
@@ -425,9 +619,32 @@ function expandRowRangeToFullyContainSpans(grid: SpecsGrid, startRow: number, en
   return { startRow: start, endRow: end };
 }
 
-export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number, name: string): SpecsGrid {
+// Every field the group-editor modal (specs-grid-editor.tsx) submits together in one shot — since
+// that's now a real form with controlled state for all of it at once (not an inline popover built up
+// incrementally field-by-field), createRowGroup/renameRowGroup below take the whole thing as one
+// object and just write it, rather than the old per-field-optional "undefined means leave this one
+// alone" convention that only made sense when different callers touched different subsets.
+export type SpecsRowGroupEditableFields = {
+  name: string;
+  price: string; // "" = no price
+  defaultIncluded: boolean;
+  anchorFirstPageBottom: boolean;
+  editableByRoleIds: string[]; // [] = unrestricted
+  category: string; // "" = uncategorized
+};
+
+export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number, fields: SpecsRowGroupEditableFields): SpecsGrid {
   const expanded = expandRowRangeToFullyContainSpans(grid, Math.min(startRow, endRow), Math.max(startRow, endRow));
-  const group: SpecsRowGroup = { id: genSpecsGroupId(), name, ...expanded };
+  const group: SpecsRowGroup = {
+    id: genSpecsGroupId(),
+    name: fields.name,
+    ...expanded,
+    ...(fields.price ? { price: fields.price } : {}),
+    ...(fields.defaultIncluded ? { defaultIncluded: true } : {}),
+    ...(fields.anchorFirstPageBottom ? { anchorFirstPageBottom: true } : {}),
+    ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
+    ...(fields.category ? { category: fields.category } : {}),
+  };
   return { ...grid, groups: [...grid.groups, group] };
 }
 
@@ -446,8 +663,28 @@ export function addRowsToGroup(grid: SpecsGrid, groupId: string, startRow: numbe
   return { ...grid, groups: grid.groups.map((g) => (g.id === groupId ? { ...g, ...expanded } : g)) };
 }
 
-export function renameRowGroup(grid: SpecsGrid, groupId: string, name: string): SpecsGrid {
-  return { ...grid, groups: grid.groups.map((g) => (g.id === groupId ? { ...g, name } : g)) };
+// Writes every editable field at once (see SpecsRowGroupEditableFields' own comment) — id/startRow/
+// endRow/hidden are the only things NOT owned by the group-editor modal, so those are the only
+// fields carried over from the existing group rather than replaced.
+export function renameRowGroup(grid: SpecsGrid, groupId: string, fields: SpecsRowGroupEditableFields): SpecsGrid {
+  return {
+    ...grid,
+    groups: grid.groups.map((g) => {
+      if (g.id !== groupId) return g;
+      return {
+        id: g.id,
+        startRow: g.startRow,
+        endRow: g.endRow,
+        ...(g.hidden !== undefined ? { hidden: g.hidden } : {}),
+        name: fields.name,
+        ...(fields.price ? { price: fields.price } : {}),
+        ...(fields.defaultIncluded ? { defaultIncluded: true } : {}),
+        ...(fields.anchorFirstPageBottom ? { anchorFirstPageBottom: true } : {}),
+        ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
+        ...(fields.category ? { category: fields.category } : {}),
+      };
+    }),
+  };
 }
 
 export function setRowGroupHidden(grid: SpecsGrid, groupId: string, hidden: boolean): SpecsGrid {
