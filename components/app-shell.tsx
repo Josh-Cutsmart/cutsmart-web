@@ -1208,6 +1208,21 @@ export function AppShell({
     }
   };
 
+  // Gates the New Project modal's click-off-to-close — once any field actually has something in
+  // it, an accidental click on the backdrop shouldn't silently discard it.
+  const hasNewProjectFormContent = () =>
+    Boolean(
+      projectName.trim() ||
+        clientFirstName.trim() ||
+        clientLastName.trim() ||
+        clientPhone.trim() ||
+        clientEmail.trim() ||
+        projectAddress.trim() ||
+        projectNotes.trim() ||
+        tags.length > 0 ||
+        photos.length > 0,
+    );
+
   const resetProjectForm = () => {
     for (const photo of photos) {
       try {
@@ -2353,7 +2368,15 @@ export function AppShell({
       )}
 
       {shouldRenderNewProjectModal && (
-        <div className="glass-modal-backdrop fixed inset-0 z-[9000] flex items-center justify-center px-4">
+        <div
+          className="glass-modal-backdrop fixed inset-0 z-[9000] flex items-center justify-center px-4"
+          onClick={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (hasNewProjectFormContent()) return;
+            setShowNewProject(false);
+            resetProjectForm();
+          }}
+        >
           <div
             ref={newProjectPanelRef}
             className="glass-modal-panel relative flex flex-col overflow-hidden"

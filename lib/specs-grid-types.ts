@@ -50,6 +50,18 @@ export type SpecsCell = {
   // width/height instead of its text — the underlying `text` is kept untouched so removing the
   // image restores whatever text was there before.
   imageUrl?: string;
+  // Set via the editor's "Mark for Client Confirmation" toolbar toggle — marks this cell as one
+  // the external client-confirmation flow (app/client/specs/[shareId]) should render as a Yes/No
+  // toggle instead of (alongside) its plain text. See salesPayload.specsConfirmationSubmittedAt
+  // (app/(app)/projects/[projectId]/page.tsx) for the sheet-wide lock these per-cell answers
+  // freeze under once the client submits — deliberately NOT a field on SpecsGrid itself, see that
+  // type's own comment for why.
+  confirmable?: boolean;
+  // Absent = unanswered. Freely overwritable by the client on every visit until the sheet is
+  // submitted — never written by the internal editor itself, only by the public answer route.
+  confirmedYes?: boolean;
+  // ISO timestamp of the most recent answer write.
+  confirmedAt?: string;
 };
 
 // The one canonical way to read "the runs for this cell" — every renderer (on-screen editor, PDF
@@ -155,6 +167,15 @@ export type SpecsGrid = {
   rows: SpecsRow[];
   groups: SpecsRowGroup[];
   deletedGroups?: SpecsDeletedRowGroup[];
+  // Deliberately NOT a place for the client-confirmation sheet-wide submission lock (see
+  // salesPayload.specsConfirmationSubmittedAt / app/api/specs-share/[shareId]/submit) — several
+  // structural helpers in this file (insertRow, removeRow, insertColumn, removeColumn,
+  // mergeSelection, unmergeCell, moveRowGroup...) and a few local ones in
+  // components/specs-grid-editor.tsx reconstruct a SpecsGrid object field-by-field rather than
+  // spreading the original, so any field added directly here would be silently dropped the
+  // moment someone inserts a row, merges cells, or does any other structural edit. The
+  // submission lock lives one level up instead, as a sibling of specificationsGrid on
+  // salesPayload — outside every one of those reconstructions.
 };
 
 export type SpecsGridSelection = {
@@ -194,6 +215,20 @@ export const MM_TO_PX = 96 / 25.4;
 export function getSpecsPageUsableWidthPx(pageSize: SpecsPageSize): number {
   const { widthMm } = SPECS_PAGE_SIZES[pageSize];
   return Math.round((widthMm - SPECS_PAGE_MARGIN_MM * 2) * MM_TO_PX);
+}
+
+// The actual rendered width of the sheet's own "mock page" — the physical paper size, unless the
+// grid's own columns (plus print margin) already need more room than that, in which case the box
+// grows to fit them rather than clipping. Shared by components/specs-grid-client-view.tsx's own
+// mock-page container and app/client/specs/[shareId]/page.tsx (so the "Submit" bars above/below the
+// sheet can be sized to match it exactly, rather than guessing at a fixed width) — one calculation,
+// not two copies that could drift apart.
+export function computeSpecsPageBoxWidthPx(grid: SpecsGrid): number {
+  const safeColumnWidths = grid.columnWidths.map((w) => (typeof w === "number" && Number.isFinite(w) && w > 0 ? w : DEFAULT_COL_WIDTH_PX));
+  const tableTotalWidthPx = safeColumnWidths.reduce((sum, w) => sum + w, 0);
+  const marginPx = Math.round(SPECS_PAGE_MARGIN_MM * MM_TO_PX);
+  const pageWidthPx = Math.round(SPECS_PAGE_SIZES[grid.pageSize].widthMm * MM_TO_PX);
+  return Math.max(pageWidthPx, tableTotalWidthPx + marginPx * 2);
 }
 
 export function genSpecsRowId(): string {
@@ -270,6 +305,169 @@ export function getCellSpan(cell: SpecsCell | null | undefined): { rowSpan: numb
   return { rowSpan: sanitizeSpanValue(cell?.rowSpan), colSpan: sanitizeSpanValue(cell?.colSpan) };
 }
 
+// Finds whichever cell actually occupies (row, col) visually — the cell stored directly there, or
+// (if that position is null, i.e. covered by an earlier anchor's colSpan) the anchor reached by
+// scanning backward within the same row. A plain index lookup at a covered position returns null,
+// which silently hides a wide merged cell from a neighboring row's own border-sharing checks —
+// exactly why a merged cell's border used to look cut off after its first column. Doesn't chase
+// rowSpan coverage reaching down from an earlier row — narrower than a full grid search, but covers
+// the common horizontal-merge case these neighbor lookups need.
+//
+// Shared by components/specs-grid-editor.tsx's own border overlay and
+// components/specs-grid-client-view.tsx's read-only render of the same grid for the public
+// client-confirmation page — both need the EXACT same border geometry so a confirmable cell's
+// border/spacing looks identical whether staff or the client is looking at it.
+export function findRowAnchorCell(row: SpecsRow | undefined, col: number): SpecsCell | null {
+  if (!row || col < 0) return null;
+  for (let c = col; c >= 0; c -= 1) {
+    const candidate = row.cells[c];
+    if (candidate) {
+      const { colSpan } = getCellSpan(candidate);
+      return c + colSpan - 1 >= col ? candidate : null;
+    }
+  }
+  return null;
+}
+
+// A cell's own border flag on one side and its neighbor's flag on the touching side (e.g. my
+// borderBottom vs. the cell below's borderTop) are stored independently — so the edge should render
+// whenever EITHER side turned it on, not only when the cell being drawn happens to own the flag.
+// Mine wins if both are set (arbitrary but consistent tiebreak for color/width).
+export function resolveBorderSide(
+  mineOn: boolean | undefined,
+  mineColor: string | undefined,
+  mineWidth: number | undefined,
+  neighborOn: boolean | undefined,
+  neighborColor: string | undefined,
+  neighborWidth: number | undefined,
+): { color: string; width: number } | null {
+  if (mineOn) return { color: mineColor ?? "#000000", width: mineWidth ?? DEFAULT_BORDER_WIDTH_PX };
+  if (neighborOn) return { color: neighborColor ?? "#000000", width: neighborWidth ?? DEFAULT_BORDER_WIDTH_PX };
+  return null;
+}
+
+// Explicit borders are rendered as a SEPARATE overlay of solid rectangles positioned on top of the
+// whole table, rather than per-cell box-shadow. Reason: even with a single, correctly-resolved owner
+// cell per edge (see below), that owner is still just one `<td>` among many siblings — and a LATER
+// sibling cell's own plain 1px gridline (a real `border-*`, not a box-shadow) always paints AFTER an
+// EARLIER cell's box-shadow, per normal in-flow paint order. Wherever a vertical gridline crossed a
+// horizontal explicit-border band, the later-painted gridline showed through as a small notch,
+// cutting the border into segments. An absolutely-positioned overlay is a POSITIONED sibling of the
+// `<table>` itself, which — regardless of z-index — always paints after all of the table's own
+// normal-flow content (background/borders/box-shadow of every cell), so nothing from any cell can
+// ever paint on top of it.
+//
+// Each shared edge still resolves to exactly ONE owner — the earlier cell in reading order, checking
+// both its own flag and the later cell's opposite flag (so toggling "Bottom" on the upper cell or
+// "Top" on the lower cell both produce the same single line) — except the grid's own outer top/left
+// edge (row 0 / column 0), which has no earlier cell to delegate to. `findRowAnchorCell` (not a raw
+// index lookup) means this stays correct against a wider/narrower merged neighbor too: every column
+// a wide merge spans independently discovers that same covering cell, even from a position the merge
+// only covers rather than anchors.
+export type BorderSegment = { left: number; top: number; width: number; height: number; color: string };
+
+// rowBottoms is normally the exact same array as rowTops — they only ever differ once the live
+// on-screen anchor-to-bottom shift is active (see the editor's own comment on that), where the row
+// right before the spacer needs its OWN natural bottom edge here, not the anchor row's inflated top.
+export function computeBorderSegments(
+  grid: SpecsGrid,
+  colPrefixSums: number[],
+  rowTops: number[],
+  rowBottoms: number[],
+  hiddenRowIndexes: Set<number>,
+): BorderSegment[] {
+  const segments: BorderSegment[] = [];
+  const maxColIdx = colPrefixSums.length - 1;
+  const maxRowIdx = rowTops.length - 1;
+  for (let r = 0; r < grid.rows.length; r += 1) {
+    // Deliberately NOT skipping a hidden row entirely as a border owner here — a hidden row whose
+    // neighbor is still VISIBLE is exactly the "trailing divider row" case: its own bottom/top
+    // position collapses to zero height, so whatever border its VISIBLE neighbor wants still lands
+    // correctly at the seam where the hidden content used to be. What DOES need gating, per cell
+    // below, is which SIDE'S OWN style is allowed to actually produce a border — a hidden row's own
+    // border property must never draw (regardless of whether the far side is visible or hidden), and
+    // a visible row's own border property must always draw (regardless of the far side's state). See
+    // `ownRowVisible` below.
+    const row = grid.rows[r];
+    const ownRowVisible = !hiddenRowIndexes.has(r);
+    for (let c = 0; c < grid.columnWidths.length; c += 1) {
+      const cell = row.cells[c];
+      if (!cell) continue;
+      const { rowSpan, colSpan } = getCellSpan(cell);
+      const style = cell.style ?? {};
+      // getCellSpan only guarantees a finite positive integer, not that it actually fits within the
+      // grid's current size from this cell's position — a stored span that outgrew the grid (e.g.
+      // from an earlier bug, before this session's various merge-adjustment fixes) would otherwise
+      // index colPrefixSums/rowTops out of bounds, producing `undefined` and a NaN width/height.
+      // Clamping here means such a cell just visually caps at the grid's edge instead of crashing.
+      const left = colPrefixSums[c];
+      const right = colPrefixSums[Math.min(c + colSpan, maxColIdx)];
+      const top = rowTops[r];
+      const bottom = rowBottoms[Math.min(r + rowSpan, maxRowIdx)];
+
+      if (r === 0 && ownRowVisible && style.borderTop) {
+        const width = style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX;
+        segments.push({ left, top, width: right - left, height: width, color: style.borderColor ?? "#000000" });
+      }
+      if (c === 0 && ownRowVisible && style.borderLeft) {
+        const width = style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX;
+        segments.push({ left, top, width, height: bottom - top, color: style.borderColor ?? "#000000" });
+      }
+      // Ownership-aware, not just adjacency-aware: this cell's own borderBottom only counts while its
+      // OWN row is visible, and the neighbor's borderTop only counts while THAT row is visible —
+      // independently of each other. A border between a hidden row and a visible one therefore always
+      // resolves to whichever side is actually visible (if either), rather than a blanket "hide
+      // whenever either side is hidden" or "keep whenever either side is visible" rule — either of
+      // which is provably wrong in some direction: a still-visible row's own explicit border must
+      // always show regardless of what's hidden on the other side (it's that row's own decoration),
+      // while a hidden row's own border must never show even if it happens to face a visible
+      // neighbor that simply doesn't specify a border of its own.
+      const belowNeighbor = findRowAnchorCell(grid.rows[r + rowSpan], c);
+      const belowNeighborVisible = !hiddenRowIndexes.has(r + rowSpan);
+      const mineBottomOn = Boolean(ownRowVisible && style.borderBottom);
+      const neighborTopOn = Boolean(belowNeighborVisible && belowNeighbor?.style?.borderTop);
+      const bottomResolved = resolveBorderSide(
+        mineBottomOn,
+        style.borderColor,
+        style.borderWidthPx,
+        neighborTopOn,
+        belowNeighbor?.style?.borderColor,
+        belowNeighbor?.style?.borderWidthPx,
+      );
+      if (bottomResolved) {
+        // Which edge this boundary actually belongs to matters once rowTops/rowBottoms can differ
+        // (see their own comment) — a border satisfied by THIS row's own borderBottom is this row's
+        // own decoration and wants its natural (non-stretching) bottom edge, but one satisfied ONLY
+        // by the row BELOW's own borderTop (mineBottomOn false here) is really THAT row's own top
+        // edge — e.g. an anchored row's own top border — and needs ITS top position instead, which
+        // is what actually tracks the anchor shift. Falls back to `bottom` when neither/both are set
+        // (resolveBorderSide already prefers "mine" there, so this matches that same preference).
+        const edgeAtBottom = mineBottomOn || !neighborTopOn ? bottom : rowTops[Math.min(r + rowSpan, maxRowIdx)];
+        // When every row before this one has collapsed to zero height (this cell's own row is
+        // hidden and sits right at the start of the table), the resolved edge can land smaller than
+        // the border's own width, pushing `top` negative — off the top edge of the scrollable area
+        // and therefore invisible even though the border is otherwise correctly meant to show here
+        // (as the resumed visible content's own leading edge). Clamp to 0 so it still renders, flush
+        // against the table's actual top.
+        segments.push({ left, top: Math.max(0, edgeAtBottom - bottomResolved.width), width: right - left, height: bottomResolved.width, color: bottomResolved.color });
+      }
+      const rightNeighbor = findRowAnchorCell(grid.rows[r], c + colSpan);
+      const rightResolved = resolveBorderSide(
+        ownRowVisible && style.borderRight,
+        style.borderColor,
+        style.borderWidthPx,
+        ownRowVisible && rightNeighbor?.style?.borderLeft,
+        rightNeighbor?.style?.borderColor,
+        rightNeighbor?.style?.borderWidthPx,
+      );
+      if (rightResolved) {
+        segments.push({ left: right - rightResolved.width, top, width: rightResolved.width, height: bottom - top, color: rightResolved.color });
+      }
+    }
+  }
+  return segments;
+}
+
 // Runtime shape-guard for a value loaded from Firestore — a malformed/partial document (or a
 // leftover value from a totally different feature) must never be allowed to crash the editor or
 // the PDF builder. Returns null on anything that doesn't look like a well-formed grid.
@@ -317,17 +515,31 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
         ? cell.runs.filter((r): r is SpecsTextRun => Boolean(r) && typeof r === "object" && typeof (r as Record<string, unknown>).text === "string")
         : null;
       const sanitizedRuns = validRuns && validRuns.length > 0 ? validRuns : undefined;
-      if (clampedRowSpan !== cell.rowSpan || clampedColSpan !== cell.colSpan || sanitizedRuns !== cell.runs) {
-        // Firestore's setDoc rejects a literal `undefined` property value outright — `runs` has to be
-        // an absent key when there's nothing valid to keep, not a present key holding `undefined`, so
-        // this is built field-by-field rather than `{ ...cell, runs: undefined }`.
+      const confirmable = typeof cell.confirmable === "boolean" ? cell.confirmable : undefined;
+      const confirmedYes = typeof cell.confirmedYes === "boolean" ? cell.confirmedYes : undefined;
+      const confirmedAt = typeof cell.confirmedAt === "string" && cell.confirmedAt ? cell.confirmedAt : undefined;
+      if (
+        clampedRowSpan !== cell.rowSpan ||
+        clampedColSpan !== cell.colSpan ||
+        sanitizedRuns !== cell.runs ||
+        confirmable !== cell.confirmable ||
+        confirmedYes !== cell.confirmedYes ||
+        confirmedAt !== cell.confirmedAt
+      ) {
+        // Firestore's setDoc rejects a literal `undefined` property value outright — every optional
+        // field here (including rowSpan/colSpan, absent on any cell that was never part of a merge)
+        // has to be an absent key when there's nothing valid to keep, not a present key holding
+        // `undefined`, so this is built field-by-field rather than `{ ...cell, runs: undefined }`.
         normalizedCells.push({
           text: cell.text,
-          rowSpan: clampedRowSpan,
-          colSpan: clampedColSpan,
+          ...(typeof clampedRowSpan === "number" ? { rowSpan: clampedRowSpan } : {}),
+          ...(typeof clampedColSpan === "number" ? { colSpan: clampedColSpan } : {}),
           ...(cell.style ? { style: cell.style } : {}),
           ...(cell.imageUrl ? { imageUrl: cell.imageUrl } : {}),
           ...(sanitizedRuns ? { runs: sanitizedRuns } : {}),
+          ...(typeof confirmable === "boolean" ? { confirmable } : {}),
+          ...(typeof confirmedYes === "boolean" ? { confirmedYes } : {}),
+          ...(confirmedAt ? { confirmedAt } : {}),
         });
       } else {
         normalizedCells.push(cell);
@@ -411,6 +623,11 @@ export type SpecsGridVersion = {
   // fetchProjectUpdatedAtMarker's own callers) — unused by Specs, which has no automatic/outdated-
   // detection concept, only the plain manual "Save Version" flow above.
   capturedProjectMarker?: string;
+  // Set only on a Specs version saved WHILE the sheet was actively shared with a client (see
+  // saveSpecsSheetVersion in app/(app)/projects/[projectId]/page.tsx) — this snapshot is the
+  // permanent record of exactly what the client saw and answered at that point; the live sheet
+  // resets to a fresh, unanswered, editable draft immediately after. Unused by Quote.
+  sentToClient?: boolean;
 };
 
 export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
@@ -423,18 +640,20 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
     if (!grid) continue;
     const savedByName = typeof row.savedByName === "string" && row.savedByName ? row.savedByName : "";
     const capturedProjectMarker = typeof row.capturedProjectMarker === "string" && row.capturedProjectMarker ? row.capturedProjectMarker : "";
+    const sentToClient = row.sentToClient === true;
     out.push({
       id: typeof row.id === "string" && row.id ? row.id : genSpecsRowId(),
       name: typeof row.name === "string" ? row.name : "",
       version: typeof row.version === "number" && Number.isFinite(row.version) ? row.version : 0,
       savedAtIso: typeof row.savedAtIso === "string" ? row.savedAtIso : "",
       // Firestore's setDoc rejects a literal `undefined` property value outright (throws
-      // "invalid-argument") — these two optional fields have to be genuinely ABSENT keys when
-      // there's no value, not present keys holding `undefined`, since a normalized version like this
-      // one routinely gets spread into a new array and written straight back (every "Save Version" /
-      // "Update" flow that appends to an existing history list).
+      // "invalid-argument") — these optional fields have to be genuinely ABSENT keys when there's
+      // no value, not present keys holding `undefined`, since a normalized version like this one
+      // routinely gets spread into a new array/document and written straight back (every "Save
+      // Version" / "Update" flow that appends to an existing history list).
       ...(savedByName ? { savedByName } : {}),
       ...(capturedProjectMarker ? { capturedProjectMarker } : {}),
+      ...(sentToClient ? { sentToClient } : {}),
       grid,
     });
   }

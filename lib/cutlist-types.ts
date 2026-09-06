@@ -38,6 +38,7 @@ export type CutlistRow = {
   adjustableShelfDrilling?: string;
   hingesUp?: string[];
   hingesDown?: string[];
+  hingeSide?: "" | "LH" | "RH" | "Mirror";
   information: string;
   grain: boolean;
   grainValue: string;

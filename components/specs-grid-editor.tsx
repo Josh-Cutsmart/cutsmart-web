@@ -6,6 +6,7 @@ import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import {
   Bold,
   Underline,
+  CheckSquare,
   AlignLeft,
   AlignCenter,
   AlignRight,
@@ -36,7 +37,6 @@ import {
   type SpecsGridSelection,
   type SpecsCellStyle,
   type SpecsCell,
-  type SpecsRow,
   type SpecsRowGroup,
   type SpecsPageSize,
   type SpecsTextRun,
@@ -45,6 +45,7 @@ import {
   runsToPlainText,
   normalizeTextRuns,
   getCellSpan,
+  computeBorderSegments,
   canMergeSelection,
   mergeSelection,
   unmergeCell,
@@ -157,6 +158,14 @@ export type SpecsGridEditorProps = {
   // exactly the same either way, this just stops it from visibly looking "highlighted" while you do
   // it. Only Quote's live project sheet sets this; every other caller keeps the ring.
   hideCellSelectionOutline?: boolean;
+  // True once a client-confirmation link has been created for this project's specs sheet (see
+  // specsShareStatus in app/(app)/projects/[projectId]/page.tsx) — locks the ENTIRE sheet against
+  // deletion/hiding/text-edits the same way an individual client-answered row already is (see
+  // isRowAnsweredByClient's own comment), not just the specific rows/sections that happen to have
+  // an answer yet. The client could be looking at (or about to answer) any part of the sheet the
+  // moment it's sent, not only cells already answered — only Specifications' own live project sheet
+  // ever sets this; Quote has no client-confirmation concept.
+  isSentToClient?: boolean;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -211,158 +220,6 @@ function imageObjectPositionFor(style: SpecsCellStyle): string {
   const horizontal = style.align === "left" ? "left" : style.align === "right" ? "right" : "center";
   const vertical = style.verticalAlign === "top" ? "top" : style.verticalAlign === "bottom" ? "bottom" : "center";
   return `${horizontal} ${vertical}`;
-}
-
-// Finds whichever cell actually occupies (row, col) visually — the cell stored directly there, or
-// (if that position is null, i.e. covered by an earlier anchor's colSpan) the anchor reached by
-// scanning backward within the same row. A plain index lookup at a covered position returns null,
-// which silently hides a wide merged cell from a neighboring row's own border-sharing checks —
-// exactly why a merged cell's border used to look cut off after its first column. Doesn't chase
-// rowSpan coverage reaching down from an earlier row — narrower than a full grid search, but covers
-// the common horizontal-merge case these neighbor lookups need.
-function findRowAnchorCell(row: SpecsRow | undefined, col: number): SpecsCell | null {
-  if (!row || col < 0) return null;
-  for (let c = col; c >= 0; c -= 1) {
-    const candidate = row.cells[c];
-    if (candidate) {
-      const { colSpan } = getCellSpan(candidate);
-      return c + colSpan - 1 >= col ? candidate : null;
-    }
-  }
-  return null;
-}
-
-// A cell's own border flag on one side and its neighbor's flag on the touching side (e.g. my
-// borderBottom vs. the cell below's borderTop) are stored independently — so the edge should render
-// whenever EITHER side turned it on, not only when the cell being drawn happens to own the flag.
-// Mine wins if both are set (arbitrary but consistent tiebreak for color/width).
-function resolveBorderSide(
-  mineOn: boolean | undefined,
-  mineColor: string | undefined,
-  mineWidth: number | undefined,
-  neighborOn: boolean | undefined,
-  neighborColor: string | undefined,
-  neighborWidth: number | undefined,
-): { color: string; width: number } | null {
-  if (mineOn) return { color: mineColor ?? "#000000", width: mineWidth ?? DEFAULT_BORDER_WIDTH_PX };
-  if (neighborOn) return { color: neighborColor ?? "#000000", width: neighborWidth ?? DEFAULT_BORDER_WIDTH_PX };
-  return null;
-}
-
-// Explicit borders are rendered as a SEPARATE overlay of solid rectangles positioned on top of the
-// whole table, rather than per-cell box-shadow. Reason: even with a single, correctly-resolved owner
-// cell per edge (see below), that owner is still just one `<td>` among many siblings — and a LATER
-// sibling cell's own plain 1px gridline (a real `border-*`, not a box-shadow) always paints AFTER an
-// EARLIER cell's box-shadow, per normal in-flow paint order. Wherever a vertical gridline crossed a
-// horizontal explicit-border band, the later-painted gridline showed through as a small notch,
-// cutting the border into segments. An absolutely-positioned overlay is a POSITIONED sibling of the
-// `<table>` itself, which — regardless of z-index — always paints after all of the table's own
-// normal-flow content (background/borders/box-shadow of every cell), so nothing from any cell can
-// ever paint on top of it.
-//
-// Each shared edge still resolves to exactly ONE owner — the earlier cell in reading order, checking
-// both its own flag and the later cell's opposite flag (so toggling "Bottom" on the upper cell or
-// "Top" on the lower cell both produce the same single line) — except the grid's own outer top/left
-// edge (row 0 / column 0), which has no earlier cell to delegate to. `findRowAnchorCell` (not a raw
-// index lookup) means this stays correct against a wider/narrower merged neighbor too: every column
-// a wide merge spans independently discovers that same covering cell, even from a position the merge
-// only covers rather than anchors.
-type BorderSegment = { left: number; top: number; width: number; height: number; color: string };
-
-// rowBottoms is normally the exact same array as rowTops — they only ever differ once the live
-// on-screen anchor-to-bottom shift is active (see its own comment further down), where the row
-// right before the spacer needs its OWN natural bottom edge here, not the anchor row's inflated top.
-function computeBorderSegments(grid: SpecsGrid, colPrefixSums: number[], rowTops: number[], rowBottoms: number[], hiddenRowIndexes: Set<number>): BorderSegment[] {
-  const segments: BorderSegment[] = [];
-  const maxColIdx = colPrefixSums.length - 1;
-  const maxRowIdx = rowTops.length - 1;
-  for (let r = 0; r < grid.rows.length; r += 1) {
-    // Deliberately NOT skipping a hidden row entirely as a border owner here — a hidden row whose
-    // neighbor is still VISIBLE is exactly the "trailing divider row" case: its own bottom/top
-    // position collapses to zero height, so whatever border its VISIBLE neighbor wants still lands
-    // correctly at the seam where the hidden content used to be. What DOES need gating, per cell
-    // below, is which SIDE'S OWN style is allowed to actually produce a border — a hidden row's own
-    // border property must never draw (regardless of whether the far side is visible or hidden), and
-    // a visible row's own border property must always draw (regardless of the far side's state). See
-    // `ownRowVisible` below.
-    const row = grid.rows[r];
-    const ownRowVisible = !hiddenRowIndexes.has(r);
-    for (let c = 0; c < grid.columnWidths.length; c += 1) {
-      const cell = row.cells[c];
-      if (!cell) continue;
-      const { rowSpan, colSpan } = getCellSpan(cell);
-      const style = cell.style ?? {};
-      // getCellSpan only guarantees a finite positive integer, not that it actually fits within the
-      // grid's current size from this cell's position — a stored span that outgrew the grid (e.g.
-      // from an earlier bug, before this session's various merge-adjustment fixes) would otherwise
-      // index colPrefixSums/rowTops out of bounds, producing `undefined` and a NaN width/height.
-      // Clamping here means such a cell just visually caps at the grid's edge instead of crashing.
-      const left = colPrefixSums[c];
-      const right = colPrefixSums[Math.min(c + colSpan, maxColIdx)];
-      const top = rowTops[r];
-      const bottom = rowBottoms[Math.min(r + rowSpan, maxRowIdx)];
-
-      if (r === 0 && ownRowVisible && style.borderTop) {
-        const width = style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX;
-        segments.push({ left, top, width: right - left, height: width, color: style.borderColor ?? "#000000" });
-      }
-      if (c === 0 && ownRowVisible && style.borderLeft) {
-        const width = style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX;
-        segments.push({ left, top, width, height: bottom - top, color: style.borderColor ?? "#000000" });
-      }
-      // Ownership-aware, not just adjacency-aware: this cell's own borderBottom only counts while its
-      // OWN row is visible, and the neighbor's borderTop only counts while THAT row is visible —
-      // independently of each other. A border between a hidden row and a visible one therefore always
-      // resolves to whichever side is actually visible (if either), rather than a blanket "hide
-      // whenever either side is hidden" or "keep whenever either side is visible" rule — either of
-      // which is provably wrong in some direction: a still-visible row's own explicit border must
-      // always show regardless of what's hidden on the other side (it's that row's own decoration),
-      // while a hidden row's own border must never show even if it happens to face a visible
-      // neighbor that simply doesn't specify a border of its own.
-      const belowNeighbor = findRowAnchorCell(grid.rows[r + rowSpan], c);
-      const belowNeighborVisible = !hiddenRowIndexes.has(r + rowSpan);
-      const mineBottomOn = Boolean(ownRowVisible && style.borderBottom);
-      const neighborTopOn = Boolean(belowNeighborVisible && belowNeighbor?.style?.borderTop);
-      const bottomResolved = resolveBorderSide(
-        mineBottomOn,
-        style.borderColor,
-        style.borderWidthPx,
-        neighborTopOn,
-        belowNeighbor?.style?.borderColor,
-        belowNeighbor?.style?.borderWidthPx,
-      );
-      if (bottomResolved) {
-        // Which edge this boundary actually belongs to matters once rowTops/rowBottoms can differ
-        // (see their own comment) — a border satisfied by THIS row's own borderBottom is this row's
-        // own decoration and wants its natural (non-stretching) bottom edge, but one satisfied ONLY
-        // by the row BELOW's own borderTop (mineBottomOn false here) is really THAT row's own top
-        // edge — e.g. an anchored row's own top border — and needs ITS top position instead, which
-        // is what actually tracks the anchor shift. Falls back to `bottom` when neither/both are set
-        // (resolveBorderSide already prefers "mine" there, so this matches that same preference).
-        const edgeAtBottom = mineBottomOn || !neighborTopOn ? bottom : rowTops[Math.min(r + rowSpan, maxRowIdx)];
-        // When every row before this one has collapsed to zero height (this cell's own row is
-        // hidden and sits right at the start of the table), the resolved edge can land smaller than
-        // the border's own width, pushing `top` negative — off the top edge of the scrollable area
-        // and therefore invisible even though the border is otherwise correctly meant to show here
-        // (as the resumed visible content's own leading edge). Clamp to 0 so it still renders, flush
-        // against the table's actual top.
-        segments.push({ left, top: Math.max(0, edgeAtBottom - bottomResolved.width), width: right - left, height: bottomResolved.width, color: bottomResolved.color });
-      }
-      const rightNeighbor = findRowAnchorCell(grid.rows[r], c + colSpan);
-      const rightResolved = resolveBorderSide(
-        ownRowVisible && style.borderRight,
-        style.borderColor,
-        style.borderWidthPx,
-        ownRowVisible && rightNeighbor?.style?.borderLeft,
-        rightNeighbor?.style?.borderColor,
-        rightNeighbor?.style?.borderWidthPx,
-      );
-      if (rightResolved) {
-        segments.push({ left: right - rightResolved.width, top, width: rightResolved.width, height: bottom - top, color: rightResolved.color });
-      }
-    }
-  }
-  return segments;
 }
 
 type GroupOutline = { id: string; name: string; hidden: boolean; top: number; height: number };
@@ -621,6 +478,7 @@ export default function SpecsGridEditor({
   lockUngroupedBlankCells,
   showEditableGroupBorders,
   hideCellSelectionOutline,
+  isSentToClient,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -639,6 +497,14 @@ export default function SpecsGridEditor({
   useEffect(() => {
     selectionRef.current = selection;
   }, [selection]);
+  // A separate, non-contiguous selection built via Ctrl/Cmd+click — used ONLY by the "Mark for
+  // Confirmation" toolbar button (project view), so staff can mark many scattered cells across the
+  // sheet as one bulk action instead of one cell at a time. Deliberately independent of `selection`
+  // (the normal single-rectangle selection every other toolbar action reads) rather than extending
+  // that model to arbitrary multi-cell ranges, which would ripple into merge/border/fill/copy-paste
+  // and every other selection-based action that assumes one contiguous rectangle. Keyed by
+  // `${row}:${col}`.
+  const [ctrlMarkedCells, setCtrlMarkedCells] = useState<Set<string>>(new Set());
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   // Which row's "+ add row" button is currently faded in — set on hovering anywhere in that row
   // (not just the small gutter cell itself), cleared on leaving it. Only rendered/used in a
@@ -807,7 +673,17 @@ export default function SpecsGridEditor({
     setHistoryCounts({ undo: undoStackRef.current.length, redo: 0 });
   };
 
+  // One choke point every structural/content mutation in this component funnels through
+  // (insertRow/removeRow/insertColumn/removeColumn, merge/unmerge, cell text commits, image
+  // insert/remove, cell style, toggleCellConfirmable, drag-resize commits...) — gating it here
+  // once, rather than patching each individual button/handler, is what makes the sheet
+  // COMPLETELY locked the moment it's sent (isSentToClient), not just the specific actions
+  // (delete row, text edit) already covered piecemeal before this. The only way past this while
+  // sent is the parent page's own "Save Version" escape hatch (see its own comment in
+  // app/(app)/projects/[projectId]/page.tsx), which resets the sheet and revokes the link
+  // BEFORE remounting this component with isSentToClient already false.
   const applyChange = (next: SpecsGrid, persist: boolean) => {
+    if (isSentToClient) return;
     if (persist) pushHistory(liveGridRef.current);
     liveGridRef.current = next;
     setLiveGrid(next);
@@ -815,6 +691,7 @@ export default function SpecsGridEditor({
   };
 
   const undo = () => {
+    if (isSentToClient) return;
     const prev = undoStackRef.current.pop();
     if (!prev) return;
     redoStackRef.current.push(liveGridRef.current);
@@ -825,6 +702,7 @@ export default function SpecsGridEditor({
   };
 
   const redo = () => {
+    if (isSentToClient) return;
     const next = redoStackRef.current.pop();
     if (!next) return;
     undoStackRef.current.push(liveGridRef.current);
@@ -1062,6 +940,47 @@ export default function SpecsGridEditor({
         // key entirely rather than setting it to undefined when clearing the image.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { imageUrl: _removed, ...rest } = c!;
+        return rest;
+      });
+      return { ...r, cells };
+    });
+    applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
+  };
+
+  // "Mark for Client Confirmation" — flags a single cell as one the external client-confirmation
+  // flow (app/client/specs/[shareId]) should render as a Yes/No toggle. Turning it off also clears
+  // any prior answer, since an unmarked cell shouldn't keep showing a stale Yes/No.
+  const toggleCellConfirmable = (row: number, col: number) => {
+    const cell = liveGrid.rows[row]?.cells[col];
+    if (!cell) return;
+    const nextConfirmable = !cell.confirmable;
+    const rows = liveGrid.rows.map((r, ri) => {
+      if (ri !== row) return r;
+      const cells = r.cells.map((c, ci) => {
+        if (ci !== col) return c;
+        if (nextConfirmable) return { ...c!, confirmable: true };
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { confirmable: _removedConfirmable, confirmedYes: _removedYes, confirmedAt: _removedAt, ...rest } = c!;
+        return rest;
+      });
+      return { ...r, cells };
+    });
+    applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
+  };
+
+  // Bulk version of the above — applies the same field add/remove logic across every cell in
+  // `targets` as ONE undo step, driven by the Ctrl/Cmd+click multi-select (ctrlMarkedCells). Every
+  // targeted cell ends up in the SAME `nextConfirmable` state (a plain "select all / deselect all"
+  // convention) rather than each cell independently toggling its own current state, which would be
+  // ambiguous for a mixed selection.
+  const setCellsConfirmable = (targets: { row: number; col: number }[], nextConfirmable: boolean) => {
+    const targetSet = new Set(targets.map((t) => `${t.row}:${t.col}`));
+    const rows = liveGrid.rows.map((r, ri) => {
+      const cells = r.cells.map((c, ci) => {
+        if (!c || !targetSet.has(`${ri}:${ci}`)) return c;
+        if (nextConfirmable) return { ...c, confirmable: true };
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { confirmable: _removedConfirmable, confirmedYes: _removedYes, confirmedAt: _removedAt, ...rest } = c;
         return rest;
       });
       return { ...r, cells };
@@ -1742,6 +1661,46 @@ export default function SpecsGridEditor({
           {canUnmerge ? <TableCellsSplit size={14} /> : <TableCellsMerge size={14} />}
           {canUnmerge ? "Unmerge" : "Merge"}
         </button>
+        {isProjectSheetView ? (
+          <>
+            <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
+            <button
+              type="button"
+              disabled={!activeCell && ctrlMarkedCells.size === 0}
+              onClick={() => {
+                // Ctrl/Cmd+click multi-select takes priority when it's non-empty — a plain "select
+                // all / deselect all" toggle across every marked cell, applied as one undo step
+                // (see setCellsConfirmable's own comment), then the multi-select is cleared so it
+                // doesn't linger and get reused unintentionally by a later, unrelated click.
+                if (ctrlMarkedCells.size > 0) {
+                  const targets = Array.from(ctrlMarkedCells).map((k) => {
+                    const [r, c] = k.split(":").map(Number);
+                    return { row: r, col: c };
+                  });
+                  const allAlreadyConfirmable = targets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
+                  setCellsConfirmable(targets, !allAlreadyConfirmable);
+                  setCtrlMarkedCells(new Set());
+                } else if (activeCell) {
+                  toggleCellConfirmable(activeCell.row, activeCell.col);
+                }
+              }}
+              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+              style={ctrlMarkedCells.size === 0 && activeCell?.cell?.confirmable ? toolbarButtonActiveStyle : toolbarButtonStyle}
+              title={
+                ctrlMarkedCells.size > 0
+                  ? `Mark or unmark all ${ctrlMarkedCells.size} selected cells for client confirmation`
+                  : "Mark this cell for the client to confirm with Yes/No — Ctrl/Cmd+click other cells to select several at once"
+              }
+            >
+              <CheckSquare size={14} />
+              {ctrlMarkedCells.size > 0
+                ? `Mark ${ctrlMarkedCells.size} Cells`
+                : activeCell?.cell?.confirmable
+                  ? "Confirmable ✓"
+                  : "Mark for Confirmation"}
+            </button>
+          </>
+        ) : null}
         {isProjectSheetView ? null : (
           <>
             <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
@@ -2036,6 +1995,14 @@ export default function SpecsGridEditor({
               const isRowLockedForViewer = Boolean(
                 canEditSpecsGroup && rowGroupForRow?.editableByRoleIds && rowGroupForRow.editableByRoleIds.length > 0 && !canEditSpecsGroup(rowGroupForRow),
               );
+              // Same protection as the left-hand delete button above (see removeRowAt's own
+              // disabled state) — a row containing a cell the client has actually answered
+              // (Yes or No) can't have its text edited either, for the same reason: changing what
+              // the client was shown/agreed to after the fact would make their answer meaningless.
+              // Also locked the moment the WHOLE sheet has been sent (isSentToClient), even before
+              // any individual cell has an answer yet — the client could be looking at any row the
+              // instant it's sent, not only ones already answered.
+              const isRowAnsweredByClient = Boolean(isSentToClient) || row.cells.some((c) => c && c.confirmable && c.confirmedYes !== undefined);
               return (
               <Fragment key={row.id}>
                 {rowIdx === anchorSpacerBeforeRowIdx ? (
@@ -2107,6 +2074,7 @@ export default function SpecsGridEditor({
                   const { rowSpan, colSpan } = getCellSpan(cell);
                   const key = `${rowIdx}:${colIdx}`;
                   const style = cell.style ?? {};
+                  const isCtrlMarked = ctrlMarkedCells.has(key);
                   // A table row's `height` is only a floor — content that needs more space always
                   // wins, which is exactly why a very short row (e.g. 5px) never actually rendered
                   // that short once a cell's own text/line-height needed more room. Pinning an
@@ -2133,6 +2101,24 @@ export default function SpecsGridEditor({
                       rowSpan={rowSpan > 1 ? rowSpan : undefined}
                       onMouseDown={(e) => {
                         if (isUngroupedBlankCell) return;
+                        // Ctrl/Cmd+click is its own, entirely separate interaction — toggles this
+                        // cell's membership in ctrlMarkedCells (the "Mark for Confirmation" bulk
+                        // multi-select, project view only) and never touches the normal single-
+                        // rectangle `selection` every other toolbar action reads. Excludes a right-
+                        // click (button 2) so Ctrl+right-click still opens the usual context menu.
+                        if (isProjectSheetView && (e.ctrlKey || e.metaKey) && e.button !== 2) {
+                          setCtrlMarkedCells((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(key)) next.delete(key);
+                            else next.add(key);
+                            return next;
+                          });
+                          return;
+                        }
+                        // Any OTHER click drops whatever Ctrl+click multi-select was in progress —
+                        // it's a transient aid for the one bulk action, not meant to linger through
+                        // an unrelated normal click.
+                        if (ctrlMarkedCells.size > 0) setCtrlMarkedCells(new Set());
                         // Right-click is a mousedown too, and fires before onContextMenu — without
                         // this check, right-clicking anywhere would collapse a multi-cell selection
                         // down to just the clicked cell before the context menu ever saw it. Keep an
@@ -2202,7 +2188,21 @@ export default function SpecsGridEditor({
                         // itself is a single rectangle drawn once around the whole selection (see
                         // selectionOutline below), not per-cell here — a per-cell ring doubled up into
                         // a visible extra line wherever two selected cells shared a gridline.
-                        boxShadow: isProjectSheetView ? undefined : gridlineBoxShadow(rowIdx === 0, colIdx === 0),
+                        // A confirmable cell gets a persistent colored inset border so staff can spot
+                        // marked cells at a glance without needing to click into each one — only
+                        // meaningful in a project's own sheet (isProjectSheetView), never the company
+                        // template builder, matching the toolbar toggle's own gating. A cell currently
+                        // in the Ctrl+click multi-select (isCtrlMarked) gets a distinct amber double
+                        // ring instead/on top — deliberately a different color than the blue
+                        // "already confirmable" marker, so "about to be bulk-toggled" never reads as
+                        // "already marked."
+                        boxShadow: isCtrlMarked
+                          ? "inset 0 0 0 2px #F59E0B, inset 0 0 0 4px #ffffff, inset 0 0 0 6px #F59E0B"
+                          : isProjectSheetView
+                            ? cell.confirmable
+                              ? "inset 0 0 0 2px var(--brand-strong)"
+                              : undefined
+                            : gridlineBoxShadow(rowIdx === 0, colIdx === 0),
                       }}
                     >
                       {cell.imageUrl ? (
@@ -2263,11 +2263,56 @@ export default function SpecsGridEditor({
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
                             onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, cell, px)}
-                            readOnly={isRowLockedForViewer || isUngroupedBlankCell}
-                            readOnlyReason={isUngroupedBlankCell && !isRowLockedForViewer ? "Blank cells outside a section can't be edited" : undefined}
+                            readOnly={isRowLockedForViewer || isUngroupedBlankCell || isRowAnsweredByClient}
+                            readOnlyReason={
+                              isRowAnsweredByClient
+                                ? isSentToClient
+                                  ? "This sheet has been sent to the client and can't be edited — save a version first to make changes"
+                                  : "This row has a client-confirmed answer and can't be edited"
+                                : isUngroupedBlankCell && !isRowLockedForViewer
+                                  ? "Blank cells outside a section can't be edited"
+                                  : undefined
+                            }
                           />
                         </div>
                       )}
+                      {/* Read-only status for a confirmable cell — this editor never writes
+                          confirmedYes/confirmedAt itself, only the public
+                          app/api/specs-share/[shareId]/answer route does. Once answered, this fills
+                          the ENTIRE cell solid green/red (matching the client's own full-cell Yes/No
+                          fill — see components/specs-grid-client-view.tsx) rather than a small
+                          corner badge, so staff can read a cell's answer at a glance without
+                          needing to zoom in. Still-unanswered stays a small "Pending" pill — there's
+                          no color for "nothing to show yet" that wouldn't misleadingly read as an
+                          actual answer. */}
+                      {isProjectSheetView && cell.confirmable ? (
+                        cell.confirmedYes === undefined ? (
+                          <span
+                            className="pointer-events-none absolute right-1 top-1 z-10 inline-flex items-center rounded-[999px] px-1.5 py-[1px] text-[10px] font-bold"
+                            style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)", border: "1px solid var(--glass-border)" }}
+                            title="Waiting on the client"
+                          >
+                            Pending
+                          </span>
+                        ) : (
+                          // No z-index (and no invented border of our own) — this cell's real
+                          // explicit border, if the template author drew one, is rendered by the
+                          // SEPARATE overlay below (see computeBorderSegments) as a plain sibling of
+                          // the whole <table>, painted in normal DOM order. Giving this fill a
+                          // positive z-index (as it briefly had) outranks that overlay's own
+                          // default stacking and paints OVER it regardless of DOM order — hiding
+                          // the template's actual border and leaving only a hand-drawn stand-in
+                          // that didn't match its real width/color. Without z-index here, the real
+                          // border shows through exactly as it does on every other cell.
+                          <div
+                            className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] font-bold"
+                            style={cell.confirmedYes ? { backgroundColor: "var(--success-strong)", color: "#ffffff" } : { backgroundColor: "var(--danger-strong)", color: "#ffffff" }}
+                            title={cell.confirmedAt ? `Answered ${new Date(cell.confirmedAt).toLocaleString()}` : undefined}
+                          >
+                            {cell.confirmedYes ? "Yes" : "No"}
+                          </div>
+                        )
+                      ) : null}
                     </td>
                   );
                 })}
@@ -2290,6 +2335,13 @@ export default function SpecsGridEditor({
           ? liveGrid.rows.map((row, rowIdx) => {
               if (hiddenRowIndexes.has(rowIdx)) return null;
               const isHovered = hoveredRowIndex === rowIdx;
+              // A row the client has already answered (Yes OR No — confirmedYes !== undefined,
+              // not just cell.confirmable) is locked against this button: deleting it would
+              // silently throw away a real client decision with no way to recover it. Doesn't
+              // affect a row that's merely marked confirmable but not yet answered — UNLESS the
+              // whole sheet has been sent (isSentToClient), in which case every row is locked
+              // regardless, since the client could be looking at any of them.
+              const hasClientAnswer = Boolean(isSentToClient) || row.cells.some((c) => c && c.confirmable && c.confirmedYes !== undefined);
               return (
                 <div
                   key={row.id}
@@ -2307,33 +2359,53 @@ export default function SpecsGridEditor({
                         raised slightly off the sheet, independent of its sibling. */}
                     <button
                       type="button"
-                      onClick={() => removeRowAt(rowIdx)}
+                      disabled={hasClientAnswer}
+                      onClick={() => {
+                        if (hasClientAnswer) return;
+                        removeRowAt(rowIdx);
+                      }}
                       onMouseEnter={() => setLiftedButtonKey(`remove-${rowIdx}`)}
                       onMouseLeave={() => setLiftedButtonKey((prev) => (prev === `remove-${rowIdx}` ? null : prev))}
-                      title="Remove this row"
-                      className="flex h-4 w-4 items-center justify-center rounded-full transition-transform duration-150"
+                      title={
+                        hasClientAnswer
+                          ? isSentToClient
+                            ? "This sheet has been sent to the client and can't be edited — save a version first to make changes"
+                            : "This row has a client-confirmed answer and can't be deleted"
+                          : "Remove this row"
+                      }
+                      className="flex h-4 w-4 items-center justify-center rounded-full transition-transform duration-150 disabled:cursor-not-allowed"
                       style={{
-                        backgroundColor: "#EF4444",
+                        backgroundColor: hasClientAnswer ? "#9CA3AF" : "#EF4444",
                         color: "#ffffff",
-                        transform: liftedButtonKey === `remove-${rowIdx}` ? "translateY(-2px)" : "none",
-                        boxShadow: liftedButtonKey === `remove-${rowIdx}` ? "0 3px 6px rgba(0, 0, 0, 0.4)" : "none",
+                        transform: !hasClientAnswer && liftedButtonKey === `remove-${rowIdx}` ? "translateY(-2px)" : "none",
+                        boxShadow: !hasClientAnswer && liftedButtonKey === `remove-${rowIdx}` ? "0 3px 6px rgba(0, 0, 0, 0.4)" : "none",
                       }}
                     >
                       <Minus size={12} strokeWidth={3} color="#ffffff" />
                     </button>
                     <button
                       type="button"
-                      onClick={() => insertBlankTemplateRowBelow(rowIdx)}
+                      disabled={hasClientAnswer}
+                      onClick={() => {
+                        if (hasClientAnswer) return;
+                        insertBlankTemplateRowBelow(rowIdx);
+                      }}
                       onMouseEnter={() => setLiftedButtonKey(`add-${rowIdx}`)}
                       onMouseLeave={() => setLiftedButtonKey((prev) => (prev === `add-${rowIdx}` ? null : prev))}
-                      title="Add a blank row below"
-                      className="flex h-4 w-4 items-center justify-center rounded-full transition-transform duration-150"
+                      title={
+                        hasClientAnswer
+                          ? isSentToClient
+                            ? "This sheet has been sent to the client and can't be edited — save a version first to make changes"
+                            : "This row has a client-confirmed answer and can't be edited"
+                          : "Add a blank row below"
+                      }
+                      className="flex h-4 w-4 items-center justify-center rounded-full transition-transform duration-150 disabled:cursor-not-allowed"
                       style={{
-                        backgroundColor: "#22C55E",
+                        backgroundColor: hasClientAnswer ? "#9CA3AF" : "#22C55E",
                         color: "#ffffff",
                         marginRight: 5,
-                        transform: liftedButtonKey === `add-${rowIdx}` ? "translateY(-2px)" : "none",
-                        boxShadow: liftedButtonKey === `add-${rowIdx}` ? "0 3px 6px rgba(0, 0, 0, 0.4)" : "none",
+                        transform: !hasClientAnswer && liftedButtonKey === `add-${rowIdx}` ? "translateY(-2px)" : "none",
+                        boxShadow: !hasClientAnswer && liftedButtonKey === `add-${rowIdx}` ? "0 3px 6px rgba(0, 0, 0, 0.4)" : "none",
                       }}
                     >
                       <Plus size={12} strokeWidth={3} color="#ffffff" />

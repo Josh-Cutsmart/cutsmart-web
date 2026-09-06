@@ -717,16 +717,23 @@ export default function DashboardPage() {
 
   const onSelectProjectStatus = async (project: Project, nextStatus: string) => {
     if (!nextStatus || statusUpdatingProjectId || !canEditProjectFromDashboard(project)) return;
+    const previousStatus = project.statusLabel;
     setStatusUpdatingProjectId(project.id);
+    // Optimistic: drop the card straight into its new column instead of waiting on the write to
+    // resolve first — the round-trip is what made a drop feel like it "took a while" to land.
+    setAllProjects((prev) =>
+      prev.map((row) =>
+        row.id === project.id ? { ...row, statusLabel: nextStatus, updatedAt: new Date().toISOString() } : row,
+      ),
+    );
+    setStatusMenuProjectId("");
+    setStatusMenuPos(null);
     const ok = await updateProjectStatus(project, nextStatus);
-    if (ok) {
+    if (!ok) {
+      // Persist failed — put it back where it actually is.
       setAllProjects((prev) =>
-        prev.map((row) =>
-          row.id === project.id ? { ...row, statusLabel: nextStatus, updatedAt: new Date().toISOString() } : row,
-        ),
+        prev.map((row) => (row.id === project.id ? { ...row, statusLabel: previousStatus } : row)),
       );
-      setStatusMenuProjectId("");
-      setStatusMenuPos(null);
     }
     setStatusUpdatingProjectId("");
   };
@@ -932,7 +939,7 @@ export default function DashboardPage() {
           borderColor: cardBorder,
           backgroundColor: cardBg,
           opacity: draggingProjectId === project.id ? 0.4 : 1,
-          cursor: canEdit ? "grab" : "pointer",
+          cursor: draggingProjectId === project.id ? "grabbing" : "pointer",
         }}
       >
         <p className="truncate text-[12.5px] font-bold" style={{ color: "#000000" }}>{project.name}</p>

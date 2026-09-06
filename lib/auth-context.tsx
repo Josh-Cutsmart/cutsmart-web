@@ -35,8 +35,18 @@ interface AuthContextValue {
 
 const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
 const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
+// A cold, first-time connection (fresh browser, no cached Firestore/Auth state) is measurably
+// slower and more failure-prone than a warm reload — bound how long the membership/profile fetch
+// is allowed to hang so a stalled network call can never leave the loading screen stuck forever.
+const MEMBERSHIP_LOAD_TIMEOUT_MS = 12000;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function timeoutAfter<T>(ms: number): Promise<T> {
+  return new Promise((_resolve, reject) => {
+    window.setTimeout(() => reject(new Error("Membership load timed out")), ms);
+  });
+}
 
 function fromFirebaseUser(
   user: User,
@@ -128,35 +138,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        const [membership, profile] = await Promise.all([
-          fetchPrimaryMembership(firebaseUser.uid),
-          fetchUserProfileSummary(firebaseUser.uid),
-        ]);
-        if (!active) {
-          return;
-        }
-        const resolvedName =
-          membership?.displayName ||
-          profile?.displayName ||
-          firebaseUser.displayName ||
-          fallbackNameFromEmail(firebaseUser.email ?? profile?.email ?? "");
+        try {
+          const [membership, profile] = await Promise.race([
+            Promise.all([
+              fetchPrimaryMembership(firebaseUser.uid),
+              fetchUserProfileSummary(firebaseUser.uid),
+            ]),
+            timeoutAfter<[Awaited<ReturnType<typeof fetchPrimaryMembership>>, Awaited<ReturnType<typeof fetchUserProfileSummary>>]>(MEMBERSHIP_LOAD_TIMEOUT_MS),
+          ]);
+          if (!active) {
+            return;
+          }
+          const resolvedName =
+            membership?.displayName ||
+            profile?.displayName ||
+            firebaseUser.displayName ||
+            fallbackNameFromEmail(firebaseUser.email ?? profile?.email ?? "");
 
-        setUser(
-          {
-            ...fromFirebaseUser(
-              firebaseUser,
-              membership?.role ?? "staff",
-              membership?.companyId || profile?.companyId,
-              resolvedName,
-              profile?.userColor,
-              profile?.mobile,
-              Boolean(profile?.verified),
-            ),
-            permissions: membership?.permissionKeys ?? [],
-          },
-        );
-        setIsLoading(false);
-        setIsDemoMode(false);
+          setUser(
+            {
+              ...fromFirebaseUser(
+                firebaseUser,
+                membership?.role ?? "staff",
+                membership?.companyId || profile?.companyId,
+                resolvedName,
+                profile?.userColor,
+                profile?.mobile,
+                Boolean(profile?.verified),
+              ),
+              permissions: membership?.permissionKeys ?? [],
+            },
+          );
+        } catch {
+          if (!active) return;
+          // A slow/failed membership or profile fetch (most likely on a cold, first-time
+          // connection with no cached Firestore state) should never leave the loading screen
+          // stuck forever — fall back to a basic signed-in user built straight from the Firebase
+          // user object so the app is still usable; the user can retry whatever needed the
+          // missing membership/profile data once it's actually reachable.
+          setUser({
+            ...fromFirebaseUser(firebaseUser, "staff", undefined, undefined, undefined, undefined, false),
+            permissions: [],
+          });
+        } finally {
+          if (active) {
+            setIsLoading(false);
+            setIsDemoMode(false);
+          }
+        }
       };
 
       void loadMembership();

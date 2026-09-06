@@ -623,7 +623,11 @@ export function GlobalAppTabsBar() {
   // The tab bar is only ever meaningful inside the authenticated (app) routes to begin with, so simply
   // never showing it on the pre-app "/" (or "/company-onboarding") routes closes that gap directly,
   // without needing any new readiness signal threaded in from those pages.
-  const isPreAppRoute = pathname === "/" || pathname === "/company-onboarding";
+  // "/client/..." is the public, no-login specs-confirmation page (app/client/specs/[shareId]) —
+  // if a signed-in staff member opens the link themselves (e.g. to preview it), this bar must
+  // still stay hidden rather than rendering internal app chrome on top of a page an external
+  // client might also be looking at.
+  const isPreAppRoute = pathname === "/" || pathname === "/company-onboarding" || pathname.startsWith("/client/");
   if (!user || !groupedGlobalTabs.length || chromeHidden || isPreAppRoute) {
     return null;
   }

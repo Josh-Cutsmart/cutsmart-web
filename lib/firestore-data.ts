@@ -5,6 +5,7 @@ import {
   deleteDoc,
   doc,
   documentId,
+  type DocumentReference,
   getDoc,
   getDocs,
   limit,
@@ -20,6 +21,7 @@ import {
 import { db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
+import { normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
 import type { Cutlist, Project, ProjectChange, ProjectImageItem, SalesQuote } from "@/lib/types";
 import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
 
@@ -1557,6 +1559,32 @@ export async function purgeExpiredDeletedProjects(uid?: string, preferredCompany
   }
 }
 
+// The one place that resolves a project's REAL Firestore document reference — `project.id` is a
+// stored field value (see normalizeProject), not guaranteed to equal the actual document ID, so
+// every reader/writer has to try `projects/{id}` first, then fall back to querying
+// `companies/{companyId}/jobs` by its `id` field. Extracted from what used to be duplicated inline
+// in both updateProjectPatch and grantTempProductionAccess; also reused by the version-history
+// subcollection helpers below, since a subcollection has to hang off whichever of these two
+// locations the project doc actually lives in.
+export async function resolveProjectDocRef(project: Project): Promise<DocumentReference | null> {
+  if (!db || !project) return null;
+  try {
+    const topLevelRef = doc(db, "projects", project.id);
+    if ((await getDoc(topLevelRef)).exists()) return topLevelRef;
+  } catch {
+    // continue into nested company/jobs fallback
+  }
+  if (!project.companyId) return null;
+  try {
+    const jobsSnap = await getDocs(
+      query(collection(db, "companies", project.companyId, "jobs"), where("id", "==", project.id), limit(1)),
+    );
+    return jobsSnap.empty ? null : jobsSnap.docs[0].ref;
+  } catch {
+    return null;
+  }
+}
+
 export async function grantTempProductionAccess(
   project: Project,
   targetUid: string,
@@ -1579,33 +1607,10 @@ export async function grantTempProductionAccess(
     updatedAtIso: new Date().toISOString(),
   } as Record<string, unknown>;
 
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
   try {
-    const topLevelRef = doc(db, "projects", project.id);
-    const topLevelSnap = await getDoc(topLevelRef);
-    if (topLevelSnap.exists()) {
-      await updateDoc(topLevelRef, patch);
-      return expiryIso;
-    }
-  } catch {
-    // continue into nested company/jobs fallback
-  }
-
-  if (!project.companyId) {
-    return null;
-  }
-
-  try {
-    const jobsQ = query(
-      collection(db, "companies", project.companyId, "jobs"),
-      where("id", "==", project.id),
-      limit(1),
-    );
-    const jobsSnap = await getDocs(jobsQ);
-    if (jobsSnap.empty) {
-      return null;
-    }
-
-    await updateDoc(jobsSnap.docs[0].ref, patch);
+    await updateDoc(ref, patch);
     return expiryIso;
   } catch {
     return null;
@@ -1625,40 +1630,16 @@ export async function updateProjectPatch(
     updatedAtIso: new Date().toISOString(),
   };
 
-  try {
-    const topLevelRef = doc(db, "projects", project.id);
-    const topLevelSnap = await getDoc(topLevelRef);
-    if (topLevelSnap.exists()) {
-      await updateDoc(topLevelRef, nextPatch);
-      return true;
-    }
-  } catch (error) {
-    // continue into nested company/jobs fallback, but log in case the fallback also fails —
-    // otherwise a genuine top-level write failure looks identical to "not stored top-level".
-    console.warn("[updateProjectPatch] top-level projects/{id} write failed, trying jobs fallback:", error);
-  }
-
-  if (!project.companyId) {
-    console.warn("[updateProjectPatch] no project.companyId, cannot fall back to companies/{id}/jobs.");
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) {
+    console.warn("[updateProjectPatch] could not resolve a Firestore document for project", project.id);
     return false;
   }
-
   try {
-    const jobsQ = query(
-      collection(db, "companies", project.companyId, "jobs"),
-      where("id", "==", project.id),
-      limit(1),
-    );
-    const jobsSnap = await getDocs(jobsQ);
-    if (jobsSnap.empty) {
-      console.warn("[updateProjectPatch] companies/{id}/jobs query returned no matching doc for project", project.id);
-      return false;
-    }
-
-    await updateDoc(jobsSnap.docs[0].ref, nextPatch);
+    await updateDoc(ref, nextPatch);
     return true;
   } catch (error) {
-    console.warn("[updateProjectPatch] companies/{id}/jobs write failed:", error);
+    console.warn("[updateProjectPatch] write failed:", error);
     return false;
   }
 }
@@ -1684,6 +1665,103 @@ export async function fetchProjectUpdatedAtMarker(project: Project): Promise<str
     return String(data.updatedAtIso ?? data.updatedAt ?? "").trim() || null;
   } catch {
     return null;
+  }
+}
+
+// The two manually-saved version-history lists (Quote grid's "Save Version" history and the
+// Specifications sheet's own equivalent) used to live as ever-growing arrays inside the project
+// doc's `sales` object — which is itself mirrored 4x per save (see persistSalesPatch in
+// app/(app)/projects/[projectId]/page.tsx), so every version byte was stored 4 times. That's what
+// pushed a real project past Firestore's 1MB per-document limit. Each version is now its own small
+// document in a subcollection hung off the project's resolved doc ref, so the collection can grow
+// without ever risking the 1MB ceiling again.
+type GridVersionKind = "quoteGridVersions" | "specificationsVersions";
+
+export async function fetchGridVersions(project: Project, kind: GridVersionKind): Promise<SpecsGridVersion[]> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return [];
+  try {
+    const snap = await getDocs(query(collection(ref, kind), orderBy("version", "asc")));
+    const out: SpecsGridVersion[] = [];
+    for (const d of snap.docs) {
+      // Pass the real Firestore doc ID explicitly — normalizeSpecsGridVersion falls back to
+      // minting its own id when one isn't present, which must never be relied on here since this
+      // id is what addresses the document for later patch/restore operations.
+      const version = normalizeSpecsGridVersion({ ...d.data(), id: d.id });
+      if (version) out.push(version);
+    }
+    return out;
+  } catch (error) {
+    console.warn(`[fetchGridVersions] ${kind} read failed:`, error);
+    return [];
+  }
+}
+
+// Single-document equivalent of fetchGridVersions — used to pull one version fresh from Firestore
+// (e.g. re-reading the exact version a client-confirmation link is bound to, to see answers the
+// client has saved since this page's own hydration effect last ran; see refreshSpecsConfirmationAnswers
+// in app/(app)/projects/[projectId]/page.tsx) without re-fetching every other version too.
+export async function fetchGridVersion(project: Project, kind: GridVersionKind, versionId: string): Promise<SpecsGridVersion | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref || !versionId) return null;
+  try {
+    const snap = await getDoc(doc(ref, kind, versionId));
+    if (!snap.exists()) return null;
+    return normalizeSpecsGridVersion({ ...snap.data(), id: snap.id });
+  } catch (error) {
+    console.warn(`[fetchGridVersion] ${kind}/${versionId} read failed:`, error);
+    return null;
+  }
+}
+
+export async function saveGridVersion(
+  project: Project,
+  kind: GridVersionKind,
+  input: { name: string; version: number; savedAtIso: string; savedByName?: string; grid: SpecsGrid; capturedProjectMarker?: string; sentToClient?: boolean },
+): Promise<SpecsGridVersion | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    // Firestore-generated id, not genSpecsRowId() — that generator was only ever used as an array
+    // key before (a collision there would silently overwrite a sibling array entry, which never
+    // mattered in practice); now the id addresses a real document via setDoc, where a collision
+    // would silently clobber a different version's document. Mirrors createCompanyLead's own
+    // doc(collection(db,...)) + setDoc idiom.
+    const versionRef = doc(collection(ref, kind));
+    const body: SpecsGridVersion = {
+      id: versionRef.id,
+      name: input.name,
+      version: input.version,
+      savedAtIso: input.savedAtIso,
+      ...(input.savedByName ? { savedByName: input.savedByName } : {}),
+      ...(input.capturedProjectMarker ? { capturedProjectMarker: input.capturedProjectMarker } : {}),
+      ...(input.sentToClient ? { sentToClient: true } : {}),
+      grid: input.grid,
+    };
+    // JSON round-trip before writing — Firestore rejects a literal `undefined` property value
+    // outright, and this is the same defensive pattern used everywhere else version data is written.
+    await setDoc(versionRef, JSON.parse(JSON.stringify(body)));
+    return body;
+  } catch (error) {
+    console.warn(`[saveGridVersion] ${kind} write failed:`, error);
+    return null;
+  }
+}
+
+export async function updateGridVersionGrid(
+  project: Project,
+  kind: GridVersionKind,
+  versionId: string,
+  grid: SpecsGrid,
+): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await updateDoc(doc(ref, kind, versionId), { grid: JSON.parse(JSON.stringify(grid)) });
+    return true;
+  } catch (error) {
+    console.warn(`[updateGridVersionGrid] ${kind}/${versionId} write failed:`, error);
+    return false;
   }
 }
 

@@ -1,0 +1,72 @@
+import { NextRequest, NextResponse } from "next/server";
+import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
+import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getSpecsShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
+
+// No access code — the link itself (this shareId) is the only secret, per the user's explicit
+// call. See lib/specs-share.ts's buildSpecsConfirmationEmailText comment for the reasoning.
+export async function POST(request: NextRequest, { params }: { params: Promise<{ shareId: string }> }) {
+  if (!adminDb || !hasFirebaseAdminConfig) {
+    return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
+  }
+
+  const { shareId } = await params;
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const name = String(body.name ?? "").trim();
+
+  const shareRef = adminDb.collection("specsShareLinks").doc(shareId);
+  const shareSnap = await shareRef.get();
+  if (!shareSnap.exists) {
+    return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
+  }
+  const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
+
+  if (isSpecsShareLinkExpired(shareDoc)) {
+    return NextResponse.json({ ok: false, error: "expired" }, { status: 400 });
+  }
+
+  // Idempotent — a returning visit that's already submitted just confirms the existing state
+  // rather than erroring, since the client page may call this again if its own local state was
+  // lost (e.g. a reload mid-flow).
+  if (shareDoc.submittedAt) {
+    return NextResponse.json({ ok: true, confirmationSubmittedAt: shareDoc.submittedAt });
+  }
+
+  const projectRef = await getProjectDocRefAdmin(adminDb, shareDoc.projectId, shareDoc.companyId);
+  if (!projectRef) {
+    return NextResponse.json({ ok: false, error: "project-not-found" }, { status: 404 });
+  }
+  // The share link is bound to a specific specificationsVersions snapshot — see
+  // SpecsShareLinkDoc.versionId's own comment. A link created before this field existed falls back
+  // to the old live-project-doc behavior.
+  const target = getSpecsShareGridTarget(projectRef, shareDoc);
+  const targetSnap = await target.ref.get();
+  const targetData = (targetSnap.data() ?? {}) as Record<string, unknown>;
+  const grid =
+    target.kind === "version"
+      ? normalizeSpecsGrid(targetData.grid)
+      : normalizeSpecsGrid(((targetData.sales ?? {}) as Record<string, unknown>).specificationsGrid);
+  if (!grid) {
+    return NextResponse.json({ ok: false, error: "no-specifications-sheet" }, { status: 404 });
+  }
+
+  // The submission lock lives on this small, separate specsShareLinks doc — never on the project
+  // doc itself, which can already sit right at Firestore's 1MB per-document limit (a large specs
+  // sheet, big quote history, etc.) where even a couple of extra small fields can tip an unrelated
+  // save over the edge. See lib/specs-share.ts's SpecsShareLinkDoc comment.
+  const nowIso = new Date().toISOString();
+  try {
+    await shareRef.set(
+      {
+        submittedAt: nowIso,
+        ...(name ? { submittedByName: name } : {}),
+      },
+      { merge: true },
+    );
+  } catch (err) {
+    console.error("[specs-share/submit] write failed:", err);
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "write-failed" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, confirmationSubmittedAt: nowIso });
+}

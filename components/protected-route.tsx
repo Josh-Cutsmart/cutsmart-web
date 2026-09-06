@@ -16,8 +16,12 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (isLoading) {
     return (
-      <div className="mx-4 my-4 rounded-[14px] border border-[var(--panel-border)] bg-white p-8 text-sm text-[var(--text-muted)]">
-        Loading workspace...
+      <div className="flex h-[60vh] w-full items-center justify-center">
+        <div
+          className="h-9 w-9 animate-spin rounded-full border-[3px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+          role="status"
+          aria-label="Loading"
+        />
       </div>
     );
   }

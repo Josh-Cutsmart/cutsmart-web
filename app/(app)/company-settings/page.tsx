@@ -1250,6 +1250,7 @@ export default function CompanySettingsPage() {
     dateFormat: "DD/MM/YYYY",
     timeZone: "Pacific/Auckland",
     deletedRetentionDays: "90",
+    clientConfirmationLinkDays: "30",
     themeColor: "#2F6BFF",
     logoPath: "",
   });
@@ -1350,6 +1351,7 @@ export default function CompanySettingsPage() {
           dateFormat: toStr(doc.dateFormat, "DD/MM/YYYY"),
           timeZone: toStr(doc.timeZone, "Pacific/Auckland"),
           deletedRetentionDays: toStr(doc.deletedRetentionDays, "90"),
+          clientConfirmationLinkDays: toStr(doc.clientConfirmationLinkDays, "30"),
           themeColor: toStr(doc.themeColor, "#2F6BFF"),
           logoPath: toStr(doc.logoPath),
         });
@@ -2401,6 +2403,7 @@ export default function CompanySettingsPage() {
       dateFormat: form.dateFormat,
       timeZone: form.timeZone,
       deletedRetentionDays: Number(form.deletedRetentionDays || 90),
+      clientConfirmationLinkDays: Number(form.clientConfirmationLinkDays || 30),
       themeColor: form.themeColor,
       logoPath: form.logoPath,
       projectStatuses: statuses.map((row, idx) => ({
@@ -5025,6 +5028,22 @@ export default function CompanySettingsPage() {
                       >
                         Open Specs Layout Builder
                       </button>
+                    </div>
+                  </Panel>
+                  <Panel title="Client Confirmation">
+                    <div className="grid grid-cols-[1fr_140px] items-center gap-2 text-[12px]">
+                      <p className="text-[11px] text-[#667085]">
+                        How long a client confirmation link (emailed with a specifications sheet) stays valid before it expires.
+                      </p>
+                      <select
+                        value={form.clientConfirmationLinkDays}
+                        onChange={(e) => setForm((prev) => ({ ...prev, clientConfirmationLinkDays: e.target.value }))}
+                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                      >
+                        {deletedRetentionOptions.map((opt) => (
+                          <option key={opt.days} value={opt.days}>{opt.label}</option>
+                        ))}
+                      </select>
                     </div>
                   </Panel>
                   <Panel title="Quote Layout">

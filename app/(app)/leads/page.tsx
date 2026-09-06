@@ -3306,7 +3306,12 @@ export default function LeadsPage() {
                         title={`Expand ${column.name}`}
                         aria-label={`Expand ${column.name}`}
                       >
-                        <ChevronsLeftRight size={14} style={{ color: "#000000" }} />
+                        <span
+                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+                          style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                        >
+                          <ChevronsLeftRight size={13} />
+                        </span>
                         <span
                           className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
                           style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
