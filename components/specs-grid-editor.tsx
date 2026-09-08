@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import {
@@ -166,6 +166,12 @@ export type SpecsGridEditorProps = {
   // moment it's sent, not only cells already answered — only Specifications' own live project sheet
   // ever sets this; Quote has no client-confirmation concept.
   isSentToClient?: boolean;
+  // Arbitrary content rendered inside the grey canvas area, centered and width-matched to the
+  // white mock-page sheet (mockPageBoxWidthPx — the same value the sheet itself uses), sitting
+  // directly above it — below the fixed formatting toolbar, which stays exactly where it's always
+  // been. Only Quote's own live project sheet sets this (an "Accepted by X on Y" banner once the
+  // client has accepted) — omit for every other caller, which renders nothing extra here.
+  belowToolbarBanner?: ReactNode;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -479,6 +485,7 @@ export default function SpecsGridEditor({
   showEditableGroupBorders,
   hideCellSelectionOutline,
   isSentToClient,
+  belowToolbarBanner,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -948,7 +955,7 @@ export default function SpecsGridEditor({
   };
 
   // "Mark for Client Confirmation" — flags a single cell as one the external client-confirmation
-  // flow (app/client/specs/[shareId]) should render as a Yes/No toggle. Turning it off also clears
+  // flow (app/client/hub/[shareId]) should render as a Yes/No toggle. Turning it off also clears
   // any prior answer, since an unmarked cell shouldn't keep showing a stale Yes/No.
   const toggleCellConfirmable = (row: number, col: number) => {
     const cell = liveGrid.rows[row]?.cells[col];
@@ -1664,41 +1671,71 @@ export default function SpecsGridEditor({
         {isProjectSheetView ? (
           <>
             <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <button
-              type="button"
-              disabled={!activeCell && ctrlMarkedCells.size === 0}
-              onClick={() => {
-                // Ctrl/Cmd+click multi-select takes priority when it's non-empty — a plain "select
-                // all / deselect all" toggle across every marked cell, applied as one undo step
-                // (see setCellsConfirmable's own comment), then the multi-select is cleared so it
-                // doesn't linger and get reused unintentionally by a later, unrelated click.
-                if (ctrlMarkedCells.size > 0) {
-                  const targets = Array.from(ctrlMarkedCells).map((k) => {
-                    const [r, c] = k.split(":").map(Number);
-                    return { row: r, col: c };
-                  });
-                  const allAlreadyConfirmable = targets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
-                  setCellsConfirmable(targets, !allAlreadyConfirmable);
-                  setCtrlMarkedCells(new Set());
-                } else if (activeCell) {
-                  toggleCellConfirmable(activeCell.row, activeCell.col);
+            {(() => {
+              // Every real (non-null) cell inside the current drag-highlighted rectangle — NOT just
+              // its top-left slot, which is all `activeCell` itself ever points at (see its own
+              // comment: it's always rect.minRow/minCol). Without this, highlighting a whole range
+              // and clicking this button silently marked only that one corner cell.
+              const dragRangeTargets = (() => {
+                if (!selection) return [];
+                const rect = normalizeRect(selection);
+                const out: { row: number; col: number }[] = [];
+                for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
+                  for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
+                    if (liveGrid.rows[r]?.cells[c]) out.push({ row: r, col: c });
+                  }
                 }
-              }}
-              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
-              style={ctrlMarkedCells.size === 0 && activeCell?.cell?.confirmable ? toolbarButtonActiveStyle : toolbarButtonStyle}
-              title={
-                ctrlMarkedCells.size > 0
-                  ? `Mark or unmark all ${ctrlMarkedCells.size} selected cells for client confirmation`
-                  : "Mark this cell for the client to confirm with Yes/No — Ctrl/Cmd+click other cells to select several at once"
-              }
-            >
-              <CheckSquare size={14} />
-              {ctrlMarkedCells.size > 0
-                ? `Mark ${ctrlMarkedCells.size} Cells`
-                : activeCell?.cell?.confirmable
-                  ? "Confirmable ✓"
-                  : "Mark for Confirmation"}
-            </button>
+                return out;
+              })();
+              const isBulkRange = ctrlMarkedCells.size === 0 && dragRangeTargets.length > 1;
+              return (
+                <button
+                  type="button"
+                  disabled={!activeCell && ctrlMarkedCells.size === 0}
+                  onClick={() => {
+                    // Ctrl/Cmd+click multi-select takes priority when it's non-empty — a plain
+                    // "select all / deselect all" toggle across every marked cell, applied as one
+                    // undo step (see setCellsConfirmable's own comment), then the multi-select is
+                    // cleared so it doesn't linger and get reused unintentionally by a later,
+                    // unrelated click. Otherwise, a drag-highlighted range of more than one cell
+                    // gets the same bulk treatment; a plain single-cell selection still just toggles
+                    // that one cell.
+                    if (ctrlMarkedCells.size > 0) {
+                      const targets = Array.from(ctrlMarkedCells).map((k) => {
+                        const [r, c] = k.split(":").map(Number);
+                        return { row: r, col: c };
+                      });
+                      const allAlreadyConfirmable = targets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
+                      setCellsConfirmable(targets, !allAlreadyConfirmable);
+                      setCtrlMarkedCells(new Set());
+                    } else if (isBulkRange) {
+                      const allAlreadyConfirmable = dragRangeTargets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
+                      setCellsConfirmable(dragRangeTargets, !allAlreadyConfirmable);
+                    } else if (activeCell) {
+                      toggleCellConfirmable(activeCell.row, activeCell.col);
+                    }
+                  }}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+                  style={!isBulkRange && ctrlMarkedCells.size === 0 && activeCell?.cell?.confirmable ? toolbarButtonActiveStyle : toolbarButtonStyle}
+                  title={
+                    ctrlMarkedCells.size > 0
+                      ? `Mark or unmark all ${ctrlMarkedCells.size} selected cells for client confirmation`
+                      : isBulkRange
+                        ? `Mark or unmark all ${dragRangeTargets.length} highlighted cells for client confirmation`
+                        : "Mark this cell for the client to confirm with Yes/No — Ctrl/Cmd+click other cells to select several at once"
+                  }
+                >
+                  <CheckSquare size={14} />
+                  {ctrlMarkedCells.size > 0
+                    ? `Mark ${ctrlMarkedCells.size} Cells`
+                    : isBulkRange
+                      ? `Mark ${dragRangeTargets.length} Cells`
+                      : activeCell?.cell?.confirmable
+                        ? "Confirmable ✓"
+                        : "Mark for Confirmation"}
+                </button>
+              );
+            })()}
           </>
         ) : null}
         {isProjectSheetView ? null : (
@@ -1932,6 +1969,11 @@ export default function SpecsGridEditor({
         // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
         style={{ backgroundColor: "#EDEFF4" }}
       >
+        {belowToolbarBanner ? (
+          <div className="relative mx-auto mb-3" style={{ width: mockPageBoxWidthPx }}>
+            {belowToolbarBanner}
+          </div>
+        ) : null}
         <div className="relative mx-auto" style={{ width: mockPageBoxWidthPx, minHeight: mockPageBoxHeightPx, backgroundColor: "#ffffff", boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)" }}>
         {/* Insets the table + every overlay below it (borders, selection, resize handles, the row
             +/- buttons) by the real print margin as ONE unit, so a project's own copy reads centered
@@ -2192,12 +2234,11 @@ export default function SpecsGridEditor({
                         // marked cells at a glance without needing to click into each one — only
                         // meaningful in a project's own sheet (isProjectSheetView), never the company
                         // template builder, matching the toolbar toggle's own gating. A cell currently
-                        // in the Ctrl+click multi-select (isCtrlMarked) gets a distinct amber double
-                        // ring instead/on top — deliberately a different color than the blue
-                        // "already confirmable" marker, so "about to be bulk-toggled" never reads as
-                        // "already marked."
+                        // in the Ctrl+click multi-select (isCtrlMarked) gets the SAME ring as a
+                        // normal drag-highlighted selection (selectionOutline, below) — same
+                        // brand-blue 2px inset — so it reads as "selected," not a separate status.
                         boxShadow: isCtrlMarked
-                          ? "inset 0 0 0 2px #F59E0B, inset 0 0 0 4px #ffffff, inset 0 0 0 6px #F59E0B"
+                          ? "inset 0 0 0 2px var(--brand-strong)"
                           : isProjectSheetView
                             ? cell.confirmable
                               ? "inset 0 0 0 2px var(--brand-strong)"
@@ -2273,27 +2314,32 @@ export default function SpecsGridEditor({
                                   ? "Blank cells outside a section can't be edited"
                                   : undefined
                             }
+                            // A sheet locked because it was sent to the client (isSentToClient) is
+                            // just a normal, fully-readable snapshot of what the client is seeing —
+                            // not a permission restriction — so it stays full-opacity black text
+                            // instead of the dimmed treatment used for an actual permission lock or
+                            // an ungrouped blank cell.
+                            dimmed={!isSentToClient}
                           />
                         </div>
                       )}
                       {/* Read-only status for a confirmable cell — this editor never writes
                           confirmedYes/confirmedAt itself, only the public
-                          app/api/specs-share/[shareId]/answer route does. Once answered, this fills
-                          the ENTIRE cell solid green/red (matching the client's own full-cell Yes/No
-                          fill — see components/specs-grid-client-view.tsx) rather than a small
-                          corner badge, so staff can read a cell's answer at a glance without
-                          needing to zoom in. Still-unanswered stays a small "Pending" pill — there's
-                          no color for "nothing to show yet" that wouldn't misleadingly read as an
-                          actual answer. */}
+                          app/api/specs-share/[shareId]/answer route does. Fills the ENTIRE cell
+                          (matching the client's own full-cell Yes/No fill — see
+                          components/specs-grid-client-view.tsx) rather than a small corner badge,
+                          so staff can read a cell's status at a glance without needing to zoom in —
+                          same treatment for "Pending" (still-unanswered) as for a real Yes/No, just
+                          neutral colors so it doesn't misleadingly read as an actual answer. */}
                       {isProjectSheetView && cell.confirmable ? (
                         cell.confirmedYes === undefined ? (
-                          <span
-                            className="pointer-events-none absolute right-1 top-1 z-10 inline-flex items-center rounded-[999px] px-1.5 py-[1px] text-[10px] font-bold"
-                            style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)", border: "1px solid var(--glass-border)" }}
+                          <div
+                            className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] font-bold"
+                            style={{ backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                             title="Waiting on the client"
                           >
                             Pending
-                          </span>
+                          </div>
                         ) : (
                           // No z-index (and no invented border of our own) — this cell's real
                           // explicit border, if the template author drew one, is rendered by the
@@ -3023,6 +3069,7 @@ function SpecsCellTextArea({
   onNaturalHeightChange,
   readOnly,
   readOnlyReason,
+  dimmed = true,
 }: {
   cellKey: string;
   runs: SpecsTextRun[];
@@ -3052,6 +3099,10 @@ function SpecsCellTextArea({
   // reason (e.g. lockUngroupedBlankCells), so the tooltip doesn't claim a permissions issue that
   // isn't the actual cause.
   readOnlyReason?: string;
+  // Defaults true (the existing washed-out look for a permission/structural lock). Pass false for
+  // a lock that isn't a restriction on THIS viewer — e.g. isSentToClient — where the text should
+  // read exactly as it will to the client, in full black, not grey.
+  dimmed?: boolean;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -3070,12 +3121,12 @@ function SpecsCellTextArea({
       <div
         dangerouslySetInnerHTML={{ __html: runsToHtml(runs) }}
         title={readOnlyReason ?? "You don't have permission to edit this section"}
-        className="whitespace-pre-wrap break-words px-2 py-0.5 opacity-80"
+        className={`whitespace-pre-wrap break-words px-2 py-0.5 ${dimmed ? "opacity-80" : ""}`}
         style={{
           fontFamily: style.fontFamily || "inherit",
           fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
           textAlign: style.align ?? "left",
-          color: style.textColor ?? "var(--text-main)",
+          color: dimmed ? style.textColor ?? "var(--text-main)" : style.textColor ?? "#000000",
           // "not-allowed" (a permissions-style cross) only reads correctly for the role-based lock —
           // a blank cell outside any group isn't being denied permission, it's just structurally
           // uninteractive, so it gets the plain pointer/default cursor instead (readOnlyReason is

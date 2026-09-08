@@ -22,6 +22,7 @@ import { db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
 import { normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
+import type { ProductComparison } from "@/lib/cutlist-types";
 import type { Cutlist, Project, ProjectChange, ProjectImageItem, SalesQuote } from "@/lib/types";
 import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
 
@@ -1761,6 +1762,137 @@ export async function updateGridVersionGrid(
     return true;
   } catch (error) {
     console.warn(`[updateGridVersionGrid] ${kind}/${versionId} write failed:`, error);
+    return false;
+  }
+}
+
+// Flags an EXISTING version document as sent, without touching its grid — used when staff send a
+// version they're already viewing from history rather than the live draft (see sendQuoteToClient
+// in app/(app)/projects/[projectId]/page.tsx), so re-sending an old version never clones a
+// redundant duplicate the way sending the live draft does.
+export async function markGridVersionSentToClient(project: Project, kind: GridVersionKind, versionId: string): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await updateDoc(doc(ref, kind, versionId), { sentToClient: true });
+    return true;
+  } catch (error) {
+    console.warn(`[markGridVersionSentToClient] ${kind}/${versionId} write failed:`, error);
+    return false;
+  }
+}
+
+export async function deleteGridVersion(project: Project, kind: GridVersionKind, versionId: string): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await deleteDoc(doc(ref, kind, versionId));
+    return true;
+  } catch (error) {
+    console.warn(`[deleteGridVersion] ${kind}/${versionId} write failed:`, error);
+    return false;
+  }
+}
+
+// Product Compare tool (Initial Measure) — one small document per named comparison in its own
+// subcollection, same "own doc, not an array on the project's `sales` object" reasoning as the
+// grid-version helpers just above. See ProductComparison's own comment in lib/cutlist-types.ts.
+function normalizeProductComparisonDoc(data: Record<string, unknown>, id: string): ProductComparison | null {
+  const name = String(data.name ?? "").trim();
+  const selectedRowIds = Array.isArray(data.selectedRowIds)
+    ? data.selectedRowIds.map((v) => String(v ?? "").trim()).filter(Boolean)
+    : [];
+  const rawOverrides = (data.rowProductOverrides ?? {}) as Record<string, unknown>;
+  const rowProductOverrides: Record<string, string> = {};
+  if (rawOverrides && typeof rawOverrides === "object") {
+    for (const [rowId, value] of Object.entries(rawOverrides)) {
+      const trimmed = String(value ?? "").trim();
+      if (rowId.trim() && trimmed) rowProductOverrides[rowId.trim()] = trimmed;
+    }
+  }
+  const savedAtIso = String(data.savedAtIso ?? "").trim();
+  const savedByName = String(data.savedByName ?? "").trim();
+  return {
+    id,
+    name: name || "Untitled comparison",
+    selectedRowIds,
+    ...(Object.keys(rowProductOverrides).length > 0 ? { rowProductOverrides } : {}),
+    savedAtIso: savedAtIso || new Date(0).toISOString(),
+    ...(savedByName ? { savedByName } : {}),
+  };
+}
+
+export async function fetchProductComparisons(project: Project): Promise<ProductComparison[]> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return [];
+  try {
+    const snap = await getDocs(collection(ref, "productComparisons"));
+    const out: ProductComparison[] = [];
+    for (const d of snap.docs) {
+      const comparison = normalizeProductComparisonDoc(d.data() as Record<string, unknown>, d.id);
+      if (comparison) out.push(comparison);
+    }
+    return out;
+  } catch (error) {
+    console.warn("[fetchProductComparisons] read failed:", error);
+    return [];
+  }
+}
+
+export async function saveProductComparison(
+  project: Project,
+  input: {
+    name: string;
+    selectedRowIds: string[];
+    rowProductOverrides?: Record<string, string>;
+    savedAtIso: string;
+    savedByName?: string;
+  },
+): Promise<ProductComparison | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const docRef = doc(collection(ref, "productComparisons"));
+    const body: ProductComparison = {
+      id: docRef.id,
+      name: input.name,
+      selectedRowIds: input.selectedRowIds,
+      ...(input.rowProductOverrides && Object.keys(input.rowProductOverrides).length > 0 ? { rowProductOverrides: input.rowProductOverrides } : {}),
+      savedAtIso: input.savedAtIso,
+      ...(input.savedByName ? { savedByName: input.savedByName } : {}),
+    };
+    await setDoc(docRef, JSON.parse(JSON.stringify(body)));
+    return body;
+  } catch (error) {
+    console.warn("[saveProductComparison] write failed:", error);
+    return null;
+  }
+}
+
+export async function updateProductComparison(
+  project: Project,
+  comparisonId: string,
+  patch: Partial<Pick<ProductComparison, "name" | "selectedRowIds" | "rowProductOverrides">>,
+): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await updateDoc(doc(ref, "productComparisons", comparisonId), JSON.parse(JSON.stringify(patch)));
+    return true;
+  } catch (error) {
+    console.warn(`[updateProductComparison] ${comparisonId} write failed:`, error);
+    return false;
+  }
+}
+
+export async function deleteProductComparison(project: Project, comparisonId: string): Promise<boolean> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await deleteDoc(doc(ref, "productComparisons", comparisonId));
+    return true;
+  } catch (error) {
+    console.warn(`[deleteProductComparison] ${comparisonId} write failed:`, error);
     return false;
   }
 }

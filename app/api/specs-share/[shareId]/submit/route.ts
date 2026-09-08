@@ -63,6 +63,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
       { merge: true },
     );
+    // Permanent record on the version document itself, mirroring Quote's own accept route — the
+    // specsShareLinks doc can be revoked or can expire, but this frozen specificationsVersions doc
+    // (and its submission) stays forever, and the staff sidebar's own bubble reads THIS field, not
+    // the hub doc's, to color itself green. Only when actually version-bound (target.kind ===
+    // "version") — a legacy link predating that field has no version doc to write onto.
+    if (target.kind === "version") {
+      await target.ref.set(
+        {
+          submittedAtIso: nowIso,
+          ...(name ? { submittedByName: name } : {}),
+        },
+        { merge: true },
+      );
+    }
   } catch (err) {
     console.error("[specs-share/submit] write failed:", err);
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "write-failed" }, { status: 500 });

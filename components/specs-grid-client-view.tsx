@@ -1,5 +1,6 @@
 "use client";
 
+import { Fragment } from "react";
 import { Check, X } from "lucide-react";
 import {
   getCellRuns,
@@ -29,6 +30,11 @@ export type SpecsGridClientViewProps = {
   // "rowId:colIndex" of whichever answer is currently in flight, so that one toggle can show a
   // brief pending state without disabling the whole sheet.
   answeringKey?: string | null;
+  // Widens the rendered mock-page box to at least this width — never shrinks it below what this
+  // grid's own columns need. Used by the client hub page (app/client/hub/[shareId]) so the
+  // Specifications and Quote tabs render as the same-size sheet regardless of which one has wider
+  // columns, instead of visibly resizing when a client switches tabs.
+  boxWidthPx?: number;
 };
 
 // Reuses the same align/verticalAlign fields text cells use — matches
@@ -40,8 +46,8 @@ function imageObjectPositionFor(style: SpecsCellStyle): string {
   return `${horizontal} ${vertical}`;
 }
 
-// A read-only render of a SpecsGrid for the external client-confirmation page
-// (app/client/specs/[shareId]) — deliberately NOT <SpecsGridEditor>: no merge-editing, resizing,
+// A read-only render of a SpecsGrid for the external client hub page
+// (app/client/hub/[shareId]) — deliberately NOT <SpecsGridEditor>: no merge-editing, resizing,
 // formatting toolbar, or image-insert UI belongs in front of someone with no CutSmart login. Only a
 // confirmable cell (see lib/specs-grid-types.ts's SpecsCell.confirmable) gets any interactive
 // element at all, and only when `locked` is false.
@@ -52,7 +58,7 @@ function imageObjectPositionFor(style: SpecsCellStyle): string {
 // blanket 1px gridline on every cell, which the real sheet never draws), same cell padding/font
 // fallbacks, and the same hidden-row-group filtering — so what the client sees is the same document
 // staff see, not a differently-scaled approximation of it.
-export default function SpecsGridClientView({ grid, locked, onAnswer, answeringKey }: SpecsGridClientViewProps) {
+export default function SpecsGridClientView({ grid, locked, onAnswer, answeringKey, boxWidthPx }: SpecsGridClientViewProps) {
   const expandedGroups = getExpandedRowGroups(grid);
   const hiddenRowIndexes = new Set<number>();
   for (const g of expandedGroups) {
@@ -71,14 +77,42 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
   const rowPrefixSums: number[] = [0];
   for (const h of safeRowHeights) rowPrefixSums.push(rowPrefixSums[rowPrefixSums.length - 1] + h);
 
-  const borderSegments = computeBorderSegments(grid, colPrefixSums, rowPrefixSums, rowPrefixSums, hiddenRowIndexes);
-
   const mockPageMarginPx = Math.round(SPECS_PAGE_MARGIN_MM * MM_TO_PX);
   const mockPageHeightPx = Math.round(SPECS_PAGE_SIZES[grid.pageSize].heightMm * MM_TO_PX);
+
+  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) — ported from
+  // specs-grid-editor.tsx's own project-sheet view verbatim, so a group like "Footer Bar"/"T&C"
+  // pinned to the bottom of page 1 there renders in the SAME place here, instead of just sitting
+  // wherever it naturally falls in the row flow. See that file's own comment on this exact block
+  // for the full reasoning (inflating rowPrefixSums in place, before any consumer reads it, plus a
+  // real blank spacer <tr> in the table's own native row flow, rendered further down).
+  let anchorSpacerPx = 0;
+  let anchorSpacerBeforeRowIdx = -1;
+  let rowBottomEdgeSums = rowPrefixSums;
+  const anchoredGroups = expandedGroups.filter((g) => g.anchorFirstPageBottom && !g.hidden);
+  if (anchoredGroups.length > 0) {
+    const anchorStartRow = Math.min(...anchoredGroups.map((g) => g.startRow));
+    const usableHeightPx = mockPageHeightPx - mockPageMarginPx * 2;
+    const heightBeforeAnchorPx = rowPrefixSums[anchorStartRow] ?? 0;
+    const heightFromAnchorPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) - heightBeforeAnchorPx;
+    const requiredSpacerPx = usableHeightPx - heightBeforeAnchorPx - heightFromAnchorPx;
+    if (requiredSpacerPx > 0.5) {
+      const naturalAnchorTop = rowPrefixSums[anchorStartRow];
+      for (let i = anchorStartRow; i < rowPrefixSums.length; i += 1) rowPrefixSums[i] += requiredSpacerPx;
+      rowBottomEdgeSums = rowPrefixSums.slice();
+      rowBottomEdgeSums[anchorStartRow] = naturalAnchorTop;
+      anchorSpacerPx = requiredSpacerPx;
+      anchorSpacerBeforeRowIdx = anchorStartRow;
+    }
+  }
+
+  const borderSegments = computeBorderSegments(grid, colPrefixSums, rowPrefixSums, rowBottomEdgeSums, hiddenRowIndexes);
   const tableRenderedHeightPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) + mockPageMarginPx * 2;
-  // Shared with app/client/specs/[shareId]/page.tsx (see that function's own comment) so the
-  // "Submit" bars above/below this component are sized to match this page's own width exactly.
-  const mockPageBoxWidthPx = computeSpecsPageBoxWidthPx(grid);
+  // Shared with app/client/hub/[shareId]/page.tsx (see that function's own comment) so the
+  // "Submit"/"Accept" bars above/below this component are sized to match this page's own width
+  // exactly. Never shrinks below what this grid's own columns actually need — boxWidthPx only ever
+  // widens the box (extra blank margin on the right), it never clips or rescales the table itself.
+  const mockPageBoxWidthPx = Math.max(computeSpecsPageBoxWidthPx(grid), boxWidthPx ?? 0);
   // Same "only ever grows past the paper size, never shrinks below it" rule as the editor's own mock
   // page — a visual reference for how this prints, not a hard crop.
   const mockPageBoxHeightPx = Math.max(mockPageHeightPx, tableRenderedHeightPx);
@@ -100,12 +134,23 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
               {grid.rows.map((row, rowIdx) => {
                 if (hiddenRowIndexes.has(rowIdx)) return null;
                 return (
-                  <tr key={row.id} style={{ height: safeRowHeights[rowIdx] }}>
+                <Fragment key={row.id}>
+                  {rowIdx === anchorSpacerBeforeRowIdx ? (
+                    // The real, native-table-flow counterpart to the rowPrefixSums shift above —
+                    // that shift alone only moves the border overlay and this row's own visual
+                    // position; the table's actual row stacking needs an actual blank row too, or
+                    // every row from here on would just sit directly under the previous one. See
+                    // specs-grid-editor.tsx's own identical spacer <tr> for the full reasoning.
+                    <tr aria-hidden="true">
+                      <td colSpan={grid.columnWidths.length} style={{ height: anchorSpacerPx, padding: 0, border: "none", background: "transparent" }} />
+                    </tr>
+                  ) : null}
+                  <tr style={{ height: safeRowHeights[rowIdx] }}>
                     {row.cells.map((cell, colIdx) => {
                       if (cell === null) return null;
                       const { rowSpan, colSpan } = getCellSpan(cell);
                       const style = cell.style ?? {};
-                      // Must match app/client/specs/[shareId]/page.tsx's own `answeringKey` format
+                      // Must match app/client/hub/[shareId]/page.tsx's own `answeringKey` format
                       // (`${rowId}:${colIndex}`) exactly — a mismatched separator here meant
                       // `isAnswering` was silently always false, so the Yes/No buttons were never
                       // actually disabled while a request for this same cell was in flight. That let
@@ -200,6 +245,7 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                       );
                     })}
                   </tr>
+                </Fragment>
                 );
               })}
             </tbody>

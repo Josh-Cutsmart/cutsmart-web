@@ -51,7 +51,7 @@ export type SpecsCell = {
   // image restores whatever text was there before.
   imageUrl?: string;
   // Set via the editor's "Mark for Client Confirmation" toolbar toggle — marks this cell as one
-  // the external client-confirmation flow (app/client/specs/[shareId]) should render as a Yes/No
+  // the external client-confirmation flow (app/client/hub/[shareId]) should render as a Yes/No
   // toggle instead of (alongside) its plain text. See salesPayload.specsConfirmationSubmittedAt
   // (app/(app)/projects/[projectId]/page.tsx) for the sheet-wide lock these per-cell answers
   // freeze under once the client submits — deliberately NOT a field on SpecsGrid itself, see that
@@ -220,7 +220,7 @@ export function getSpecsPageUsableWidthPx(pageSize: SpecsPageSize): number {
 // The actual rendered width of the sheet's own "mock page" — the physical paper size, unless the
 // grid's own columns (plus print margin) already need more room than that, in which case the box
 // grows to fit them rather than clipping. Shared by components/specs-grid-client-view.tsx's own
-// mock-page container and app/client/specs/[shareId]/page.tsx (so the "Submit" bars above/below the
+// mock-page container and app/client/hub/[shareId]/page.tsx (so the "Submit" bars above/below the
 // sheet can be sized to match it exactly, rather than guessing at a fixed width) — one calculation,
 // not two copies that could drift apart.
 export function computeSpecsPageBoxWidthPx(grid: SpecsGrid): number {
@@ -623,11 +623,25 @@ export type SpecsGridVersion = {
   // fetchProjectUpdatedAtMarker's own callers) — unused by Specs, which has no automatic/outdated-
   // detection concept, only the plain manual "Save Version" flow above.
   capturedProjectMarker?: string;
-  // Set only on a Specs version saved WHILE the sheet was actively shared with a client (see
-  // saveSpecsSheetVersion in app/(app)/projects/[projectId]/page.tsx) — this snapshot is the
-  // permanent record of exactly what the client saw and answered at that point; the live sheet
-  // resets to a fresh, unanswered, editable draft immediately after. Unused by Quote.
+  // Set on a Specs OR Quote version saved WHILE it was actively shared with a client (see
+  // saveSpecsSheetVersion / sendQuoteToClient in app/(app)/projects/[projectId]/page.tsx) — this
+  // snapshot is the permanent record of exactly what the client saw at that point; the live sheet
+  // resets to a fresh, editable draft immediately after.
   sentToClient?: boolean;
+  // Quote only — set once the client accepts this specific frozen version (see
+  // app/api/specs-share/[shareId]/accept). Written directly onto this version document (not just
+  // the revocable/expirable specsShareLinks hub doc) so the acceptance record is permanent even
+  // after the share link itself is later revoked or expires.
+  acceptedAtIso?: string;
+  acceptedByName?: string;
+  // Specs only — set once the client submits their confirmation of this specific frozen version
+  // (see app/api/specs-share/[shareId]/submit). Same permanent-record reasoning as
+  // acceptedAtIso/acceptedByName above: written directly onto this version document, not just the
+  // revocable/expirable specsShareLinks hub doc, and cleared (along with that hub doc's own
+  // submittedAt/submittedByName) if staff ever reopen it for editing — see
+  // reopenSpecsConfirmationForEditing in app/(app)/projects/[projectId]/page.tsx.
+  submittedAtIso?: string;
+  submittedByName?: string;
 };
 
 export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
@@ -641,6 +655,10 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
     const savedByName = typeof row.savedByName === "string" && row.savedByName ? row.savedByName : "";
     const capturedProjectMarker = typeof row.capturedProjectMarker === "string" && row.capturedProjectMarker ? row.capturedProjectMarker : "";
     const sentToClient = row.sentToClient === true;
+    const acceptedAtIso = typeof row.acceptedAtIso === "string" && row.acceptedAtIso ? row.acceptedAtIso : "";
+    const acceptedByName = typeof row.acceptedByName === "string" && row.acceptedByName ? row.acceptedByName : "";
+    const submittedAtIso = typeof row.submittedAtIso === "string" && row.submittedAtIso ? row.submittedAtIso : "";
+    const submittedByName = typeof row.submittedByName === "string" && row.submittedByName ? row.submittedByName : "";
     out.push({
       id: typeof row.id === "string" && row.id ? row.id : genSpecsRowId(),
       name: typeof row.name === "string" ? row.name : "",
@@ -654,6 +672,10 @@ export function normalizeSpecsGridVersions(raw: unknown): SpecsGridVersion[] {
       ...(savedByName ? { savedByName } : {}),
       ...(capturedProjectMarker ? { capturedProjectMarker } : {}),
       ...(sentToClient ? { sentToClient } : {}),
+      ...(acceptedAtIso ? { acceptedAtIso } : {}),
+      ...(acceptedByName ? { acceptedByName } : {}),
+      ...(submittedAtIso ? { submittedAtIso } : {}),
+      ...(submittedByName ? { submittedByName } : {}),
       grid,
     });
   }

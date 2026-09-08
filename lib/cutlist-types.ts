@@ -50,3 +50,24 @@ export type CutlistRow = {
 
 export type CutlistDraftRow = CutlistRow;
 export type CutlistEntryDraft = Omit<CutlistRow, "id" | "room">;
+
+// A staff-named "what if these pieces used a different product" scenario for the Initial Measure
+// sheet's Product Compare tool — see computeCutlistSelectionPricing in
+// app/(app)/projects/[projectId]/page.tsx. Deliberately holds no frozen price: the $ result is
+// always recomputed live from the CURRENT initialCutlistRows state whenever a comparison is
+// opened, so it stays correct if a selected row's size/quantity/product changes after this was
+// saved. Stored as its own small Firestore subcollection document (never inside the project doc's
+// `sales` object) — same reasoning as SpecsGridVersion's own comment: keeps the project document
+// safe from Firestore's 1MB per-document limit.
+export type ProductComparison = {
+  id: string;
+  name: string;
+  selectedRowIds: string[];
+  // Per-row target product, keyed by CutlistRow id — there's no single comparison-wide product;
+  // each row is only ever compared to something once it has its own entry here, letting a mixed
+  // selection compare some pieces to one product and others to a different one in the same run
+  // (e.g. doors to Lacquer, panels to a two-pac). A row missing here contributes zero change.
+  rowProductOverrides?: Record<string, string>;
+  savedAtIso: string;
+  savedByName?: string;
+};

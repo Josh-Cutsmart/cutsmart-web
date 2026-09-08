@@ -37,5 +37,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     submittedAt: shareDoc.submittedAt || null,
     submittedByName: shareDoc.submittedByName || null,
     versionId: shareDoc.versionId || null,
+    specsSentFromLive: shareDoc.specsSentFromLive ?? null,
+    quoteVersionId: shareDoc.quoteVersionId || null,
+    quoteAcceptedAt: shareDoc.quoteAcceptedAt || null,
+    quoteAcceptedByName: shareDoc.quoteAcceptedByName || null,
+    quoteSentFromLive: shareDoc.quoteSentFromLive ?? null,
   });
 }

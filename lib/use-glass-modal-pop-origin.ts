@@ -62,7 +62,24 @@ export function useGlassModalPopOrigin(
       lastOriginRef.current = origin;
     }
     const panel = panelRef.current;
-    if (!panel) return;
+    if (!panel) {
+      // No mounted panel to animate — happens when this hook's own portal isn't the one
+      // currently in the tree (e.g. a caller renders two of these for the same isOpen/origin
+      // pair, one used in a fullscreen view and one in the default view, only one of which is
+      // ever actually mounted at a time), or the panel unmounted (its whole view was navigated
+      // away from) before this effect could run. If we're closing, there's nothing to animate,
+      // but `shouldRender` must still drop to false now — otherwise this instance is stuck
+      // reporting "open" forever, and the next time its own portal DOES mount (e.g. navigating
+      // to the view that renders it) it appears fully visible with no way to close, since
+      // nothing will ever re-run this effect without a fresh isOpen/origin change. Deferred via
+      // setTimeout (rather than called inline) since React disallows synchronous setState calls
+      // directly in an effect body — same pattern the "no origin" closing branch below already uses.
+      if (!isOpen) {
+        const noPanelTimeout = window.setTimeout(() => setShouldRender(false), 0);
+        return () => window.clearTimeout(noPanelTimeout);
+      }
+      return;
+    }
     const activeOrigin = lastOriginRef.current;
 
     if (isOpen) {

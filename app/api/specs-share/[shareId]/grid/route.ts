@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getSpecsShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getSpecsShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 
 // No access code — the link itself (this shareId) is the only secret, per the user's explicit
@@ -20,6 +20,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   if (isSpecsShareLinkExpired(shareDoc)) {
     return NextResponse.json({ ok: false, error: "expired" }, { status: 400 });
+  }
+
+  // A hub link that only ever had the Quote sent (quoteVersionId present, versionId absent) must
+  // never fall through to getSpecsShareGridTarget's legacy live-project fallback below — that
+  // fallback only exists for a genuinely pre-versionId Specs link, and would otherwise leak the
+  // LIVE (never-sent) specs sheet under a phantom Specs tab. Only true when Specs was never sent
+  // to this hub at all.
+  if (!shareDoc.versionId && shareDoc.quoteVersionId) {
+    return NextResponse.json({ ok: false, error: "specs-not-sent" }, { status: 404 });
   }
 
   const projectRef = await getProjectDocRefAdmin(adminDb, shareDoc.projectId, shareDoc.companyId);
@@ -43,12 +52,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ ok: false, error: "no-specifications-sheet" }, { status: 404 });
   }
 
-  // Only the grid + a display name — never the raw project document, which may hold unrelated
+  // Only the grid + a display name (+ the assigned staff member's own contact info, resolved via
+  // resolveAssignedContactAdmin) — never the raw project document, which may hold unrelated
   // sensitive business data (pricing, other contacts) that must never reach this public route.
   const projectName = String(projectData.name ?? "").trim();
+  const assignedContact = await resolveAssignedContactAdmin(adminDb, shareDoc.companyId, projectData);
   // Lives on the small, separate specsShareLinks doc already fetched above, not on the project
   // doc — see lib/specs-share.ts's SpecsShareLinkDoc comment for why.
   const confirmationSubmittedAt = shareDoc.submittedAt || null;
   const confirmationSubmittedByName = shareDoc.submittedByName || null;
-  return NextResponse.json({ ok: true, grid, projectName, confirmationSubmittedAt, confirmationSubmittedByName });
+  return NextResponse.json({ ok: true, grid, projectName, assignedContact, confirmationSubmittedAt, confirmationSubmittedByName });
 }

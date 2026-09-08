@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, Check, ChevronDown, ClipboardList, Copy, Cpu, Download, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ClipboardList, Copy, Cpu, Download, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -21,25 +21,32 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor from "@/components/specs-grid-editor";
-import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, createEmptyGrid, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
+import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, createEmptyGrid, computeSpecsPageBoxWidthPx, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
+import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow, resolveProjectImageUrl, resolveProjectImageDataUrl, blobToDataUrl } from "@/lib/specs-grid-pdf";
 import {
   fetchCompanyDoc,
   fetchCompanyMembers,
+  deleteGridVersion,
+  deleteProductComparison,
   fetchChanges,
   fetchCutlists,
   fetchGridVersion,
   fetchGridVersions,
+  fetchProductComparisons,
   fetchProjectById,
   fetchProjectUpdatedAtMarker,
   fetchQuotes,
   fetchUserColorMapByUids,
   grantTempProductionAccess,
+  markGridVersionSentToClient,
   resyncCompanyProjectTagUsage,
   saveCompanyDocPatch,
   saveGridVersion,
+  saveProductComparison,
   syncCompanyClientProfileFromProject,
   softDeleteProject,
   updateGridVersionGrid,
+  updateProductComparison,
   updateProjectPatch,
   updateProjectStatus,
   updateProjectTags,
@@ -54,7 +61,7 @@ import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/use
 import { QUOTE_TEMPLATE_PLACEHOLDERS, interpolateQuoteTemplateText } from "@/lib/quote-template-placeholders";
 import type { Cutlist, Project, ProjectChange, ProjectImageAnnotation, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { storage, auth } from "@/lib/firebase";
-import type { CutlistDraftRow, CutlistEntryDraft, CutlistRow, DoorModeValue } from "@/lib/cutlist-types";
+import type { CutlistDraftRow, CutlistEntryDraft, CutlistRow, DoorModeValue, ProductComparison } from "@/lib/cutlist-types";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const QUOTE_SNAPSHOT_RENDERER_VERSION = "html-v1";
@@ -179,6 +186,20 @@ function shortMonthStyleDate(value: string) {
     .toLowerCase()
     .replace(" ", "");
   return `${date} | ${time}`;
+}
+
+// DD/MM/YYYY (never MM/DD, regardless of the viewer's own browser locale) plus a separate 12-hour
+// time string — used by the Quote "Pending"/"Accepted" banners above the sheet, where the exact
+// date the client acted matters and shouldn't silently flip ordering for a US-locale browser.
+function numericDDMMYYYYAndTime(value: string): { date: string; time: string } {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return { date: "-", time: "-" };
+  const date = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }).format(d);
+  const time = new Intl.DateTimeFormat("en-NZ", { hour: "numeric", minute: "2-digit", hour12: true })
+    .format(d)
+    .toLowerCase()
+    .replace(" ", "");
+  return { date, time };
 }
 
 function dashboardStyleDateOnly(value: string) {
@@ -1052,7 +1073,7 @@ type OrderMiscDraftRow = { name: string; notes: string; qty: string; deleted?: b
 type OrderHingeRow = { id: string; name: string; qty: string };
 
 type ProductionNav = "overview" | "cutlist" | "nesting" | "cnc" | "order" | "unlock" | "print";
-type SalesNav = "initial" | "items" | "quote" | "specifications" | "overview";
+type SalesNav = "initial" | "items" | "quote" | "specifications" | "compare" | "overview";
 type ProjectMainTab = "general" | "sales" | "production" | "settings";
 type ProjectLiveTabStateSnapshot = {
   resolvedTab: ProjectMainTab;
@@ -1405,6 +1426,123 @@ function formatCurrencyValue(value: number): string {
   }).format(Math.max(0, value));
 }
 
+// Signed variant of formatCurrencyValue (which clamps to 0) — used wherever a value can
+// legitimately go negative, e.g. the Product Compare tool's cost delta (a downgrade costs less).
+function formatSignedCurrencyValue(value: number): string {
+  return `${value < 0 ? "-" : "+"}${formatCurrencyValue(Math.abs(value))}`;
+}
+
+// Shared sheet-pricing types — a "product" here is a Company Settings sales product (Melteca,
+// Lacquer, ...) with one or more sheet-size options, each carrying its own price. Used by both
+// salesRoomSheetAnalysis (the Sales Items room-pricing engine) and computeCutlistSelectionPricing
+// (the Product Compare tool) so the two never drift into two different costing models.
+type SheetPriceOption = { sheetSize: string; width: number; height: number; price: number };
+type ProductSheetPricing = { defaultOption: SheetPriceOption | null; options: SheetPriceOption[] };
+
+// Picks which sheet size a piece of the given dimensions would actually be cut from for a given
+// product: the product's default sheet if the piece fits on it, else the first configured option
+// it fits on, else the largest configured option (an oversize fallback, flagged via
+// usedLargerThanDefault so callers can warn about it). `grainLocked` pieces may never be rotated
+// 90° to fit (a grained board's pattern must run one way), so they only ever check the
+// non-rotated orientation.
+function chooseSheetOptionForPiece(
+  product: ProductSheetPricing,
+  width: number,
+  height: number,
+  grainLocked: boolean,
+  margin: number,
+): { option: SheetPriceOption | null; usedLargerThanDefault: boolean } {
+  const fitsSheet = (option: SheetPriceOption) => {
+    const innerW = Math.max(80, option.width - margin * 2);
+    const innerH = Math.max(80, option.height - margin * 2);
+    if (grainLocked) return width <= innerW && height <= innerH;
+    return (width <= innerW && height <= innerH) || (height <= innerW && width <= innerH);
+  };
+  const defaultOption = product.defaultOption;
+  const usedLargerThanDefault = defaultOption ? !fitsSheet(defaultOption) : false;
+  const option =
+    (defaultOption && fitsSheet(defaultOption) ? defaultOption : null) ??
+    product.options.find((candidate) => fitsSheet(candidate)) ??
+    product.options[product.options.length - 1] ??
+    null;
+  return { option, usedLargerThanDefault };
+}
+
+type PackablePiece = { width: number; height: number; grainLocked: boolean };
+
+// How many sheets of the given size a set of same-product pieces requires: a simple deterministic
+// bin-pack (largest area first, left-to-right row fill, wrap to a new row/sheet on overflow,
+// kerf-width gaps between pieces) — not optimal, but consistent and fast enough to run live as
+// staff tick checkboxes. A non-grain-locked piece may be rotated 90° when that lets it fit or
+// packs the sheet's long axis more efficiently. Mirrors the nesting preview's own layout logic
+// closely enough for pricing purposes without needing to track actual placements — only the
+// resulting sheet count is ever used for cost.
+function packPiecesOntoSheets(pieces: PackablePiece[], sheetWidth: number, sheetHeight: number, margin: number, kerf: number): number {
+  const innerW = Math.max(80, sheetWidth - margin * 2);
+  const innerH = Math.max(80, sheetHeight - margin * 2);
+  const sorted = [...pieces].sort((a, b) => b.width * b.height - a.width * a.height);
+
+  let sheetsUsed = 0;
+  let piecesOnCurrentSheet = 0;
+  let x = 0;
+  let y = 0;
+  let rowMax = 0;
+
+  const startNewSheet = () => {
+    if (piecesOnCurrentSheet > 0) sheetsUsed += 1;
+    piecesOnCurrentSheet = 0;
+    x = 0;
+    y = 0;
+    rowMax = 0;
+  };
+
+  for (const piece of sorted) {
+    let w = piece.width;
+    let h = piece.height;
+
+    if (!piece.grainLocked) {
+      const canNormalFit = w <= innerW && h <= innerH;
+      const canRotatedFit = h <= innerW && w <= innerH;
+      const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
+
+      if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
+        const nextW = h;
+        const nextH = w;
+        w = nextW;
+        h = nextH;
+      } else if (!canNormalFit && !canRotatedFit) {
+        const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
+        const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
+        if (rotatedOverflow < normalOverflow) {
+          const nextW = h;
+          const nextH = w;
+          w = nextW;
+          h = nextH;
+        }
+      }
+    }
+
+    w = Math.min(w, innerW);
+    h = Math.min(h, innerH);
+
+    if (x > 0 && x + w > innerW) {
+      x = 0;
+      y += rowMax + kerf;
+      rowMax = 0;
+    }
+    if (y > 0 && y + h > innerH) {
+      startNewSheet();
+    }
+
+    piecesOnCurrentSheet += 1;
+    x += w + kerf;
+    rowMax = Math.max(rowMax, h);
+  }
+
+  if (piecesOnCurrentSheet > 0) sheetsUsed += 1;
+  return sheetsUsed;
+}
+
 // Clusters Quote Extras (any object carrying an optional SpecsRowGroup-style `category`) under one
 // heading per distinct category, for both quote-extras sidebars below. Matched case-insensitively
 // (trimmed) so "Benchtops" and "benchtops " land in the same bucket instead of silently splitting
@@ -1691,24 +1829,6 @@ function normalizeProjectImageItemsForViewer(project: Project | null): ProjectIm
     .map((url) => ({ url: String(url || "").trim(), name: "", annotations: [] as ProjectImageAnnotation[] }))
     .filter((item) => item.url)
     .slice(0, 10);
-}
-
-async function resolveProjectImageUrl(raw: string): Promise<string> {
-  const value = String(raw || "").trim();
-  if (!value) return "";
-  if (/^https?:\/\//i.test(value)) return value;
-  const storageClient = storage;
-  if (!storageClient) return "";
-  const normalized = value.replace(/^\/+/, "");
-  try {
-    return await getDownloadURL(storageRef(storageClient, normalized));
-  } catch {
-    try {
-      return await getDownloadURL(storageRef(storageClient, value));
-    } catch {
-      return "";
-    }
-  }
 }
 
 function toNum(value: unknown): number {
@@ -2747,208 +2867,6 @@ function toErrorMessage(error: unknown): string {
     } catch {}
   }
   return "Unknown error";
-}
-
-async function blobToDataUrl(blob: Blob): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read blob."));
-    reader.readAsDataURL(blob);
-  });
-}
-
-
-// jsPDF only ships helvetica/times/courier without embedding an actual font file, and its font
-// embedder (jsPDF.API.TTFFont) only understands TrueType-outline (glyf/loca) fonts — not the CFF/
-// PostScript outlines most script/signature-style OTF files (including this app's own
-// public/fonts/Signature.otf, confirmed via its own table directory) actually use, so there's no
-// reliable way to embed the real custom font here. This maps every SYSTEM_QUOTE_FONT_OPTIONS choice
-// to whichever built-in comes closest by feel — an approximation, not a promise the printed page
-// matches the screen pixel-for-pixel, same as picking any of the many other OS fonts in that list
-// that this PDF library was never going to have either.
-function resolvePdfFontFamily(cssFontFamily: string | undefined): "helvetica" | "times" | "courier" {
-  const lower = (cssFontFamily || "").toLowerCase();
-  if (!lower) return "helvetica";
-  if (/courier|consolas|lucida console/.test(lower)) return "courier";
-  if (/times|georgia|cambria|garamond|book antiqua|palatino/.test(lower)) return "times";
-  return "helvetica";
-}
-
-function escapeSpecsCellHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-// The exact inverse of specs-grid-editor.tsx's own runsToHtml (not imported from there — a
-// component file's internal helpers aren't meant to be reached into from elsewhere, and this is a
-// few lines) — <b>/<u>/<br> matching a run's own bold/underline/embedded line breaks.
-function specsRunsToHtml(runs: SpecsTextRun[]): string {
-  return runs
-    .map((run) => {
-      const escaped = escapeSpecsCellHtml(run.text).replace(/\n/g, "<br>");
-      let html = escaped;
-      if (run.underline) html = `<u>${html}</u>`;
-      if (run.bold) html = `<b>${html}</b>`;
-      return html;
-    })
-    .join("");
-}
-
-// Renders a cell's real rich content to a raster image using the BROWSER's own layout/font engine
-// — the only way to make BOTH of the following actually true in the PDF at once: (1) a font jsPDF
-// can't embed as real vector text (see resolvePdfFontFamily's own comment — this app's own
-// Signature.otf included) shows up looking like itself instead of falling back to a built-in, and
-// (2) a cell mixing bold/plain/underlined text across several wrapped lines lands EXACTLY where the
-// editor itself would wrap it, with no risk of overflowing into the row below. That second part
-// used to be hand-rolled here as an independent word-wrap re-implementation measured via jsPDF's own
-// getTextWidth — close, but never pixel-identical to the browser's real layout, and any cell whose
-// hand-estimated wrap came out with MORE lines than the browser's real one overflowed straight into
-// whatever printed below it. Measuring the real, unclipped natural height here (returned alongside
-// the image) and letting the caller grow the row's own minCellHeight to match — rather than clipping
-// to whatever the row's STORED heightPx already happened to be — closes that gap from the other
-// side too: a row whose height wasn't (or couldn't be) auto-grown to fit isn't silently clipped in
-// print either, exactly like a too-short row never silently clips content in the live editor itself.
-// Shared by both functions below — everything about how a cell's rich content gets laid out in an
-// offscreen element EXCEPT what happens to it afterward (just measured and discarded, vs. pinned to
-// a final height and rasterized). Caller owns attaching/detaching `wrapper` to/from the document.
-function buildOffscreenSpecsCellContainer(
-  runs: SpecsTextRun[],
-  style: SpecsCellStyle,
-  widthPx: number,
-): { wrapper: HTMLDivElement; container: HTMLDivElement } {
-  // A zero-size, overflow-hidden, fixed-at-the-origin WRAPPER keeps this fully invisible without
-  // resorting to shoving the real content far off in negative-coordinate space — some capture
-  // implementations measure/clip oddly for elements positioned way outside any plausible viewport,
-  // and the actual content node underneath still gets its own real box (and therefore real layout)
-  // regardless of the wrapper clipping it from view.
-  const wrapper = document.createElement("div");
-  wrapper.style.position = "fixed";
-  wrapper.style.top = "0";
-  wrapper.style.left = "0";
-  wrapper.style.width = "0";
-  wrapper.style.height = "0";
-  wrapper.style.overflow = "hidden";
-  wrapper.style.zIndex = "-1";
-  wrapper.style.pointerEvents = "none";
-  const container = document.createElement("div");
-  container.style.width = `${Math.max(1, Math.round(widthPx))}px`;
-  // Height starts auto (unclipped) so scrollHeight reports how tall this content genuinely needs to
-  // be — only pinned to a fixed px height (with clipping) afterward, once that's known, and only by
-  // the caller that actually needs a final image rather than just a measurement.
-  container.style.boxSizing = "border-box";
-  container.style.padding = "2px 8px";
-  container.style.background = "transparent";
-  // Matches the editor's own vertical-align wrapper (specs-grid-editor.tsx) — flex column + one of
-  // these three justify-content values. Harmless to set before a final height is pinned to anything
-  // taller than the content's own natural height: a flex container's OWN natural size (what
-  // scrollHeight measures) is unaffected by justify-content until there's actually extra space
-  // inside it to redistribute, which there isn't yet while height is still auto.
-  container.style.display = "flex";
-  container.style.flexDirection = "column";
-  container.style.justifyContent = style.verticalAlign === "middle" ? "center" : style.verticalAlign === "bottom" ? "flex-end" : "flex-start";
-  // A single inner element holds the actual run HTML — every DIRECT child of a `display:flex`
-  // container becomes its own flex item, so setting a multi-run cell's <b>/<u> spans straight as
-  // THIS container's innerHTML made each run (a separate top-level node: a bare text node followed
-  // by a <b> element, say) its own stacked flex item under flex-direction:column, forcing every run
-  // onto its own line no matter how much width was actually available — exactly what made a bolded
-  // placeholder at the end of a sentence always drop to a new line in print. Keeping the flex
-  // container down to this ONE child (which justify-content then positions as a whole) lets the
-  // runs inside it stay ordinary inline content that wraps together like any normal paragraph.
-  const content = document.createElement("div");
-  content.style.whiteSpace = "pre-wrap";
-  content.style.wordBreak = "break-word";
-  // Matches SpecsCellTextArea's own fallback exactly — "inherit" resolves against the real page's
-  // body font-family (this element ends up appended to that same document below), the same as an
-  // on-screen cell that never had a font explicitly chosen. A hardcoded font color, though, NOT
-  // var(--text-main) — jsPDF's own vector-text path already defaults to plain black regardless of
-  // the viewer's light/dark theme (it has no CSS/theme context of its own to read), and a captured
-  // image inheriting a light dark-mode text color would print invisible on a white page.
-  content.style.fontFamily = style.fontFamily || "inherit";
-  content.style.fontSize = `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`;
-  content.style.textAlign = style.align ?? "left";
-  content.style.color = style.textColor || "#000000";
-  content.innerHTML = specsRunsToHtml(runs);
-  container.appendChild(content);
-  wrapper.appendChild(container);
-  return { wrapper, container };
-}
-
-// Just the height measurement half of renderSpecsCellRunsToDataUrl below, without the (comparatively
-// expensive) rasterization step — used for EVERY plain text cell, not just the rich/unembeddable-font
-// ones that actually get rendered as images, so a row whose real (browser-wrapped) content needs more
-// lines than jspdf-autotable's own internal wrap estimate assumed also gets grown to fit, the same
-// way a rich cell already does. That mismatch — this app's own PDF-side text measurement landing on a
-// different wrapped-line count than the real one the row's stored height was ever actually sized for
-// — is what let a plain cell's second wrapped line overflow into the row below it in print.
-async function measureSpecsCellNaturalHeightPx(runs: SpecsTextRun[], style: SpecsCellStyle, widthPx: number): Promise<number> {
-  const { wrapper, container } = buildOffscreenSpecsCellContainer(runs, style, widthPx);
-  document.body.appendChild(wrapper);
-  try {
-    return Math.max(1, container.scrollHeight);
-  } finally {
-    document.body.removeChild(wrapper);
-  }
-}
-
-// Renders a cell's real rich content to a raster image using the BROWSER's own layout/font engine
-// — the only way to make BOTH of the following actually true in the PDF at once: (1) a font jsPDF
-// can't embed as real vector text (see resolvePdfFontFamily's own comment — this app's own
-// Signature.otf included) shows up looking like itself instead of falling back to a built-in, and
-// (2) a cell mixing bold/plain/underlined text across several wrapped lines lands EXACTLY where the
-// editor itself would wrap it, with no risk of overflowing into the row below. That second part
-// used to be hand-rolled here as an independent word-wrap re-implementation measured via jsPDF's own
-// getTextWidth — close, but never pixel-identical to the browser's real layout, and any cell whose
-// hand-estimated wrap came out with MORE lines than the browser's real one overflowed straight into
-// whatever printed below it. Measuring the real, unclipped natural height here (returned alongside
-// the image) and letting the caller grow the row's own minCellHeight to match — rather than clipping
-// to whatever the row's STORED heightPx already happened to be — closes that gap from the other
-// side too: a row whose height wasn't (or couldn't be) auto-grown to fit isn't silently clipped in
-// print either, exactly like a too-short row never silently clips content in the live editor itself.
-async function renderSpecsCellRunsToDataUrl(
-  runs: SpecsTextRun[],
-  style: SpecsCellStyle,
-  widthPx: number,
-  minHeightPx: number,
-): Promise<{ dataUrl: string; heightPx: number } | null> {
-  const { wrapper, container } = buildOffscreenSpecsCellContainer(runs, style, widthPx);
-  document.body.appendChild(wrapper);
-  try {
-    // Explicitly requests THIS font/size combo, not just whatever's already loaded — a custom
-    // @font-face like Signature might not have been requested by anything on the page yet (its
-    // font-display: swap means the fallback renders immediately while it loads in the background),
-    // so document.fonts.ready alone could resolve before it's actually ready to draw with.
-    if (typeof document.fonts?.load === "function") {
-      await document.fonts.load(`${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px ${container.style.fontFamily}`).catch(() => {});
-    }
-    if (typeof document.fonts?.ready?.then === "function") await document.fonts.ready;
-    const heightPx = Math.max(1, Math.round(minHeightPx), container.scrollHeight);
-    container.style.height = `${heightPx}px`;
-    container.style.overflow = "hidden";
-    const dataUrl = await toPng(container, { pixelRatio: 2, cacheBust: true });
-    return { dataUrl, heightPx };
-  } catch {
-    // Rendering this one cell as an image failed (an unavailable browser API, an unexpected DOM/
-    // capture error) — the caller falls back to plain vector text for it rather than letting one
-    // cell's failure abort the whole export.
-    return null;
-  } finally {
-    document.body.removeChild(wrapper);
-  }
-}
-
-async function resolveProjectImageDataUrl(raw: string): Promise<string> {
-  const resolvedUrl =
-    (await resolveProjectImageUrl(raw)) ||
-    (/^https?:\/\//i.test(String(raw || "").trim()) ? String(raw || "").trim() : "");
-  if (!resolvedUrl) return "";
-  try {
-    const response = await fetch(resolvedUrl, { mode: "cors", credentials: "omit", cache: "force-cache" });
-    if (!response.ok) return resolvedUrl;
-    const imageBlob = await response.blob();
-    return await blobToDataUrl(imageBlob);
-  } catch {
-    return resolvedUrl;
-  }
 }
 
 function normalizeEdgebandingSettings(raw: unknown): {
@@ -5463,7 +5381,66 @@ export default function ProjectDetailsPage() {
   const specsSheetVersionsHydratedForProjectIdRef = useRef<string | null>(null);
   const [specsSheetVersions, setSpecsSheetVersions] = useState<SpecsGridVersion[]>([]);
 
-  // "Send to Client" — emails a temporary link (app/client/specs/[shareId]) so an external client
+  // Product Compare tool (Initial Measure) — named "what if these pieces used a different
+  // product" scenarios, same own-subcollection-per-project storage pattern as the Specs/Quote
+  // version history just above (see ProductComparison's own comment in lib/cutlist-types.ts).
+  const productComparisonsHydratedForProjectIdRef = useRef<string | null>(null);
+  const [productComparisons, setProductComparisons] = useState<ProductComparison[]>([]);
+  // "" means no comparison is open yet (the builder shows a blank/unsaved draft).
+  const [activeComparisonId, setActiveComparisonId] = useState("");
+  const [comparisonNameDraft, setComparisonNameDraft] = useState("");
+  const [comparisonSelectedRowIds, setComparisonSelectedRowIds] = useState<Set<string>>(new Set());
+  // Each row's own target product, keyed by CutlistRow id — there's no comparison-wide product
+  // dropdown; a row only ever compares once it has its own entry here, which lets a mixed
+  // selection compare some pieces to one product and others to a different one (e.g. doors to
+  // Lacquer, panels to a two-pac) in the same run. A row missing here contributes zero change.
+  const [comparisonRowProductOverrides, setComparisonRowProductOverrides] = useState<Record<string, string>>({});
+  // "New Comparison" clicked while there's unsaved draft work — asks whether to save it first
+  // rather than silently discarding it (see onClickNewComparison/saveCurrentAndStartNewComparison).
+  const [isNewComparisonConfirmOpen, setIsNewComparisonConfirmOpen] = useState(false);
+  // How the piece checklist below is grouped for selection — purely about how easy the pieces are
+  // to find and tick (e.g. selecting "everything currently in Melteca" is much easier grouped by
+  // product); has no effect on pricing/wording.
+  const [comparisonGroupBy, setComparisonGroupBy] = useState<"room" | "partType" | "product">("room");
+  // Sliding blue indicator behind the By Room/Part Type/Product buttons — measured off the actual
+  // rendered buttons (their labels aren't equal width) rather than an assumed fraction, so it lines
+  // up exactly and stays correct if a label ever changes.
+  const comparisonGroupByButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [comparisonGroupByIndicatorRect, setComparisonGroupByIndicatorRect] = useState<{ left: number; width: number } | null>(null);
+  // Sort order for the rows WITHIN each group above — independent of comparisonGroupBy, which only
+  // decides how rows are bucketed into tables in the first place. Sorting never moves a row into a
+  // different group/table, only reorders rows inside the one it's already in.
+  const [comparisonSortBy, setComparisonSortBy] = useState<
+    "name-asc" | "name-desc" | "quantity-desc" | "quantity-asc" | "partType-asc" | "partType-desc"
+  >("name-asc");
+  // Anchor for shift-click range selection on the row checkboxes (see
+  // applyComparisonRowRangeSelect) — the last row clicked WITHOUT shift held. A ref, not state:
+  // it's pure interaction bookkeeping, never rendered, so it doesn't need to trigger a re-render.
+  const comparisonLastClickedRowIdRef = useRef<string | null>(null);
+  const [isSavingComparison, setIsSavingComparison] = useState(false);
+  const [isDeletingComparison, setIsDeletingComparison] = useState(false);
+  // Which saved comparison's card has its delete confirmation open — "" means none. Lives
+  // independently of activeComparisonId since a card can be deleted without opening it first. The
+  // origin/panelRef/shouldRender trio is the same "pop out of the button that opened it" glass
+  // modal animation every other confirm dialog in this file uses (see use-glass-modal-pop-origin.ts).
+  const [comparisonPendingDeleteId, setComparisonPendingDeleteId] = useState("");
+  const [comparisonDeleteModalOrigin, setComparisonDeleteModalOrigin] = useState<GlassModalOrigin>(null);
+  const comparisonDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderComparisonDeleteModal = useGlassModalPopOrigin(
+    Boolean(comparisonPendingDeleteId),
+    comparisonDeleteModalOrigin,
+    comparisonDeleteModalPanelRef,
+  );
+  // Same idea for "Apply to Cutlist" — writes that comparison's per-row product overrides
+  // permanently into the real Initial Measure cutlist (see applyProductComparisonToCutlist and
+  // comparisonApplyModal further down, next to buildComparisonApplyPreview).
+  const [isApplyingComparison, setIsApplyingComparison] = useState(false);
+  const [comparisonApplyModalOrigin, setComparisonApplyModalOrigin] = useState<GlassModalOrigin>(null);
+  const comparisonApplyModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const [comparisonCopyFeedback, setComparisonCopyFeedback] = useState(false);
+  const comparisonSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // "Send to Client" — emails a temporary link (app/client/hub/[shareId]) so an external client
   // can toggle Yes/No on cells the author marked "confirmable" in the editor above, without ever
   // needing a real CutSmart login. See app/api/specs-share/create/route.ts.
   const [isSendSpecsToClientModalOpen, setIsSendSpecsToClientModalOpen] = useState(false);
@@ -5479,8 +5456,17 @@ export default function ProjectDetailsPage() {
   const [sendSpecsToClientPreview, setSendSpecsToClientPreview] = useState<{ to: string; subject: string; body: string } | null>(null);
   const [sendSpecsToClientCopyFeedback, setSendSpecsToClientCopyFeedback] = useState(false);
   const [isReopeningSpecsConfirmation, setIsReopeningSpecsConfirmation] = useState(false);
+  // Confirmation popup for "Reopen for editing" — a client's submission is a real, potentially
+  // consequential thing to discard, so this asks first rather than firing on a single click.
+  const [isReopenSpecsConfirmOpen, setIsReopenSpecsConfirmOpen] = useState(false);
+  const [reopenSpecsConfirmOrigin, setReopenSpecsConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const reopenSpecsConfirmModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderReopenSpecsConfirmModal = useGlassModalPopOrigin(isReopenSpecsConfirmOpen, reopenSpecsConfirmOrigin, reopenSpecsConfirmModalPanelRef);
   // Fetched from specsShareLinks/{projectId} (see fetchSpecsShareStatus below) — null means no
-  // share link has been created for this project yet.
+  // share link (hub) has been created for this project yet. The hub doc carries BOTH tabs' state
+  // in one document (see SpecsShareLinkDoc's own header comment in lib/specs-share.ts), so one
+  // fetch/state object covers Specs and Quote together — the quote* fields are simply absent until
+  // "Send Quote to Client" has been used at least once.
   const [specsShareStatus, setSpecsShareStatus] = useState<{
     clientEmail: string;
     expiresAt: string;
@@ -5491,7 +5477,42 @@ export default function ProjectDetailsPage() {
     // existed. Used to pull the client's latest answers into that specific version's local state
     // (see refreshSpecsConfirmationAnswers), never into the live sheet.
     versionId: string | null;
+    // Specs' own version of quoteSentFromLive below — see that field's comment. True only when
+    // versionId was snapshotted from the live sheet at the exact moment it was sent.
+    specsSentFromLive: boolean | null;
+    quoteVersionId: string | null;
+    quoteAcceptedAt: string | null;
+    quoteAcceptedByName: string | null;
+    // True only when quoteVersionId was created by snapshotting the LIVE grid at the exact moment
+    // it was sent (the normal "Send Quote to Client" flow while viewing live) — false/null when it
+    // was instead an EXISTING historical version marked sent directly from the sidebar (see
+    // sendQuoteToClient's own branch on activeQuoteGridVersionId). Needed because the live grid is
+    // only actually locked/"the sent one" in the first case — sending an old version leaves the
+    // live draft fully independent and still freely editable, so it must never show as
+    // pending/locked just because SOMETHING is currently sent. See isViewingSentQuoteVersion below.
+    quoteSentFromLive: boolean | null;
   } | null>(null);
+
+  // "Send Quote to Client" — the Quote's own version of the Send-to-Client block above, into the
+  // SAME hub link (see sendQuoteToClient/reopenQuoteAcceptanceForEditing below). Mirrors every
+  // piece of Specs' own state 1:1 — see that block's own comments for what each one is for.
+  const [isSendQuoteToClientModalOpen, setIsSendQuoteToClientModalOpen] = useState(false);
+  const [sendQuoteToClientOrigin, setSendQuoteToClientOrigin] = useState<GlassModalOrigin>(null);
+  const sendQuoteToClientPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderSendQuoteToClientModal = useGlassModalPopOrigin(isSendQuoteToClientModalOpen, sendQuoteToClientOrigin, sendQuoteToClientPanelRef);
+  const [sendQuoteToClientEmailDraft, setSendQuoteToClientEmailDraft] = useState("");
+  const [isSendingQuoteToClient, setIsSendingQuoteToClient] = useState(false);
+  const [sendQuoteToClientError, setSendQuoteToClientError] = useState("");
+  const [sendQuoteToClientPreview, setSendQuoteToClientPreview] = useState<{ to: string; subject: string; body: string } | null>(null);
+  const [sendQuoteToClientCopyFeedback, setSendQuoteToClientCopyFeedback] = useState(false);
+  const [isReopeningQuoteAcceptance, setIsReopeningQuoteAcceptance] = useState(false);
+  // Confirmation popup for "Reopen for editing"/"Open for editing" — retracting a sent (or
+  // accepted) quote is a real, potentially consequential thing to do, so this asks first rather
+  // than firing on a single click. Same pattern as isReopenSpecsConfirmOpen.
+  const [isReopenQuoteConfirmOpen, setIsReopenQuoteConfirmOpen] = useState(false);
+  const [reopenQuoteConfirmOrigin, setReopenQuoteConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const reopenQuoteConfirmModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderReopenQuoteConfirmModal = useGlassModalPopOrigin(isReopenQuoteConfirmOpen, reopenQuoteConfirmOrigin, reopenQuoteConfirmModalPanelRef);
 
   // ===== Quote Grid — the cell/grid-based replacement for the old block/container Quote template
   // system, built the same way the Specifications sheet already was earlier this session. A priced
@@ -5612,6 +5633,48 @@ export default function ProjectDetailsPage() {
   const shouldRenderQuoteGridSaveVersionModal = useGlassModalPopOrigin(isQuoteGridSaveVersionModalOpen, quoteGridSaveVersionModalOrigin, quoteGridSaveVersionModalPanelRef);
   const [quoteGridSaveVersionNameDraft, setQuoteGridSaveVersionNameDraft] = useState("");
   const [isSavingQuoteGridVersion, setIsSavingQuoteGridVersion] = useState(false);
+
+  // Delete a single Quote version from the Version History sidebar — "" means no confirmation is
+  // pending. The bubble's own hover-revealed delete icon (see quoteGridVersionsSorted.map below)
+  // captures its click point into quoteVersionDeleteOrigin before opening this, same
+  // pop-from-click-point convention as every other glass modal in this file.
+  const [quoteVersionPendingDeleteId, setQuoteVersionPendingDeleteId] = useState("");
+  const [quoteVersionDeleteOrigin, setQuoteVersionDeleteOrigin] = useState<GlassModalOrigin>(null);
+  const quoteVersionDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderQuoteVersionDeleteModal = useGlassModalPopOrigin(
+    Boolean(quoteVersionPendingDeleteId),
+    quoteVersionDeleteOrigin,
+    quoteVersionDeleteModalPanelRef,
+  );
+  const [isDeletingQuoteVersion, setIsDeletingQuoteVersion] = useState(false);
+  // Drives the delete icon's slide/bounce via a literal inline `transform` string toggled by real
+  // hover state, rather than Tailwind's group-hover translate utilities — those compose `transform`
+  // out of an unregistered `--tw-translate-x` custom property, which browsers can't smoothly
+  // interpolate (it jumps discretely partway through the transition instead of animating), which is
+  // exactly the "doesn't animate, flashes then fades" bug this replaced.
+  const [hoveredQuoteVersionId, setHoveredQuoteVersionId] = useState("");
+  const deleteQuoteVersionById = async (versionId: string) => {
+    if (!project || !versionId || isDeletingQuoteVersion) return;
+    // A version that's been sent to the client (accepted or still pending) is never deletable, even
+    // from here, so it can't be silently lost by whatever set quoteVersionPendingDeleteId — a client
+    // could be looking at it right now, or it's a permanent acceptance record (see acceptedAtIso's
+    // own comment in lib/specs-grid-types.ts). The disabled/hidden delete icon already blocks this
+    // in the normal UI path; this is the same guarantee for the confirm modal itself.
+    const target = quoteGridVersions.find((v) => v.id === versionId);
+    if (target?.acceptedAtIso || target?.sentToClient) return;
+    setIsDeletingQuoteVersion(true);
+    try {
+      const ok = await deleteGridVersion(project, "quoteGridVersions", versionId);
+      if (!ok) return;
+      setQuoteGridVersions((prev) => prev.filter((v) => v.id !== versionId));
+      // Deleting the version currently open in the editor falls back to the live grid — there's
+      // nothing left to display for it.
+      if (activeQuoteGridVersionId === versionId) returnToLiveQuoteGrid();
+      setQuoteVersionPendingDeleteId("");
+    } finally {
+      setIsDeletingQuoteVersion(false);
+    }
+  };
 
   // Which version is currently being viewed/edited — "" means the live quote. Unlike Specs' history
   // (which only ever offers "restore this over the live grid"), Quote history stays independently
@@ -7837,6 +7900,7 @@ export default function ProjectDetailsPage() {
     items: "Sales Items",
     quote: "Sales Quote",
     specifications: "Sales Specifications",
+    compare: "Sales Product Compare",
     overview: "Sales",
   };
   const productionViewLabels: Record<Exclude<ProductionNav, "unlock" | "print">, string> = {
@@ -8006,6 +8070,7 @@ export default function ProjectDetailsPage() {
         snapshot.salesNav === "items" ||
         snapshot.salesNav === "quote" ||
         snapshot.salesNav === "specifications" ||
+        snapshot.salesNav === "compare" ||
         snapshot.salesNav === "overview"
       ) {
         setSalesNav(snapshot.salesNav);
@@ -9999,6 +10064,42 @@ export default function ProjectDetailsPage() {
   };
 
 
+  // Shared by salesRoomSheetAnalysis (whole-cutlist room pricing, below) and
+  // computeCutlistSelectionPricing (the Product Compare tool's "what if these pieces used a
+  // different product" calculator) — one lookup so the two never read differently-shaped pricing
+  // for the same product.
+  const productSheetPricingByName = useMemo(() => {
+    const map = new Map<string, ProductSheetPricing>();
+    for (const row of companySalesProductConfigs) {
+      map.set(row.name.trim().toLowerCase(), {
+        defaultOption: row.defaultOption
+          ? {
+              sheetSize: row.defaultOption.sheetSize,
+              width: row.defaultOption.width,
+              height: row.defaultOption.height,
+              price: row.defaultOption.price,
+            }
+          : null,
+        options: row.options.map((option) => ({
+          sheetSize: option.sheetSize,
+          width: option.width,
+          height: option.height,
+          price: option.price,
+        })),
+      });
+    }
+    return map;
+  }, [companySalesProductConfigs]);
+  const nestingSheetSettings = useMemo(() => {
+    const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
+    const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
+    return {
+      sheetHeight: Math.max(100, toNum(rawNested.sheetHeight ?? rawNested.h ?? 2440) || 2440),
+      sheetWidth: Math.max(100, toNum(rawNested.sheetWidth ?? rawNested.w ?? 1220) || 1220),
+      kerf: Math.max(0, toNum(rawNested.kerf ?? 5) || 5),
+      margin: Math.max(0, toNum(rawNested.margin ?? 10) || 10),
+    };
+  }, [companyDoc]);
   const salesRoomSheetAnalysis = useMemo(() => {
     type FlatPiece = {
       id: string;
@@ -10008,25 +10109,12 @@ export default function ProjectDetailsPage() {
       width: number;
       height: number;
       area: number;
+      grainLocked: boolean;
     };
-    type SheetOption = {
-      sheetSize: string;
-      width: number;
-      height: number;
-      price: number;
-    };
-    type SheetPlacement = {
-      piece: FlatPiece;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    };
-    type SheetLayout = { index: number; placements: SheetPlacement[] };
     type RoomSheetBucket = {
       room: string;
       productName: string;
-      option: SheetOption;
+      option: SheetPriceOption;
       pieces: FlatPiece[];
       usedLargerThanDefault: boolean;
     };
@@ -10042,42 +10130,8 @@ export default function ProjectDetailsPage() {
       const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
       return Number.isFinite(n) && n > 0 ? n : 0;
     };
-    const formatCurrencyValue = (value: number) =>
-      new Intl.NumberFormat("en-NZ", {
-        style: "currency",
-        currency: "NZD",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(Math.max(0, value));
-    const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
-    const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
-    const settings = {
-      sheetHeight: Math.max(100, toNum(rawNested.sheetHeight ?? rawNested.h ?? 2440) || 2440),
-      sheetWidth: Math.max(100, toNum(rawNested.sheetWidth ?? rawNested.w ?? 1220) || 1220),
-      kerf: Math.max(0, toNum(rawNested.kerf ?? 5) || 5),
-      margin: Math.max(0, toNum(rawNested.margin ?? 10) || 10),
-    };
-    const productMap = new Map(
-      companySalesProductConfigs.map((row) => [
-        row.name.trim().toLowerCase(),
-        {
-          defaultOption: row.defaultOption
-            ? {
-                sheetSize: row.defaultOption.sheetSize,
-                width: row.defaultOption.width,
-                height: row.defaultOption.height,
-                price: row.defaultOption.price,
-              }
-            : null,
-          options: row.options.map((option) => ({
-            sheetSize: option.sheetSize,
-            width: option.width,
-            height: option.height,
-            price: option.price,
-          })),
-        },
-      ]),
-    );
+    const settings = nestingSheetSettings;
+    const productMap = productSheetPricingByName;
 
     const expandedRows: CutlistRow[] = [];
     for (const row of initialCutlistRows) {
@@ -10167,21 +10221,13 @@ export default function ProjectDetailsPage() {
       const grainLocked =
         grainDim > 0 || Boolean(initialMeasureBoardGrainMap[productName.trim().toLowerCase()]);
 
-      const fitsSheet = (option: SheetOption) => {
-        const innerW = Math.max(80, option.width - settings.margin * 2);
-        const innerH = Math.max(80, option.height - settings.margin * 2);
-        if (grainLocked) {
-          return width <= innerW && height <= innerH;
-        }
-        return (width <= innerW && height <= innerH) || (height <= innerW && width <= innerH);
-      };
-
-      const defaultOption = product.defaultOption;
-      const requiresLargerThanDefault = defaultOption ? !fitsSheet(defaultOption) : false;
-      const chosenOption =
-        (defaultOption && fitsSheet(defaultOption) ? defaultOption : null) ??
-        product.options.find((option) => fitsSheet(option)) ??
-        product.options[product.options.length - 1];
+      const { option: chosenOption, usedLargerThanDefault: requiresLargerThanDefault } = chooseSheetOptionForPiece(
+        product,
+        width,
+        height,
+        grainLocked,
+        settings.margin,
+      );
       if (!chosenOption) continue;
 
       const key = `${room.toLowerCase()}__${productName.toLowerCase()}__${chosenOption.sheetSize}`;
@@ -10202,6 +10248,7 @@ export default function ProjectDetailsPage() {
           width: Math.max(30, width),
           height: Math.max(24, height),
           area: Math.max(1, width * height),
+          grainLocked,
         });
       }
       piecesByRoomAndSheet.set(key, bucket);
@@ -10216,97 +10263,30 @@ export default function ProjectDetailsPage() {
     for (const bucket of piecesByRoomAndSheet.values()) {
       const sheetWidth = Math.max(200, bucket.option.width);
       const sheetHeight = Math.max(150, bucket.option.height);
-      const innerW = Math.max(80, sheetWidth - settings.margin * 2);
-      const innerH = Math.max(80, sheetHeight - settings.margin * 2);
       const kerf = Math.max(0, settings.kerf);
-      const sorted = [...bucket.pieces].sort((a, b) => b.area - a.area);
 
-      const sheets: SheetLayout[] = [];
-      let current: SheetLayout = { index: 1, placements: [] };
-      let x = 0;
-      let y = 0;
-      let rowMax = 0;
-
-      const startNewSheet = () => {
-        if (current.placements.length > 0) sheets.push(current);
-        current = { index: sheets.length + 1, placements: [] };
-        x = 0;
-        y = 0;
-        rowMax = 0;
-      };
-
-      for (const piece of sorted) {
-        let w = piece.width;
-        let h = piece.height;
-        // Lock orientation (no 90° rotation) either when the user picked an explicit grain
-        // dimension for this row, or whenever the board itself is marked "Grained" in Company
-        // Settings — a grained board can't be freely rotated to pack more pieces per sheet just
-        // because no per-row grain value happens to be set.
-        const grainLocked =
-          toPositiveNum(piece.row.grainValue) > 0 ||
-          Boolean(initialMeasureBoardGrainMap[piece.productName.trim().toLowerCase()]);
-
-        if (!grainLocked) {
-          const canNormalFit = w <= innerW && h <= innerH;
-          const canRotatedFit = h <= innerW && w <= innerH;
-          const preferLongOnSheetLong = innerW >= innerH ? h > w : w > h;
-
-          if (canRotatedFit && (!canNormalFit || preferLongOnSheetLong)) {
-            const nextW = h;
-            const nextH = w;
-            w = nextW;
-            h = nextH;
-          } else if (!canNormalFit && !canRotatedFit) {
-            const normalOverflow = Math.max(0, w - innerW) + Math.max(0, h - innerH);
-            const rotatedOverflow = Math.max(0, h - innerW) + Math.max(0, w - innerH);
-            if (rotatedOverflow < normalOverflow) {
-              const nextW = h;
-              const nextH = w;
-              w = nextW;
-              h = nextH;
-            }
-          }
-        }
-
-        w = Math.min(w, innerW);
-        h = Math.min(h, innerH);
-
-        if (x > 0 && x + w > innerW) {
-          x = 0;
-          y += rowMax + kerf;
-          rowMax = 0;
-        }
-        if (y > 0 && y + h > innerH) {
-          startNewSheet();
-        }
-
-        current.placements.push({ piece, x, y, w, h });
-        x += w + kerf;
-        rowMax = Math.max(rowMax, h);
-      }
-
-      if (current.placements.length > 0) sheets.push(current);
-      const bucketCost = sheets.length * bucket.option.price;
+      const sheetsRequired = packPiecesOntoSheets(bucket.pieces, sheetWidth, sheetHeight, settings.margin, kerf);
+      const bucketCost = sheetsRequired * bucket.option.price;
       priceByRoom[bucket.room.toLowerCase()] = (priceByRoom[bucket.room.toLowerCase()] ?? 0) + bucketCost;
-      if (sheets.length > 0) {
+      if (sheetsRequired > 0) {
         const sheetCountKey = `${bucket.productName}__${bucket.option.sheetSize}`;
         const existingSheetCount = sheetCountsByProductMap.get(sheetCountKey);
         if (existingSheetCount) {
-          existingSheetCount.sheetCount += sheets.length;
+          existingSheetCount.sheetCount += sheetsRequired;
         } else {
           sheetCountsByProductMap.set(sheetCountKey, {
             productName: bucket.productName,
             sheetSize: bucket.option.sheetSize,
-            sheetCount: sheets.length,
+            sheetCount: sheetsRequired,
           });
         }
       }
-      if (bucket.usedLargerThanDefault && sheets.length > 0) {
+      if (bucket.usedLargerThanDefault && sheetsRequired > 0) {
         largerSheetWarningEntries.push({
           room: bucket.room,
           productName: bucket.productName,
           sheetSize: bucket.option.sheetSize,
-          sheetCount: sheets.length,
+          sheetCount: sheetsRequired,
           addedToQuote: true,
         });
       }
@@ -10336,13 +10316,542 @@ export default function ProjectDetailsPage() {
     // listed below, so it's safe to omit them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    companySalesProductConfigs,
+    productSheetPricingByName,
     initialCutlistRows,
-    companyDoc,
+    nestingSheetSettings,
     salesRoomRows,
     initialMeasureBoardGrainMap,
   ]);
   const salesRoomPricingByName = salesRoomSheetAnalysis.pricingByRoom;
+  // The Product Compare tool's own calculator — same bucketing+packing engine as
+  // salesRoomSheetAnalysis above (chooseSheetOptionForPiece/packPiecesOntoSheets), but run over
+  // just a caller-chosen subset of rows with a caller-chosen product override, so it can answer
+  // "what would THESE selected pieces cost, either as they currently are or if they all used a
+  // different product" without touching the rest of the cutlist. Deliberately isolated to the
+  // given rows alone (not blended into the room's other pieces) — that's the number staff actually
+  // want for a quote line, and avoids having to reproduce nesting interaction effects with
+  // everything else in the room. Called twice per open comparison: once with
+  // `effectiveProductFor = (row) => row.board` (current cost) and once with a constant override
+  // (hypothetical cost) — see the Product Compare tab further down.
+  const computeCutlistSelectionPricing = useCallback(
+    (
+      rows: CutlistRow[],
+      effectiveProductFor: (row: CutlistRow) => string,
+    ): { totalCost: number; totalAreaM2: number; byRoom: Record<string, number> } => {
+      const toPositiveNum = (v: unknown) => {
+        const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      };
+      type SelectionPiece = { room: string; width: number; height: number; grainLocked: boolean };
+
+      const expandedRows: CutlistRow[] = [];
+      for (const row of rows) {
+        if (isCabinetryPartType(row.partType)) {
+          for (const piece of buildCabinetryDerivedPieces(row)) {
+            const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+            if (qty <= 0) continue;
+            expandedRows.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty) });
+          }
+          continue;
+        }
+        if (isDrawerPartType(row.partType)) {
+          for (const piece of buildDrawerDerivedPieces(row)) {
+            const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+            if (qty <= 0) continue;
+            expandedRows.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty) });
+          }
+          continue;
+        }
+        expandedRows.push(row);
+      }
+
+      type SelectionBucket = { room: string; option: SheetPriceOption; pieces: SelectionPiece[] };
+      const buckets = new Map<string, SelectionBucket>();
+      let totalAreaM2 = 0;
+
+      for (const row of expandedRows) {
+        // Unassigned rows still price as their own "Project Cutlist" bucket — mirrors the label
+        // initialCutlistRoomTabs already uses for the same concept (see page.tsx:9517-9525).
+        const room = String(row.room || "").trim() || "Project Cutlist";
+        const productName = effectiveProductFor(row).trim();
+        if (!productName) continue;
+        const product = productSheetPricingByName.get(productName.toLowerCase());
+        if (!product || !product.options.length) continue;
+
+        const qty = Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1);
+        const dimH = toPositiveNum(row.height);
+        const dimW = toPositiveNum(row.width);
+        const dimD = toPositiveNum(row.depth);
+        const grainDim = toPositiveNum(row.grainValue);
+        let width = dimW || dimD || 120;
+        let height = dimH || dimD || 80;
+        if (grainDim > 0) {
+          const allDims = [dimH, dimW, dimD].filter((v) => v > 0);
+          const hasGrainMatch = allDims.some((v) => Math.abs(v - grainDim) < 0.001);
+          if (hasGrainMatch) {
+            const crossCandidates = allDims.filter((v) => Math.abs(v - grainDim) >= 0.001);
+            const cross = (crossCandidates.length ? Math.max(...crossCandidates) : 0) || dimW || dimH || dimD || 80;
+            width = grainDim;
+            height = cross;
+          }
+        }
+        const grainLocked = grainDim > 0 || Boolean(initialMeasureBoardGrainMap[productName.toLowerCase()]);
+        const { option: chosenOption } = chooseSheetOptionForPiece(product, width, height, grainLocked, nestingSheetSettings.margin);
+        if (!chosenOption) continue;
+
+        const pieceWidth = Math.max(30, width);
+        const pieceHeight = Math.max(24, height);
+        totalAreaM2 += (pieceWidth * pieceHeight * qty) / 1_000_000;
+
+        const key = `${room.toLowerCase()}__${productName.toLowerCase()}__${chosenOption.sheetSize}`;
+        const bucket = buckets.get(key) ?? { room, option: chosenOption, pieces: [] };
+        for (let i = 0; i < qty; i += 1) {
+          bucket.pieces.push({ room, width: pieceWidth, height: pieceHeight, grainLocked });
+        }
+        buckets.set(key, bucket);
+      }
+
+      const byRoom: Record<string, number> = {};
+      let totalCost = 0;
+      for (const bucket of buckets.values()) {
+        const sheetsRequired = packPiecesOntoSheets(
+          bucket.pieces,
+          Math.max(200, bucket.option.width),
+          Math.max(150, bucket.option.height),
+          nestingSheetSettings.margin,
+          nestingSheetSettings.kerf,
+        );
+        const cost = sheetsRequired * bucket.option.price;
+        totalCost += cost;
+        byRoom[bucket.room] = (byRoom[bucket.room] ?? 0) + cost;
+      }
+
+      return { totalCost, totalAreaM2, byRoom };
+    },
+    // isCabinetryPartType/buildCabinetryDerivedPieces/isDrawerPartType/buildDrawerDerivedPieces are
+    // plain functions redefined every render (same reasoning as salesRoomSheetAnalysis's own
+    // comment above) — deterministic given the state already listed, safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [productSheetPricingByName, nestingSheetSettings, initialMeasureBoardGrainMap],
+  );
+  // Product Compare — fetched once per project into its own subcollection-backed list, same
+  // hydrate-once-per-project-id guard pattern as specsSheetVersionsHydratedForProjectIdRef above.
+  useEffect(() => {
+    const isOnComparePage = resolvedTab === "sales" && salesAccess.view && salesNav === "compare";
+    if (!isOnComparePage || !project) return;
+    if (productComparisonsHydratedForProjectIdRef.current === project.id) return;
+    productComparisonsHydratedForProjectIdRef.current = project.id;
+    void fetchProductComparisons(project).then(setProductComparisons);
+  }, [resolvedTab, salesAccess.view, salesNav, project]);
+  const productComparisonsSorted = useMemo(
+    () => [...productComparisons].sort((a, b) => b.savedAtIso.localeCompare(a.savedAtIso)),
+    [productComparisons],
+  );
+  // Loading a saved comparison (or starting fresh) seeds the builder's own draft state — editing
+  // after that only touches the draft, never the saved doc directly, so the debounced-autosave
+  // effect further below (keyed off activeComparisonId/comparisonNameDraft/etc.) is what actually
+  // writes it back.
+  const openProductComparison = (comparison: ProductComparison) => {
+    if (comparisonSaveTimeoutRef.current) clearTimeout(comparisonSaveTimeoutRef.current);
+    setActiveComparisonId(comparison.id);
+    setComparisonNameDraft(comparison.name);
+    setComparisonSelectedRowIds(new Set(comparison.selectedRowIds));
+    setComparisonRowProductOverrides(comparison.rowProductOverrides ?? {});
+  };
+  const startNewProductComparison = () => {
+    if (comparisonSaveTimeoutRef.current) clearTimeout(comparisonSaveTimeoutRef.current);
+    setActiveComparisonId("");
+    setComparisonNameDraft("");
+    setComparisonSelectedRowIds(new Set());
+    setComparisonRowProductOverrides({});
+  };
+  // Whether the CURRENT draft has anything in it worth not losing — only meaningful for a
+  // brand-new, never-saved draft (activeComparisonId === ""); once a comparison is saved, every
+  // further edit already autosaves on its own (see the debounced effect below), so there's never
+  // anything at risk of being silently discarded for one of those.
+  const isNewComparisonDraftDirty =
+    !activeComparisonId &&
+    (comparisonNameDraft.trim() !== "" || comparisonSelectedRowIds.size > 0 || Object.keys(comparisonRowProductOverrides).length > 0);
+  // "New Comparison" — if there's unsaved draft work, ask before clearing it rather than silently
+  // discarding it (see the confirm modal in the JSX below); otherwise just clear straight away.
+  const onClickNewComparison = () => {
+    if (isNewComparisonDraftDirty) {
+      setIsNewComparisonConfirmOpen(true);
+    } else {
+      startNewProductComparison();
+    }
+  };
+  const toggleComparisonRowSelected = (rowId: string) => {
+    setComparisonSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  };
+  // "" clears the override for that row entirely.
+  // Always affects only this ONE row — see applyProductToTickedRowsInGroup below for the explicit
+  // bulk-apply action (the "Change selected to" bar), which is now the only way to set several
+  // rows' products in one action.
+  const setComparisonRowProductOverride = (rowId: string, productName: string) => {
+    setComparisonRowProductOverrides((prev) => {
+      const next = { ...prev };
+      if (!productName) delete next[rowId];
+      else next[rowId] = productName;
+      return next;
+    });
+    // Picking a product ticks the row automatically — clearing back to blank unticks it — so
+    // setting a product IS how you include a piece, no separate checkbox click required.
+    setComparisonSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      if (productName) next.add(rowId);
+      else next.delete(rowId);
+      return next;
+    });
+  };
+  // "Change selected to" bar — appears at the top of a group's own table once 2+ of ITS rows are
+  // ticked, letting staff explicitly bulk-apply one product to just that group's ticked rows in a
+  // single action, rather than the old implicit "changing one ticked row changes every ticked row
+  // everywhere" behaviour. Only ever touches rows that are ALREADY ticked and already belong to
+  // this specific group — ticked rows elsewhere, or unticked rows in this same group, are untouched.
+  const applyProductToTickedRowsInGroup = (groupRowIds: string[], productName: string) => {
+    const tickedInGroup = groupRowIds.filter((id) => comparisonSelectedRowIds.has(id));
+    if (tickedInGroup.length === 0) return;
+    setComparisonRowProductOverrides((prev) => {
+      const next = { ...prev };
+      for (const id of tickedInGroup) {
+        if (!productName) delete next[id];
+        else next[id] = productName;
+      }
+      return next;
+    });
+    if (!productName) {
+      setComparisonSelectedRowIds((prev) => {
+        const next = new Set(prev);
+        for (const id of tickedInGroup) next.delete(id);
+        return next;
+      });
+    }
+  };
+  const toggleComparisonGroupSelected = (rowIdsInGroup: string[]) => {
+    setComparisonSelectedRowIds((prev) => {
+      const allSelected = rowIdsInGroup.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        for (const id of rowIdsInGroup) next.delete(id);
+      } else {
+        for (const id of rowIdsInGroup) next.add(id);
+      }
+      return next;
+    });
+  };
+  // Rows grouped for the piece checklist below, by whichever field comparisonGroupBy currently
+  // picks — "by room" mirrors initialCutlistRoomTabs's own grouping (see that memo's own comment),
+  // "by part type"/"by product" group on the row's own partType/board instead, for when it's
+  // easier to find pieces that way (e.g. ticking "everything currently in Melteca"). Whichever
+  // field is empty on a row falls into its own "Unassigned"/"Project Cutlist" bucket, kept last so
+  // the real, named groups lead.
+  const comparisonPieceGroups = useMemo(() => {
+    const fallbackLabel = comparisonGroupBy === "room" ? "Project Cutlist" : "Unassigned";
+    const fieldFor = (row: CutlistRow) =>
+      comparisonGroupBy === "room" ? row.room : comparisonGroupBy === "partType" ? row.partType : row.board;
+    const byLabel = new Map<string, CutlistRow[]>();
+    for (const row of initialCutlistRows) {
+      const label = String(fieldFor(row) || "").trim() || fallbackLabel;
+      const list = byLabel.get(label) ?? [];
+      list.push(row);
+      byLabel.set(label, list);
+    }
+    // The company's configured part-type order (anything not in that list falls back
+    // alphabetically after it) — used both for ordering By Part Type's own tables below, and for
+    // the "Part Type A–Z"/"Z–A" row sort options, so both read the exact same order.
+    const partTypeRank = new Map(initialMeasurePartTypeOptions.map((name, idx) => [name, idx]));
+    const partTypeOrder = (partType: string) => (partTypeRank.has(partType) ? Number(partTypeRank.get(partType)) : 999);
+    // Sorts the rows WITHIN one group/table — comparisonGroupBy already decided which table a row
+    // belongs to; this only reorders rows inside that same table, never moves them between tables.
+    const sortRows = (rows: CutlistRow[]) => {
+      const sorted = [...rows];
+      const qty = (row: CutlistRow) => Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      switch (comparisonSortBy) {
+        case "name-asc":
+          sorted.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+          break;
+        case "name-desc":
+          sorted.sort((a, b) => (b.name || "").localeCompare(a.name || ""));
+          break;
+        case "quantity-desc":
+          sorted.sort((a, b) => qty(b) - qty(a));
+          break;
+        case "quantity-asc":
+          sorted.sort((a, b) => qty(a) - qty(b));
+          break;
+        case "partType-asc":
+          sorted.sort((a, b) => partTypeOrder(a.partType) - partTypeOrder(b.partType) || a.partType.localeCompare(b.partType));
+          break;
+        case "partType-desc":
+          sorted.sort((a, b) => partTypeOrder(b.partType) - partTypeOrder(a.partType) || b.partType.localeCompare(a.partType));
+          break;
+      }
+      return sorted;
+    };
+    const fallbackRows = byLabel.get(fallbackLabel) ?? [];
+    byLabel.delete(fallbackLabel);
+    // By Part Type orders its tables the same way the real Initial Measure cutlist list does (see
+    // groupedInitialCutlistRows' own identical rank map) — the company's configured part-type
+    // order, not alphabetical. Room/Product grouping stay alphabetical, unchanged.
+    const groups = Array.from(byLabel.entries())
+      .sort((a, b) => {
+        if (comparisonGroupBy === "partType") {
+          const ar = partTypeOrder(a[0]);
+          const br = partTypeOrder(b[0]);
+          if (ar !== br) return ar - br;
+        }
+        return a[0].localeCompare(b[0]);
+      })
+      .map(([label, rows]) => ({ label, rows: sortRows(rows) }));
+    if (fallbackRows.length > 0) groups.push({ label: fallbackLabel, rows: sortRows(fallbackRows) });
+    return groups;
+  }, [initialCutlistRows, comparisonGroupBy, comparisonSortBy, initialMeasurePartTypeOptions]);
+  // Re-measures the sliding indicator whenever the active By Room/Part Type/Product button changes
+  // (including on first mount, so it doesn't start off missing/at 0,0 before any click happens).
+  useLayoutEffect(() => {
+    const el = comparisonGroupByButtonRefs.current[comparisonGroupBy];
+    if (!el) return;
+    setComparisonGroupByIndicatorRect({ left: el.offsetLeft, width: el.offsetWidth });
+  }, [comparisonGroupBy]);
+  // Shift-click range select — ticks every row between the last row clicked (without shift) and
+  // the one just shift-clicked, inclusive, in the CURRENTLY DISPLAYED order (flattened across every
+  // group/table, top to bottom) — matches the anchor-and-extend behavior of Explorer/Gmail-style
+  // lists. Only ever adds to the selection (never removes), since the user asked for shift-click to
+  // tick the range, not toggle it.
+  const applyComparisonRowRangeSelect = (anchorId: string, targetId: string) => {
+    const orderedIds = comparisonPieceGroups.flatMap((g) => g.rows.map((r) => r.id));
+    const anchorIdx = orderedIds.indexOf(anchorId);
+    const targetIdx = orderedIds.indexOf(targetId);
+    // If the anchor can no longer be found (e.g. it scrolled out of the current grouping/sort, or
+    // this is stale from before the list last changed), there's no range to compute — but the row
+    // actually just clicked must still end up selected rather than the click doing nothing.
+    const rangeIds =
+      anchorIdx === -1 || targetIdx === -1
+        ? [targetId]
+        : orderedIds.slice(Math.min(anchorIdx, targetIdx), Math.max(anchorIdx, targetIdx) + 1);
+    setComparisonSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      for (const id of rangeIds) next.add(id);
+      return next;
+    });
+  };
+  // How wide the per-row Compare To <select> needs to be to fit its longest possible option
+  // without truncating — every row shares this same option list (companySalesProductNames), so
+  // this is computed once rather than per row. `ch` sizes off the font's own average character
+  // width, which is what actually determines a <select>'s rendered content width; the small
+  // padding covers the built-in caret plus the select's own left/right padding.
+  const comparisonRowSelectWidthCh = useMemo(() => {
+    const longest = companySalesProductNames.reduce((max, label) => Math.max(max, label.length), 0);
+    return longest + 4;
+  }, [companySalesProductNames]);
+  // Live result for whatever is currently ticked — recomputed from the CURRENT cutlist every
+  // render (see ProductComparison's own comment on why nothing here is a frozen snapshot).
+  // Rooms staff have excluded from the quote entirely (see onToggleSalesRoomIncluded/"Exclude
+  // from quote") never contribute to the job total below, even if one of their pieces happens to
+  // be ticked — the room isn't being quoted at all, so an upgrade cost for it wouldn't be either.
+  // A row with no room assigned ("Project Cutlist") isn't tied to any Sales Room, so it's never
+  // excluded this way.
+  const excludedRoomNamesLower = useMemo(
+    () => new Set(salesRoomRows.filter((r) => !r.included).map((r) => r.name.trim().toLowerCase())),
+    [salesRoomRows],
+  );
+  const comparisonPricing = useMemo(() => {
+    // A row counts toward the total if it's TICKED, or if it has its own per-row override set —
+    // setting an individual row's Compare To product is a complete way to include it on its own,
+    // it shouldn't also require ticking the checkbox first.
+    const eligibleRows = initialCutlistRows.filter(
+      (row) => comparisonSelectedRowIds.has(row.id) || Boolean(comparisonRowProductOverrides[row.id]),
+    );
+    const selectedRows = eligibleRows.filter((row) => {
+      const room = String(row.room || "").trim().toLowerCase();
+      return !room || !excludedRoomNamesLower.has(room);
+    });
+    const excludedSelectedCount = eligibleRows.length - selectedRows.length;
+    // Current/New are both priced across the WHOLE job (every piece, not just the ticked ones) —
+    // staff want to see the real before/after total cost of the job, not just the cost of the
+    // handful of pieces being swapped. Only the rows actually being compared use their override in
+    // the "New" pass; every other piece prices identically in both, at its own real product — so
+    // the delta between the two totals still comes out exactly equal to the swapped pieces' own
+    // cost difference, it's just shown against the full job total on both sides instead of $0.
+    const allRows = initialCutlistRows.filter((row) => {
+      const room = String(row.room || "").trim().toLowerCase();
+      return !room || !excludedRoomNamesLower.has(room);
+    });
+    const current = computeCutlistSelectionPricing(allRows, (row) => row.board);
+    // A row only ever prices as "changed" once it has its own override — there's no comparison-
+    // wide product to fall back to, so a row with none just contributes its own real product
+    // (zero change) rather than vanishing out of the hypothetical side entirely.
+    const hasTarget = selectedRows.some((row) => Boolean(comparisonRowProductOverrides[row.id]));
+    const hypothetical = hasTarget
+      ? computeCutlistSelectionPricing(allRows, (row) => comparisonRowProductOverrides[row.id] || row.board)
+      : current;
+    // Every DISTINCT product actually being compared to across the counted rows — not just
+    // whether any per-row override exists, since several rows can each carry their own override
+    // and still all happen to agree on the same product. Rows with no override at all are left
+    // out here — they contribute zero change and shouldn't count as "a" target.
+    const effectiveTargetProducts = new Set<string>();
+    for (const row of selectedRows) {
+      const target = comparisonRowProductOverrides[row.id];
+      if (target) effectiveTargetProducts.add(target);
+    }
+    const singleTargetProduct = effectiveTargetProducts.size === 1 ? Array.from(effectiveTargetProducts)[0] : null;
+    return { current, hypothetical, delta: hypothetical.totalCost - current.totalCost, pieceCount: selectedRows.length, excludedSelectedCount, singleTargetProduct, hasTarget };
+  }, [initialCutlistRows, comparisonSelectedRowIds, comparisonRowProductOverrides, computeCutlistSelectionPricing, excludedRoomNamesLower]);
+  // A single total for the whole job — not broken down by room, per the user's own call. Named
+  // after the actual product being compared to when every counted row's own override agrees on
+  // the same one — only falls back to the generic phrasing when rows are genuinely being compared
+  // to DIFFERENT products.
+  const comparisonWordingText = useMemo(() => {
+    if (!comparisonPricing.hasTarget || comparisonPricing.pieceCount === 0) return "";
+    const label = comparisonPricing.singleTargetProduct ? `Upgrade to ${comparisonPricing.singleTargetProduct}` : "Product upgrade";
+    return `${label}: ${formatSignedCurrencyValue(comparisonPricing.delta)}`;
+  }, [comparisonPricing]);
+  const copyComparisonWording = async () => {
+    if (!comparisonWordingText) return;
+    try {
+      await navigator.clipboard.writeText(comparisonWordingText);
+      setComparisonCopyFeedback(true);
+      window.setTimeout(() => setComparisonCopyFeedback(false), 1500);
+    } catch {
+      // Non-critical — the text is already visible on screen for a manual copy.
+    }
+  };
+  // Debounced autosave for an ALREADY-saved comparison — mirrors onSpecsSheetChange's own 2000ms
+  // debounce pattern. A brand-new, not-yet-named comparison is only ever written by the explicit
+  // "Save" action below (saveOrCreateProductComparison), since it needs a name and doesn't have an
+  // id to patch yet.
+  useEffect(() => {
+    if (!activeComparisonId || !project || !salesAccess.edit) return;
+    if (comparisonSaveTimeoutRef.current) clearTimeout(comparisonSaveTimeoutRef.current);
+    comparisonSaveTimeoutRef.current = setTimeout(() => {
+      void updateProductComparison(project, activeComparisonId, {
+        name: comparisonNameDraft.trim() || "Untitled comparison",
+        selectedRowIds: Array.from(comparisonSelectedRowIds),
+        rowProductOverrides: comparisonRowProductOverrides,
+      }).then((ok) => {
+        if (ok) {
+          setProductComparisons((prev) =>
+            prev.map((c) =>
+              c.id === activeComparisonId
+                ? {
+                    ...c,
+                    name: comparisonNameDraft.trim() || "Untitled comparison",
+                    selectedRowIds: Array.from(comparisonSelectedRowIds),
+                    rowProductOverrides: comparisonRowProductOverrides,
+                  }
+                : c,
+            ),
+          );
+        }
+      });
+    }, 2000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeComparisonId, comparisonNameDraft, comparisonSelectedRowIds, comparisonRowProductOverrides]);
+  const saveOrCreateProductComparison = async (): Promise<boolean> => {
+    if (!project || !salesAccess.edit || activeComparisonId) return false;
+    const trimmedName = comparisonNameDraft.trim();
+    if (!trimmedName) return false;
+    setIsSavingComparison(true);
+    const saved = await saveProductComparison(project, {
+      name: trimmedName,
+      selectedRowIds: Array.from(comparisonSelectedRowIds),
+      rowProductOverrides: comparisonRowProductOverrides,
+      savedAtIso: new Date().toISOString(),
+      savedByName: user?.displayName || undefined,
+    });
+    setIsSavingComparison(false);
+    if (saved) {
+      setProductComparisons((prev) => [...prev, saved]);
+      setActiveComparisonId(saved.id);
+      return true;
+    }
+    return false;
+  };
+  // "Save & New" in the confirm prompt above — saves the current draft as its own comparison
+  // (requires a name, same as the ordinary Save action), then clears the builder for a fresh one.
+  // Leaves the just-saved comparison untouched/closed in the background rather than staying open,
+  // since the whole point of clicking "New Comparison" was to move on to a new one.
+  const saveCurrentAndStartNewComparison = async () => {
+    const ok = await saveOrCreateProductComparison();
+    if (ok) {
+      startNewProductComparison();
+      setIsNewComparisonConfirmOpen(false);
+    }
+  };
+  const discardAndStartNewComparison = () => {
+    startNewProductComparison();
+    setIsNewComparisonConfirmOpen(false);
+  };
+  // Deletes whichever comparison's card confirmation is open — not necessarily the one currently
+  // loaded in the builder, since a card can be deleted straight from the sidebar list without
+  // opening it first. Only clears/resets the builder if the deleted comparison WAS the active one.
+  const deleteProductComparisonById = async (comparisonId: string) => {
+    if (!project || !comparisonId || !salesAccess.edit || isDeletingComparison) return;
+    setIsDeletingComparison(true);
+    const ok = await deleteProductComparison(project, comparisonId);
+    setIsDeletingComparison(false);
+    if (ok) {
+      setProductComparisons((prev) => prev.filter((c) => c.id !== comparisonId));
+      if (comparisonId === activeComparisonId) startNewProductComparison();
+    }
+    setComparisonPendingDeleteId("");
+  };
+  // Preview for the "Apply to Cutlist" confirmation below — every piece this comparison would
+  // actually change, so staff can see exactly what they're committing to before it happens. A row
+  // whose override already matches its current product contributes nothing (nothing would change).
+  // Built ONCE, at the moment the card's Apply icon is clicked, and frozen into
+  // comparisonApplyModal rather than kept as a live useMemo off initialCutlistRows — recomputing it
+  // live would flash the "nothing to change" empty state for one render right as Apply finishes
+  // (initialCutlistRows updates to match the overrides a moment before the modal itself closes).
+  const buildComparisonApplyPreview = (comparison: ProductComparison) => {
+    const overrides = comparison.rowProductOverrides ?? {};
+    const changes: { id: string; name: string; from: string; to: string }[] = [];
+    for (const row of initialCutlistRows) {
+      const to = overrides[row.id];
+      if (to && to !== row.board) {
+        changes.push({ id: row.id, name: row.name || "Untitled piece", from: row.board || "—", to });
+      }
+    }
+    return { comparison, changes };
+  };
+  const [comparisonApplyModal, setComparisonApplyModal] = useState<{
+    comparison: ProductComparison;
+    changes: { id: string; name: string; from: string; to: string }[];
+  } | null>(null);
+  const shouldRenderComparisonApplyModal = useGlassModalPopOrigin(
+    Boolean(comparisonApplyModal),
+    comparisonApplyModalOrigin,
+    comparisonApplyModalPanelRef,
+  );
+  // Commits a saved comparison's per-row product overrides permanently into the real Initial
+  // Measure cutlist — this is the ONE place the tool writes back to initialCutlistRows itself,
+  // everything else (ticking, per-row Compare To, the results panel) only ever touches the
+  // comparison's own draft state. Every other row (no override, or override same as current
+  // product) is left completely untouched. Reuses persistInitialCutlistRows — the same save path
+  // every other Initial Measure row edit already goes through — so this behaves exactly like a
+  // normal manual edit (optimistic update, then Firestore write) rather than a special case.
+  const applyProductComparisonToCutlist = async (comparisonId: string) => {
+    if (!project || !salesAccess.edit || isApplyingComparison) return;
+    const target = productComparisons.find((c) => c.id === comparisonId);
+    if (!target) return;
+    const overrides = target.rowProductOverrides ?? {};
+    const next = initialCutlistRows.map((row) => (overrides[row.id] ? { ...row, board: overrides[row.id] } : row));
+    const changedCount = next.filter((row, i) => row.board !== initialCutlistRows[i].board).length;
+    setIsApplyingComparison(true);
+    setInitialCutlistRows(next);
+    await persistInitialCutlistRows(next);
+    setIsApplyingComparison(false);
+    setComparisonApplyModal(null);
+    if (changedCount > 0) {
+      logCutlistActivity(`"${target.name}" applied — ${changedCount} piece${changedCount === 1 ? "" : "s"} changed product`, { scope: "initial" });
+    }
+  };
   const effectiveSalesItemsRooms = useMemo(() => {
     const sourceRooms = salesItemsBoardRooms.length > 0 ? salesItemsBoardRooms : persistedSalesItemsRooms;
     const hydratedRooms = sourceRooms.map((room) => ({
@@ -13713,6 +14222,7 @@ export default function ProjectDetailsPage() {
           parsed.salesNav === "items" ||
           parsed.salesNav === "quote" ||
           parsed.salesNav === "specifications" ||
+          parsed.salesNav === "compare" ||
           parsed.salesNav === "overview"
         ) {
           setSalesNav(parsed.salesNav);
@@ -22004,7 +22514,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const isSalesSpecificationsFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "specifications";
   // Same "play the entrance animation only when this view is freshly entered" effect as the Quote
   // sheet's own (see its own comment, right above isSalesQuoteFullscreen), mirrored for Specs' own
-  // Sections panel.
+  // Sections AND Version History panels — Quote's own effect covers both of its equivalents since
+  // they both default open; Version History here defaults CLOSED, but state still persists across
+  // navigating away and back within this same component, so if it was left open from an earlier
+  // visit it needs this too, or it'd just sit there instantly with no pop-in the next time this
+  // view is (re)entered while still open. Harmless to fire unconditionally either way — the flag
+  // only has any visible effect while its own panel is actually open.
   useEffect(() => {
     if (isSalesSpecificationsFullscreen && !wasSalesSpecificationsFullscreenRef.current) {
       setIsSpecsSectionsPanelJustOpened(true);
@@ -22013,9 +22528,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         setIsSpecsSectionsPanelJustOpened(false);
         specsSectionsPanelOpenTimeoutRef.current = null;
       }, 800);
+      setIsSpecsVersionsSidebarJustOpened(true);
+      if (specsVersionsSidebarOpenTimeoutRef.current) clearTimeout(specsVersionsSidebarOpenTimeoutRef.current);
+      specsVersionsSidebarOpenTimeoutRef.current = setTimeout(() => {
+        setIsSpecsVersionsSidebarJustOpened(false);
+        specsVersionsSidebarOpenTimeoutRef.current = null;
+      }, 800);
     }
     wasSalesSpecificationsFullscreenRef.current = isSalesSpecificationsFullscreen;
   }, [isSalesSpecificationsFullscreen]);
+  const isSalesCompareFullscreen = resolvedTab === "sales" && salesAccess.view && salesNav === "compare";
   const isNestingFullscreen =
     resolvedTab === "production" && productionAccess.view && productionNav === "nesting";
   const isProductionSectionFullscreen =
@@ -22026,7 +22548,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         isSalesInitialFullscreen ||
         isSalesItemsFullscreen ||
         isSalesQuoteFullscreen ||
-        isSalesSpecificationsFullscreen,
+        isSalesSpecificationsFullscreen ||
+        isSalesCompareFullscreen,
     );
     return () => setChromeHidden(false);
   }, [
@@ -22035,6 +22558,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     isSalesItemsFullscreen,
     isSalesQuoteFullscreen,
     isSalesSpecificationsFullscreen,
+    isSalesCompareFullscreen,
     setChromeHidden,
   ]);
   // isAddRoomModalOpen is shared by several unrelated fullscreen views (Order, Sales Initial,
@@ -22615,6 +23139,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         submittedAt?: string | null;
         submittedByName?: string | null;
         versionId?: string | null;
+        specsSentFromLive?: boolean | null;
+        quoteVersionId?: string | null;
+        quoteAcceptedAt?: string | null;
+        quoteAcceptedByName?: string | null;
+        quoteSentFromLive?: boolean | null;
       };
       if (!data.ok) return;
       setSpecsShareStatus(
@@ -22625,6 +23154,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               submittedAt: data.submittedAt || null,
               submittedByName: data.submittedByName || null,
               versionId: data.versionId || null,
+              specsSentFromLive: data.specsSentFromLive ?? null,
+              quoteVersionId: data.quoteVersionId || null,
+              quoteAcceptedAt: data.quoteAcceptedAt || null,
+              quoteAcceptedByName: data.quoteAcceptedByName || null,
+              quoteSentFromLive: data.quoteSentFromLive ?? null,
             }
           : null,
       );
@@ -22633,7 +23167,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
   }, [project]);
   // This page loads the project ONCE (no realtime listener — see fetchProjectById's own callers),
-  // so a client answering a cell via the public app/client/specs/[shareId] page (a write via the
+  // so a client answering a cell via the public app/client/hub/[shareId] page (a write via the
   // admin SDK, straight into the sent version's own specificationsVersions doc — see
   // SpecsShareLinkDoc.versionId's own comment) never reaches this page's own state on its own. The
   // live sheet is no longer what the client answers against (it stays freely editable regardless
@@ -22653,6 +23187,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           if (v.id !== sentSpecsVersionId) return v;
           return {
             ...v,
+            // Also pulled in here, not just each cell's confirmedYes/confirmedAt below — the
+            // Version History sidebar's own bubble reads these to color itself green/show
+            // "Submitted by X" (see submit/route.ts, which writes them onto this same version doc
+            // the moment the client submits), and this refresh is the only path that notices a
+            // submission that happened after this page's own state was first hydrated.
+            submittedAtIso: fresh.submittedAtIso,
+            submittedByName: fresh.submittedByName,
             grid: {
               ...v.grid,
               rows: v.grid.rows.map((row) => {
@@ -22676,15 +23217,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
   }, [project, sentSpecsVersionId]);
   useEffect(() => {
-    if (resolvedTab === "sales" && salesAccess.view && salesNav === "specifications") {
+    // Fires on either sub-tab — the hub doc's status covers both Specs and Quote in one fetch, so
+    // whichever one staff opens first should populate the chip for both.
+    if (resolvedTab === "sales" && salesAccess.view && (salesNav === "specifications" || salesNav === "quote")) {
       void fetchSpecsShareStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedTab, salesAccess.view, salesNav, project?.id]);
   useEffect(() => {
-    if (sentSpecsVersionId) void refreshSpecsConfirmationAnswers();
+    // Also re-fires on every visit to the Specifications tab (resolvedTab/salesNav), not just when
+    // sentSpecsVersionId itself changes — a client can submit an ALREADY-sent version (no new send,
+    // so the id never changes) while staff had this page open, and without this, the Version
+    // History sidebar's own "Submitted by X" badge would only ever refresh on a full page reload.
+    if (resolvedTab === "sales" && salesAccess.view && salesNav === "specifications" && sentSpecsVersionId) {
+      void refreshSpecsConfirmationAnswers();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sentSpecsVersionId]);
+  }, [resolvedTab, salesAccess.view, salesNav, sentSpecsVersionId]);
   const sendSpecsToClient = async () => {
     if (!project || isSendingSpecsToClient || !auth?.currentUser) return;
     const clientEmail = sendSpecsToClientEmailDraft.trim();
@@ -22692,32 +23241,54 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setSendSpecsToClientError("Enter the client's email address.");
       return;
     }
-    if (!specsSheetGrid) {
-      setSendSpecsToClientError("There's no specifications sheet to send yet.");
-      return;
-    }
     setIsSendingSpecsToClient(true);
     setSendSpecsToClientError("");
     try {
-      // Checkpoint the EXACT state being sent, right now, BEFORE creating the link — this saved
-      // version (tagged sentToClient) is what the link actually points at (see
-      // SpecsShareLinkDoc.versionId's own comment), never the live project doc. That's what lets
-      // the live sheet stay freely editable after sending: further staff edits land only on
-      // specsSheetGrid, which this link's routes never read from again.
-      const nextVersionNumber = specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1;
-      const saved = await saveGridVersion(project, "specificationsVersions", {
-        name: `Sent to ${clientEmail}`,
-        version: nextVersionNumber,
-        savedAtIso: new Date().toISOString(),
-        savedByName: user?.displayName || undefined,
-        grid: JSON.parse(JSON.stringify(specsSheetGrid)) as SpecsGrid,
-        sentToClient: true,
-      });
-      if (!saved) {
-        setSendSpecsToClientError("Could not save the version to send.");
-        return;
+      let sentVersionId: string;
+      // Whether this send snapshots the LIVE sheet (true) or marks an ALREADY-SAVED historical
+      // version sent directly (false) — see specsSentFromLive's own comment in lib/specs-share.ts.
+      // Mirrors sendQuoteToClient's own identical branch.
+      let sentFromLive: boolean;
+      if (activeSpecsSheetVersionId) {
+        const versionId = activeSpecsSheetVersionId;
+        const ok = await markGridVersionSentToClient(project, "specificationsVersions", versionId);
+        if (!ok) {
+          setSendSpecsToClientError("Could not mark this version as sent.");
+          return;
+        }
+        setSpecsSheetVersions((prev) => prev.map((v) => (v.id === versionId ? { ...v, sentToClient: true } : v)));
+        sentVersionId = versionId;
+        sentFromLive = false;
+      } else {
+        if (!specsSheetGrid) {
+          setSendSpecsToClientError("There's no specifications sheet to send yet.");
+          return;
+        }
+        // Checkpoint the EXACT state being sent, right now, BEFORE creating the link — this saved
+        // version (tagged sentToClient) is what the link actually points at (see
+        // SpecsShareLinkDoc.versionId's own comment), never the live project doc. That's what lets
+        // the live sheet stay freely editable after sending: further staff edits land only on
+        // specsSheetGrid, which this link's routes never read from again.
+        const nextVersionNumber = specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1;
+        const saved = await saveGridVersion(project, "specificationsVersions", {
+          // Plain "Version N" like any other save — not renamed to "Sent to <email>", so the
+          // sidebar's list of names stays consistent regardless of whether a given version was
+          // created by "Save Version" or by sending straight from live.
+          name: `Version ${nextVersionNumber}`,
+          version: nextVersionNumber,
+          savedAtIso: new Date().toISOString(),
+          savedByName: user?.displayName || undefined,
+          grid: JSON.parse(JSON.stringify(specsSheetGrid)) as SpecsGrid,
+          sentToClient: true,
+        });
+        if (!saved) {
+          setSendSpecsToClientError("Could not save the version to send.");
+          return;
+        }
+        setSpecsSheetVersions((prev) => [...prev, saved]);
+        sentVersionId = saved.id;
+        sentFromLive = true;
       }
-      setSpecsSheetVersions((prev) => [...prev, saved]);
 
       const idToken = await auth.currentUser.getIdToken();
       const res = await fetch("/api/specs-share/create", {
@@ -22728,7 +23299,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           projectId: project.id,
           projectName: project.name,
           clientEmail,
-          versionId: saved.id,
+          versionId: sentVersionId,
+          sentFromLive,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -22739,14 +23311,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         body?: string;
       };
       if (!data.ok) {
-        setSendSpecsToClientError(data.error || "Could not create the confirmation link.");
+        setSendSpecsToClientError(
+          data.error === "already-sent"
+            ? "Another version is already sent to the client — Reopen for Editing first."
+            : data.error || "Could not create the confirmation link.",
+        );
         return;
       }
       // Not emailed automatically — shown as copy-paste-ready text instead (see this state's own
       // comment). The modal stays open, now showing the preview rather than the email-entry form.
       setSendSpecsToClientPreview({ to: clientEmail, subject: data.subject || "", body: data.body || "" });
       setSendSpecsToClientCopyFeedback(false);
-      setSpecsShareStatus({ clientEmail, expiresAt: data.expiresAt || "", submittedAt: null, submittedByName: null, versionId: saved.id });
+      // A functional update, not a full replace — the hub doc's quote fields (if the Quote was
+      // already sent to this same link) must survive a Specs (re)send untouched. The create route
+      // itself already merges rather than overwrites server-side; this just keeps local state
+      // consistent with that.
+      setSpecsShareStatus((prev) => ({
+        clientEmail,
+        expiresAt: data.expiresAt || "",
+        submittedAt: null,
+        submittedByName: null,
+        versionId: sentVersionId,
+        specsSentFromLive: sentFromLive,
+        quoteVersionId: prev?.quoteVersionId || null,
+        quoteAcceptedAt: prev?.quoteAcceptedAt || null,
+        quoteAcceptedByName: prev?.quoteAcceptedByName || null,
+        quoteSentFromLive: prev?.quoteSentFromLive ?? null,
+      }));
     } finally {
       setIsSendingSpecsToClient(false);
     }
@@ -22760,14 +23351,190 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const idToken = await auth.currentUser.getIdToken();
       const res = await fetch(`/api/specs-share/${project.id}/reopen`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${idToken}` },
+        headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "specs" }),
       });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean };
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; reopenedVersionId?: string | null };
       if (data.ok) {
-        setSpecsShareStatus((prev) => (prev ? { ...prev, submittedAt: null, submittedByName: null } : prev));
+        // Full retraction, same as reopenQuoteForEditing — versionId/specsSentFromLive are cleared
+        // too, not just the submission, so the toolbar's own "Pending Review"/"Submitted" banner
+        // and the Version History sidebar's "Sent to Client" pill both go back to plain.
+        setSpecsShareStatus((prev) =>
+          prev ? { ...prev, versionId: null, specsSentFromLive: null, submittedAt: null, submittedByName: null } : prev,
+        );
+        // The version's own sentToClient/submittedAtIso/submittedByName are cleared server-side too
+        // (see the reopen route's own comment) — mirror that locally so the Version History
+        // bubble's badge/coloring disappears immediately instead of waiting for a refetch, same
+        // pattern as reopenQuoteForEditing.
+        const reopenedVersionId = data.reopenedVersionId || "";
+        if (reopenedVersionId) {
+          setSpecsSheetVersions((prev) =>
+            prev.map((v) =>
+              v.id === reopenedVersionId ? { ...v, sentToClient: undefined, submittedAtIso: undefined, submittedByName: undefined } : v,
+            ),
+          );
+          void fetchGridVersion(project, "specificationsVersions", reopenedVersionId).then((fresh) => {
+            if (!fresh) return;
+            setSpecsSheetVersions((prev) => prev.map((v) => (v.id === reopenedVersionId ? fresh : v)));
+          });
+        }
       }
     } finally {
       setIsReopeningSpecsConfirmation(false);
+    }
+  };
+  // Quote's own version of sendSpecsToClient above — freezes a quoteGridVersions snapshot, then
+  // sends it to the SAME hub link (kind: "quote"), which the create route merges onto rather than
+  // overwriting, so an already-sent Specs tab on this same link is never disturbed.
+  const sendQuoteToClient = async () => {
+    if (!project || isSendingQuoteToClient || !auth?.currentUser) return;
+    const clientEmail = sendQuoteToClientEmailDraft.trim();
+    if (!clientEmail) {
+      setSendQuoteToClientError("Enter the client's email address.");
+      return;
+    }
+    setIsSendingQuoteToClient(true);
+    setSendQuoteToClientError("");
+    try {
+      let sentVersionId: string;
+      // Whether this send snapshots the LIVE grid (true) or marks an ALREADY-SAVED historical
+      // version sent directly (false) — see quoteSentFromLive's own comment in lib/specs-share.ts
+      // for why the live grid must never be treated as "the sent one" in the second case.
+      let sentFromLive: boolean;
+      // Already viewing an existing saved version (opened from the sidebar) — mark that exact
+      // document as sent instead of cloning a redundant duplicate. "quote_last_closed" is the one
+      // exception: it's a synthetic id for an ephemeral field, not a real quoteGridVersions
+      // document, so it falls through to the same save-a-fresh-copy path as the live grid below.
+      if (activeQuoteGridVersionId && activeQuoteGridVersionId !== "quote_last_closed") {
+        const versionId = activeQuoteGridVersionId;
+        const ok = await markGridVersionSentToClient(project, "quoteGridVersions", versionId);
+        if (!ok) {
+          setSendQuoteToClientError("Could not mark this version as sent.");
+          return;
+        }
+        setQuoteGridVersions((prev) => prev.map((v) => (v.id === versionId ? { ...v, sentToClient: true } : v)));
+        sentVersionId = versionId;
+        sentFromLive = false;
+      } else {
+        if (!quoteGrid) {
+          setSendQuoteToClientError("There's no quote to send yet.");
+          return;
+        }
+        const nextVersionNumber = quoteGridVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1;
+        const saved = await saveGridVersion(project, "quoteGridVersions", {
+          name: `Sent to ${clientEmail}`,
+          version: nextVersionNumber,
+          savedAtIso: new Date().toISOString(),
+          savedByName: user?.displayName || undefined,
+          grid: JSON.parse(JSON.stringify(quoteGrid)) as SpecsGrid,
+          sentToClient: true,
+        });
+        if (!saved) {
+          setSendQuoteToClientError("Could not save the version to send.");
+          return;
+        }
+        setQuoteGridVersions((prev) => [...prev, saved]);
+        sentVersionId = saved.id;
+        sentFromLive = true;
+      }
+
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/specs-share/create", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "quote",
+          companyId: project.companyId,
+          projectId: project.id,
+          projectName: project.name,
+          clientEmail,
+          versionId: sentVersionId,
+          sentFromLive,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        expiresAt?: string;
+        subject?: string;
+        body?: string;
+      };
+      if (!data.ok) {
+        setSendQuoteToClientError(
+          data.error === "already-sent"
+            ? "Another version is already sent to the client — Reopen for Editing first."
+            : data.error || "Could not create the quote link.",
+        );
+        return;
+      }
+      setSendQuoteToClientPreview({ to: clientEmail, subject: data.subject || "", body: data.body || "" });
+      setSendQuoteToClientCopyFeedback(false);
+      setSpecsShareStatus((prev) => ({
+        clientEmail,
+        expiresAt: data.expiresAt || "",
+        submittedAt: prev?.submittedAt || null,
+        submittedByName: prev?.submittedByName || null,
+        versionId: prev?.versionId || null,
+        specsSentFromLive: prev?.specsSentFromLive ?? null,
+        quoteVersionId: sentVersionId,
+        quoteAcceptedAt: null,
+        quoteAcceptedByName: null,
+        quoteSentFromLive: sentFromLive,
+      }));
+    } finally {
+      setIsSendingQuoteToClient(false);
+    }
+  };
+  // Staff-side safety valve for a SENT quote — not just an already-accepted one. Once sent, the
+  // live Quote Grid is fully locked against any edit (see isSentToClient below), so this is the
+  // ONLY way back to an editable quote: it retracts the sent quote entirely (clears quoteVersionId
+  // — see app/api/specs-share/[shareId]/reopen/route.ts's own comment on why Quote's reopen goes
+  // further than Specs'), which also removes the Quote tab from the client's hub link until staff
+  // sends a fresh version.
+  const reopenQuoteForEditing = async () => {
+    if (isReopeningQuoteAcceptance || !project || !auth?.currentUser) return;
+    setIsReopeningQuoteAcceptance(true);
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch(`/api/specs-share/${project.id}/reopen`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "quote" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; reopenedVersionId?: string | null };
+      if (data.ok) {
+        // Read from the server's own response, not this page's local specsShareStatus — that can
+        // lag behind Firestore (e.g. right after an outdated-quote "Update"), and trusting a stale
+        // client-side id here was leaving the Version History bubble's "Accepted" badge stuck
+        // showing even though the reopen route had already cleared the real record.
+        const reopenedVersionId = data.reopenedVersionId || "";
+        setSpecsShareStatus((prev) =>
+          prev ? { ...prev, quoteVersionId: null, quoteAcceptedAt: null, quoteAcceptedByName: null, quoteSentFromLive: null } : prev,
+        );
+        // The version's own sentToClient/acceptedAtIso/acceptedByName are cleared server-side too
+        // (see the reopen route's own comment — reopening retracts the send itself, not just the
+        // acceptance) — mirror that locally so the Version History bubble's "Sent to Client"/
+        // "Accepted" badges disappear immediately instead of waiting for a refetch.
+        if (reopenedVersionId) {
+          setQuoteGridVersions((prev) =>
+            prev.map((v) => (v.id === reopenedVersionId ? { ...v, sentToClient: undefined, acceptedAtIso: undefined, acceptedByName: undefined } : v)),
+          );
+          // Belt-and-braces refetch of that one version doc — guarantees the sidebar bubble matches
+          // whatever the server actually holds even if the optimistic patch above were ever wrong,
+          // rather than trusting the local mutation alone.
+          void fetchGridVersion(project, "quoteGridVersions", reopenedVersionId).then((fresh) => {
+            if (!fresh) return;
+            setQuoteGridVersions((prev) => prev.map((v) => (v.id === reopenedVersionId ? fresh : v)));
+          });
+        }
+        // Forces SpecsGridEditor to fully remount with fresh internal state — isSentToClient
+        // flipping true→false without a remount was leaving the sheet rendering blank until a
+        // manual page refresh (stale internal state from the editor's readOnly/editable branch
+        // swap); remounting sidesteps it entirely rather than chasing the exact cause.
+        setQuoteGridEditorKey((prev) => prev + 1);
+      }
+    } finally {
+      setIsReopeningQuoteAcceptance(false);
     }
   };
   // Explicit, deliberate reset (confirmed via its own popup) — this project's specs sheet otherwise
@@ -22807,6 +23574,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     () => [...specsSheetVersions].sort((a, b) => b.version - a.version),
     [specsSheetVersions],
   );
+  // Delete a single Specs version from the Version History sidebar — mirrors
+  // deleteQuoteVersionById exactly, just against "specificationsVersions". Specs versions have no
+  // acceptedAtIso equivalent (no per-version "accepted" concept), so the not-deletable guard is
+  // just sentToClient — a client could be looking at any sent version at any time.
+  const [hoveredSpecsVersionId, setHoveredSpecsVersionId] = useState("");
+  const [specsVersionPendingDeleteId, setSpecsVersionPendingDeleteId] = useState("");
+  const [specsVersionDeleteOrigin, setSpecsVersionDeleteOrigin] = useState<GlassModalOrigin>(null);
+  const specsVersionDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderSpecsVersionDeleteModal = useGlassModalPopOrigin(
+    Boolean(specsVersionPendingDeleteId),
+    specsVersionDeleteOrigin,
+    specsVersionDeleteModalPanelRef,
+  );
+  const [isDeletingSpecsVersion, setIsDeletingSpecsVersion] = useState(false);
+  const deleteSpecsVersionById = async (versionId: string) => {
+    if (!project || !versionId || isDeletingSpecsVersion) return;
+    if (specsSheetVersions.find((v) => v.id === versionId)?.sentToClient) return;
+    setIsDeletingSpecsVersion(true);
+    try {
+      const ok = await deleteGridVersion(project, "specificationsVersions", versionId);
+      if (!ok) return;
+      setSpecsSheetVersions((prev) => prev.filter((v) => v.id !== versionId));
+      if (activeSpecsSheetVersionId === versionId) returnToLiveSpecsSheet();
+      setSpecsVersionPendingDeleteId("");
+    } finally {
+      setIsDeletingSpecsVersion(false);
+    }
+  };
   const saveSpecsSheetVersion = async () => {
     if (!specsSheetGrid || isSavingSpecsVersion || !project) return;
     const trimmedName = specsSaveVersionNameDraft.trim();
@@ -22906,8 +23701,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     return false;
   };
+  // Sections can't be toggled at all on a version that's been sent or submitted — same reasoning
+  // as isQuoteExtrasLockedForSending: whatever's on screen being the sent/submitted one should
+  // read exactly as it did then, not be silently changed out from under a client who could be
+  // looking at it right now. Checks the version actually being viewed (its own sentToClient/
+  // submittedAtIso when viewing history) rather than the hub doc's current state, same live-vs-
+  // historical branch as isViewingSentSpecsVersion above.
+  const isSpecsSectionsLockedForSending = activeSpecsSheetVersionId
+    ? Boolean(activeSpecsSheetVersion?.sentToClient || activeSpecsSheetVersion?.submittedAtIso)
+    : Boolean(specsShareStatus?.versionId && specsShareStatus?.specsSentFromLive);
   const onToggleSpecsSheetGroup = (groupId: string, hidden: boolean) => {
-    if (!displayedSpecsSheetGrid) return;
+    if (!displayedSpecsSheetGrid || isSpecsSectionsLockedForSending) return;
     if (hidden) {
       const group = specsSheetGroups.find((g) => g.id === groupId);
       if (group && specsSheetGroupHasClientAnswer(group)) return;
@@ -23271,411 +24075,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     () => (displayedQuoteGrid ? getExpandedRowGroups(displayedQuoteGrid) : []),
     [displayedQuoteGrid],
   );
+  // Same lock condition as SpecsGridEditor's own isSentToClient prop on the Quote fullscreen view
+  // (isQuoteLockedForSending && isViewingSentQuoteVersion, computed locally there — this is that
+  // same boolean re-derived here from the same underlying state, since Extras isn't rendered inside
+  // that scope) — whatever's on screen being sent OR accepted should read EXACTLY as it did then,
+  // so toggling which groups show can't quietly change it out from under a client who could be
+  // looking at it right now. Checks the version actually being viewed for ITS OWN permanent
+  // sentToClient/acceptedAtIso flags (not just whether it's the hub's CURRENTLY-bound one), same as
+  // isQuoteContentLockedForSending's own identical broadening in the Quote block above — an older
+  // version, once superseded by a newer send, stays locked too.
+  const isQuoteExtrasLockedForSending = activeQuoteGridVersionId
+    ? Boolean(activeQuoteGridVersion?.sentToClient || activeQuoteGridVersion?.acceptedAtIso)
+    : Boolean(specsShareStatus?.quoteVersionId && specsShareStatus?.quoteSentFromLive);
   const onToggleQuoteGridExtra = (groupId: string, hidden: boolean) => {
-    if (!displayedQuoteGrid) return;
+    if (!displayedQuoteGrid || isQuoteExtrasLockedForSending) return;
     onQuoteGridChange(setRowGroupHidden(displayedQuoteGrid, groupId, hidden));
   };
 
-  // Reads the grid's own columnWidths/row heights/cell text/style directly — no style-pool
-  // indirection, no hidden rows/columns, no Excel-style "text spills into the next empty cell"
-  // simulation to fight (cells just wrap normally like a plain table). Much simpler than the old
-  // Univer-based version, since this data model is entirely ours end-to-end.
-  const buildSpecsGridPdfBlob = async (rawGrid: SpecsGrid): Promise<Blob | null> => {
-    // Older projects (and anything a company's 100-row default template still carries) can have a
-    // stored sheet full of unused blank rows from before empty rows were pruned at clone time — strip
-    // them here too, right before export, so print/PDF output never regresses to spilling those rows
-    // across several mostly-blank extra pages, regardless of how the on-screen grid got that way.
-    const grid = pruneEmptySpecsRows(rawGrid);
-    if (grid.rows.length === 0 || grid.columnWidths.length === 0) return null;
-
-    // Same defensive sanitizing as the editor's own render path (specs-grid-editor.tsx) — a single
-    // bad stored width/height would otherwise poison the whole PDF's layout math.
-    const columnWidths = grid.columnWidths.map((w) => (typeof w === "number" && Number.isFinite(w) && w > 0 ? w : DEFAULT_COL_WIDTH_PX));
-    const rowHeights = grid.rows.map((r) => (typeof r.heightPx === "number" && Number.isFinite(r.heightPx) && r.heightPx > 0 ? r.heightPx : DEFAULT_ROW_HEIGHT_PX));
-
-    // CSS reference pixel (96 DPI) -> PDF point (72 DPI) — the exact ratio a browser uses when it
-    // prints px-sized content, so a column/row converted this way lands at the same physical size
-    // on paper as it renders on screen, instead of stretching to always fill the full page width.
-    const PX_TO_PT = 0.75;
-    // jspdf-autotable's own approximate ratio between a cell's font size and the line-height it
-    // actually needs (its internal FONT_ROW_RATIO) — used below to size text down to fit a short
-    // row's own padding-adjusted space, rather than letting autoTable's default floor inflate it.
-    const SPECS_PDF_LINE_HEIGHT_FACTOR = 1.15;
-    const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: grid.pageSize.toLowerCase() });
-    const pageWidthPt = doc.internal.pageSize.getWidth();
-    const marginPt = 24;
-    const usableWidthPt = pageWidthPt - marginPt * 2;
-    const totalWidthPt = columnWidths.reduce((sum, w) => sum + w, 0) * PX_TO_PT || 1;
-    // Only ever shrink (never stretch) so a narrow grid prints at its true designed size instead of
-    // being blown up to fill the page — the same factor applies to width/height/font/border/padding
-    // so a cell's shape stays faithful to what it looked like on screen.
-    const scale = totalWidthPt > usableWidthPt ? usableWidthPt / totalWidthPt : 1;
-
-    // Cell images are stored as plain (small) URLs, not embedded data — resolve every distinct one
-    // to a data URL up front (jsPDF's addImage/getImageProperties need real image data, not a bare
-    // URL) since `didDrawCell` below runs synchronously during the table's render pass.
-    const distinctImageUrls = Array.from(
-      new Set(grid.rows.flatMap((row) => row.cells.flatMap((cell) => (cell?.imageUrl ? [cell.imageUrl] : [])))),
-    );
-    const imageDataUrlEntries = await Promise.all(
-      distinctImageUrls.map(async (url) => [url, await resolveProjectImageDataUrl(url)] as const),
-    );
-    const imageDataUrlCache: Record<string, string> = Object.fromEntries(imageDataUrlEntries);
-
-    type AutoTableCell = {
-      content: string;
-      colSpan?: number;
-      rowSpan?: number;
-      styles?: Record<string, unknown>;
-      imageUrl?: string;
-      imageAlign?: SpecsCellStyle["align"];
-      imageVerticalAlign?: SpecsCellStyle["verticalAlign"];
-      underline?: boolean;
-      // A richCellKey image (rendered text, not a real logo/picture) — see its own push-site comment
-      // for why this bypasses the fit-centered/imageAlign math entirely in didDrawCell below.
-      isRichCellImage?: boolean;
-    };
-    // Expanded once here (not per-cell) — see getExpandedRowGroups' own comment: a group's saved
-    // bounds can cut through a merged cell it was only meant to partially border, so every read of a
-    // group's bounds goes through this correction rather than the raw grid.groups list. A hidden
-    // group's rows are skipped from the output entirely (not just blanked) — matching the editor's
-    // own "completely hides" behavior for a project's own copy of the sheet.
-    const expandedGroups = getExpandedRowGroups(grid);
-    const hiddenRowIndexes = new Set<number>();
-    for (const g of expandedGroups) {
-      if (!g.hidden) continue;
-      for (let r = g.startRow; r <= g.endRow; r += 1) hiddenRowIndexes.add(r);
-    }
-    // Every non-image, non-empty cell's real (browser-wrapped) height gets measured up front, all in
-    // parallel — for a rich cell (mixed bold/underline, or an unembeddable font — see
-    // renderSpecsCellRunsToDataUrl's own comment for both), that's a full render to an image; for a
-    // plain one, it's just a layout measurement (measureSpecsCellNaturalHeightPx's own comment on
-    // why: jspdf-autotable's own internal wrap estimate can land on a different line count than the
-    // browser's real one, and a row whose stored height was only ever sized for the real count came
-    // up short in print exactly where the estimate needed an extra line the row had no room for).
-    // Done here rather than inside didDrawCell because that hook runs synchronously and can't await.
-    type CellHeightTarget = { key: string; runs: SpecsTextRun[]; style: SpecsCellStyle; widthPx: number; minHeightPx: number; isRich: boolean };
-    const cellHeightTargets: CellHeightTarget[] = [];
-    for (let r = 0; r < grid.rows.length; r += 1) {
-      if (hiddenRowIndexes.has(r)) continue;
-      for (let c = 0; c < grid.columnWidths.length; c += 1) {
-        const cell = grid.rows[r].cells[c];
-        if (!cell || cell.imageUrl || !cell.text) continue;
-        const runs = getCellRuns(cell);
-        const style = cell.style ?? {};
-        const usesUnembeddableFont = Boolean(style.fontFamily && style.fontFamily.toLowerCase().includes("signature"));
-        const isRich = runs.length > 1 || usesUnembeddableFont;
-        const { rowSpan, colSpan } = getCellSpan(cell);
-        let widthPx = 0;
-        for (let ci = c; ci < c + colSpan && ci < columnWidths.length; ci += 1) widthPx += columnWidths[ci];
-        let minHeightPx = 0;
-        for (let ri = r; ri < r + rowSpan && ri < rowHeights.length; ri += 1) minHeightPx += rowHeights[ri];
-        cellHeightTargets.push({ key: `richcell:${r}:${c}`, runs, style, widthPx, minHeightPx, isRich });
-      }
-    }
-    // Rich cells' rendered images (data URL + the height they actually got rendered at); keyed
-    // separately from imageDataUrlCache (rather than merged into it) because the main pass below
-    // also needs to read that height back out, not just the data URL — a rendering FAILURE (null;
-    // see renderSpecsCellRunsToDataUrl's own comment) simply has no entry here, and that cell falls
-    // back to plain vector text instead.
-    const richCellRenderCache: Record<string, { dataUrl: string; heightPx: number }> = {};
-    // Every measured cell's natural height in px (rich or plain) — the main pass below grows a
-    // cell's own minCellHeight to at least this, regardless of which path ends up drawing it.
-    const cellNaturalHeightCache: Record<string, number> = {};
-    await Promise.all(
-      cellHeightTargets.map(async (t) => {
-        if (t.isRich) {
-          const rendered = await renderSpecsCellRunsToDataUrl(t.runs, t.style, t.widthPx, t.minHeightPx);
-          if (rendered) {
-            richCellRenderCache[t.key] = rendered;
-            imageDataUrlCache[t.key] = rendered.dataUrl;
-            cellNaturalHeightCache[t.key] = rendered.heightPx;
-          }
-        } else {
-          cellNaturalHeightCache[t.key] = await measureSpecsCellNaturalHeightPx(t.runs, t.style, t.widthPx);
-        }
-      }),
-    );
-    // anchorFirstPageBottom (see its own comment on SpecsRowGroup) — the spacer height needed to push
-    // the earliest such group to the bottom of page 1 can only be known AFTER every row's real height
-    // (including any natural-content growth from wrapped text/rich cells, computed below) is settled —
-    // an earlier version of this calc summed raw stored row heights before that growth was known,
-    // which drastically underestimated tall paragraph rows and made the anchor math wrong. See the
-    // real calc, using `body`'s own finalized per-row heights, right before the autoTable() call below.
-    const anchoredGroups = expandedGroups.filter((g) => g.anchorFirstPageBottom && !g.hidden);
-    const anchorStartRow = anchoredGroups.length > 0 ? Math.min(...anchoredGroups.map((g) => g.startRow)) : -1;
-    const body: AutoTableCell[][] = [];
-    // Parallel to `body` — which original grid row each body row came from — so the anchor-spacer calc
-    // below can find where `anchorStartRow` landed after hidden rows are skipped and (further down)
-    // fully-covered rowSpan rows are collapsed away.
-    const bodyRowGridIndex: number[] = [];
-
-    for (let r = 0; r < grid.rows.length; r += 1) {
-      if (hiddenRowIndexes.has(r)) continue;
-      const row = grid.rows[r];
-      const rowArr: AutoTableCell[] = [];
-      for (let c = 0; c < grid.columnWidths.length; c += 1) {
-        const cell = row.cells[c];
-        if (cell === null) continue;
-        const { rowSpan, colSpan } = getCellSpan(cell);
-        const style = cell.style ?? {};
-        // A cell's runs (see getCellRuns' own comment) are the one source of truth for bold/underline
-        // now — a legacy or never-rich-edited cell synthesizes a single run from style.bold/underline
-        // automatically, so reading runs here instead of `style` directly still sees the right value
-        // for those, while also picking up a cell that WAS edited through the rich-text path but ended
-        // up uniformly one style (style.bold/underline itself is not kept in sync with that case).
-        const runs = getCellRuns(cell);
-        const isMixedFormatting = runs.length > 1;
-        const usesUnembeddableFont = Boolean(style.fontFamily && style.fontFamily.toLowerCase().includes("signature"));
-        const cellHeightKey = !cell.imageUrl && cell.text ? `richcell:${r}:${c}` : undefined;
-        const richCellKey = cellHeightKey && (isMixedFormatting || usesUnembeddableFont) ? cellHeightKey : undefined;
-        const richCellRendered = richCellKey ? richCellRenderCache[richCellKey] : undefined;
-        // A rowSpan cell needs the SUM of every row it spans for its minimum height, or a merged
-        // cell prints far shorter than it actually looks in the editor. Grown further still if this
-        // cell's own real (browser-measured) natural height needed more room than that — a rich cell
-        // rendered as an image (renderSpecsCellRunsToDataUrl's own comment), or a plain one that
-        // simply wraps to more lines than the row's stored height was ever sized for
-        // (measureSpecsCellNaturalHeightPx's own comment) — autoTable grows the WHOLE row to match
-        // automatically once any one of its cells asks for more via minCellHeight below, so nothing
-        // else here needs to know this happened.
-        let spannedHeightPx = 0;
-        for (let idx = r; idx < r + rowSpan && idx < grid.rows.length; idx += 1) {
-          spannedHeightPx += rowHeights[idx];
-        }
-        const naturalHeightPx = cellHeightKey ? cellNaturalHeightCache[cellHeightKey] : undefined;
-        if (naturalHeightPx) spannedHeightPx = Math.max(spannedHeightPx, naturalHeightPx);
-        const targetHeightPt = spannedHeightPx * PX_TO_PT * scale;
-        // Falls back to the editor's own on-screen default cell font size (converted the same
-        // px->pt way as an explicit style.fontSize would be), not an unrelated fixed pt value —
-        // otherwise every cell that never had its font size manually changed prints at a different
-        // size than what the Specifications window actually shows for it.
-        const requestedFontSizePt = (style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX) * PX_TO_PT * scale;
-        // Matches SpecsCellTextArea's own `py-0.5` (2px, not 4 — Tailwind's spacing scale is
-        // quarter-rem steps, so `0.5` is 2px, half of what a bare "4" here silently assumed, and
-        // that "4" was never itself px->pt converted either). Previously overstating the padding by
-        // roughly 3x meant this shrank text far more than the on-screen row actually needed to —
-        // exactly why a normal-sized default cell could come out visibly smaller in the PDF than it
-        // ever looked in the editor, worse the shorter a row got (e.g. the 20px default row height).
-        const basePaddingPt = 2 * PX_TO_PT * scale;
-        // jspdf-autotable's own cellPadding/fontSize table defaults are a FLOOR on a row's height,
-        // not a cap — a compact row that renders fine on screen (where the editor genuinely clips
-        // content to the configured height, per the earlier row-height fix) would otherwise get
-        // forced taller here to fit the default padding + font's line height, printing noticeably
-        // larger than the on-screen preview. Shrink padding first (down to a small minimum), then
-        // font size, so short rows print at roughly their real size instead of inflating — the PDF
-        // equivalent of the editor's own "clip, don't grow" behavior.
-        const cellPaddingPt = Math.max(0.5, Math.min(basePaddingPt, targetHeightPt * 0.25));
-        const availableForTextPt = Math.max(1, targetHeightPt - cellPaddingPt * 2);
-        const fontSizePt = cell.imageUrl ? requestedFontSizePt : Math.min(requestedFontSizePt, availableForTextPt / SPECS_PDF_LINE_HEIGHT_FACTOR);
-        const cellStyles: Record<string, unknown> = {
-          fontSize: fontSizePt,
-          cellPadding: cellPaddingPt,
-          halign: style.align ?? "left",
-          valign: style.verticalAlign ?? "top",
-        };
-        if (!isMixedFormatting && runs[0]?.bold) cellStyles.fontStyle = "bold";
-        cellStyles.font = resolvePdfFontFamily(style.fontFamily);
-        if (style.bgColor) cellStyles.fillColor = style.bgColor;
-        if (style.textColor) cellStyles.textColor = style.textColor;
-        cellStyles.minCellHeight = targetHeightPt;
-        const borderWidthPt = (style.borderWidthPx ?? DEFAULT_BORDER_WIDTH_PX) * PX_TO_PT * scale;
-        cellStyles.lineWidth = {
-          top: style.borderTop ? borderWidthPt : 0,
-          right: style.borderRight ? borderWidthPt : 0,
-          bottom: style.borderBottom ? borderWidthPt : 0,
-          left: style.borderLeft ? borderWidthPt : 0,
-        };
-        if (style.borderColor && (style.borderTop || style.borderRight || style.borderBottom || style.borderLeft)) {
-          cellStyles.lineColor = style.borderColor;
-        }
-        // richCellKey only actually gets used as the AutoTableCell's own imageUrl once its render
-        // succeeded (richCellRendered) — a FAILED render (renderSpecsCellRunsToDataUrl's own null
-        // case) falls back to plain vector content instead of a blank cell, same as any other cell.
-        const imageUrl = cell.imageUrl || (richCellRendered ? richCellKey : undefined);
-        rowArr.push({
-          // An image (a real one, or a rendered-text one from richCellKey) replaces the cell's
-          // visible text entirely (matching the editor), drawn on top in didDrawCell below once
-          // autoTable has placed this cell's box.
-          content: imageUrl ? "" : cell.text,
-          ...(imageUrl && richCellRendered
-            // A rich-cell image already has its own text alignment/padding baked in (the offscreen
-            // capture used the exact same style.align/textAlign, matching the on-screen cell) — fit-
-            // centering it like a logo on TOP of that would shift already-aligned text again, off of
-            // where it actually sits within the image. didDrawCell instead stretches this one to
-            // fill the cell's own box exactly, at (0,0), with no fit/align math at all.
-            ? { imageUrl, isRichCellImage: true }
-            : imageUrl
-              ? { imageUrl, imageAlign: style.align, imageVerticalAlign: style.verticalAlign }
-              : {}),
-          ...(!imageUrl && !isMixedFormatting && runs[0]?.underline ? { underline: true } : {}),
-          ...(rowSpan > 1 ? { rowSpan } : {}),
-          ...(colSpan > 1 ? { colSpan } : {}),
-          styles: cellStyles,
-        });
-      }
-      body.push(rowArr);
-      bodyRowGridIndex.push(r);
-    }
-
-    // jspdf-autotable's own fitContent() (node_modules/jspdf-autotable/dist/jspdf.plugin.autotable.js)
-    // only floors a row's height to the active rowSpan's share when that row has at least one cell —
-    // its per-column loop does `if (!cell) continue`, skipping the floor entirely for a row. A rowSpan
-    // cell that also spans the full row width leaves every row it covers with zero cells (nothing else
-    // occupies them), so those rows never get floored and collapse toward zero height, letting the next
-    // row's content start too early and overlap the still-tall spanning cell above it — this is the
-    // source of the text-overlap-in-print bug. Our minCellHeight on the spanning cell already holds its
-    // FULL required height (undivided — the library divides by rowSpan itself), so instead of fighting
-    // the library's per-row floor, collapse any such cell down to a single un-spanned row: same total
-    // height, same column width, no covered rows left for the bug to bite.
-    for (let i = 0; i < body.length; i += 1) {
-      const rowArr = body[i];
-      const soleCell = rowArr.length === 1 ? rowArr[0] : undefined;
-      const span = soleCell?.rowSpan ?? 1;
-      if (!soleCell || span <= 1) continue;
-      let allCoveredRowsEmpty = true;
-      for (let k = 1; k < span && i + k < body.length; k += 1) {
-        if (body[i + k].length !== 0) {
-          allCoveredRowsEmpty = false;
-          break;
-        }
-      }
-      if (!allCoveredRowsEmpty) continue;
-      soleCell.rowSpan = 1;
-      body.splice(i + 1, span - 1);
-      bodyRowGridIndex.splice(i + 1, span - 1);
-    }
-
-    // anchorFirstPageBottom — if the content strictly before the earliest anchored group, PLUS that
-    // group and everything after it, together still fit within one physical page, a blank spacer row
-    // is inserted right before it sized to close exactly that gap, so it (and anything trailing it)
-    // lands flush against the bottom of page 1 instead of wherever it would have naturally fallen
-    // right after the preceding content. If the combined height already exceeds a page, no spacer is
-    // inserted at all — the group just flows onto whichever page autoTable's own pagination naturally
-    // puts it on, same as any other content. Computed here (using `body`'s own finalized per-row
-    // heights, after natural-content growth and the rowSpan collapse above have both already settled
-    // every row's real height) rather than from raw stored row heights up front, which badly
-    // underestimated any row containing wrapped/rich text and threw the spacer size off.
-    if (anchoredGroups.length > 0) {
-      const pageHeightPt = doc.internal.pageSize.getHeight();
-      const usableHeightPt = pageHeightPt - marginPt * 2;
-      const bodyRowHeightPt = body.map((rowArr) =>
-        rowArr.reduce((max, c) => {
-          const h = c.styles?.minCellHeight;
-          return typeof h === "number" && h > max ? h : max;
-        }, 0),
-      );
-      let anchorBodyIndex = bodyRowGridIndex.findIndex((gridRow) => gridRow >= anchorStartRow);
-      if (anchorBodyIndex === -1) anchorBodyIndex = body.length;
-      const heightBeforeAnchorPt = bodyRowHeightPt.slice(0, anchorBodyIndex).reduce((sum, h) => sum + h, 0);
-      const heightFromAnchorPt = bodyRowHeightPt.slice(anchorBodyIndex).reduce((sum, h) => sum + h, 0);
-      const requiredSpacerPt = usableHeightPt - heightBeforeAnchorPt - heightFromAnchorPt;
-      if (requiredSpacerPt > 0.01) {
-        body.splice(anchorBodyIndex, 0, [
-          {
-            content: "",
-            colSpan: grid.columnWidths.length,
-            styles: { minCellHeight: requiredSpacerPt, cellPadding: 0, lineWidth: 0 },
-          },
-        ]);
-      }
-    }
-
-    const columnStyles: Record<number, { cellWidth: number }> = {};
-    columnWidths.forEach((w, idx) => {
-      columnStyles[idx] = { cellWidth: w * PX_TO_PT * scale };
-    });
-
-    autoTable(doc, {
-      body,
-      theme: "plain",
-      startY: marginPt,
-      margin: { left: marginPt, right: marginPt, top: marginPt, bottom: marginPt },
-      styles: { fontSize: DEFAULT_CELL_FONT_SIZE_PX * PX_TO_PT * scale, cellPadding: 4 * scale, overflow: "linebreak", valign: "middle", lineWidth: 0 },
-      columnStyles,
-      didDrawCell: (data) => {
-        const raw = data.cell.raw as AutoTableCell | undefined;
-        const imageUrl = raw?.imageUrl;
-        const dataUrl = imageUrl ? imageDataUrlCache[imageUrl] : undefined;
-        if (dataUrl && dataUrl.startsWith("data:")) {
-          try {
-            if (raw?.isRichCellImage) {
-              // This image WAS the cell — captured at the exact same width text wraps to on screen
-              // (the column's own width), so scaling it to data.cell.width is lossless; height comes
-              // along for the ride at whatever THAT scale factor implies, preserving the image's own
-              // proportions instead of independently stretching height to data.cell.height too (which
-              // squashed/stretched it whenever autoTable's own final row height came out even slightly
-              // off from what this image was actually captured at). Anchored at the cell's own
-              // top-left, matching where the on-screen cell's own padding starts text from — the
-              // fit-CENTERED math in the else branch below (built for a logo that's free to be
-              // smaller than its cell and wants centering) would otherwise re-offset already-aligned
-              // text a second time on top of its own baked-in alignment.
-              const props = doc.getImageProperties(dataUrl);
-              const drawWidth = data.cell.width;
-              const drawHeight = props.width > 0 ? drawWidth * (props.height / props.width) : data.cell.height;
-              doc.addImage(dataUrl, "PNG", data.cell.x, data.cell.y, drawWidth, drawHeight);
-            } else {
-              const props = doc.getImageProperties(dataUrl);
-              const fitScale = Math.min(data.cell.width / props.width, data.cell.height / props.height);
-              const drawWidth = props.width * fitScale;
-              const drawHeight = props.height * fitScale;
-              // Matches imageObjectPositionFor's on-screen defaults: unset -> centered, since that
-              // reads best for a logo placed in a cell larger than it needs.
-              const extraX = data.cell.width - drawWidth;
-              const extraY = data.cell.height - drawHeight;
-              const x = data.cell.x + (raw?.imageAlign === "left" ? 0 : raw?.imageAlign === "right" ? extraX : extraX / 2);
-              const y = data.cell.y + (raw?.imageVerticalAlign === "top" ? 0 : raw?.imageVerticalAlign === "bottom" ? extraY : extraY / 2);
-              doc.addImage(dataUrl, props.fileType, x, y, drawWidth, drawHeight);
-            }
-          } catch {
-            // Malformed/unsupported image data — leave the cell blank rather than failing the export.
-          }
-          return;
-        }
-        // jsPDF has no built-in underline — autoTable draws the text itself internally, so this
-        // re-measures each of ITS OWN already-wrapped lines (data.cell.text, populated by autoTable's
-        // own word-wrap before this hook runs) with the exact font it drew them in, and draws a plain
-        // line under each one. Vertical placement mirrors autoTable's own valign block-centering math
-        // (top/middle/bottom against the cell's actual rendered height) closely enough to sit right
-        // under the text it's tracking, without hooking into autoTable's private layout internals.
-        if (!raw?.underline || !Array.isArray(data.cell.text) || data.cell.text.length === 0) return;
-        const cellStyles = (raw.styles ?? {}) as Record<string, unknown>;
-        const fontSizePt = typeof cellStyles.fontSize === "number" ? cellStyles.fontSize : DEFAULT_CELL_FONT_SIZE_PX * PX_TO_PT * scale;
-        const paddingPt = typeof cellStyles.cellPadding === "number" ? cellStyles.cellPadding : 4 * scale;
-        const halign = (cellStyles.halign as string) ?? "left";
-        const valign = (cellStyles.valign as string) ?? "top";
-        doc.setFontSize(fontSizePt);
-        doc.setFont(typeof cellStyles.font === "string" ? cellStyles.font : "helvetica", cellStyles.fontStyle === "bold" ? "bold" : "normal");
-        if (cellStyles.textColor) doc.setDrawColor(cellStyles.textColor as string);
-        else doc.setDrawColor(0, 0, 0);
-        doc.setLineWidth(Math.max(0.4, fontSizePt * 0.04));
-        // jsPDF's own approximate ratio between a font's size and the line-height it actually needs —
-        // same constant the layout pass above uses, so these lines land at the same spacing autoTable
-        // itself used when it wrapped and placed this same text.
-        const lineHeightPt = fontSizePt * 1.15;
-        const textBlockHeightPt = data.cell.text.length * lineHeightPt;
-        let cursorY =
-          valign === "middle"
-            ? data.cell.y + (data.cell.height - textBlockHeightPt) / 2
-            : valign === "bottom"
-              ? data.cell.y + data.cell.height - textBlockHeightPt - paddingPt
-              : data.cell.y + paddingPt;
-        for (const line of data.cell.text) {
-          const textWidthPt = doc.getTextWidth(line);
-          const underlineY = cursorY + lineHeightPt * 0.85;
-          const x =
-            halign === "center"
-              ? data.cell.x + (data.cell.width - textWidthPt) / 2
-              : halign === "right"
-                ? data.cell.x + data.cell.width - paddingPt - textWidthPt
-                : data.cell.x + paddingPt;
-          doc.line(x, underlineY, x + textWidthPt, underlineY);
-          cursorY += lineHeightPt;
-        }
-      },
-    });
-
-    return doc.output("blob");
-  };
   const onPrintSpecificationsSheet = async () => {
     if (!displayedSpecsSheetGrid) return;
     const blob = await buildSpecsGridPdfBlob(displayedSpecsSheetGrid);
@@ -26984,25 +27400,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     void onExportCncPdf("print");
   };
 
-  const openPdfBlobInPrintWindow = (pdfBlob: Blob) => {
-    if (typeof window === "undefined") return;
-    const url = URL.createObjectURL(pdfBlob);
-    const printWindow = window.open(url, "_blank");
-    if (printWindow) {
-      const triggerPrint = () => {
-        try {
-          printWindow.focus();
-          printWindow.print();
-        } catch {
-          // no-op
-        }
-      };
-      printWindow.addEventListener("load", triggerPrint, { once: true });
-      window.setTimeout(triggerPrint, 500);
-    }
-    window.setTimeout(() => URL.revokeObjectURL(url), 120000);
-  };
-
   const buildNestingPdfBlob = (): Blob | null => {
     const printableGroups = nestingBoardLayouts.filter((group) => group.sheets.length > 0);
     if (printableGroups.length === 0) return null;
@@ -30130,7 +30527,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               borderColor: color,
                               color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
                             }}
-                            className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                            className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
                           >
                             {v}
                           </button>
@@ -30727,6 +31124,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         );
                                       }
                                       if (key === "grain") {
+                                        // Same guard as Production Cutlist's own grouped list (see its
+                                        // rowBoardAllowsGrain check) — the "grain" COLUMN shows for every
+                                        // row once ANY row in the whole cutlist needs it (one shared
+                                        // column, can't be per-row), but each row's own TOGGLE must still
+                                        // only render when ITS OWN product is actually grain-enabled in
+                                        // Company Settings, or every other row got a toggle it can't use.
+                                        const rowBoardAllowsGrain = initialMeasureBoardGrainFor(String(row.board ?? "").trim());
                                         return (
                                           <td
                                             ref={registerCutlistWarnCellRef(row.id, key)}
@@ -30734,13 +31138,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                             className={`px-2 py-[3px] align-middle ${cutlistCellAlignClass(key)}`}
                                             style={{ ...initialMeasureGroupGrainColumnStyle, color: groupTextColor }}
                                           >
-                                            <GrainDimensionToggle
-                                              options={initialMeasureGrainDimensionChoicesForRow(row)}
-                                              value={String(row.grainValue ?? "")}
-                                              disabled={salesReadOnly}
-                                              onChange={(nextValue) => void applyInitialRowGrainValue(row, nextValue)}
-                                              size="compact"
-                                            />
+                                            {rowBoardAllowsGrain ? (
+                                              <GrainDimensionToggle
+                                                options={initialMeasureGrainDimensionChoicesForRow(row)}
+                                                value={String(row.grainValue ?? "")}
+                                                disabled={salesReadOnly}
+                                                onChange={(nextValue) => void applyInitialRowGrainValue(row, nextValue)}
+                                                size="compact"
+                                              />
+                                            ) : null}
                                           </td>
                                         );
                                       }
@@ -36233,6 +36639,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // block becomes dead code once this returns, kept only until Phase 6's full removal pass.
   if (isSalesQuoteFullscreen) {
     const hasQuoteGridTemplate = Boolean((companyDoc as Record<string, unknown> | null)?.quoteGridTemplate);
+    // Once "Send Quote to Client" has been used, the live Quote Grid is fully locked against ANY
+    // edit (see SpecsGridEditor's own isSentToClient prop/comment) — a client could be reviewing
+    // it at any moment. The only way back to editable is reopenQuoteForEditing (below), which
+    // retracts the sent quote entirely. Deliberately different from Specs' own live sheet, which
+    // stays editable after sending by design — see saveSpecsSheetVersion's own comment.
+    const isQuoteLockedForSending = Boolean(specsShareStatus?.quoteVersionId);
+    // Only true when whatever's actually ON SCREEN right now IS the sent version — either the live
+    // grid, but ONLY when the currently-sent version was actually snapshotted FROM live at send
+    // time (quoteSentFromLive — see its own comment in lib/specs-share.ts); sending an EXISTING
+    // historical version instead (the sidebar's own "Send Quote to Client" on a past version)
+    // leaves the live draft fully independent and still freely editable, so it must never claim to
+    // be "the sent one" just because something else is currently sent. Viewing a historical version
+    // is simpler: true only for that one specific version, never some OTHER saved version.
+    const isViewingSentQuoteVersion = isViewingQuoteGridVersion
+      ? activeQuoteGridVersionId === specsShareStatus?.quoteVersionId
+      : Boolean(specsShareStatus?.quoteSentFromLive);
+    // Broader than isViewingSentQuoteVersion above (which only tracks the CURRENTLY-bound sent
+    // version, for the banners) — this locks editing on ANY version that's ever carried
+    // sentToClient/acceptedAtIso, even an older one since superseded by a newer send. Those fields
+    // are permanent records (see acceptedAtIso's own comment in lib/specs-grid-types.ts); nothing
+    // about a version staff already sent or a client already accepted should ever be editable
+    // again, not just the one currently live on the hub link.
+    const isQuoteContentLockedForSending = isViewingQuoteGridVersion
+      ? Boolean(activeQuoteGridVersion?.sentToClient || activeQuoteGridVersion?.acceptedAtIso)
+      : Boolean(specsShareStatus?.quoteVersionId && specsShareStatus?.quoteSentFromLive);
+    const quoteAcceptedBannerVisible = Boolean(specsShareStatus?.quoteAcceptedAt) && isViewingSentQuoteVersion;
+    // Sent, but the client hasn't accepted it yet — the other half of the same "which banner shows
+    // above the sheet" decision as quoteAcceptedBannerVisible above; exactly one of the two is ever
+    // true at once.
+    const quotePendingBannerVisible = isQuoteLockedForSending && !specsShareStatus?.quoteAcceptedAt && isViewingSentQuoteVersion;
     return (
       <ProtectedRoute>
         <div className="flex h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-[var(--bg-app)]">
@@ -36268,6 +36704,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   Save failed — your last edit may not have saved
                 </span>
               ) : null}
+              {/* Both the accepted AND pending-acceptance cases have their own full-width banner
+                  right above the page preview now (see quoteAcceptedBannerVisible/
+                  quotePendingBannerVisible below) instead of living here as a small chip. */}
+              {specsShareStatus?.quoteVersionId ? (
+                <button
+                  type="button"
+                  onClick={() => void fetchSpecsShareStatus()}
+                  title="Check for client acceptance"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border disabled:opacity-60"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                >
+                  <RefreshCw size={13} />
+                </button>
+              ) : null}
             </div>
             {quoteGridOutdatedBanner ? (
               <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
@@ -36298,7 +36748,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {!isViewingQuoteGridVersion ? (
                 <button
                   type="button"
-                  disabled={!quoteGrid || isSavingQuoteGridVersion}
+                  disabled={!quoteGrid || isSavingQuoteGridVersion || isQuoteLockedForSending}
+                  title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
                   onClick={(e) => {
                     setQuoteGridSaveVersionModalOrigin(captureGlassModalOrigin(e));
                     setQuoteGridSaveVersionNameDraft(`Version ${quoteGridVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
@@ -36314,7 +36765,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {!isViewingQuoteGridVersion ? (
                 <button
                   type="button"
-                  disabled={!hasQuoteGridTemplate}
+                  disabled={!hasQuoteGridTemplate || isQuoteLockedForSending}
+                  title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
                   onClick={() => setIsQuoteGridResetConfirmOpen(true)}
                   className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
                   style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
@@ -36323,6 +36775,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   Reset to Template
                 </button>
               ) : null}
+              {/* Available while viewing EITHER the live grid or a historical version — sending
+                  marks whichever's on screen as sent (see sendQuoteToClient's own comment on how it
+                  branches on activeQuoteGridVersionId). Only one version may be sent at a time —
+                  disabled whenever ANY version is currently sent, not just while viewing that exact
+                  one, so a second version can never be sent alongside it; Reopen for Editing first. */}
+              <button
+                type="button"
+                disabled={!displayedQuoteGrid || isQuoteLockedForSending}
+                title={isQuoteLockedForSending ? "Already sent — Reopen for Editing first to send a different version" : undefined}
+                onClick={(e) => {
+                  setSendQuoteToClientOrigin(captureGlassModalOrigin(e));
+                  setSendQuoteToClientEmailDraft(specsShareStatus?.clientEmail || project?.clientEmail || "");
+                  setSendQuoteToClientError("");
+                  setSendQuoteToClientPreview(null);
+                  setIsSendQuoteToClientModalOpen(true);
+                }}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <Mail size={14} />
+                Send Quote to Client
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -36350,7 +36824,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{
               left: 0,
               top: 56,
-              width: 260,
+              // 260 (the bubble's own original width) + 42 reserved purely for the hover-delete
+              // icon — see quoteGridVersionsSorted.map's own comment on why that reserved 42px has
+              // to be genuinely NEW panel width, not carved out of the bubble's original size.
+              width: 302,
               height: 49,
               borderBottomColor: "var(--glass-border)",
               color: isQuoteHistoryPanelOpen && !isQuoteHistoryPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
@@ -36412,9 +36889,61 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   hideCellSelectionOutline
                   companyRoleOptions={specsGroupRoleOptions}
                   canEditSpecsGroup={canEditSpecsGroup}
+                  // Locks whatever's actually ON SCREEN whenever IT (not just the hub's currently-
+                  // bound one) has ever been sent or accepted — see isQuoteContentLockedForSending's
+                  // own comment above for why this now covers an older, superseded version too, not
+                  // just the live grid or the one specific version currently live on the hub link.
+                  isSentToClient={isQuoteContentLockedForSending}
                   toolbarFixedTopPx={56}
-                  toolbarFixedLeftPx={260}
+                  toolbarFixedLeftPx={302}
                   toolbarFixedRightPx={280}
+                  // Rendered INSIDE the editor's own canvas area, below its fixed formatting
+                  // toolbar and right above the white sheet — see belowToolbarBanner's own comment
+                  // in specs-grid-editor.tsx. Exactly one of the two banners ever shows at once
+                  // (quoteAcceptedBannerVisible/quotePendingBannerVisible are mutually exclusive),
+                  // both scoped to whatever's actually on screen being the sent version.
+                  belowToolbarBanner={
+                    quoteAcceptedBannerVisible ? (
+                      <div className="flex items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
+                        <span>
+                          {specsShareStatus?.quoteAcceptedAt ? (
+                            (() => {
+                              const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.quoteAcceptedAt);
+                              return `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"} on ${date} at ${time}`;
+                            })()
+                          ) : (
+                            `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"}`
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isReopeningQuoteAcceptance}
+                          onClick={(e) => {
+                            setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
+                            setIsReopenQuoteConfirmOpen(true);
+                          }}
+                          className="shrink-0 underline decoration-dotted underline-offset-2 disabled:opacity-60"
+                        >
+                          {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for editing"}
+                        </button>
+                      </div>
+                    ) : quotePendingBannerVisible ? (
+                      <div className="flex items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                        <span>Pending Review by Client</span>
+                        <button
+                          type="button"
+                          disabled={isReopeningQuoteAcceptance}
+                          onClick={(e) => {
+                            setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
+                            setIsReopenQuoteConfirmOpen(true);
+                          }}
+                          className="shrink-0 underline decoration-dotted underline-offset-2 disabled:opacity-60"
+                        >
+                          {isReopeningQuoteAcceptance ? "Reopening…" : "Open for editing"}
+                        </button>
+                      </div>
+                    ) : undefined
+                  }
                 />
               ) : (
                 <div className="flex items-center justify-center py-16 text-[12px]" style={{ color: "var(--text-muted)" }}>
@@ -36489,7 +37018,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             }}
                           >
                             <span className="inline-flex min-w-0 items-center gap-2">
-                              <QuoteExtraToggleSwitch checked={!g.hidden} onChange={(checked) => onToggleQuoteGridExtra(g.id, !checked)} />
+                              <QuoteExtraToggleSwitch
+                                checked={!g.hidden}
+                                disabled={isQuoteExtrasLockedForSending}
+                                onChange={(checked) => onToggleQuoteGridExtra(g.id, !checked)}
+                              />
                               <span className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{g.name}</span>
                             </span>
                             {g.price ? <span className="shrink-0 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>{g.price}</span> : null}
@@ -36507,25 +37040,56 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               // No outer box here either — see Quote Extras' own comment above. Each version entry
               // is already its own rounded+bordered "bubble" (below), floating independently.
               <div
-                className="hide-scrollbar fixed z-[95] flex w-[260px] max-h-[calc(100dvh-129px)] flex-col gap-3 overflow-y-auto px-3"
+                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100dvh-129px)] flex-col gap-3 overflow-y-auto px-3"
                 style={{ left: 16, top: 56 + 49 + 8 }}
               >
-                {quoteGridVersionsSorted.length === 0 ? (
-                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                    No versions saved yet. A version is also saved automatically whenever you return to an outdated quote and click Update.
-                  </p>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {quoteGridVersionsSorted.map((v) => (
-                      <button
+                <div className="flex flex-col gap-2">
+                  {/* Always first, regardless of saved history — the live grid always exists even
+                      with zero saved versions, and is the one place edits actually persist to
+                      unless a historical version is open (see onQuoteGridChange). Green like the
+                      other "currently editable" and "accepted" states in this sidebar, since it's
+                      the one entry that's never locked. */}
+                  <button
+                    type="button"
+                    onClick={returnToLiveQuoteGrid}
+                    className="relative mr-[42px] rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                    style={{
+                      borderColor: "var(--success-strong)",
+                      backgroundColor: "var(--success-soft)",
+                      // Same pop-in/out as every other bubble below (see their own comment) — leads
+                      // the stagger at 0ms, since this always renders first.
+                      ...(isQuoteHistoryPanelClosing
+                        ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
+                        : isQuoteHistoryPanelJustOpened
+                          ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both", animationDelay: "0ms" }
+                          : {}),
+                    }}
+                  >
+                    {/* Small "this is live" pulse — a static dot plus an expanding, fading ring
+                        behind it (Tailwind's standard animate-ping recipe), unconditional (not
+                        tied to selection) since the live grid is always live regardless of what's
+                        currently being viewed. */}
+                    <span className="absolute right-1.5 top-1.5 flex h-2.5 w-2.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: "#22C55E" }} />
+                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#16A34A" }} />
+                    </span>
+                    <span className="text-[12px] font-bold" style={{ color: "#000000" }}>Live Quote</span>
+                    <p className="mt-1 text-[11px]" style={{ color: "#000000" }}>
+                      The current editable draft
+                    </p>
+                  </button>
+                  {quoteGridVersionsSorted.length === 0 ? (
+                    <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                      No versions saved yet. A version is also saved automatically whenever you return to an outdated quote and click Update.
+                    </p>
+                  ) : (
+                    quoteGridVersionsSorted.map((v) => (
+                      <div
                         key={v.id}
-                        type="button"
-                        onClick={() => openQuoteGridVersion(v.id)}
-                        className="rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                        className="relative flex"
+                        onMouseEnter={() => setHoveredQuoteVersionId(v.id)}
+                        onMouseLeave={() => setHoveredQuoteVersionId((prev) => (prev === v.id ? "" : prev))}
                         style={{
-                          ...(activeQuoteGridVersionId === v.id
-                            ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)" }
-                            : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }),
                           // See Quote Extras' own comment on isQuoteExtrasPanelJustOpened — same
                           // "only animate on the panel's own first open" reasoning here, so clicking
                           // an entry (which changes activeQuoteGridVersionId and re-renders this
@@ -36540,18 +37104,124 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               : {}),
                         }}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{v.name}</span>
-                          <span className="shrink-0 text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>{quoteGridVersionPriceLabel(v.grid)}</span>
-                        </div>
-                        <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                          {v.savedAtIso ? dashboardStyleDate(v.savedAtIso) : "Unknown date"}
-                          {v.savedByName ? ` · ${v.savedByName}` : ""}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                        {/* Delete icon — docked in a 42px gutter to the right of the bubble. That
+                            42px is genuinely NEW room: the whole Version History panel (its toggle
+                            bar, this scroll container, and the canvas's own toolbarFixedLeftPx
+                            offset — see the three "302" values above/below) was widened by exactly
+                            42px over its original 260px, and the bubble reserves that same 42px of
+                            margin (below), so the bubble itself renders at its ORIGINAL width, never
+                            narrower. At rest it sits translated -42px — exactly over the bubble,
+                            hidden behind it (opacity 0) — then slides right into its gutter on
+                            hover with a "back" easing that slightly overshoots past 0 and springs
+                            back, reading as coming out from behind the bubble rather than just
+                            fading in. Driven by real hover state (hoveredQuoteVersionId) rather than
+                            a Tailwind group-hover translate class — Tailwind composes `transform`
+                            out of an unregistered `--tw-translate-x` custom property, which doesn't
+                            interpolate smoothly (it jumps discretely mid-transition), which is
+                            exactly the "doesn't animate, flashes then fades" bug this replaced. Kept
+                            WITHIN the row's own flex width rather than positioned past it — the
+                            panel's scroll container has overflow-y set with no explicit overflow-x,
+                            which the CSS spec forces to "auto" (i.e. clipped) too, so anything
+                            positioned past the row's own box would get cut off. Never rendered for a
+                            version that's been sent to the client at all — accepted or still
+                            pending, a client could be looking at it right now, and an accepted one
+                            is a permanent record (see acceptedAtIso's own comment in
+                            lib/specs-grid-types.ts) — either way it must never be deletable, not
+                            even with a confirmation (also enforced a second time inside
+                            deleteQuoteVersionById itself). The bubble below still reserves its 42px
+                            margin regardless, so row widths stay uniform whether or not a given row
+                            happens to have a delete icon at all. */}
+                        {v.acceptedAtIso || v.sentToClient ? null : (
+                          <button
+                            type="button"
+                            aria-label={`Delete "${v.name}"`}
+                            title="Delete this version"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQuoteVersionDeleteOrigin(captureGlassModalOrigin(e));
+                              setQuoteVersionPendingDeleteId(v.id);
+                            }}
+                            className="absolute right-0 top-0 z-0 flex h-full w-9 shrink-0 items-center justify-center rounded-[10px] border shadow-sm"
+                            style={{
+                              borderColor: "var(--danger-border)",
+                              backgroundColor: "var(--danger-soft)",
+                              color: "var(--danger-strong)",
+                              pointerEvents: hoveredQuoteVersionId === v.id ? "auto" : "none",
+                              opacity: hoveredQuoteVersionId === v.id ? 1 : 0,
+                              transform: hoveredQuoteVersionId === v.id ? "translateX(0)" : "translateX(-42px)",
+                              transitionProperty: "transform, opacity",
+                              transitionDuration: "320ms, 200ms",
+                              transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1), ease-out",
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openQuoteGridVersion(v.id)}
+                          className="relative z-[1] mr-[42px] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                          style={
+                            // Accepted stays green regardless of selection — a settled outcome, not a
+                            // transient "currently viewing" state, so it shouldn't fade to the normal
+                            // unselected color the moment staff click onto a different version. Selecting
+                            // it deepens the same green (rather than switching to the brand color used
+                            // for a normal selection) so it still reads as "currently viewing" without
+                            // losing the accepted styling.
+                            v.acceptedAtIso
+                              ? activeQuoteGridVersionId === v.id
+                                // Same colors as the accepted banner above the sheet — see
+                                // quoteAcceptedBannerVisible's own style just above.
+                                ? { borderColor: "#15803D", backgroundColor: "#F0FDF4" }
+                                : { borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)" }
+                              : // Sent-but-not-yet-accepted stays blue regardless of selection too, same
+                                // reasoning as accepted above — it already happens to be the same color
+                                // a normal selection uses, so this just means selecting it doesn't fade
+                                // it to grey the moment focus moves elsewhere.
+                                v.sentToClient || activeQuoteGridVersionId === v.id
+                                ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)" }
+                                : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }
+                          }
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-[12px] font-semibold" style={{ color: v.acceptedAtIso ? "#000000" : "var(--text-main)" }}>{v.name}</span>
+                            <span className="shrink-0 text-[11px] font-bold" style={{ color: v.acceptedAtIso ? "#000000" : "var(--text-muted)" }}>{quoteGridVersionPriceLabel(v.grid)}</span>
+                          </div>
+                          {v.sentToClient || v.acceptedAtIso ? (
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              {v.acceptedAtIso ? (
+                                <span
+                                  title={`Accepted by ${v.acceptedByName || "client"} on ${new Date(v.acceptedAtIso).toLocaleDateString()} at ${new Date(v.acceptedAtIso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`}
+                                  className="inline-flex shrink-0 items-center gap-1 rounded-[999px] px-1.5 py-[1px] text-[10px] font-bold"
+                                  style={{ backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+                                >
+                                  <Check size={9} strokeWidth={3.5} />
+                                  Accepted{v.acceptedByName ? ` by ${v.acceptedByName}` : ""}
+                                </span>
+                              ) : v.sentToClient ? (
+                                <span
+                                  title="This version was sent to the client and is awaiting acceptance"
+                                  className="inline-flex shrink-0 items-center gap-1 rounded-[999px] border px-1.5 py-[1px] text-[10px] font-bold"
+                                  style={{
+                                    backgroundColor: "var(--brand-soft)",
+                                    color: "var(--brand-strong)",
+                                    borderColor: "var(--brand-strong)",
+                                  }}
+                                >
+                                  Sent to Client
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <p className="mt-1 text-[11px]" style={{ color: v.acceptedAtIso ? "#000000" : "var(--text-muted)" }}>
+                            {v.savedAtIso ? dashboardStyleDate(v.savedAtIso) : "Unknown date"}
+                            {v.savedByName ? ` · ${v.savedByName}` : ""}
+                          </p>
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             ) : null}
           </div>
@@ -36653,6 +37323,224 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 document.body,
               )
             : null}
+          {shouldRenderQuoteVersionDeleteModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+                  <button
+                    type="button"
+                    aria-label="Close delete version confirmation backdrop"
+                    onClick={() => setQuoteVersionPendingDeleteId("")}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={quoteVersionDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Version?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        {(() => {
+                          const target = quoteGridVersions.find((v) => v.id === quoteVersionPendingDeleteId);
+                          return target
+                            ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
+                            : "Delete this version? This can't be undone.";
+                        })()}
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setQuoteVersionPendingDeleteId("")}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isDeletingQuoteVersion}
+                          onClick={() => void deleteQuoteVersionById(quoteVersionPendingDeleteId)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                        >
+                          {isDeletingQuoteVersion ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderReopenQuoteConfirmModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+                  <button
+                    type="button"
+                    aria-label="Close reopen confirmation backdrop"
+                    onClick={() => setIsReopenQuoteConfirmOpen(false)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={reopenQuoteConfirmModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reopen for Editing?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        This retracts the sent quote entirely — it stops being available on the client&apos;s link
+                        {quoteAcceptedBannerVisible ? " and its acceptance is cleared" : ""}, and the live quote unlocks for editing. You&apos;ll need to send it again for the client to see it.
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsReopenQuoteConfirmOpen(false)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isReopeningQuoteAcceptance}
+                          onClick={() => {
+                            setIsReopenQuoteConfirmOpen(false);
+                            void reopenQuoteForEditing();
+                          }}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                        >
+                          {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for Editing"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderSendQuoteToClientModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close send quote to client backdrop"
+                    onClick={() => setIsSendQuoteToClientModalOpen(false)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={sendQuoteToClientPanelRef} className={`glass-modal-panel relative overflow-hidden ${sendQuoteToClientPreview ? "w-[min(520px,96vw)]" : "w-[min(420px,96vw)]"}`} style={{ zIndex: 2147483647 }}>
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                        {sendQuoteToClientPreview ? "Copy This to Your Email" : "Send Quote to Client"}
+                      </p>
+                    </div>
+                    {sendQuoteToClientPreview ? (
+                      <div className="space-y-4 px-5 py-4">
+                        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                          This isn&apos;t emailed automatically — copy it into your own email client and send it to{" "}
+                          <strong style={{ color: "var(--text-main)" }}>{sendQuoteToClientPreview.to}</strong> yourself.
+                        </p>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                            Subject
+                          </label>
+                          <input
+                            readOnly
+                            value={sendQuoteToClientPreview.subject}
+                            onFocus={(e) => e.currentTarget.select()}
+                            className="h-9 w-full rounded-[9px] border px-3 text-[13px] outline-none"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                            Message
+                          </label>
+                          <textarea
+                            readOnly
+                            value={sendQuoteToClientPreview.body}
+                            onFocus={(e) => e.currentTarget.select()}
+                            rows={7}
+                            className="w-full resize-none rounded-[9px] border px-3 py-2 text-[13px] outline-none"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsSendQuoteToClientModalOpen(false)}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                          >
+                            Done
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void navigator.clipboard
+                                .writeText(`Subject: ${sendQuoteToClientPreview.subject}\n\n${sendQuoteToClientPreview.body}`)
+                                .then(() => {
+                                  setSendQuoteToClientCopyFeedback(true);
+                                  window.setTimeout(() => setSendQuoteToClientCopyFeedback(false), 2000);
+                                });
+                            }}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
+                            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                          >
+                            {sendQuoteToClientCopyFeedback ? "Copied!" : "Copy"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <form
+                        className="space-y-4 px-5 py-4"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void sendQuoteToClient();
+                        }}
+                      >
+                        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                          Creates (or adds to) the client&apos;s hub link so they can review and accept this quote, without needing to log in — you&apos;ll get the message text to copy into your own email next.
+                        </p>
+                        <div>
+                          <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                            Client email
+                          </label>
+                          <input
+                            autoFocus
+                            type="email"
+                            value={sendQuoteToClientEmailDraft}
+                            onChange={(e) => setSendQuoteToClientEmailDraft(e.target.value)}
+                            placeholder="client@example.com"
+                            className="h-9 w-full rounded-[9px] border px-3 text-[13px] outline-none"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          />
+                        </div>
+                        {sendQuoteToClientError ? (
+                          <p className="text-[11px] font-bold" style={{ color: "var(--danger-strong)" }}>{sendQuoteToClientError}</p>
+                        ) : null}
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsSendQuoteToClientModalOpen(false)}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={isSendingQuoteToClient}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+                            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                          >
+                            {isSendingQuoteToClient ? "Creating…" : "Create Link"}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
         </div>
       </ProtectedRoute>
     );
@@ -36675,6 +37563,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
   if (isSalesSpecificationsFullscreen) {
     const hasTemplate = Boolean((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
+    // Same "which banner shows above the sheet" pattern as the Quote tab's own — see its
+    // quoteAcceptedBannerVisible/quotePendingBannerVisible comments. `specsShareStatus?.versionId`
+    // (not just specsShareStatus truthy) is the correct "was Specs actually sent" check, since one
+    // hub doc now carries both tabs' state — a link that only ever had the Quote sent would
+    // otherwise wrongly show a Specs status here too.
+    // Only true for the live sheet when whatever's currently sent was actually snapshotted FROM
+    // live at send time (specsSentFromLive) — sending an EXISTING historical version instead (the
+    // sidebar's own "Send to Client" on a past version) leaves the live draft fully independent, so
+    // it must never claim to be "the sent one" just because something else is currently sent. See
+    // isViewingSentQuoteVersion's own identical fix in the Quote block above.
+    const isViewingSentSpecsVersion = activeSpecsSheetVersionId
+      ? activeSpecsSheetVersionId === specsShareStatus?.versionId
+      : Boolean(specsShareStatus?.specsSentFromLive);
+    // Locks editing completely once a version has been sent or submitted — overrides the earlier
+    // "Specs' live sheet always stays editable" design: staff explicitly asked for a sent/
+    // submitted Specs version to become fully uneditable too, same as Quote, not just show a
+    // status banner. Broader than isViewingSentSpecsVersion above (which only tracks the
+    // CURRENTLY-bound sent version, for the banners) — this checks the version actually being
+    // viewed for ITS OWN permanent sentToClient/submittedAtIso flags, so an older version, once
+    // superseded by a newer send, stays locked too, not just the one currently live on the hub
+    // link.
+    const isSpecsContentLockedForSending = activeSpecsSheetVersionId
+      ? Boolean(activeSpecsSheetVersion?.sentToClient || activeSpecsSheetVersion?.submittedAtIso)
+      : Boolean(specsShareStatus?.versionId && specsShareStatus?.specsSentFromLive);
+    const specsSubmittedBannerVisible = Boolean(specsShareStatus?.submittedAt) && isViewingSentSpecsVersion;
+    const specsPendingBannerVisible = Boolean(specsShareStatus?.versionId) && !specsShareStatus?.submittedAt && isViewingSentSpecsVersion;
     return (
       <ProtectedRoute>
         <div className="flex h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-[var(--bg-app)]">
@@ -36725,39 +37639,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   Save failed — your last edit may not have saved
                 </span>
               ) : null}
-              {specsShareStatus?.submittedAt ? (
-                <span className="inline-flex items-center gap-2 rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}>
-                  Submitted by {specsShareStatus.submittedByName || "client"} on {new Date(specsShareStatus.submittedAt).toLocaleDateString()}
-                  <button
-                    type="button"
-                    disabled={isReopeningSpecsConfirmation}
-                    onClick={() => void reopenSpecsConfirmationForEditing()}
-                    className="underline decoration-dotted underline-offset-2 disabled:opacity-60"
-                  >
-                    {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen for Editing"}
-                  </button>
-                </span>
-              ) : specsShareStatus ? (
-                <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
-                  Link created for {specsShareStatus.clientEmail}
-                  {specsShareStatus.expiresAt ? ` · expires ${new Date(specsShareStatus.expiresAt).toLocaleDateString()}` : ""}
-                </span>
-              ) : null}
-              {specsShareStatus ? (
-                <button
-                  type="button"
-                  disabled={isRefreshingSpecsAnswers}
-                  onClick={() => {
-                    void fetchSpecsShareStatus();
-                    void refreshSpecsConfirmationAnswers();
-                  }}
-                  title="Check for new client answers"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border disabled:opacity-60"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  <RefreshCw size={13} className={isRefreshingSpecsAnswers ? "animate-spin" : ""} />
-                </button>
-              ) : null}
+              {/* Both the submitted AND pending-submission cases have their own full-width banner
+                  right above the page preview now (see specsSubmittedBannerVisible/
+                  specsPendingBannerVisible below) instead of living here as a small chip. */}
             </div>
             {specsSheetVersionBanner ? (
               <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
@@ -36788,7 +37672,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {!isViewingSpecsSheetVersion ? (
                 <button
                   type="button"
-                  disabled={!specsSheetGrid || isSavingSpecsVersion}
+                  disabled={!specsSheetGrid || isSavingSpecsVersion || isSpecsContentLockedForSending}
+                  title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
                   onClick={(e) => {
                     setSpecsSaveVersionModalOrigin(captureGlassModalOrigin(e));
                     setSpecsSaveVersionNameDraft(`Version ${specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
@@ -36804,7 +37689,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {!isViewingSpecsSheetVersion ? (
                 <button
                   type="button"
-                  disabled={!hasTemplate}
+                  disabled={!hasTemplate || isSpecsContentLockedForSending}
+                  title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
                   onClick={() => setIsSpecsSheetResetConfirmOpen(true)}
                   className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
                   style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
@@ -36813,24 +37699,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   Reset to Template
                 </button>
               ) : null}
-              {!isViewingSpecsSheetVersion ? (
-                <button
-                  type="button"
-                  disabled={!specsSheetGrid}
-                  onClick={(e) => {
-                    setSendSpecsToClientOrigin(captureGlassModalOrigin(e));
-                    setSendSpecsToClientEmailDraft(project?.clientEmail || "");
-                    setSendSpecsToClientError("");
-                    setSendSpecsToClientPreview(null);
-                    setIsSendSpecsToClientModalOpen(true);
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                >
-                  <Mail size={14} />
-                  Send to Client
-                </button>
-              ) : null}
+              {/* Available while viewing EITHER the live sheet or a historical version — sending
+                  marks whichever's on screen as sent (see sendSpecsToClient's own branch on
+                  activeSpecsSheetVersionId), mirroring the Quote tab's own identical button. Only
+                  one version may be sent at a time — disabled whenever ANY version is currently
+                  sent, so a second version can never be sent alongside it; Reopen for Editing
+                  first. */}
+              <button
+                type="button"
+                disabled={!displayedSpecsSheetGrid || Boolean(specsShareStatus?.versionId)}
+                title={specsShareStatus?.versionId ? "Already sent — Reopen for Editing first to send a different version" : undefined}
+                onClick={(e) => {
+                  setSendSpecsToClientOrigin(captureGlassModalOrigin(e));
+                  setSendSpecsToClientEmailDraft(specsShareStatus?.clientEmail || project?.clientEmail || "");
+                  setSendSpecsToClientError("");
+                  setSendSpecsToClientPreview(null);
+                  setIsSendSpecsToClientModalOpen(true);
+                }}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <Mail size={14} />
+                Send to Client
+              </button>
               <button
                 type="button"
                 onClick={() => setSalesNav("overview")}
@@ -36854,7 +37745,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{
               left: 0,
               top: 56,
-              width: 260,
+              // 260 (the bubble's own original width) + 42 reserved for the hover-delete icon —
+              // see the sidebar's own comment on why that reserved 42px has to be genuinely NEW
+              // panel width, not carved out of the bubble's original size. Matches Quote's own
+              // Version History toggle width exactly.
+              width: 302,
               height: 49,
               borderBottomColor: "var(--glass-border)",
               color: isSpecsVersionsSidebarOpen && !isSpecsVersionsSidebarClosing ? "var(--brand-strong)" : "var(--text-main)",
@@ -36908,9 +37803,52 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   hideSectionsBar
                   companyRoleOptions={specsGroupRoleOptions}
                   canEditSpecsGroup={canEditSpecsGroup}
+                  // Locks whatever's actually ON SCREEN once it's ever been sent or submitted — see
+                  // isSpecsContentLockedForSending's own comment above. Specs' live sheet used to
+                  // stay editable after sending by design; staff explicitly asked for that to change
+                  // too, matching Quote's own full lock.
+                  isSentToClient={isSpecsContentLockedForSending}
                   toolbarFixedTopPx={56}
-                  toolbarFixedLeftPx={260}
+                  toolbarFixedLeftPx={302}
                   toolbarFixedRightPx={260}
+                  // Same "banner below the toolbar, right above the sheet" treatment as the Quote
+                  // tab's own — see its belowToolbarBanner comment, including the same colors/
+                  // layout (right-mounted button, brand-blue pending). Purely a status indicator
+                  // here (unlike Quote, Specs' own live sheet stays freely editable after sending
+                  // by design), so there's no matching isSentToClient lock to go with it, and the
+                  // pending banner has no action button — there's nothing to "reopen," it's already
+                  // editable.
+                  belowToolbarBanner={
+                    specsSubmittedBannerVisible ? (
+                      <div className="flex items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
+                        <span>
+                          {specsShareStatus?.submittedAt ? (
+                            (() => {
+                              const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.submittedAt);
+                              return `Submitted by ${specsShareStatus?.submittedByName || "client"} on ${date} at ${time}`;
+                            })()
+                          ) : (
+                            `Submitted by ${specsShareStatus?.submittedByName || "client"}`
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isReopeningSpecsConfirmation}
+                          onClick={(e) => {
+                            setReopenSpecsConfirmOrigin(captureGlassModalOrigin(e));
+                            setIsReopenSpecsConfirmOpen(true);
+                          }}
+                          className="shrink-0 underline decoration-dotted underline-offset-2 disabled:opacity-60"
+                        >
+                          {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen for editing"}
+                        </button>
+                      </div>
+                    ) : specsPendingBannerVisible ? (
+                      <div className="flex items-center justify-center gap-2 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
+                        <span>Pending Review by Client</span>
+                      </div>
+                    ) : undefined
+                  }
                 />
               ) : (
                 <div className="flex items-center justify-center py-16 text-[12px]" style={{ color: "var(--text-muted)" }}>
@@ -36925,27 +37863,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 the "Version History" toggle button in the header, not repeated here. */}
             {isSpecsVersionsSidebarOpen ? (
               <div
-                className="hide-scrollbar fixed z-[95] flex w-[260px] max-h-[calc(100dvh-129px)] flex-col gap-2 overflow-y-auto px-3"
+                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100dvh-129px)] flex-col gap-2 overflow-y-auto px-3"
                 style={{ left: 16, top: 56 + 49 + 8 }}
               >
+                {/* Always first, regardless of saved history — mirrors the Quote sheet's own "Live
+                    Quote" bubble exactly (green, pulsing dot, same mr-[42px] width match). */}
+                <button
+                  type="button"
+                  onClick={returnToLiveSpecsSheet}
+                  className="relative mr-[42px] rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                  style={{
+                    borderColor: "var(--success-strong)",
+                    backgroundColor: "var(--success-soft)",
+                    // Same pop-in/out as every other bubble below (see their own comment) — leads
+                    // the stagger at 0ms, since this always renders first.
+                    ...(isSpecsVersionsSidebarClosing
+                      ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
+                      : isSpecsVersionsSidebarJustOpened
+                        ? { animation: "glass-bubble-slide-in-left 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both", animationDelay: "0ms" }
+                        : {}),
+                  }}
+                >
+                  <span className="absolute right-1.5 top-1.5 flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: "#22C55E" }} />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#16A34A" }} />
+                  </span>
+                  <span className="text-[12px] font-bold" style={{ color: "#000000" }}>Live Specs</span>
+                  <p className="mt-1 text-[11px]" style={{ color: "#000000" }}>
+                    The current editable draft
+                  </p>
+                </button>
                 {specsSheetVersionsSorted.length === 0 ? (
                   <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                     No versions saved yet. Use &quot;Save Version&quot; above to create a checkpoint you can come back to.
                   </p>
                 ) : (
                   specsSheetVersionsSorted.map((v) => (
-                    <button
+                    <div
                       key={v.id}
-                      type="button"
-                      onClick={() => openSpecsSheetVersion(v.id)}
-                      className="rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                      className="relative flex"
+                      onMouseEnter={() => setHoveredSpecsVersionId(v.id)}
+                      onMouseLeave={() => setHoveredSpecsVersionId((prev) => (prev === v.id ? "" : prev))}
                       style={{
-                        ...(activeSpecsSheetVersionId === v.id
-                          ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)" }
-                          : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }),
-                        // Only animate on the panel's own first open — clicking an entry (which
-                        // changes activeSpecsSheetVersionId and re-renders this whole list) must
-                        // never replay every row's entrance.
                         ...(isSpecsVersionsSidebarClosing
                           ? { animation: "glass-bubble-slide-out-left 280ms ease both", animationDelay: "0ms" }
                           : isSpecsVersionsSidebarJustOpened
@@ -36956,24 +37915,83 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             : {}),
                       }}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{v.name}</span>
-                        {v.sentToClient ? (
-                          <span
-                            title="This version was captured from a live sheet that was sent to the client"
-                            className="inline-flex shrink-0 items-center gap-1 rounded-[999px] px-1.5 py-[1px] text-[10px] font-bold"
-                            style={{ backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
-                          >
-                            <Check size={9} strokeWidth={3.5} />
-                            Sent to Client
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                        <span className="min-w-0 truncate">{v.savedAtIso ? shortMonthStyleDate(v.savedAtIso) : "Unknown date"}</span>
-                        {v.savedByName ? <span className="min-w-0 shrink-0 truncate">{v.savedByName}</span> : null}
-                      </div>
-                    </button>
+                      {/* Same hover-reveal delete icon as the Quote sheet's own Version History —
+                          see that sidebar's own comment for the reserved-42px-gutter/clipping/
+                          bounce-animation reasoning, all identical here. Never rendered once sent —
+                          a client could be looking at it, and it's a record of what was sent. */}
+                      {v.sentToClient || v.submittedAtIso ? null : (
+                        <button
+                          type="button"
+                          aria-label={`Delete "${v.name}"`}
+                          title="Delete this version"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSpecsVersionDeleteOrigin(captureGlassModalOrigin(e));
+                            setSpecsVersionPendingDeleteId(v.id);
+                          }}
+                          className="absolute right-0 top-0 z-0 flex h-full w-9 shrink-0 items-center justify-center rounded-[10px] border shadow-sm"
+                          style={{
+                            borderColor: "var(--danger-border)",
+                            backgroundColor: "var(--danger-soft)",
+                            color: "var(--danger-strong)",
+                            pointerEvents: hoveredSpecsVersionId === v.id ? "auto" : "none",
+                            opacity: hoveredSpecsVersionId === v.id ? 1 : 0,
+                            transform: hoveredSpecsVersionId === v.id ? "translateX(0)" : "translateX(-42px)",
+                            transitionProperty: "transform, opacity",
+                            transitionDuration: "320ms, 200ms",
+                            transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1), ease-out",
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openSpecsSheetVersion(v.id)}
+                        className="relative z-[1] mr-[42px] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                        style={
+                          // Submitted stays green regardless of selection (same treatment as the
+                          // Quote sheet's own accepted bubble — see that block's own comment),
+                          // deepening to the banner's own colors while selected. Sent-but-not-
+                          // submitted stays blue regardless of selection for the same reason: it
+                          // already happens to be the same color a normal selection uses, so this
+                          // just means selecting it doesn't fade to grey once focus moves on.
+                          v.submittedAtIso
+                            ? activeSpecsSheetVersionId === v.id
+                              ? { borderColor: "#15803D", backgroundColor: "#F0FDF4" }
+                              : { borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)" }
+                            : v.sentToClient || activeSpecsSheetVersionId === v.id
+                              ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)" }
+                              : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }
+                        }
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 truncate text-[12px] font-semibold" style={{ color: v.submittedAtIso ? "#000000" : "var(--text-main)" }}>{v.name}</span>
+                          {v.submittedAtIso ? (
+                            <span
+                              title={`Submitted by ${v.submittedByName || "client"}`}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-[999px] px-1.5 py-[1px] text-[10px] font-bold"
+                              style={{ backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+                            >
+                              <Check size={9} strokeWidth={3.5} />
+                              Submitted{v.submittedByName ? ` by ${v.submittedByName}` : ""}
+                            </span>
+                          ) : v.sentToClient ? (
+                            <span
+                              title="This version was captured from a live sheet that was sent to the client"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-[999px] border px-1.5 py-[1px] text-[10px] font-bold"
+                              style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)", borderColor: "var(--brand-strong)" }}
+                            >
+                              Sent to Client
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-[11px]" style={{ color: v.submittedAtIso ? "#000000" : "var(--text-muted)" }}>
+                          <span className="min-w-0 truncate">{v.savedAtIso ? shortMonthStyleDate(v.savedAtIso) : "Unknown date"}</span>
+                          {v.savedByName ? <span className="min-w-0 shrink-0 truncate">{v.savedByName}</span> : null}
+                        </div>
+                      </button>
+                    </div>
                   ))
                 )}
               </div>
@@ -37011,11 +38029,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                     >
                       <span className="min-w-0 truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{g.name}</span>
-                      <span title={specsSheetGroupHasClientAnswer(g) ? "This section has a client-confirmed answer and can't be hidden" : undefined}>
+                      <span
+                        title={
+                          isSpecsSectionsLockedForSending
+                            ? "This version has been sent to (or submitted by) the client and can't be changed — Reopen for Editing first"
+                            : specsSheetGroupHasClientAnswer(g)
+                              ? "This section has a client-confirmed answer and can't be hidden"
+                              : undefined
+                        }
+                      >
                         <QuoteExtraToggleSwitch
                           checked={!g.hidden}
                           onChange={(checked) => onToggleSpecsSheetGroup(g.id, !checked)}
-                          disabled={specsSheetGroupHasClientAnswer(g)}
+                          disabled={isSpecsSectionsLockedForSending || specsSheetGroupHasClientAnswer(g)}
                         />
                       </span>
                     </div>
@@ -37251,6 +38277,793 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         >
                           Reset to Template
                         </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderSpecsVersionDeleteModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+                  <button
+                    type="button"
+                    aria-label="Close delete version confirmation backdrop"
+                    onClick={() => setSpecsVersionPendingDeleteId("")}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={specsVersionDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Version?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        {(() => {
+                          const target = specsSheetVersions.find((v) => v.id === specsVersionPendingDeleteId);
+                          return target
+                            ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
+                            : "Delete this version? This can't be undone.";
+                        })()}
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSpecsVersionPendingDeleteId("")}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isDeletingSpecsVersion}
+                          onClick={() => void deleteSpecsVersionById(specsVersionPendingDeleteId)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                        >
+                          {isDeletingSpecsVersion ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderReopenSpecsConfirmModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+                  <button
+                    type="button"
+                    aria-label="Close reopen confirmation backdrop"
+                    onClick={() => setIsReopenSpecsConfirmOpen(false)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={reopenSpecsConfirmModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reopen for Editing?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        This clears the client&apos;s submission so they can answer again — the sheet itself stays exactly as it is, and it&apos;s still available on the same link.
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsReopenSpecsConfirmOpen(false)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isReopeningSpecsConfirmation}
+                          onClick={() => {
+                            setIsReopenSpecsConfirmOpen(false);
+                            void reopenSpecsConfirmationForEditing();
+                          }}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                        >
+                          {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen for Editing"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
+  if (isSalesCompareFullscreen) {
+    return (
+      <ProtectedRoute>
+        <div className="flex h-[100dvh] flex-col overflow-y-auto overflow-x-hidden bg-[var(--bg-app)]">
+          <div
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            style={{
+              height: 56,
+              backgroundColor: "var(--glass-modal-bg)",
+              backdropFilter: "blur(12px) saturate(220%)",
+              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+            }}
+          />
+          <div className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5" style={{ color: "var(--text-main)" }}>
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+            <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <ArrowLeftRight size={14} />
+              <span>Product Compare</span>
+              <span style={{ color: "var(--text-muted)" }}>|</span>
+              <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSalesNav("overview")}
+              className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+            >
+              <ArrowLeft size={14} />
+              Back
+            </button>
+          </div>
+          <div className="flex flex-1" style={{ paddingTop: 56 }}>
+            {/* Saved comparisons — a named "what if these pieces used a different product" scenario
+                per row, same click-to-open-a-card model as the Specs/Quote version history lists.
+                The name field always reflects whichever draft is currently open (a fresh unsaved
+                one, or an already-saved one being edited/renamed). */}
+            <div className="hide-scrollbar w-[260px] shrink-0 overflow-y-auto border-r p-3" style={{ borderColor: "var(--glass-border)", maxHeight: "calc(100dvh - 56px)" }}>
+              <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                Comparison name
+              </label>
+              <div className="mb-3 flex items-center gap-2">
+                <input
+                  value={comparisonNameDraft}
+                  onChange={(e) => setComparisonNameDraft(e.target.value)}
+                  disabled={!salesAccess.edit}
+                  placeholder="e.g. Lacquer upgrade"
+                  className="h-9 min-w-0 flex-1 rounded-[9px] border px-3 text-[13px] outline-none disabled:opacity-60"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                />
+                {/* Only for a brand-new, never-saved draft — once a comparison is saved, every
+                    further edit (including renaming it here) already autosaves on its own (see
+                    the debounced effect further up), so there's nothing left to explicitly save. */}
+                {!activeComparisonId ? (
+                  <button
+                    type="button"
+                    disabled={!salesAccess.edit || isSavingComparison || !comparisonNameDraft.trim()}
+                    onClick={() => void saveOrCreateProductComparison()}
+                    title="Save comparison"
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border text-white hover:brightness-95 disabled:opacity-55"
+                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  >
+                    <Save size={14} />
+                  </button>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={onClickNewComparison}
+                className="mb-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <Plus size={14} />
+                New Comparison
+              </button>
+              {productComparisonsSorted.length === 0 ? (
+                <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No comparisons saved yet.</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {productComparisonsSorted.map((c) => (
+                    // A <div role="button">, not a nested <button>, since the card's own delete
+                    // icon is a real interactive button inside it — a button can't contain another
+                    // button in valid HTML, and this sidesteps that entirely.
+                    <div
+                      key={c.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openProductComparison(c)}
+                      onKeyDown={(e) => {
+                        if (e.key !== "Enter" && e.key !== " ") return;
+                        e.preventDefault();
+                        openProductComparison(c);
+                      }}
+                      className="flex cursor-pointer items-start gap-2 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                      style={
+                        activeComparisonId === c.id
+                          ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)" }
+                          : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }
+                      }
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{c.name}</p>
+                        <p className="mt-0.5 truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
+                          {dashboardStyleDate(c.savedAtIso)}
+                        </p>
+                      </div>
+                      {salesAccess.edit ? (
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            aria-label={`Apply "${c.name}" to cutlist`}
+                            title="Apply to Cutlist"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setComparisonApplyModalOrigin(captureGlassModalOrigin(e));
+                              setComparisonApplyModal(buildComparisonApplyPreview(c));
+                            }}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] opacity-60 transition hover:bg-[var(--success-soft)] hover:opacity-100"
+                            style={{ color: "var(--success-strong)" }}
+                          >
+                            <RefreshCw size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Delete "${c.name}"`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setComparisonDeleteModalOrigin(captureGlassModalOrigin(e));
+                              setComparisonPendingDeleteId(c.id);
+                            }}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] opacity-60 transition hover:bg-[var(--danger-soft)] hover:opacity-100"
+                            style={{ color: "var(--danger-strong)" }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Builder — the room-grouped row checklist, live results, and the copy-paste wording
+                panel. No comparison-wide product picker here — each row is only ever compared to
+                something once it has its own "Compare To" set, right in the checklist below. */}
+            <div className="flex-1 overflow-y-auto px-4 pb-24 pt-4 md:px-5">
+              {!salesAccess.view ? (
+                <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>You don&apos;t have access to Sales.</p>
+              ) : initialCutlistRows.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
+                  <ArrowLeftRight size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
+                  <p>No Initial Measure cutlist yet — add pieces there first.</p>
+                </div>
+              ) : (
+                <div className="max-w-[900px] space-y-4">
+                  {/* Grouped checklist — tick individual pieces, or a whole group's header
+                      checkbox to select/deselect every row in it at once. The grouping itself
+                      (room/part type/product) only changes how pieces are found here — it has no
+                      effect on the pricing or wording, which always work off the plain selection.
+                      Sort is independent of grouping — it stays on whichever By Room/Part Type/
+                      Product table is currently selected, and only reorders the rows within each
+                      of those tables, never moves a row into a different one. */}
+                  <div>
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div className="relative inline-flex rounded-[9px] border p-0.5" style={{ borderColor: "var(--glass-border)" }}>
+                        {comparisonGroupByIndicatorRect ? (
+                          <div
+                            aria-hidden="true"
+                            className="absolute top-0.5 bottom-0.5 rounded-[7px]"
+                            style={{
+                              backgroundColor: "var(--brand-soft)",
+                              left: comparisonGroupByIndicatorRect.left,
+                              width: comparisonGroupByIndicatorRect.width,
+                              transition: "left 260ms cubic-bezier(0.22, 1, 0.36, 1), width 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+                              zIndex: 0,
+                            }}
+                          />
+                        ) : null}
+                        {([
+                          { key: "room", label: "By Room" },
+                          { key: "partType", label: "By Part Type" },
+                          { key: "product", label: "By Product" },
+                        ] as const).map((style) => (
+                          <button
+                            key={style.key}
+                            ref={(el) => {
+                              comparisonGroupByButtonRefs.current[style.key] = el;
+                            }}
+                            type="button"
+                            onClick={() => setComparisonGroupBy(style.key)}
+                            className="relative z-[1] rounded-[7px] px-3 py-1 text-[11px] font-bold transition-colors"
+                            style={{ color: comparisonGroupBy === style.key ? "var(--brand)" : "var(--text-main)" }}
+                          >
+                            {style.label}
+                          </button>
+                        ))}
+                      </div>
+                      <GlassSelectDropdown
+                        value={comparisonSortBy}
+                        options={
+                          // Sorting by part type within tables that are ALREADY split one-part-
+                          // type-per-table (By Part Type grouping) wouldn't do anything, so it's
+                          // left out of the list there rather than offering a no-op option.
+                          comparisonGroupBy === "partType"
+                            ? ["name-asc", "name-desc", "quantity-desc", "quantity-asc"]
+                            : ["name-asc", "name-desc", "quantity-desc", "quantity-asc", "partType-asc", "partType-desc"]
+                        }
+                        onChange={(v) => setComparisonSortBy(v as typeof comparisonSortBy)}
+                        getLabel={(opt) =>
+                          opt === "name-asc"
+                            ? "Name A–Z"
+                            : opt === "name-desc"
+                              ? "Name Z–A"
+                              : opt === "quantity-desc"
+                                ? "Quantity High–Low"
+                                : opt === "quantity-asc"
+                                  ? "Quantity Low–High"
+                                  : opt === "partType-asc"
+                                    ? "Part Type A–Z"
+                                    : "Part Type Z–A"
+                        }
+                        noTruncate
+                        className="h-8 rounded-[9px] border px-2 text-[11px] font-bold"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-3">
+                    {comparisonPieceGroups.map((group) => {
+                      const rowIds = group.rows.map((r) => r.id);
+                      const selectedCount = rowIds.filter((id) => comparisonSelectedRowIds.has(id)).length;
+                      const allSelected = selectedCount === rowIds.length;
+                      const someSelected = selectedCount > 0 && !allSelected;
+                      // Whether ANY row in this specific group actually uses a depth dimension —
+                      // most groups are all flat panels (H × W only), and reserving a 3rd slot no
+                      // row here ever fills would push that lone × left of the block's own center
+                      // instead of sitting right under "Size". Collapses to a 2-slot H × W layout
+                      // when nothing in the group needs the 3rd slot; still per-GROUP rather than
+                      // per-row, so every row within it keeps the same fixed slot alignment.
+                      const groupHasDepth = group.rows.some((r) => String(r.depth || "").trim().length > 0);
+                      // Same three-tier part-type colour language as the cutlist list itself (see
+                      // groupColorPalette's own callers there): a solid-ish title bar, a darker
+                      // header row underneath it for the column labels, and each data row in that
+                      // same colour's much lighter tint — darkest at the top, lightest at the
+                      // bottom, exactly like Initial Measure's own grouped table. The title
+                      // bar/header only take the group's colour when the group actually IS a part
+                      // type; grouping by room/product instead colours each individual row by ITS
+                      // OWN part type (a room or product isn't itself a part type), with a neutral
+                      // header above the mix.
+                      const groupPalette = comparisonGroupBy === "partType" ? groupColorPalette(partTypeColors[group.label] ?? "#CBD5E1") : null;
+                      const columnsTemplate = "28px 130px minmax(0,1fr) 280px 140px 70px";
+                      // Text defaults to black everywhere in this checklist — it only flips to
+                      // white where the SPECIFIC background actually shown (title bar/header/row
+                      // tint, not the raw part-type colour) is dark enough to need it. Checked
+                      // per-surface rather than reusing groupColorPalette's own single `text`
+                      // value, since the title bar, header, and row tints are each a different
+                      // lightness of the same base colour and can each need a different call.
+                      const titleBarTextColor = groupPalette && !isLightHex(groupPalette.titleBarBg) ? "#FFFFFF" : "#000000";
+                      const headerTextColor = groupPalette && !isLightHex(groupPalette.headerBg) ? "#FFFFFF" : "#000000";
+                      return (
+                        <div key={group.label} className="overflow-hidden rounded-[12px] border" style={{ borderColor: "var(--glass-border)" }}>
+                          <div
+                            className="flex items-center justify-between gap-2 px-3 py-2"
+                            style={{
+                              backgroundColor: groupPalette?.titleBarBg ?? "var(--panel-muted)",
+                              color: titleBarTextColor,
+                              // Locked to the bar's OWN tallest possible content (checkbox/name/
+                              // count PLUS the "Change selected to" dropdown) so it never grows or
+                              // shrinks depending on whether that control happens to be showing —
+                              // ticking a second row must never visibly resize the bar above it.
+                              minHeight: 44,
+                            }}
+                          >
+                            <div className="flex min-w-0 items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={allSelected}
+                                ref={(el) => {
+                                  if (el) el.indeterminate = someSelected;
+                                }}
+                                disabled={!salesAccess.edit}
+                                onChange={() => toggleComparisonGroupSelected(rowIds)}
+                                className="h-4 w-4 shrink-0"
+                              />
+                              {/* <span>, not <p> — app/globals.css has a global `p { color:
+                                  var(--text-main) }` rule that overrides an INHERITED color (an
+                                  inherited value is the lowest-priority source in the cascade, so
+                                  any element-level rule beats it) — a <p> here would silently ignore
+                                  titleBarTextColor and stay var(--text-main) even on a dark, white-
+                                  text-needing background. */}
+                              <span className="min-w-0 truncate text-[12px] font-bold">{group.label}</span>
+                              <span className="shrink-0 text-[11px]" style={{ opacity: 0.75 }}>
+                                ({selectedCount}/{rowIds.length} selected)
+                              </span>
+                            </div>
+                            {/* Explicit bulk-apply — only appears once there's an actual group of
+                                ticked rows in THIS table to apply to; only ever touches those
+                                already-ticked rows, never anything unticked or in another group.
+                                Replaces the old implicit "changing one ticked row changes every
+                                ticked row" behaviour with a deliberate, visible action. */}
+                            {selectedCount > 1 ? (
+                              <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold">
+                                <span className="whitespace-nowrap">Change selected to</span>
+                                <GlassSelectDropdown
+                                  value=""
+                                  options={["", ...companySalesProductNames]}
+                                  onChange={(v) => applyProductToTickedRowsInGroup(rowIds, v)}
+                                  disabled={!salesAccess.edit}
+                                  getLabel={(opt) => opt || "Select product…"}
+                                  noTruncate
+                                  className="h-7 rounded-[7px] border px-2 text-[11px] font-semibold"
+                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                          <div
+                            className="grid items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.5px]"
+                            style={{ gridTemplateColumns: columnsTemplate, backgroundColor: groupPalette?.headerBg ?? "var(--panel-muted)", color: headerTextColor }}
+                          >
+                            <span />
+                            <span>Part Type</span>
+                            <span>Part Name</span>
+                            <span className="text-center">Product</span>
+                            <span className="text-center">Size</span>
+                            <span className="text-center">Quantity</span>
+                          </div>
+                          <div className="divide-y" style={{ borderColor: "var(--glass-border)" }}>
+                            {group.rows.map((row) => {
+                              const rowPartTypeColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                              const rowBg = groupColorPalette(rowPartTypeColor).rowBg;
+                              const rowTextColor = isLightHex(rowBg) ? "#000000" : "#FFFFFF";
+                              // A lighter tint again than the row's own background, so the Compare
+                              // To control reads as its own little chip sitting on the row rather
+                              // than blending straight into it.
+                              const compareToBg = lightenHex(rowPartTypeColor, 0.55);
+                              const compareToTextColor = isLightHex(compareToBg) ? "#000000" : "#FFFFFF";
+                              // H/W/D always sit in the same fixed slot (height first, width
+                              // second, depth third) rather than a filtered/joined string — a
+                              // piece that never uses depth (e.g. a flat panel) just leaves that
+                              // slot blank instead of compacting, so every row's × separators and
+                              // values line up in the same spot regardless of digit count or which
+                              // dimensions this particular row actually has.
+                              const sizeParts = [row.height, row.width, row.depth].map((v) => String(v || "").trim());
+                              const hasAnySize = sizeParts.some(Boolean);
+                              const isRowSelected = comparisonSelectedRowIds.has(row.id);
+                              return (
+                                <div
+                                  key={row.id}
+                                  role="checkbox"
+                                  aria-checked={isRowSelected}
+                                  aria-disabled={!salesAccess.edit}
+                                  className="grid cursor-pointer select-none items-center gap-2 px-3 py-1 text-[12px] hover:brightness-95"
+                                  style={{ gridTemplateColumns: columnsTemplate, backgroundColor: rowBg, color: rowTextColor, minHeight: 32 }}
+                                  onClick={(e) => {
+                                    if (!salesAccess.edit) return;
+                                    // A plain <div>, not a <label>+<input type="checkbox"> — a real
+                                    // checkbox nested in a label gets its click FORWARDED by the
+                                    // browser via the control's own plain .click() whenever the
+                                    // click lands anywhere in the label except the control's exact
+                                    // pixels, and that forwarded call always fires with every
+                                    // modifier key forced false, silently dropping shiftKey no
+                                    // matter what was actually held. Driving selection entirely off
+                                    // this div's own click sidesteps that native forwarding/toggle
+                                    // machinery altogether — this is always the one real,
+                                    // unmodified browser event, so shiftKey is never lost.
+                                    if (e.shiftKey && comparisonLastClickedRowIdRef.current) {
+                                      applyComparisonRowRangeSelect(comparisonLastClickedRowIdRef.current, row.id);
+                                    } else {
+                                      toggleComparisonRowSelected(row.id);
+                                    }
+                                    comparisonLastClickedRowIdRef.current = row.id;
+                                  }}
+                                >
+                                  <span
+                                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border"
+                                    style={{
+                                      borderColor: isRowSelected ? "var(--brand-strong)" : "var(--glass-border)",
+                                      backgroundColor: isRowSelected ? "var(--brand-strong)" : "var(--panel-bg)",
+                                    }}
+                                  >
+                                    {isRowSelected ? <Check size={11} strokeWidth={3} color="#ffffff" /> : null}
+                                  </span>
+                                  <span className="min-w-0 truncate">{row.partType || "—"}</span>
+                                  <span className="min-w-0 truncate">{row.name || "Untitled piece"}</span>
+                                  {/* Both products under one "Product" column — the row's current
+                                      product, an arrow showing it becomes whatever's picked next,
+                                      then the Compare To control itself. This is the ONLY place a
+                                      row's target product is set — there's no comparison-wide
+                                      picker any more, so a blank selection genuinely means "not
+                                      being compared, contributes zero change," not "falls back to
+                                      something else." Picking a product here ticks the row
+                                      automatically (clearing it back to blank unticks it) — setting
+                                      a product IS how a piece gets included, no separate checkbox
+                                      click needed — and only ever affects THIS row; bulk-applying to
+                                      several ticked rows at once is the group's own "Change selected
+                                      to" bar above, not this control. The select's own
+                                      stopPropagation keeps picking a product from also triggering
+                                      the row's own onClick (which toggles/range-selects this row) —
+                                      the whole row is otherwise
+                                      a single big click target. */}
+                                  {/* Fixed height + overflow-hidden on this cell specifically —
+                                      belt-and-braces against ANY content inside (the option text
+                                      changing length, the dropdown's own internal box model)
+                                      ever growing this cell, and with it the whole row, taller
+                                      than its resting height. Nothing in here is meant to exceed
+                                      24px in the first place, so clipping at exactly that is safe. */}
+                                  <div className="flex min-w-0 items-center justify-center gap-1.5 overflow-hidden" style={{ height: 24 }}>
+                                    {/* Fixed width (same measurement as the Compare To dropdown
+                                        below) rather than sized to each row's own text — so the
+                                        arrow between them lands at the same X position on every
+                                        row instead of drifting with how long each product name is. */}
+                                    <span className="shrink-0 truncate text-right text-[11px]" style={{ width: `${comparisonRowSelectWidthCh}ch` }}>{row.board || "—"}</span>
+                                    <ArrowRight size={12} className="shrink-0" style={{ opacity: 0.6 }} />
+                                    {/* Wrapping div (not a prop on GlassSelectDropdown itself, which
+                                        has no onClick passthrough) carries the stopPropagation that
+                                        keeps opening/picking a product from also triggering the
+                                        row's own onClick. */}
+                                    <div className="inline-flex h-6 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                      <GlassSelectDropdown
+                                        value={comparisonRowProductOverrides[row.id] ?? ""}
+                                        options={["", ...companySalesProductNames]}
+                                        // A truly empty value renders the button's inner <span> with
+                                        // no text node at all — an empty inline element can collapse
+                                        // to a different (often shorter) line-box height than one
+                                        // with real glyph content, which is what was nudging the
+                                        // whole button up/down as it went from blank to a picked
+                                        // product. Always giving it a real character (matching the
+                                        // "—" placeholder already used elsewhere on this row) keeps
+                                        // its line-box height identical in both states.
+                                        getLabel={(opt) => opt || "—"}
+                                        onChange={(v) => setComparisonRowProductOverride(row.id, v)}
+                                        disabled={!salesAccess.edit}
+                                        noTruncate
+                                        className="h-6 shrink-0 rounded-[6px] border px-1.5 text-[11px] font-semibold leading-[22px] disabled:opacity-60"
+                                        style={{ width: `${comparisonRowSelectWidthCh}ch`, borderColor: "var(--glass-border)", backgroundColor: compareToBg, color: compareToTextColor }}
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="flex w-full min-w-0 items-center justify-center">
+                                    {hasAnySize ? (
+                                      <div
+                                        className="mx-auto inline-grid items-center"
+                                        style={{ gridTemplateColumns: groupHasDepth ? "4ch 12px 4ch 12px 4ch" : "4ch 12px 4ch" }}
+                                      >
+                                        <span className="truncate text-center text-[11px]">{sizeParts[0]}</span>
+                                        <span className="text-center text-[11px]" style={{ opacity: sizeParts[0] && (sizeParts[1] || sizeParts[2]) ? 0.6 : 0 }}>×</span>
+                                        <span className="truncate text-center text-[11px]">{sizeParts[1]}</span>
+                                        {groupHasDepth ? (
+                                          <>
+                                            <span className="text-center text-[11px]" style={{ opacity: sizeParts[2] && (sizeParts[0] || sizeParts[1]) ? 0.6 : 0 }}>×</span>
+                                            <span className="truncate text-center text-[11px]">{sizeParts[2]}</span>
+                                          </>
+                                        ) : null}
+                                      </div>
+                                    ) : (
+                                      <span className="text-[11px]">—</span>
+                                    )}
+                                  </div>
+                                  <span className="min-w-0 truncate text-center text-[11px]">{row.quantity || "1"}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          {/* Results — pinned to the bottom of the window (same fixed treatment as the header
+              above) so Current/New/Difference stay visible regardless of how far the checklist is
+              scrolled; recomputed from the CURRENT cutlist on every tick/target change. */}
+          {salesAccess.view && initialCutlistRows.length > 0 ? (
+            <div
+              className="fixed inset-x-0 bottom-0 z-[95] flex flex-wrap items-center justify-center gap-6 border-t px-4 py-3"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-modal-bg)",
+                backdropFilter: "blur(12px) saturate(220%)",
+                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              }}
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>Current cost</span>
+                <span className="text-[15px] font-bold" style={{ color: "#000000" }}>{formatCurrencyValue(comparisonPricing.current.totalCost)}</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>New cost</span>
+                <span className="text-[15px] font-bold" style={{ color: "#000000" }}>
+                  {comparisonPricing.hasTarget ? formatCurrencyValue(comparisonPricing.hypothetical.totalCost) : "—"}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>Difference</span>
+                <span
+                  className="text-[15px] font-bold"
+                  style={{ color: comparisonPricing.delta > 0 ? "var(--success-strong)" : comparisonPricing.delta < 0 ? "var(--danger-strong)" : "#000000" }}
+                >
+                  {comparisonPricing.hasTarget ? formatSignedCurrencyValue(comparisonPricing.delta) : "—"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className="max-w-[360px] truncate rounded-[7px] border px-2 py-1.5 text-[12px]"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                >
+                  {comparisonWordingText || "—"}
+                </span>
+                <button
+                  type="button"
+                  disabled={!comparisonWordingText}
+                  onClick={() => void copyComparisonWording()}
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[7px] border px-2.5 text-[11px] font-bold hover:brightness-95 disabled:opacity-55"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "#000000" }}
+                >
+                  <Copy size={12} />
+                  {comparisonCopyFeedback ? "Copied!" : "Copy"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {isNewComparisonConfirmOpen && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close new comparison confirmation backdrop"
+                    onClick={() => setIsNewComparisonConfirmOpen(false)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Before Starting New?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        {comparisonNameDraft.trim()
+                          ? <>You have an unsaved comparison (&quot;{comparisonNameDraft.trim()}&quot;). Save it before starting a new one, or discard it?</>
+                          : "You have unsaved changes in this comparison. Give it a name in the sidebar to save it before starting a new one, or discard it?"}
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsNewComparisonConfirmOpen(false)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={discardAndStartNewComparison}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                        >
+                          Discard
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!comparisonNameDraft.trim() || isSavingComparison}
+                          onClick={() => void saveCurrentAndStartNewComparison()}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                          style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                        >
+                          {isSavingComparison ? "Saving…" : "Save & New"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderComparisonDeleteModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+                  <button
+                    type="button"
+                    aria-label="Close delete comparison confirmation backdrop"
+                    onClick={() => setComparisonPendingDeleteId("")}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={comparisonDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Delete Comparison?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                        {(() => {
+                          const target = productComparisons.find((c) => c.id === comparisonPendingDeleteId);
+                          return target
+                            ? <>Delete &quot;{target.name}&quot;? This can&apos;t be undone.</>
+                            : "Delete this comparison? This can't be undone.";
+                        })()}
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setComparisonPendingDeleteId("")}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isDeletingComparison}
+                          onClick={() => void deleteProductComparisonById(comparisonPendingDeleteId)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                          style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                        >
+                          {isDeletingComparison ? "Deleting…" : "Delete"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+          {shouldRenderComparisonApplyModal && typeof document !== "undefined"
+            ? createPortal(
+                <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+                  <button
+                    type="button"
+                    aria-label="Close apply comparison confirmation backdrop"
+                    onClick={() => setComparisonApplyModal(null)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div ref={comparisonApplyModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(480px,96vw)] overflow-hidden">
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Apply to Cutlist?</p>
+                    </div>
+                    <div className="space-y-4 px-5 py-4">
+                      {comparisonApplyModal ? (
+                        comparisonApplyModal.changes.length === 0 ? (
+                          <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                            &quot;{comparisonApplyModal.comparison.name}&quot; doesn&apos;t change any piece&apos;s product — every compared row already matches the cutlist&apos;s current product.
+                          </p>
+                        ) : (
+                          <>
+                            <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                              This permanently updates &quot;{comparisonApplyModal.comparison.name}&quot;&apos;s {comparisonApplyModal.changes.length}{" "}
+                              piece{comparisonApplyModal.changes.length === 1 ? "" : "s"} to its compared product in the Initial Measure cutlist. This can&apos;t be undone.
+                            </p>
+                            <div className="max-h-[240px] space-y-1 overflow-y-auto rounded-[9px] border p-2" style={{ borderColor: "var(--glass-border)" }}>
+                              {comparisonApplyModal.changes.map((change) => (
+                                <div key={change.id} className="flex items-center justify-between gap-2 rounded-[6px] px-2 py-1 text-[11px]" style={{ backgroundColor: "var(--panel-muted)" }}>
+                                  <span className="min-w-0 truncate font-semibold" style={{ color: "var(--text-main)" }}>{change.name}</span>
+                                  <span className="flex shrink-0 items-center gap-1" style={{ color: "var(--text-muted)" }}>
+                                    <span className="truncate">{change.from}</span>
+                                    <ArrowRight size={11} className="shrink-0" />
+                                    <span className="truncate font-semibold" style={{ color: "var(--success-strong)" }}>{change.to}</span>
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )
+                      ) : null}
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setComparisonApplyModal(null)}
+                          className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                        >
+                          Cancel
+                        </button>
+                        {comparisonApplyModal && comparisonApplyModal.changes.length > 0 ? (
+                          <button
+                            type="button"
+                            disabled={isApplyingComparison}
+                            onClick={() => void applyProductComparisonToCutlist(comparisonApplyModal.comparison.id)}
+                            className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
+                            style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+                          >
+                            {isApplyingComparison ? "Applying…" : "Apply"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -39396,6 +41209,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Items", icon: ListChecks, key: "items" as const },
                   { label: "Quote", icon: Quote, key: "quote" as const },
                   { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
+                  { label: "Product Compare", icon: ArrowLeftRight, key: "compare" as const },
                 ].map((item, idx, arr) => {
                   const Icon = item.icon;
                   const active = salesNav === item.key;
@@ -39557,7 +41371,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       borderColor: color,
                                       color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
                                     }}
-                                    className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                                    className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
                                   >
                                     {v}
                                   </button>
