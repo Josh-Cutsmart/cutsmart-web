@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Bell, Building2, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft, Bell, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import {
+  addUserNotification,
   createCompanyInviteDetailed,
   fetchCompanyDoc,
   fetchCompanyMembers,
@@ -35,7 +37,8 @@ type SettingsSection =
 
 type StatusRow = { name: string; color: string };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
-type BoardColourMemoryRow = { value: string; count: string };
+type BoardEdgingMemoryRow = { value: string; count: string };
+type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
 type DashboardLegendRow = { id: string; name: string; color: string };
 type TagUsageRow = { value: string; count: string };
 type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
@@ -300,6 +303,19 @@ function toStr(v: unknown, fallback = "") {
   return t || fallback;
 }
 
+function formatNotificationDateTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  const day = d.toLocaleDateString(undefined, { day: "2-digit" });
+  const month = d.toLocaleDateString(undefined, { month: "long" });
+  const year = d.toLocaleDateString(undefined, { year: "numeric" });
+  const time = d
+    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(" ", "")
+    .toLowerCase();
+  return `${day} ${month} ${year}  |  ${time}`;
+}
+
 function isProtectedStarterRole(value: unknown): boolean {
   const roleKey = normalizeRoleKey(value);
   return roleKey === "owner" || roleKey === "admin" || roleKey === "staff";
@@ -517,6 +533,18 @@ function normalizeProjectTagUsage(raw: unknown): TagUsageRow[] {
     });
 }
 
+function normalizeBoardEdgingMemory(raw: unknown): BoardEdgingMemoryRow[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      return { value: toStr(item.value), count: toStr(item.count ?? 0, "0") };
+    })
+    .filter((row) => row.value)
+    .sort((a, b) => Number(b.count) - Number(a.count) || a.value.localeCompare(b.value));
+}
+
 function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>;
@@ -525,7 +553,7 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
       .filter((row) => row && typeof row === "object")
       .map((row) => {
         const item = row as Record<string, unknown>;
-        return { value: toStr(item.value), count: toStr(item.count ?? 0, "0") };
+        return { value: toStr(item.value), count: toStr(item.count ?? 0, "0"), edgings: normalizeBoardEdgingMemory(item.edgings) };
       })
       .filter((row) => row.value)
       .sort((a, b) => Number(b.count) - Number(a.count) || a.value.localeCompare(b.value));
@@ -535,7 +563,11 @@ function normalizeBoardColourMemory(raw: unknown): BoardColourMemoryRow[] {
     .filter((row) => row && typeof row === "object")
     .map((row) => {
       const item = row as Record<string, unknown>;
-      return { value: toStr(item.value ?? item.colour ?? item.color), count: toStr(item.count ?? 0, "0") };
+      return {
+        value: toStr(item.value ?? item.colour ?? item.color),
+        count: toStr(item.count ?? 0, "0"),
+        edgings: normalizeBoardEdgingMemory(item.edgings),
+      };
     })
     .filter((row) => row.value)
     .sort((a, b) => Number(b.count) - Number(a.count) || a.value.localeCompare(b.value));
@@ -1078,7 +1110,17 @@ function writeDrawerField(item: Record<string, unknown>, field: string, value: s
 
 export default function CompanySettingsPage() {
   const { user } = useAuth();
+  const searchParams = useSearchParams();
   const [active, setActive] = useState<SettingsSection>("company");
+  useEffect(() => {
+    const requestedSection = searchParams.get("section");
+    if (requestedSection && sections.some((item) => item.key === requestedSection)) {
+      setActive(requestedSection as SettingsSection);
+    }
+    // Only honor the query param on first load — the sidebar's own onClick is the source of
+    // truth for `active` after that, so this must not fight later in-page navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [search, setSearch] = useState("");
   const [company, setCompany] = useState<Record<string, unknown> | null>(null);
   const [activeCompanyId, setActiveCompanyId] = useState("");
@@ -1114,6 +1156,7 @@ export default function CompanySettingsPage() {
   const [leadStatusDragOverIndex, setLeadStatusDragOverIndex] = useState<number | null>(null);
   const [projectTagUsage, setProjectTagUsage] = useState<TagUsageRow[]>([]);
   const [boardColourMemory, setBoardColourMemory] = useState<BoardColourMemoryRow[]>([]);
+  const [expandedBoardColourMemoryRows, setExpandedBoardColourMemoryRows] = useState<Set<string>>(new Set());
   const [boardThicknesses, setBoardThicknesses] = useState<string[]>(["16", "18"]);
   const [boardFinishes, setBoardFinishes] = useState<string[]>(["Satin"]);
   const [sheetSizes, setSheetSizes] = useState<SheetSizeRow[]>([{ h: "2440", w: "1220", isDefault: true }]);
@@ -1818,6 +1861,12 @@ export default function CompanySettingsPage() {
       ),
     );
     setSaveLabel("Saved");
+    const previousRole = staffRoleOptions.find((role) => normalizeRoleKey(role.id || role.name) === currentRoleId);
+    void addUserNotification(uid, {
+      title: "Role updated",
+      message: `Your role in ${toStr(company?.name, "your company")} changed from "${previousRole?.name || currentRoleId}" to "${selectedRole.name}".`,
+      type: "role_change",
+    });
   };
 
   const confirmOwnerTransferAndRoleChange = async () => {
@@ -2339,7 +2388,11 @@ export default function CompanySettingsPage() {
       const freshRows = normalizeBoardColourMemory(fresh?.boardMaterialUsage).filter((row) => row.value !== targetValue);
       const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
         boardMaterialUsage: {
-          colours: freshRows.map((row) => ({ value: row.value, count: Number(row.count || 0) })),
+          colours: freshRows.map((row) => ({
+            value: row.value,
+            count: Number(row.count || 0),
+            edgings: row.edgings.map((edging) => ({ value: edging.value, count: Number(edging.count || 0) })),
+          })),
         },
       });
       if (!result.ok) {
@@ -2347,6 +2400,41 @@ export default function CompanySettingsPage() {
       }
     } catch {
       setSaveLabel("Save failed (board-colour-remove-failed)");
+    }
+  };
+
+  // Same fetch-fresh-then-patch reasoning as onDeleteBoardColourMemoryRow above — an edging's
+  // count is also live, bumped from the project page whenever a board row's edging changes.
+  const onDeleteBoardEdgingMemoryRow = async (colourValue: string, edgingValue: string) => {
+    if (!activeCompanyId || !canEditCompanySettings) return;
+    const targetColour = toStr(colourValue);
+    const targetEdging = toStr(edgingValue);
+    if (!targetColour || !targetEdging) return;
+    setBoardColourMemory((prev) =>
+      prev.map((row) =>
+        row.value === targetColour
+          ? { ...row, edgings: row.edgings.filter((edging) => edging.value !== targetEdging) }
+          : row,
+      ),
+    );
+    try {
+      const fresh = await fetchCompanyDoc(activeCompanyId);
+      const freshRows = normalizeBoardColourMemory(fresh?.boardMaterialUsage);
+      const result = await saveCompanyDocPatchDetailed(activeCompanyId, {
+        boardMaterialUsage: {
+          colours: freshRows.map((row) => ({
+            value: row.value,
+            count: Number(row.count || 0),
+            edgings: (row.value === targetColour ? row.edgings.filter((edging) => edging.value !== targetEdging) : row.edgings)
+              .map((edging) => ({ value: edging.value, count: Number(edging.count || 0) })),
+          })),
+        },
+      });
+      if (!result.ok) {
+        setSaveLabel(`Save failed (${result.error || "board-edging-remove-failed"})`);
+      }
+    } catch {
+      setSaveLabel("Save failed (board-edging-remove-failed)");
     }
   };
 
@@ -2947,7 +3035,17 @@ export default function CompanySettingsPage() {
                   const Icon = item.icon;
                   const selected = active === item.key;
                   return (
-                    <button key={item.key} type="button" onClick={() => setActive(item.key)} className={`inline-flex w-full items-center gap-2 rounded-[9px] px-2 py-[7px] text-left text-[12px] font-bold ${selected ? "bg-[#DDE7F5] text-[#244C7F]" : "text-[#334155] hover:bg-[#EEF2F7]"}`}>
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setActive(item.key)}
+                      className="inline-flex w-full items-center gap-2 rounded-[9px] px-2 py-[7px] text-left text-[12px] font-bold"
+                      style={
+                        selected
+                          ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                          : { color: "var(--text-main)" }
+                      }
+                    >
                       <Icon size={14} />
                       {item.label}
                     </button>
@@ -3196,27 +3294,75 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <Panel title="Board Colour Memory">
                     <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                      <div className="grid grid-cols-[22px_26px_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                        <p></p>
                         <p></p>
                         <p>Colour</p>
                         <p className="text-center">Used</p>
                       </div>
-                      {boardColourMemory.map((row, idx) => (
-                        <div key={`board_colour_${idx}`} className="grid grid-cols-[26px_1fr_70px] items-center gap-2">
-                          <button
-                            onClick={() => void onDeleteBoardColourMemoryRow(row.value)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
-                          >
-                            <X size={15} strokeWidth={2.8} />
-                          </button>
-                          <div className="inline-flex h-7 items-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#334155]">
-                            {row.value}
+                      {boardColourMemory.map((row, idx) => {
+                        const isExpanded = expandedBoardColourMemoryRows.has(row.value);
+                        const hasEdgings = row.edgings.length > 0;
+                        return (
+                          <div key={`board_colour_${idx}`} className="space-y-1">
+                            <div className="grid grid-cols-[22px_26px_1fr_70px] items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={!hasEdgings}
+                                onClick={() =>
+                                  setExpandedBoardColourMemoryRows((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(row.value)) next.delete(row.value);
+                                    else next.add(row.value);
+                                    return next;
+                                  })
+                                }
+                                className="inline-flex h-7 w-[22px] items-center justify-center rounded-[6px] text-[#667085] disabled:opacity-30"
+                                title={hasEdgings ? "Show edging tapes used with this colour" : "No edging tapes recorded yet"}
+                              >
+                                <ChevronDown size={14} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }} />
+                              </button>
+                              <button
+                                onClick={() => void onDeleteBoardColourMemoryRow(row.value)}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                              >
+                                <X size={15} strokeWidth={2.8} />
+                              </button>
+                              <div className="inline-flex h-7 items-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#334155]">
+                                {row.value}
+                              </div>
+                              <div className="inline-flex h-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] font-semibold text-[#334155]">
+                                {String(row.count || "0")}
+                              </div>
+                            </div>
+                            {isExpanded && hasEdgings && (
+                              <div className="ml-[48px] space-y-1 border-l-2 border-[#E4E9F0] pl-2">
+                                <div className="grid grid-cols-[1fr_60px_26px] items-center gap-2 px-1 text-[9px] font-extrabold uppercase tracking-[0.6px] text-[#8B98AC]">
+                                  <p>Edging</p>
+                                  <p className="text-center">Used</p>
+                                  <p></p>
+                                </div>
+                                {row.edgings.map((edging, edgingIdx) => (
+                                  <div key={`board_edging_${idx}_${edgingIdx}`} className="grid grid-cols-[1fr_60px_26px] items-center gap-2">
+                                    <div className="inline-flex h-6 items-center rounded-[6px] border border-[#E4E9F0] bg-[#FAFBFD] px-2 text-[11px] text-[#475467]">
+                                      {edging.value}
+                                    </div>
+                                    <div className="inline-flex h-6 items-center justify-center rounded-[6px] border border-[#E4E9F0] bg-[#FAFBFD] px-2 text-[11px] font-semibold text-[#475467]">
+                                      {String(edging.count || "0")}
+                                    </div>
+                                    <button
+                                      onClick={() => void onDeleteBoardEdgingMemoryRow(row.value, edging.value)}
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                    >
+                                      <X size={12} strokeWidth={2.8} />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                          <div className="inline-flex h-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] font-semibold text-[#334155]">
-                            {String(row.count || "0")}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </Panel>
                 </div>
@@ -3226,12 +3372,12 @@ export default function CompanySettingsPage() {
                   <div className="space-y-3">
                     <section
                       className="overflow-hidden rounded-[14px] border border-[#D7DEE8] shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-colors"
-                      style={{ backgroundColor: zapierLeads.enabled ? "#ffffff" : "#F3F4F6" }}
+                      style={{ backgroundColor: zapierLeads.enabled ? "var(--panel-bg)" : "var(--panel-muted)" }}
                     >
                       <div
                         className="space-y-3 px-3 pb-2 pt-4 text-[12px] transition-colors"
                         style={{
-                          backgroundColor: zapierLeads.enabled ? "#ffffff" : "#F3F4F6",
+                          backgroundColor: zapierLeads.enabled ? "var(--panel-bg)" : "var(--panel-muted)",
                         }}
                       >
                         <div
@@ -6512,7 +6658,7 @@ export default function CompanySettingsPage() {
                               <span className="rounded-[999px] border border-[#D8DEE8] bg-white px-2 py-[1px] text-[10px] font-bold uppercase tracking-[0.5px] text-[#475467]">{row.type || "info"}</span>
                             </div>
                             <p className="mt-1 text-[12px] text-[#334155]">{row.message || "-"}</p>
-                            <p className="mt-1 text-[11px] text-[#667085]">{row.createdAtIso || "-"}</p>
+                            <p className="mt-1 text-[11px] text-[#667085]">{formatNotificationDateTime(row.createdAtIso)}</p>
                           </div>
                         ))}
                       </div>

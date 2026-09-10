@@ -1,7 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { AuthProvider } from "@/lib/auth-context";
-import { AppTabsProvider } from "@/lib/app-tabs-context";
-import { GlobalAppTabsBar } from "@/components/global-app-tabs-bar";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -48,12 +45,11 @@ export default function RootLayout({
         />
       </head>
       <body className="cs-app" suppressHydrationWarning>
-        <AuthProvider>
-          <AppTabsProvider>
-            <GlobalAppTabsBar />
-            {children}
-          </AppTabsProvider>
-        </AuthProvider>
+        {/* No AuthProvider/AppTabsProvider/GlobalAppTabsBar here — this root layout wraps EVERY
+            route, including the public, no-login app/client/*. Those live in
+            app/(staff)/layout.tsx instead, scoped to just the staff-facing routes (login, company
+            onboarding, and everything under (app)) — see that file's own comment for why. */}
+        {children}
       </body>
     </html>
   );

@@ -266,6 +266,13 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
   const notes = pickFirstString(data, ["notes", "projectNotes", "description"]) ||
     pickFirstString(clientBlock, ["notes", "projectNotes", "description"]);
   const productionNotes = pickFirstString(data, ["productionNotes"]);
+  const remedials = pickFirstString(data, ["remedials"]);
+  const contractorNotesRaw = asRecord(data.contractorNotes);
+  const contractorNotes = contractorNotesRaw
+    ? Object.fromEntries(
+        Object.entries(contractorNotesRaw).map(([key, value]) => [key, String(value ?? "")]),
+      )
+    : undefined;
   const createdByName = pickFirstString(data, [
     "createdByName",
     "creatorName",
@@ -275,6 +282,12 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
   ]);
   const projectImageItems = normalizeProjectImageItems(data.projectImageItems);
   const projectImages = Array.isArray(data.projectImages) ? data.projectImages.map(String).filter(Boolean) : [];
+  const notifySubscriptionOverridesRaw = asRecord(data.notifySubscriptionOverrides);
+  const notifySubscriptionOverrides = notifySubscriptionOverridesRaw
+    ? Object.fromEntries(
+        Object.entries(notifySubscriptionOverridesRaw).map(([key, value]) => [key, Boolean(value)]),
+      )
+    : undefined;
 
   return {
     id,
@@ -287,6 +300,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     createdByName: createdByName || "Unknown",
     assignedToUid: pickFirstString(data, ["assignedToUid", "assignedUid", "projectAssignedUid"]) || undefined,
     assignedToName: pickFirstString(data, ["assignedToName", "assignedName", "projectAssignedName"]) || undefined,
+    notifySubscriptionOverrides,
     status: toProjectStatus(data.status),
     statusLabel: String(data.status ?? "New"),
     priority: (String(data.priority ?? "medium") as Project["priority"]),
@@ -303,6 +317,8 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     notes,
     productionNotes,
+    remedials,
+    contractorNotes,
     clientFirstName,
     clientLastName,
     clientPhone,
@@ -516,11 +532,13 @@ function normalizeQuote(id: string, data: Record<string, unknown>): SalesQuote {
 }
 
 function normalizeChange(id: string, data: Record<string, unknown>): ProjectChange {
+  const details = String(data.details ?? "").trim();
   return {
     id,
     projectId: String(data.projectId ?? ""),
     actor: String(data.actor ?? "System"),
     action: String(data.action ?? "Updated"),
+    details: details || undefined,
     at: toIsoString(data.at, new Date().toISOString()),
   };
 }
@@ -943,16 +961,42 @@ export async function fetchChanges(projectId: string): Promise<ProjectChange[]> 
   }
 
   try {
-    const snap = await getDocs(collection(db, "changelog"));
+    // Filtered server-side (not "fetch the whole collection and filter client-side") — this
+    // collection is shared across every project/company, and now that addProjectChange actually
+    // writes to it, a full scan on every project page load would only get more expensive as usage
+    // accumulates.
+    const snap = await getDocs(query(collection(db, "changelog"), where("projectId", "==", projectId)));
     if (snap.empty) {
       return hasFirebaseConfig ? [] : mockChanges.filter((change) => change.projectId === projectId);
     }
 
-    return snap.docs
-      .map((item) => normalizeChange(item.id, item.data() as Record<string, unknown>))
-      .filter((change) => change.projectId === projectId);
+    return snap.docs.map((item) => normalizeChange(item.id, item.data() as Record<string, unknown>));
   } catch {
     return hasFirebaseConfig ? [] : mockChanges.filter((change) => change.projectId === projectId);
+  }
+}
+
+// Appends one entry to a project's changelog — fire-and-forget from the caller's own save
+// function, purely a side-effect record of what happened. Never throws: a logging failure must
+// never surface as (or be mistaken for) the real save failing.
+export async function addProjectChange(projectId: string, actor: string, action: string, details?: string): Promise<boolean> {
+  const pid = String(projectId || "").trim();
+  const actionText = String(action || "").trim();
+  if (!pid || !actionText) return false;
+  if (!db) return true;
+  try {
+    const ref = doc(collection(db, "changelog"));
+    const detailsText = String(details || "").trim();
+    await setDoc(ref, {
+      projectId: pid,
+      actor: String(actor || "Staff").trim() || "Staff",
+      action: actionText,
+      ...(detailsText ? { details: detailsText } : {}),
+      at: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1078,6 +1122,7 @@ export interface UserNotificationRow {
   type: string;
   read: boolean;
   createdAtIso: string;
+  projectId?: string;
 }
 
 export type AppReportKind = "issue" | "feature";
@@ -3493,6 +3538,7 @@ export async function fetchUserNotifications(uid: string): Promise<UserNotificat
         type: String(data.type ?? "info"),
         read: Boolean(data.read),
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
+        projectId: String(data.projectId ?? "").trim() || undefined,
       };
     });
   } catch {
@@ -3512,6 +3558,46 @@ export async function setAllUserNotificationsRead(uid: string, read: boolean): P
       batch.update(docSnap.ref, { read: Boolean(read), updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() });
     }
     await batch.commit();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort notification writer — never lets a notification failure surface as (or block) the
+// real action it's a side-effect of (role change, assignment change, quote/specs sent, etc.). If
+// Firestore rules don't yet allow writing into another user's own notifications subcollection,
+// this silently no-ops rather than breaking the underlying save/send.
+export async function addUserNotification(
+  uid: string,
+  input: { title: string; message: string; type: string; projectId?: string },
+): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) return false;
+  try {
+    const ref = doc(collection(db, "users", userId, "notifications"));
+    await setDoc(ref, {
+      title: input.title,
+      message: input.message,
+      type: input.type,
+      projectId: input.projectId || null,
+      read: false,
+      createdAt: serverTimestamp(),
+      createdAtIso: new Date().toISOString(),
+    });
+    return true;
+  } catch (err) {
+    console.error("[addUserNotification] write failed:", err);
+    return false;
+  }
+}
+
+export async function markUserNotificationRead(uid: string, notificationId: string): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(notificationId || "").trim();
+  if (!db || !userId || !id) return false;
+  try {
+    await updateDoc(doc(db, "users", userId, "notifications", id), { read: true });
     return true;
   } catch {
     return false;

@@ -166,6 +166,14 @@ export type SpecsGridEditorProps = {
   // moment it's sent, not only cells already answered — only Specifications' own live project sheet
   // ever sets this; Quote has no client-confirmation concept.
   isSentToClient?: boolean;
+  // True while a historical SAVED version is open (not the live sheet/grid) — gates the
+  // confirmable-cell Yes/No/Pending status overlay below. The client's actual answer only ever
+  // gets written onto the specific version document that was bound at send time (see
+  // app/api/specs-share/[shareId]/answer/route.ts), never back onto the live sheet, so the live
+  // grid's own copy of confirmedYes/confirmedAt is permanently stale/meaningless the moment a
+  // version diverges from it — showing "Pending" there forever, regardless of the real answer,
+  // would be actively misleading. Only a saved version's own data is ever current.
+  isViewingSavedVersion?: boolean;
   // Arbitrary content rendered inside the grey canvas area, centered and width-matched to the
   // white mock-page sheet (mockPageBoxWidthPx — the same value the sheet itself uses), sitting
   // directly above it — below the fixed formatting toolbar, which stays exactly where it's always
@@ -485,6 +493,7 @@ export default function SpecsGridEditor({
   showEditableGroupBorders,
   hideCellSelectionOutline,
   isSentToClient,
+  isViewingSavedVersion,
   belowToolbarBanner,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
@@ -2325,13 +2334,19 @@ export default function SpecsGridEditor({
                       )}
                       {/* Read-only status for a confirmable cell — this editor never writes
                           confirmedYes/confirmedAt itself, only the public
-                          app/api/specs-share/[shareId]/answer route does. Fills the ENTIRE cell
-                          (matching the client's own full-cell Yes/No fill — see
-                          components/specs-grid-client-view.tsx) rather than a small corner badge,
-                          so staff can read a cell's status at a glance without needing to zoom in —
-                          same treatment for "Pending" (still-unanswered) as for a real Yes/No, just
-                          neutral colors so it doesn't misleadingly read as an actual answer. */}
-                      {isProjectSheetView && cell.confirmable ? (
+                          app/api/specs-share/[shareId]/answer route does, and only ever onto the
+                          specific SAVED VERSION document bound at send time — never back onto the
+                          live sheet (see isViewingSavedVersion's own comment). So this only renders
+                          at all while a saved version is open; the live grid's own copy of
+                          confirmedYes/confirmedAt is permanently stale the moment a version's been
+                          sent, and would misleadingly show "Pending" forever regardless of the real
+                          answer. Fills the ENTIRE cell (matching the client's own full-cell Yes/No
+                          fill — see components/specs-grid-client-view.tsx) rather than a small
+                          corner badge, so staff can read a cell's status at a glance without
+                          needing to zoom in — same treatment for "Pending" (still-unanswered) as
+                          for a real Yes/No, just neutral colors so it doesn't misleadingly read as
+                          an actual answer. */}
+                      {isProjectSheetView && cell.confirmable && isViewingSavedVersion ? (
                         cell.confirmedYes === undefined ? (
                           <div
                             className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] font-bold"
@@ -2377,17 +2392,19 @@ export default function SpecsGridEditor({
             zero gap) so a mouse moving from the row into the button crosses no dead space — each
             strip mirrors the row's own hover state independently, since it sits outside the <tr>'s
             own bounding box and wouldn't otherwise catch that row's mouseenter/mouseleave. */}
-        {isProjectSheetView
+        {/* Never rendered at all (not just disabled) once the whole sheet is locked (isSentToClient)
+            — a client could be looking at any row that instant, so there's nothing here to hover
+            or grab in the first place, not just nothing it's allowed to do. */}
+        {isProjectSheetView && !isSentToClient
           ? liveGrid.rows.map((row, rowIdx) => {
               if (hiddenRowIndexes.has(rowIdx)) return null;
               const isHovered = hoveredRowIndex === rowIdx;
               // A row the client has already answered (Yes OR No — confirmedYes !== undefined,
               // not just cell.confirmable) is locked against this button: deleting it would
               // silently throw away a real client decision with no way to recover it. Doesn't
-              // affect a row that's merely marked confirmable but not yet answered — UNLESS the
-              // whole sheet has been sent (isSentToClient), in which case every row is locked
-              // regardless, since the client could be looking at any of them.
-              const hasClientAnswer = Boolean(isSentToClient) || row.cells.some((c) => c && c.confirmable && c.confirmedYes !== undefined);
+              // affect a row that's merely marked confirmable but not yet answered — the
+              // isSentToClient case is now handled by not rendering this at all (see above).
+              const hasClientAnswer = row.cells.some((c) => c && c.confirmable && c.confirmedYes !== undefined);
               return (
                 <div
                   key={row.id}
@@ -2412,13 +2429,7 @@ export default function SpecsGridEditor({
                       }}
                       onMouseEnter={() => setLiftedButtonKey(`remove-${rowIdx}`)}
                       onMouseLeave={() => setLiftedButtonKey((prev) => (prev === `remove-${rowIdx}` ? null : prev))}
-                      title={
-                        hasClientAnswer
-                          ? isSentToClient
-                            ? "This sheet has been sent to the client and can't be edited — save a version first to make changes"
-                            : "This row has a client-confirmed answer and can't be deleted"
-                          : "Remove this row"
-                      }
+                      title={hasClientAnswer ? "This row has a client-confirmed answer and can't be deleted" : "Remove this row"}
                       className="flex h-4 w-4 items-center justify-center rounded-full transition-transform duration-150 disabled:cursor-not-allowed"
                       style={{
                         backgroundColor: hasClientAnswer ? "#9CA3AF" : "#EF4444",
@@ -2438,13 +2449,7 @@ export default function SpecsGridEditor({
                       }}
                       onMouseEnter={() => setLiftedButtonKey(`add-${rowIdx}`)}
                       onMouseLeave={() => setLiftedButtonKey((prev) => (prev === `add-${rowIdx}` ? null : prev))}
-                      title={
-                        hasClientAnswer
-                          ? isSentToClient
-                            ? "This sheet has been sent to the client and can't be edited — save a version first to make changes"
-                            : "This row has a client-confirmed answer and can't be edited"
-                          : "Add a blank row below"
-                      }
+                      title={hasClientAnswer ? "This row has a client-confirmed answer and can't be edited" : "Add a blank row below"}
                       className="flex h-4 w-4 items-center justify-center rounded-full transition-transform duration-150 disabled:cursor-not-allowed"
                       style={{
                         backgroundColor: hasClientAnswer ? "#9CA3AF" : "#22C55E",
@@ -2471,8 +2476,9 @@ export default function SpecsGridEditor({
             Only the drawn PILL inside it (border/background/icon) is inset from that shared edge by
             GROUP_DRAG_HANDLE_GAP_PX, so it reads as visually separated from the +/- buttons without
             that gap being a real dead zone for hover/grab purposes — you can grab anywhere from the
-            group's own rows all the way to the pill's near edge. */}
-        {isProjectSheetView
+            group's own rows all the way to the pill's near edge. Never rendered at all once the
+            whole sheet is locked (isSentToClient) — same reasoning as the row +/- strip above. */}
+        {isProjectSheetView && !isSentToClient
           ? expandedGroups.map((g) => {
               const isActive = hoveredGroupId === g.id || draggingGroupId === g.id;
               return (

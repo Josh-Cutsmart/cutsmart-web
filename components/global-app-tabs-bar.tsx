@@ -3,11 +3,33 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
-import { ChevronDown, LayoutDashboard, X } from "lucide-react";
+import { Bell, ChevronDown, LayoutDashboard, X } from "lucide-react";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
+import {
+  fetchUserNotifications,
+  markUserNotificationRead,
+  setAllUserNotificationsRead,
+  type UserNotificationRow,
+} from "@/lib/firestore-data";
+
+const NOTIF_POLL_INTERVAL_MS = 50000;
+
+function formatNotificationTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const diffMs = Date.now() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return "Just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+}
 
 let pendingActiveAppTabKeyMemory = "";
 const CLOSING_SCOPE_PREFIX = "scope::";
@@ -64,6 +86,13 @@ export function GlobalAppTabsBar() {
   const [closeTabModalOrigin, setCloseTabModalOrigin] = useState<GlassModalOrigin>(null);
   const closeTabModalPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderCloseTabModal = useGlassModalPopOrigin(Boolean(closingAppTabKey), closeTabModalOrigin, closeTabModalPanelRef);
+  const [notifRows, setNotifRows] = useState<UserNotificationRow[]>([]);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [notifPos, setNotifPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const notifBtnRef = useRef<HTMLButtonElement | null>(null);
+  const notifDropdownRef = useRef<HTMLDivElement | null>(null);
+  const notifUnreadCount = notifRows.filter((row) => !row.read).length;
+  const [notifBellWobbleKey, setNotifBellWobbleKey] = useState(0);
   const [pendingActiveAppTabKey, setPendingActiveAppTabKey] = useState(pendingActiveAppTabKeyMemory);
   const [hiddenScopeKeys, setHiddenScopeKeys] = useState<string[]>([]);
   const [draggedGroupKey, setDraggedGroupKey] = useState("");
@@ -293,10 +322,33 @@ export function GlobalAppTabsBar() {
         setIsAppTabsMenuOpen("");
         setAppTabsMenuPos(null);
       }
+      const isInsideNotifDropdown = notifDropdownRef.current?.contains(targetNode);
+      if (!isInsideTopBar && !isInsideNotifDropdown) {
+        setIsNotifOpen(false);
+      }
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, []);
+
+  useEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid) {
+      setNotifRows([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const rows = await fetchUserNotifications(uid);
+      if (!cancelled) setNotifRows(rows);
+    };
+    void load();
+    const intervalId = window.setInterval(() => void load(), NOTIF_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [user?.uid]);
 
   const blurTopTabTarget = (target?: EventTarget | null) => {
     const element = target instanceof HTMLElement ? target : null;
@@ -858,6 +910,42 @@ export function GlobalAppTabsBar() {
               );
             })}
           </div>
+          {user?.uid ? (
+            <button
+              type="button"
+              ref={notifBtnRef}
+              onMouseDown={handleAuxButtonMouseDown}
+              onClick={(event) => {
+                if (isNotifOpen) {
+                  setIsNotifOpen(false);
+                  return;
+                }
+                const rect = event.currentTarget.getBoundingClientRect();
+                const width = 340;
+                setNotifPos({
+                  left: Math.min(rect.right - width, window.innerWidth - width - 8),
+                  top: rect.bottom + 6,
+                  width,
+                });
+                setIsNotifOpen(true);
+                setNotifBellWobbleKey((prev) => prev + 1);
+              }}
+              className="relative ml-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] transition-colors"
+              style={{ color: shellPalette.textMuted }}
+              aria-label="Notifications"
+              title="Notifications"
+            >
+              <span key={notifBellWobbleKey} className="inline-flex bell-wobble">
+                <Bell size={16} />
+              </span>
+              {notifUnreadCount > 0 ? (
+                <span
+                  className="absolute right-[6px] top-[6px] h-[9px] w-[9px] rounded-full border-2"
+                  style={{ backgroundColor: "var(--danger)", borderColor: shellPalette.stripBg }}
+                />
+              ) : null}
+            </button>
+          ) : null}
         </div>
       </div>
       {isAppTabsMenuOpen &&
@@ -940,6 +1028,98 @@ export function GlobalAppTabsBar() {
                 </div>
                 );
               })}
+            </div>,
+            document.body,
+          )
+        : null}
+      {isNotifOpen && notifPos && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={notifDropdownRef}
+              className="fixed z-[210] flex max-h-[420px] flex-col overflow-hidden rounded-[12px] border"
+              style={{
+                left: notifPos.left,
+                top: notifPos.top,
+                width: notifPos.width,
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(24px) saturate(180%)",
+                WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                boxShadow: "var(--shadow-glass)",
+              }}
+            >
+              <div
+                className="flex shrink-0 items-center justify-between border-b px-3 py-2"
+                style={{ borderBottomColor: shellPalette.border }}
+              >
+                <p className="text-[12px] font-bold uppercase tracking-[0.5px]" style={{ color: shellPalette.text }}>
+                  Notifications
+                </p>
+                <button
+                  type="button"
+                  onMouseDown={handleAuxButtonMouseDown}
+                  onClick={async () => {
+                    if (!user?.uid) return;
+                    setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
+                    await setAllUserNotificationsRead(user.uid, true);
+                  }}
+                  className="text-[11px] font-bold transition-colors hover:opacity-80"
+                  style={{ color: "var(--brand)" }}
+                >
+                  Mark all read
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto">
+                {notifRows.length === 0 ? (
+                  <p className="px-3 py-6 text-center text-[12px]" style={{ color: shellPalette.textMuted }}>
+                    No notifications yet.
+                  </p>
+                ) : (
+                  notifRows.slice(0, 10).map((row) => (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onMouseDown={handleAuxButtonMouseDown}
+                      onClick={() => {
+                        if (!user?.uid) return;
+                        setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
+                        void markUserNotificationRead(user.uid, row.id);
+                        setIsNotifOpen(false);
+                        if (row.projectId) {
+                          router.push(`/projects/${row.projectId}`);
+                        }
+                      }}
+                      className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
+                      style={{
+                        borderBottomColor: shellPalette.border,
+                        backgroundColor: row.read ? "transparent" : "var(--brand-soft)",
+                      }}
+                    >
+                      <p className="text-[12px] font-bold" style={{ color: shellPalette.text }}>
+                        {row.title || "Notification"}
+                      </p>
+                      <p className="mt-[2px] truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
+                        {row.message || ""}
+                      </p>
+                      <p className="mt-[2px] text-[10px]" style={{ color: shellPalette.textMuted }}>
+                        {formatNotificationTime(row.createdAtIso)}
+                      </p>
+                    </button>
+                  ))
+                )}
+              </div>
+              <button
+                type="button"
+                onMouseDown={handleAuxButtonMouseDown}
+                onClick={() => {
+                  setIsNotifOpen(false);
+                  router.push("/company-settings?section=notifications");
+                }}
+                className="shrink-0 border-t px-3 py-2 text-center text-[11px] font-bold transition-colors hover:opacity-80"
+                style={{ borderTopColor: shellPalette.border, color: "var(--brand)" }}
+              >
+                View all
+              </button>
             </div>,
             document.body,
           )

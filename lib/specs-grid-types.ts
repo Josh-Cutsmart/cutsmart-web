@@ -936,6 +936,29 @@ export function removeRowGroup(grid: SpecsGrid, groupId: string): SpecsGrid {
   return { ...grid, groups: grid.groups.filter((g) => g.id !== groupId) };
 }
 
+// Strips confirmable/confirmedYes/confirmedAt off EVERY cell — called on the LIVE sheet the moment
+// it's sent (see sendSpecsToClient in app/(app)/projects/[projectId]/page.tsx), since the version
+// actually bound to the client link is a separate, already-snapshotted copy (which keeps its own
+// markers untouched). Without this, the live sheet kept showing every cell that was ever marked for
+// confirmation as still blue-ringed/"Pending" forever — that grid's own copy of the answer never
+// gets updated once a version's been sent (only the version document does), so those markers on
+// live are permanently stale the moment they're sent. Staff mark a fresh set on live for whatever
+// the NEXT round of confirmation should be, independent of what was already sent.
+export function clearAllConfirmableMarks(grid: SpecsGrid): SpecsGrid {
+  return {
+    ...grid,
+    rows: grid.rows.map((row) => ({
+      ...row,
+      cells: row.cells.map((cell) => {
+        if (!cell || !cell.confirmable) return cell;
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { confirmable: _removedConfirmable, confirmedYes: _removedYes, confirmedAt: _removedAt, ...rest } = cell;
+        return rest;
+      }),
+    })),
+  };
+}
+
 // A group saved before this expansion existed (or one that somehow still ended up cutting through a
 // merge) is corrected here at read time rather than needing a data migration — every group's range is
 // recomputed to fully contain any merge it partially overlaps. Callers that need to check whether a

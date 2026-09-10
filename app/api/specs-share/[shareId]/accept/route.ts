@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getQuoteShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
+import { projectNotifySubscriberUids } from "@/lib/project-notify";
 
 // Quote's own version of .../submit/route.ts. Two differences from Specs' submit: `name` is
 // REQUIRED here (rejected as missing-name if blank) since "Accepted by X" is a materially more
@@ -62,6 +63,48 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   } catch (err) {
     console.error("[specs-share/accept] write failed:", err);
     return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "write-failed" }, { status: 500 });
+  }
+
+  // Best-effort changelog entry — never lets a logging failure surface as (or block) the real
+  // acceptance above, which has already succeeded by this point.
+  try {
+    await adminDb.collection("changelog").add({
+      projectId: shareDoc.projectId,
+      actor: name || "Client",
+      action: "Accepted Quote",
+      at: nowIso,
+    });
+  } catch (err) {
+    console.error("[specs-share/accept] changelog write failed:", err);
+  }
+
+  // Best-effort notification fan-out to whichever staff are subscribed to this project (defaults
+  // to the assigned user — see lib/project-notify.ts). Never lets a failure here block the
+  // already-succeeded acceptance above.
+  try {
+    const projectSnap = await projectRef.get();
+    const projectData = (projectSnap.data() ?? {}) as Record<string, unknown>;
+    const subscriberUids = projectNotifySubscriberUids({
+      assignedToUid: String(projectData.assignedToUid ?? ""),
+      notifySubscriptionOverrides: (projectData.notifySubscriptionOverrides ?? {}) as Record<string, boolean>,
+    });
+    const projectName = String(projectData.name ?? "a project");
+    const db = adminDb;
+    await Promise.all(
+      subscriberUids.map((uid) =>
+        db.collection("users").doc(uid).collection("notifications").add({
+          title: "Client accepted the Quote",
+          message: `${name || "The client"} accepted the Quote for "${projectName}".`,
+          type: "quote_accepted",
+          projectId: shareDoc.projectId,
+          read: false,
+          createdAt: new Date(nowIso),
+          createdAtIso: nowIso,
+        }),
+      ),
+    );
+  } catch (err) {
+    console.error("[specs-share/accept] notification fan-out failed:", err);
   }
 
   return NextResponse.json({ ok: true, quoteAcceptedAt: nowIso, quoteAcceptedByName: name });

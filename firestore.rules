@@ -1,0 +1,186 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isCompanyMember(companyId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/companies/$(companyId)/memberships/$(request.auth.uid));
+    }
+
+    function canEditCompany(companyId) {
+      return isCompanyMember(companyId);
+    }
+
+    function onlyUserColorFieldsOnCreate() {
+      return request.resource.data.keys().hasOnly([
+        'userColor', 'updatedAt', 'updatedAtIso'
+      ]);
+    }
+
+    function onlyUserColorFieldsOnUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'userColor', 'updatedAt', 'updatedAtIso'
+      ]);
+    }
+
+    function hasAuthEmail() {
+      return signedIn() && request.auth.token.email is string;
+    }
+
+    function authEmailLower() {
+      return hasAuthEmail() ? request.auth.token.email.lower() : "";
+    }
+
+    function isInviteEmailMatch() {
+      return hasAuthEmail() && (
+        (resource.data.email is string && resource.data.email.lower() == authEmailLower()) ||
+        (resource.data.emailLower is string && resource.data.emailLower.lower() == authEmailLower())
+      );
+    }
+
+    // Validate join code key on membership create
+    function hasValidJoinCodeForCompany(companyId) {
+      return request.resource.data.joinCodeKey is string
+        && exists(/databases/$(database)/documents/companyJoinCodes/$(request.resource.data.joinCodeKey))
+        && get(/databases/$(database)/documents/companyJoinCodes/$(request.resource.data.joinCodeKey)).data.companyId == companyId;
+    }
+
+    // Allow owner bootstrap membership right after creating company
+    function isOwnerBootstrapForCompany(companyId) {
+      return request.resource.data.roleId is string
+        && request.resource.data.roleId.lower() == "owner"
+        && exists(/databases/$(database)/documents/companies/$(companyId))
+        && get(/databases/$(database)/documents/companies/$(companyId)).data.ownerUid == request.auth.uid;
+    }
+
+    // Join-code lookup docs (safe for non-members)
+    match /companyJoinCodes/{codeKey} {
+      allow read: if signedIn();
+      allow write: if false; // create/update from trusted flow only
+    }
+
+    // Global rule to allow collectionGroup("invites") lookups for signed-in users
+    match /{path=**}/invites/{inviteId} {
+      allow read: if signedIn();
+    }
+
+    // App-wide reports (Report Issue / Suggest Feature)
+    match /appReports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.auth.token.email is string
+        && request.resource.data.reporterEmail is string
+        && request.resource.data.reporterEmail.lower() == request.auth.token.email.lower()
+        && request.resource.data.subject is string
+        && request.resource.data.body is string
+        && request.resource.data.kind is string
+        && (request.resource.data.kind == "issue" || request.resource.data.kind == "feature");
+
+      allow read: if signedIn();
+
+      // Allow toggling Fixed/Complete only (plus update timestamps)
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'completed', 'completedAt', 'completedAtIso', 'updatedAt', 'updatedAtIso'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // Allow each user to store their own profile
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create: if isSelf(uid);
+      allow update: if isSelf(uid);
+      allow delete: if false;
+
+      // Per-user notification inbox (bell icon / Company Settings > Notifications). Reads and
+      // read/unread updates are owner-only, but create is open to any signed-in user because a
+      // teammate must be able to write a notification INTO someone else's inbox (e.g. "you were
+      // assigned a project", "your role changed") — same trust level already used for appReports
+      // and the legacy top-level /projects fallback below.
+      match /notifications/{notificationId} {
+        allow read: if isSelf(uid);
+        allow create: if signedIn();
+        allow update: if isSelf(uid);
+        allow delete: if isSelf(uid);
+      }
+    }
+
+    match /companies/{companyId} {
+      allow read: if isCompanyMember(companyId);
+      allow update: if canEditCompany(companyId);
+      allow create: if signedIn();
+      allow delete: if false;
+
+      match /memberships/{uid} {
+        allow read: if isSelf(uid) || isCompanyMember(companyId);
+
+        // Secure create:
+        // - self only
+        // - either owner bootstrap OR valid join code
+        allow create: if isSelf(uid) && (
+          isOwnerBootstrapForCompany(companyId) ||
+          hasValidJoinCodeForCompany(companyId)
+        );
+
+        // keep your existing color-only self update rule
+        allow update: if isSelf(uid) && onlyUserColorFieldsOnUpdate();
+        allow delete: if false;
+      }
+
+      match /jobs/{jobId} {
+        allow read: if isCompanyMember(companyId);
+        allow write: if isCompanyMember(companyId);
+
+        // Quote grid / Specifications sheet version history — moved out of the job doc's own
+        // `sales` field into their own subcollections (one small document per saved version)
+        // so an ever-growing history no longer risks pushing the parent job doc past Firestore's
+        // 1MB per-document limit. Same access level as the parent job doc itself.
+        match /quoteGridVersions/{versionId} {
+          allow read, write: if isCompanyMember(companyId);
+        }
+        match /specificationsVersions/{versionId} {
+          allow read, write: if isCompanyMember(companyId);
+        }
+        // Product Compare tool's saved comparisons — same reasoning as the two subcollections
+        // above (own small docs, same access level as the parent job doc).
+        match /productComparisons/{comparisonId} {
+          allow read, write: if isCompanyMember(companyId);
+        }
+      }
+
+      // Invites: used by Staff & Permissions "Add Staff" and Join Company invite flow
+      match /invites/{inviteId} {
+        allow create, update: if isCompanyMember(companyId);
+        allow read: if signedIn();
+        allow delete: if isCompanyMember(companyId) || isInviteEmailMatch();
+      }
+    }
+
+    // Optional legacy top-level projects fallback
+    match /projects/{projectId} {
+      allow read, write: if signedIn();
+
+      // Same version-history subcollections as companies/{companyId}/jobs/{jobId} above, for
+      // projects still stored in this legacy top-level location.
+      match /quoteGridVersions/{versionId} {
+        allow read, write: if signedIn();
+      }
+      match /specificationsVersions/{versionId} {
+        allow read, write: if signedIn();
+      }
+      match /productComparisons/{comparisonId} {
+        allow read, write: if signedIn();
+      }
+    }
+  }
+}

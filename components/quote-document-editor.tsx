@@ -20,6 +20,18 @@ type QuoteDocumentEditorProps = {
   onBlur?: () => void;
   onEditorReady?: (editor: any | null) => void;
   toolbarDensity?: "default" | "compact";
+  // Override the embedded card's own default white/bordered look (e.g. to match a glass panel
+  // elsewhere) — replaces the built-in background/border classes entirely when set, rather than
+  // merging with them.
+  shellClassName?: string;
+  shellStyle?: CSSProperties;
+  // Stretches the editor (toolbar + editable area) to fill its parent's full height/width instead
+  // of sizing to embeddedMinHeight/embeddedEditableMinHeight content — the parent must itself be a
+  // sized flex/height container for this to have somewhere to grow into.
+  fillHeight?: boolean;
+  // Swaps the toolbar's own default white/blurred background for the same translucent glass tint
+  // used elsewhere (e.g. the Nesting sheet stats panel), instead of its built-in white toolbar look.
+  toolbarGlassStyle?: boolean;
 };
 
 export function QuoteDocumentEditor({
@@ -38,6 +50,10 @@ export function QuoteDocumentEditor({
   onBlur,
   onEditorReady,
   toolbarDensity = "default",
+  shellClassName,
+  shellStyle,
+  fillHeight = false,
+  toolbarGlassStyle = false,
 }: QuoteDocumentEditorProps) {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -286,13 +302,19 @@ export function QuoteDocumentEditor({
         onBlur?.();
       }}
       className={
-        mode === "embedded"
+        shellClassName ??
+        (mode === "embedded"
           ? embeddedChrome === "flat"
             ? "border-0 bg-transparent shadow-none"
             : embeddedCardSquare
               ? "rounded-none border border-[#D7DEE8] bg-white"
               : "rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
-          : "rounded-[18px] border border-[#D7DEE8] bg-[#EEF3FA] shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
+          : "rounded-[18px] border border-[#D7DEE8] bg-[#EEF3FA] shadow-[0_18px_36px_rgba(15,23,42,0.08)]")
+      }
+      style={
+        fillHeight
+          ? { ...(shellStyle ?? {}), display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }
+          : shellStyle
       }
     >
       <style>{`
@@ -314,6 +336,13 @@ export function QuoteDocumentEditor({
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
           background: rgba(255, 255, 255, 0.98);
           backdrop-filter: blur(10px);
+        }
+        .cutsmart-quote-document-shell[data-toolbar-glass="true"] .ck.ck-toolbar {
+          background: rgba(248, 250, 252, 0.35) !important;
+          backdrop-filter: blur(6px) !important;
+          -webkit-backdrop-filter: blur(6px) !important;
+          border-color: #dce3ec !important;
+          box-shadow: none !important;
         }
         .cutsmart-quote-document-shell .ck.ck-toolbar .ck-toolbar__items {
           flex-wrap: wrap;
@@ -380,6 +409,20 @@ export function QuoteDocumentEditor({
         .cutsmart-quote-document-shell[data-mode="embedded"] .cutsmart-quote-document-host {
           min-width: 0;
           min-height: var(--cutsmart-embedded-min-height, 48px);
+        }
+        .cutsmart-quote-document-shell[data-fill-height="true"] .cutsmart-quote-document-host .ck.ck-editor,
+        .cutsmart-quote-document-shell[data-fill-height="true"] .cutsmart-quote-document-host .ck-editor__main {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          min-height: 0;
+          height: 100%;
+        }
+        .cutsmart-quote-document-shell[data-fill-height="true"] .ck.ck-content.ck-editor__editable,
+        .cutsmart-quote-document-shell[data-fill-height="true"] .cutsmart-quote-document-editable {
+          flex: 1;
+          min-height: 0 !important;
+          overflow: auto !important;
         }
         .cutsmart-quote-document-shell[data-mode="embedded"][data-embedded-chrome="flat"] {
           border: none !important;
@@ -479,16 +522,22 @@ export function QuoteDocumentEditor({
         data-embedded-chrome={embeddedChrome}
         data-embedded-card-square={embeddedCardSquare ? "true" : undefined}
         data-toolbar-density={toolbarDensity}
+        data-fill-height={fillHeight ? "true" : undefined}
+        data-toolbar-glass={toolbarGlassStyle ? "true" : undefined}
         style={
           mode === "embedded"
             ? ({
                 ["--cutsmart-embedded-min-height" as string]: `${embeddedMinHeight}px`,
                 ["--cutsmart-embedded-editable-min-height" as string]: `${embeddedEditableMinHeight}px`,
+                ...(fillHeight ? { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 } : {}),
               } as CSSProperties)
             : undefined
         }
       >
-        <div className={mode === "embedded" ? "cutsmart-quote-document-layout" : undefined}>
+        <div
+          className={mode === "embedded" ? "cutsmart-quote-document-layout" : undefined}
+          style={fillHeight ? { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 } : undefined}
+        >
           {toolbarHost
             ? createPortal(
                 <div
@@ -528,6 +577,7 @@ export function QuoteDocumentEditor({
                 ? "cutsmart-quote-document-host overflow-visible"
                 : "max-h-[calc(100vh-220px)] overflow-auto px-4 py-4 md:px-5"
             }
+            style={fillHeight ? { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 } : undefined}
           />
         </div>
       </div>

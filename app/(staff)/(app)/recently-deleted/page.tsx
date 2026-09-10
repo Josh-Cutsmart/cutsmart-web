@@ -699,14 +699,20 @@ function measureStatusPillWidth(options: string[]) {
   }, []);
 
   return (
-        <section className="-mx-4 -mb-4 -mt-4 min-h-screen bg-white pb-4 pt-0 md:-mx-5">
-          <div className="flex h-[56px] flex-wrap items-center justify-between gap-3 border-b border-[#D7DEE8] bg-white px-4 md:px-5">
+        <section
+          className="-mx-4 -mb-4 -mt-4 min-h-screen pb-4 pt-0 md:-mx-5"
+          style={{ backgroundColor: "var(--panel-bg)" }}
+        >
+          <div
+            className="flex h-[56px] flex-wrap items-center justify-between gap-3 border-b px-4 md:px-5"
+            style={{ borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)" }}
+          >
             <div className="inline-flex min-w-0 items-center gap-2">
-              <Trash2 size={16} color="#12345B" strokeWidth={2.1} />
-              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#12345B" }}>
-                <span style={{ color: "#12345B" }}>Recently Deleted</span>
-                <span className="px-2" style={{ color: "#6B7280" }}>|</span>
-                <span style={{ color: "#334155" }}>{companyName}</span>
+              <Trash2 size={16} color="var(--text-main)" strokeWidth={2.1} />
+              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                <span style={{ color: "var(--text-main)" }}>Recently Deleted</span>
+                <span className="px-2" style={{ color: "var(--text-muted)" }}>|</span>
+                <span style={{ color: "var(--text-muted)" }}>{companyName}</span>
               </p>
             </div>
             <div className="inline-flex items-center gap-3">
@@ -718,8 +724,8 @@ function measureStatusPillWidth(options: string[]) {
                     className="inline-flex h-8 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold uppercase tracking-[0.7px] transition-colors"
                     style={
                       activeTab === "leads"
-                        ? { backgroundColor: "#EAF1FF", color: "#12345B" }
-                        : { backgroundColor: "transparent", color: "#7F93AE" }
+                        ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                        : { backgroundColor: "transparent", color: "var(--text-muted)" }
                     }
                   >
                     Leads
@@ -731,23 +737,24 @@ function measureStatusPillWidth(options: string[]) {
                   className="inline-flex h-8 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold uppercase tracking-[0.7px] transition-colors"
                   style={
                     activeTab === "projects"
-                      ? { backgroundColor: "#EAF1FF", color: "#12345B" }
-                      : { backgroundColor: "transparent", color: "#7F93AE" }
+                      ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                      : { backgroundColor: "transparent", color: "var(--text-muted)" }
                   }
                 >
                   Projects
                 </button>
               </div>
               <div
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#D8DEE8] bg-[#F7F9FC] px-2"
-                style={{ width: 340, minWidth: 340 }}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-2"
+                style={{ width: 340, minWidth: 340, borderColor: "var(--panel-border)", backgroundColor: "var(--panel-muted)" }}
               >
-                <Search size={14} className="text-[#6B7280]" />
+                <Search size={14} style={{ color: "var(--text-muted)" }} />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={activeTab === "projects" ? "Search deleted projects..." : "Search deleted leads..."}
                   className="h-8 w-full bg-transparent text-[12px] outline-none"
+                  style={{ color: "var(--text-main)" }}
                 />
               </div>
             </div>
@@ -758,23 +765,23 @@ function measureStatusPillWidth(options: string[]) {
             <table className="w-full min-w-[920px] text-[12px]">
               <thead>
                 <tr>
-                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Project Name</th>
-                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Creator</th>
-                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Deleted</th>
-                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Permanent Delete</th>
-                  <th className="h-[38px] w-[180px] border-b py-[7px] text-center align-middle text-[11px] font-bold text-[#7F93AE]" style={{ borderColor: "#D7E1EE" }}>Action</th>
+                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Project Name</th>
+                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Creator</th>
+                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Deleted</th>
+                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Permanent Delete</th>
+                  <th className="h-[38px] w-[180px] border-b py-[7px] text-center align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading && (
                   <tr>
-                    <td className="py-3 pl-[10px] pr-[10px] text-[#6B7280]" colSpan={5}>Loading deleted projects...</td>
+                    <td className="py-3 pl-[10px] pr-[10px]" style={{ color: "var(--text-muted)" }} colSpan={5}>Loading deleted projects...</td>
                   </tr>
                 )}
 
                 {!isLoading && filtered.length === 0 && (
                   <tr>
-                    <td className="py-4 pl-[10px] pr-[10px] text-[#6B7280]" colSpan={5}>No deleted projects.</td>
+                    <td className="py-4 pl-[10px] pr-[10px]" style={{ color: "var(--text-muted)" }} colSpan={5}>No deleted projects.</td>
                   </tr>
                 )}
 
@@ -802,19 +809,21 @@ function measureStatusPillWidth(options: string[]) {
                         className="cursor-pointer [&>td]:transition-colors"
                       >
                         <td
-                          className="border-b py-[7px] pl-[10px] font-bold text-[#111827]"
+                          className="border-b py-[7px] pl-[10px] font-bold"
                           style={{
-                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
-                            borderColor: "#D7E1EE",
+                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
+                            borderColor: "var(--panel-border)",
+                            color: "var(--text-main)",
                           }}
                         >
                           {project.name}
                         </td>
                         <td
-                          className="border-b py-[7px] pl-[10px] text-[#344054]"
+                          className="border-b py-[7px] pl-[10px]"
                           style={{
-                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
-                            borderColor: "#D7E1EE",
+                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
+                            borderColor: "var(--panel-border)",
+                            color: "var(--text-main)",
                           }}
                         >
                           <div className="inline-flex items-center gap-2">
@@ -831,10 +840,11 @@ function measureStatusPillWidth(options: string[]) {
                           </div>
                         </td>
                         <td
-                          className="border-b py-[7px] text-center text-[#344054]"
+                          className="border-b py-[7px] text-center"
                           style={{
-                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
-                            borderColor: "#D7E1EE",
+                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
+                            borderColor: "var(--panel-border)",
+                            color: "var(--text-main)",
                           }}
                         >
                           {formatDeletedDate(deletedAt)}
@@ -842,13 +852,13 @@ function measureStatusPillWidth(options: string[]) {
                         <td
                           className="border-b py-[7px] text-center"
                           style={{
-                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
-                            borderColor: "#D7E1EE",
+                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
+                            borderColor: "var(--panel-border)",
                           }}
                         >
                           <span
-                            className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border border-[#F3B8BF] bg-[#FDECEC] px-2 py-[3px] text-[11px] font-bold"
-                            style={{ color: "#7F1D1D" }}
+                            className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border px-2 py-[3px] text-[11px] font-bold"
+                            style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
                           >
                             {formatRemaining(remainingMs)}
                           </span>
@@ -856,8 +866,8 @@ function measureStatusPillWidth(options: string[]) {
                         <td
                           className="w-[180px] border-b py-[7px]"
                           style={{
-                            backgroundColor: hoveredRowId === project.id ? "#EEF4FF" : idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
-                            borderColor: "#D7E1EE",
+                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
+                            borderColor: "var(--panel-border)",
                           }}
                         >
                           <div className="flex w-full justify-center">
@@ -875,23 +885,23 @@ function measureStatusPillWidth(options: string[]) {
                                 width: 132,
                                 minWidth: 132,
                                 maxWidth: 132,
-                                color: isConfirming ? "#14532D" : "#1E3A8A",
+                                color: isConfirming ? "var(--success-strong)" : "var(--brand-strong)",
                                 border: `1px solid ${
                                   isConfirming
                                     ? hoveredRestoreId === project.id
-                                      ? "#86EFAC"
-                                      : "#BBF7D0"
+                                      ? "var(--success-border)"
+                                      : "var(--success-border)"
                                     : hoveredRestoreId === project.id
-                                      ? "#94B8F0"
-                                      : "#BFD4F6"
+                                      ? "var(--brand)"
+                                      : "var(--brand-soft)"
                                 }`,
                                 background: isConfirming
                                   ? hoveredRestoreId === project.id
-                                    ? "#DCFCE7"
-                                    : "#ECFDF3"
+                                    ? "var(--success-soft)"
+                                    : "var(--success-soft)"
                                   : hoveredRestoreId === project.id
-                                    ? "#CFE0FF"
-                                    : "#EAF2FF",
+                                    ? "var(--brand-soft)"
+                                    : "var(--panel-muted)",
                                 boxShadow:
                                   hoveredRestoreId === project.id ? "0 1px 0 rgba(30,58,138,0.15)" : "none",
                               }}
@@ -908,41 +918,41 @@ function measureStatusPillWidth(options: string[]) {
                             colSpan={5}
                             className="relative border-b px-[10px] py-[8px]"
                             style={{
-                              borderColor: "#D7E1EE",
-                              backgroundColor: idx % 2 === 0 ? "#F8FBFF" : "#FFFFFF",
+                              borderColor: "var(--panel-border)",
+                              backgroundColor: idx % 2 === 0 ? "var(--panel-muted)" : "var(--panel-bg)",
                             }}
                           >
                               <div className="grid grid-cols-4 text-[12px]">
                               <div className="px-3 py-2">
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#6B7D94]">Client</p>
-                                <div className="space-y-1.5">
-                                  <div><span className="text-[#64748B]">Client Name: </span><span className="font-semibold text-[#1F2937]">{project.customer || "-"}</span></div>
-                                  <div><span className="text-[#64748B]">Phone: </span><span className="font-semibold text-[#1F2937]">{project.clientPhone || "-"}</span></div>
-                                  <div><span className="text-[#64748B]">Email: </span><span className="font-semibold text-[#1F2937]">{project.clientEmail || "-"}</span></div>
-                                  <div><span className="text-[#64748B]">Address: </span><span className="font-semibold text-[#1F2937]">{clientAddressCombined || "-"}</span></div>
+                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Client</p>
+                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                                  <div><span>Client Name: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.customer || "-"}</span></div>
+                                  <div><span>Phone: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.clientPhone || "-"}</span></div>
+                                  <div><span>Email: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.clientEmail || "-"}</span></div>
+                                  <div><span>Address: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{clientAddressCombined || "-"}</span></div>
                                 </div>
                               </div>
-                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "#D7E1EE" }}>
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#6B7D94]">Overview</p>
-                                <div className="space-y-1.5">
-                                  <div><span className="text-[#64748B]">Status: </span><span className="font-semibold text-[#1F2937]">{project.statusLabel || "-"}</span></div>
-                                  <div><span className="text-[#64748B]">Creator: </span><span className="font-semibold text-[#1F2937]">{project.createdByName || "-"}</span></div>
-                                  <div><span className="text-[#64748B]">Assigned To: </span><span className="font-semibold text-[#1F2937]">{project.assignedTo || "-"}</span></div>
+                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "var(--panel-border)" }}>
+                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Overview</p>
+                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                                  <div><span>Status: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.statusLabel || "-"}</span></div>
+                                  <div><span>Creator: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.createdByName || "-"}</span></div>
+                                  <div><span>Assigned To: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.assignedTo || "-"}</span></div>
                                 </div>
                               </div>
-                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "#D7E1EE" }}>
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#6B7D94]">Dates</p>
-                                <div className="space-y-1.5">
-                                  <div><span className="text-[#64748B]">Created: </span><span className="font-semibold text-[#1F2937]">{formatDateOnly(project.createdAt || "")}</span></div>
-                                  <div><span className="text-[#64748B]">Modified: </span><span className="font-semibold text-[#1F2937]">{formatDateOnly(project.updatedAt || "")}</span></div>
-                                  <div><span className="text-[#64748B]">Deleted: </span><span className="font-semibold text-[#1F2937]">{formatDateOnly(project.deletedAt || "")}</span></div>
+                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "var(--panel-border)" }}>
+                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Dates</p>
+                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                                  <div><span>Created: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.createdAt || "")}</span></div>
+                                  <div><span>Modified: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.updatedAt || "")}</span></div>
+                                  <div><span>Deleted: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.deletedAt || "")}</span></div>
                                 </div>
                               </div>
-                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "#D7E1EE" }}>
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#6B7D94]">Product</p>
-                                <div className="space-y-1.5">
-                                  <div><span className="text-[#64748B]">Pieces in job: </span><span className="font-semibold text-[#1F2937]">{productSummary.pieces}</span></div>
-                                  <div><span className="text-[#64748B]">Sheets: </span><span className="font-semibold text-[#1F2937]">{productSummary.sheets}</span></div>
+                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "var(--panel-border)" }}>
+                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Product</p>
+                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                                  <div><span>Pieces in job: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{productSummary.pieces}</span></div>
+                                  <div><span>Sheets: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{productSummary.sheets}</span></div>
                                 </div>
                               </div>
                               </div>
@@ -962,23 +972,23 @@ function measureStatusPillWidth(options: string[]) {
                                     minWidth: 132,
                                     maxWidth: 132,
                                     transform: "translateX(-10px)",
-                                    color: isDeleteConfirming ? "#14532D" : "#991B1B",
+                                    color: isDeleteConfirming ? "var(--success-strong)" : "var(--danger-strong)",
                                     border: `1px solid ${
                                       isDeleteConfirming
                                         ? hoveredDeleteId === project.id
-                                          ? "#86EFAC"
-                                          : "#BBF7D0"
+                                          ? "var(--success-border)"
+                                          : "var(--success-border)"
                                         : hoveredDeleteId === project.id
-                                          ? "#F5B4BC"
-                                          : "#F8CDD2"
+                                          ? "var(--danger-border)"
+                                          : "var(--danger-border)"
                                     }`,
                                     background: isDeleteConfirming
                                       ? hoveredDeleteId === project.id
-                                        ? "#DCFCE7"
-                                        : "#ECFDF3"
+                                        ? "var(--success-soft)"
+                                        : "var(--success-soft)"
                                       : hoveredDeleteId === project.id
-                                        ? "#FDECEC"
-                                        : "#FFF5F6",
+                                        ? "var(--danger-soft)"
+                                        : "var(--danger-soft)",
                                   }}
                                 >
                                   {isDeleteConfirming ? <Check size={12} /> : <Trash2 size={12} />}
@@ -1009,9 +1019,9 @@ function measureStatusPillWidth(options: string[]) {
                       className="grid min-w-full h-[38px] items-center gap-3 border-b px-4 py-[7px] text-[11px] font-bold uppercase tracking-[0.8px]"
                       style={{
                         gridTemplateColumns: deletedLeadGridTemplate,
-                        borderColor: "#D7E1EE",
-                        backgroundColor: "#F8FBFF",
-                        color: "#7F93AE",
+                        borderColor: "var(--panel-border)",
+                        backgroundColor: "var(--panel-muted)",
+                        color: "var(--text-muted)",
                       }}
                     >
                       <p>Permanent Delete</p>
@@ -1038,21 +1048,22 @@ function measureStatusPillWidth(options: string[]) {
                             className="grid min-w-full items-center gap-3 border-b px-4 py-[7px] text-left text-[12px] transition-colors"
                             style={{
                               gridTemplateColumns: deletedLeadGridTemplate,
-                              borderColor: "#D7E1EE",
-                              backgroundColor: idx % 2 === 0 ? "#FFFFFF" : "#F8FBFF",
+                              borderColor: "var(--panel-border)",
+                              backgroundColor: idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
+                              color: "var(--text-main)",
                             }}
                           >
                             <div className="text-left">
                               <span
-                                className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border border-[#F3B8BF] bg-[#FDECEC] px-2 py-[3px] text-[11px] font-bold"
-                                style={{ color: "#7F1D1D" }}
+                                className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border px-2 py-[3px] text-[11px] font-bold"
+                                style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
                               >
                                 {formatRemaining(remainingMs)}
                               </span>
                             </div>
                             <span
                               className="flex h-6 w-6 items-center justify-center rounded-full"
-                              style={{ backgroundColor: isExpanded ? "#FFFFFF" : "transparent", color: "#334155" }}
+                              style={{ backgroundColor: isExpanded ? "var(--panel-bg)" : "transparent", color: "var(--text-main)" }}
                               aria-hidden="true"
                             >
                               {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -1066,7 +1077,7 @@ function measureStatusPillWidth(options: string[]) {
                               </span>
                             </div>
                             {leadRowFields.length === 0 ? (
-                              <span className="min-w-0 text-left text-[12px] font-semibold text-[#334155]">
+                              <span className="min-w-0 text-left text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                                 No preview fields configured yet.
                               </span>
                             ) : (
@@ -1076,7 +1087,7 @@ function measureStatusPillWidth(options: string[]) {
                                 );
                                 return (
                                   <span key={`${lead.id}:${column.key}`} className="min-w-0 overflow-hidden text-left">
-                                    <p className="truncate whitespace-nowrap text-[12px] font-semibold text-[#334155]">
+                                    <p className="truncate whitespace-nowrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                                       {match?.value || "-"}
                                     </p>
                                   </span>
@@ -1084,7 +1095,7 @@ function measureStatusPillWidth(options: string[]) {
                               })
                             )}
                             <div className="text-right">
-                              <p className="whitespace-nowrap text-[11px] font-semibold text-[#6B7280]">
+                              <p className="whitespace-nowrap text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
                                 {formatDeletedDate(deletedAt)}
                               </p>
                             </div>
@@ -1093,25 +1104,25 @@ function measureStatusPillWidth(options: string[]) {
                             <div
                               className="border-b px-4 pb-4 pt-3"
                               style={{
-                                borderColor: "#D7E1EE",
-                                backgroundColor: idx % 2 === 0 ? "#F8FBFF" : "#FFFFFF",
+                                borderColor: "var(--panel-border)",
+                                backgroundColor: idx % 2 === 0 ? "var(--panel-muted)" : "var(--panel-bg)",
                               }}
                             >
                               <div className="mb-3 flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2">
                                   <span
-                                    className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border border-[#F3B8BF] bg-[#FDECEC] px-2 py-[3px] text-[11px] font-bold"
-                                    style={{ color: "#7F1D1D" }}
+                                    className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border px-2 py-[3px] text-[11px] font-bold"
+                                    style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
                                   >
                                     {formatRemaining(remainingMs)}
                                   </span>
                                 </div>
-                                <p className="text-[10px] font-extrabold uppercase tracking-[0.7px] text-[#7F93AE]">
+                                <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>
                                   Lead Details
                                 </p>
                               </div>
                               {leadDetailFields.length === 0 ? (
-                                <p className="text-[12px] font-semibold text-[#6B7280]">
+                                <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
                                   No detail fields configured yet.
                                 </p>
                               ) : (
@@ -1124,12 +1135,12 @@ function measureStatusPillWidth(options: string[]) {
                                       <div
                                         key={`${lead.id}:detail:${column.key}`}
                                         className="rounded-[12px] border px-3 py-2"
-                                        style={{ borderColor: "#D7E1EE", backgroundColor: "#FFFFFF" }}
+                                        style={{ borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)" }}
                                       >
-                                        <p className="text-[10px] font-extrabold uppercase tracking-[0.7px] text-[#7F93AE]">
+                                        <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>
                                           {column.label}
                                         </p>
-                                        <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold text-[#334155]">
+                                        <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                                           {match?.value || "-"}
                                         </p>
                                       </div>

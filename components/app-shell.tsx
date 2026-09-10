@@ -26,6 +26,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
+  addUserNotification,
   cleanupCompletedReportsForNewVersion,
   fetchAppChangelogHistory,
   fetchCompanyDoc,
@@ -826,6 +827,32 @@ export function AppShell({
               capturedAtIso: matched?.capturedAtIso || new Date().toISOString(),
             },
           ]);
+          // First-ever sighting of this version anywhere (no prior changelog entry) — fan out a
+          // notification to the current user's own company roster. This is a per-company
+          // approximation of a global broadcast (there's no backend job in this app to do a true
+          // single cross-company broadcast): whichever user in a company loads the update first
+          // triggers it for their teammates. A rare race between simultaneous first-loaders (same
+          // or different companies) can produce an occasional duplicate notification — acceptable
+          // over the alternative of nobody being notified.
+          if (!matched && companyId) {
+            try {
+              const members = await fetchCompanyMembers(companyId);
+              await Promise.all(
+                members
+                  .map((member) => String(member.uid || "").trim())
+                  .filter(Boolean)
+                  .map((memberUid) =>
+                    addUserNotification(memberUid, {
+                      title: `New version ${version}`,
+                      message: canonicalWhatsNew || "CutSmart has been updated.",
+                      type: "app_version",
+                    }),
+                  ),
+              );
+            } catch {
+              // best-effort — never block the update-notice flow itself
+            }
+          }
         } else {
           setUpdateNoticeText(whatsNew);
         }

@@ -44,6 +44,10 @@ export interface Project {
   createdByName: string;
   assignedToUid?: string;
   assignedToName?: string;
+  // uid -> explicit subscribe(true)/unsubscribe(false) choice for this project's
+  // notifications, overriding the "assigned user is subscribed by default" rule.
+  // Absent for a uid = follow the default (subscribed iff assignedToUid === uid).
+  notifySubscriptionOverrides?: Record<string, boolean>;
   status: "draft" | "quoted" | "approved" | "in-production" | "complete";
   statusLabel: string;
   priority: "low" | "medium" | "high";
@@ -55,6 +59,7 @@ export interface Project {
   tags: string[];
   notes?: string;
   productionNotes?: string;
+  remedials?: string;
   contractorNotes?: Record<string, string>;
   clientFirstName?: string;
   clientLastName?: string;
@@ -75,6 +80,10 @@ export interface ProjectChange {
   projectId: string;
   actor: string;
   action: string;
+  // Full, untruncated version of the change — set only when `action` itself is a short summary
+  // (e.g. "Cutlist updated — 3 rows changed") rather than the complete description. Newline-
+  // separated, one changed field/row per line. Falls back to `action` when absent.
+  details?: string;
   at: string;
 }
 

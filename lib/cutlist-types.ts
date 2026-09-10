@@ -36,6 +36,9 @@ export type CutlistRow = {
   adjustableShelf?: string;
   fixedShelfDrilling?: string;
   adjustableShelfDrilling?: string;
+  cabinetryKind?: "base" | "wall";
+  cabinetryClashBottom?: boolean;
+  cabinetryClashBottomManual?: boolean;
   hingesUp?: string[];
   hingesDown?: string[];
   hingeSide?: "" | "LH" | "RH" | "Mirror";
