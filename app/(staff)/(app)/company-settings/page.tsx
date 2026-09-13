@@ -44,7 +44,12 @@ type TagUsageRow = { value: string; count: string };
 type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
 type ItemCategoryRow = { name: string; color: string; subcategories: string; items: ItemCategoryItemRow[] };
 type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
-type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; grain: boolean };
+// "Grain" used to be its own checkbox; it's now one value of this Type dropdown, alongside the two
+// lacquer-sidedness options that drive the Company Wrapped lacquer-SQM calculation and "Melteca"
+// (a laminate finish that isn't lacquer at all — it simply never matches the lacquer-sidedness
+// lookup, so it needs no special-case handling anywhere).
+type JobTypeProductType = "" | "grain" | "lacquer-1" | "lacquer-2" | "melteca";
+type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; type: JobTypeProductType };
 type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
 type GapAllowancesSettings = {
   baseBelowBenchToTopOfDoorDrawer: string;
@@ -624,7 +629,13 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
               ? [{ sheetSize: fallbackSheetSize, pricePerSheet: fallbackPrice }]
               : [],
         showInSales: Boolean(row.showInSales ?? true),
-        grain: Boolean(row.grain ?? row.isGrain ?? false),
+        // Legacy docs only ever had `grain: boolean` — a previously-ticked row keeps reading as
+        // "grain" once opened under the new Type dropdown instead of silently reverting to blank.
+        type: (["grain", "lacquer-1", "lacquer-2", "melteca"].includes(toStr(row.type))
+          ? toStr(row.type)
+          : Boolean(row.grain ?? row.isGrain ?? false)
+            ? "grain"
+            : "") as JobTypeProductType,
       };
     })
     .filter((r) => r.name);
@@ -2665,7 +2676,7 @@ export default function CompanySettingsPage() {
             sheetSize: toStr(sheetPrices[0]?.sheetSize),
             sheetPrices,
             showInSales: Boolean(row.showInSales),
-            grain: Boolean(row.grain),
+            type: row.type,
           };
         })
         .filter(Boolean),
@@ -5429,19 +5440,19 @@ export default function CompanySettingsPage() {
                   ) : null}
                   <Panel title="Product">
                     <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_26px_1fr_120px_70px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                      <div className="grid grid-cols-[26px_26px_26px_1fr_120px_130px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
                         <p></p>
                         <p></p>
                         <p></p>
                         <p>Name</p>
                         <p className="text-center">Sheet Sizes</p>
-                        <p className="text-center">Grain</p>
+                        <p className="text-center">Type</p>
                         <p className="text-center">INCL IN SALES</p>
                       </div>
                       {jobTypes.map((row, idx) => (
                         <div key={idx} className="space-y-2">
                           <div
-                            className={`grid grid-cols-[26px_26px_26px_1fr_120px_70px_90px] items-center gap-2 rounded-[8px] transition-all ${
+                            className={`grid grid-cols-[26px_26px_26px_1fr_120px_130px_90px] items-center gap-2 rounded-[8px] transition-all ${
                               jobTypeDragIndex === idx
                                 ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
                               : jobTypeDragOverIndex === idx
@@ -5501,13 +5512,21 @@ export default function CompanySettingsPage() {
                             <div className="inline-flex h-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#475467]">
                               {row.sheetPrices?.length || 0} options
                             </div>
-                            <label className="inline-flex items-center justify-center text-[11px] font-bold text-[#475467]">
-                              <input
-                                type="checkbox"
-                                checked={Boolean(row.grain)}
-                                onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, grain: !v.grain } : v)))}
-                              />
-                            </label>
+                            <select
+                              value={row.type}
+                              onChange={(e) =>
+                                setJobTypes((prev) =>
+                                  prev.map((v, i) => (i === idx ? { ...v, type: e.target.value as JobTypeProductType } : v)),
+                                )
+                              }
+                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-1 text-[11px] font-semibold text-[#475467]"
+                            >
+                              <option value="">-</option>
+                              <option value="grain">Grain</option>
+                              <option value="lacquer-1">Lacquer (1 side)</option>
+                              <option value="lacquer-2">Lacquer (2 side)</option>
+                              <option value="melteca">Melteca</option>
+                            </select>
                             <label className="inline-flex items-center justify-center text-[11px] font-bold text-[#475467]"><input type="checkbox" checked={row.showInSales} onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: !v.showInSales } : v)))} /></label>
                           </div>
 
@@ -5575,7 +5594,7 @@ export default function CompanySettingsPage() {
                                 },
                               ],
                               showInSales: true,
-                              grain: false,
+                              type: "",
                             },
                           ])
                         }

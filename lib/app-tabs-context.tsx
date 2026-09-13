@@ -36,6 +36,10 @@ type AppTabsContextValue = {
   setChromeHidden: (hidden: boolean) => void;
   fillMainViewport: boolean;
   setFillMainViewport: (fill: boolean) => void;
+  // Shared so GlobalAppTabsBar's mobile hamburger button (rendered as a sibling of AppShell, not
+  // a child of it — see app/(staff)/layout.tsx) can open the same drawer AppShell owns and renders.
+  mobileNavOpen: boolean;
+  setMobileNavOpen: (open: boolean) => void;
 };
 
 const APP_TABS_STORAGE_KEY = "cutsmart_global_app_tabs_v1";
@@ -69,6 +73,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
   const [fillMainViewport, setFillMainViewport] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const suppressedScopeKeysRef = useRef<Set<string>>(new Set());
   const suppressedTabKeysRef = useRef<Set<string>>(new Set());
   const orderRegistryRef = useRef<AppTabOrderRegistry>({
@@ -372,12 +377,15 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setChromeHidden,
       fillMainViewport,
       setFillMainViewport,
+      mobileNavOpen,
+      setMobileNavOpen,
     }),
     [
       actionsByKey,
       chromeHidden,
       closeTab,
       fillMainViewport,
+      mobileNavOpen,
       registerScopeTabs,
       reorderGroupToIndex,
       restoreScope,

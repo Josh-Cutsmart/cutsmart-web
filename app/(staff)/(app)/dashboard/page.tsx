@@ -64,6 +64,20 @@ function lightenHexColor(hex: string, amount: number): string {
   return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
 }
 
+function darkenHexColor(hex: string, amount: number): string {
+  const value = String(hex || "").trim();
+  const safe = /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#64748B";
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const ratio = Math.max(0, Math.min(1, amount));
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  const nr = clamp(r * (1 - ratio));
+  const ng = clamp(g * (1 - ratio));
+  const nb = clamp(b * (1 - ratio));
+  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   const value = String(hex || "").trim();
   const safe = /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#64748B";
@@ -296,7 +310,7 @@ function assignedDisplayName(project: Project) {
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth();
-  const { tabs: globalAppTabs, registerScopeTabs, setFillMainViewport } = useAppTabs();
+  const { tabs: globalAppTabs, registerScopeTabs } = useAppTabs();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [search, setSearch] = useState("");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all");
@@ -316,17 +330,13 @@ export default function DashboardPage() {
   const [dragOverProjectStatusColumn, setDragOverProjectStatusColumn] = useState("");
   const [collapsedProjectStatusColumns, setCollapsedProjectStatusColumns] = useState<Record<string, boolean>>({});
   const [boardPrefsHydrated, setBoardPrefsHydrated] = useState(false);
-  // The board columns fill exactly to the bottom of the window via a pure CSS
-  // flex chain (AppShell's <main> gets a real viewport-relative height while
-  // this flag is on, and everything from the dashboard's own root down to the
-  // column row is a flex column with the row itself as the flex:1 child) —
-  // see the JSX below. This replaced an earlier JS-measured pixel-height
-  // approach that raced against async data loading and DPI/sub-pixel
-  // rounding, producing either a gap or a scrollbar depending on timing.
-  useEffect(() => {
-    setFillMainViewport(dashboardViewMode === "board");
-    return () => setFillMainViewport(false);
-  }, [dashboardViewMode, setFillMainViewport]);
+  // The stat cards above the board scroll away with the page like any normal content; the board
+  // panel itself (search/filter row + columns) is `position: sticky`, so it scrolls up with the
+  // page too until its own top edge reaches just below the fixed nav bar(s), then locks there —
+  // from that point on, only the columns' own internal scroll moves, not the page. This is pure
+  // CSS (no fillMainViewport/JS-measured height), so it can't race against async data loading or
+  // hit DPI/sub-pixel rounding gaps the way an earlier JS-measured version of this once did — see
+  // the sticky panel's className below for the exact offset/height values.
   const projectBoardDragGhost = useDragGhost();
   const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
   const [dashboardLegendRows, setDashboardLegendRows] = useState<DashboardLegendRow[]>([]);
@@ -916,8 +926,10 @@ export default function DashboardPage() {
   const renderProjectBoardCard = (project: Project, accentColor: string) => {
     const canEdit = canEditProjectFromDashboard(project);
     const displayAssigned = assignedDisplayName(project);
-    const cardBg = lightenHexColor(accentColor, 0.82);
-    const cardBorder = lightenHexColor(accentColor, 0.5);
+    const cardBg = isDarkMode ? darkenHexColor(accentColor, 0.75) : lightenHexColor(accentColor, 0.82);
+    const cardBorder = isDarkMode ? darkenHexColor(accentColor, 0.4) : lightenHexColor(accentColor, 0.5);
+    const cardText = isDarkMode ? dashboardPalette.text : "#000000";
+    const chipBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
     return (
       <div
         key={project.id}
@@ -942,14 +954,14 @@ export default function DashboardPage() {
           cursor: draggingProjectId === project.id ? "grabbing" : "pointer",
         }}
       >
-        <p className="truncate text-[12.5px] font-bold" style={{ color: "#000000" }}>{project.name}</p>
+        <p className="truncate text-[12.5px] font-bold" style={{ color: cardText }}>{project.name}</p>
         {project.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {project.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
                 className="rounded-[6px] px-1.5 py-[1px] text-[10px] font-bold"
-                style={{ backgroundColor: "rgba(255,255,255,0.55)", color: "#000000" }}
+                style={{ backgroundColor: chipBg, color: cardText }}
               >
                 {tag}
               </span>
@@ -965,10 +977,10 @@ export default function DashboardPage() {
               >
                 {initials(displayAssigned)}
               </span>
-              <span className="truncate text-[11px] font-semibold" style={{ color: "#000000" }}>{displayAssigned}</span>
+              <span className="truncate text-[11px] font-semibold" style={{ color: cardText }}>{displayAssigned}</span>
             </div>
           ) : <span />}
-          <span className="shrink-0 text-[10px] font-semibold" style={{ color: "#000000", opacity: 0.65 }}>
+          <span className="shrink-0 text-[10px] font-semibold" style={{ color: cardText, opacity: 0.65 }}>
             {dashboardDate(project.updatedAt)}
           </span>
         </div>
@@ -1829,10 +1841,7 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          <div
-            className="space-y-0"
-            style={dashboardViewMode === "board" ? { height: "100%", display: "flex", flexDirection: "column" } : undefined}
-          >
+          <div className="space-y-0">
 
           <div
             className="relative z-0"
@@ -1841,7 +1850,6 @@ export default function DashboardPage() {
               marginLeft: -12,
               marginRight: -12,
               padding: 16,
-              flexShrink: dashboardViewMode === "board" ? 0 : undefined,
             }}
           >
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -1915,26 +1923,17 @@ export default function DashboardPage() {
             </div>
           </div>
 
+          {/* Toolbar lives OUTSIDE the sticky panel below so it scrolls away with the stat
+              cards on mobile — otherwise the board columns can never reach the top of the
+              viewport, since the toolbar's own height would always sit above them inside the
+              stuck panel. */}
           <div
-            className="relative z-10 border-y"
+            className="relative z-10 border-t border-b px-[10px] pb-3 pt-[19px]"
             style={{
               borderColor: "var(--glass-border)",
-              backgroundColor: "var(--glass-bg-strong)",
-              backdropFilter: "blur(20px) saturate(180%)",
-              WebkitBackdropFilter: "blur(20px) saturate(180%)",
-              boxShadow: "var(--shadow-glass)",
+              backgroundColor: dashboardPalette.panelMuted,
               marginLeft: -12,
               marginRight: -12,
-              ...(dashboardViewMode === "board"
-                ? { flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" as const, overflow: "hidden" }
-                : null),
-            }}
-          >
-          <div
-            className="px-[10px] pb-3 pt-[19px]"
-            style={{
-              backgroundColor: dashboardPalette.panelMuted,
-              flexShrink: dashboardViewMode === "board" ? 0 : undefined,
             }}
           >
               <div className="flex flex-wrap items-center gap-2 pl-0 sm:pl-[10px]">
@@ -1944,7 +1943,7 @@ export default function DashboardPage() {
                   aria-checked={dashboardViewMode === "board"}
                   onClick={() => setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"))}
                   className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1"
-                  style={{ borderColor: dashboardPalette.border, backgroundColor: "#FFFFFF" }}
+                  style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}
                   title="Toggle project view"
                   aria-label="Toggle project view"
                 >
@@ -2024,6 +2023,23 @@ export default function DashboardPage() {
               </div>
 
           </div>
+
+          <div
+            className={`relative z-10 border-b ${
+              dashboardViewMode === "board"
+                ? "sticky top-3 flex h-[calc(100dvh-60px)] min-h-[280px] flex-col overflow-hidden lg:top-[60px] lg:h-[calc(100dvh-92px)] lg:min-h-[320px]"
+                : ""
+            }`}
+            style={{
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(20px) saturate(180%)",
+              WebkitBackdropFilter: "blur(20px) saturate(180%)",
+              boxShadow: "var(--shadow-glass)",
+              marginLeft: -12,
+              marginRight: -12,
+            }}
+          >
 
           {dashboardViewMode === "list" && (
           <div className="lg:hidden">
@@ -2162,7 +2178,7 @@ export default function DashboardPage() {
 
           {dashboardViewMode === "board" && (
           <div
-            className="glass-scroll flex items-stretch gap-4 overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-3"
+            className="glass-scroll flex snap-x snap-mandatory items-stretch gap-4 overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] pt-3 sm:snap-none"
             style={{ flex: "1 1 auto", minHeight: 0 }}
           >
             {showProjectsLoadingState && (
@@ -2204,6 +2220,8 @@ export default function DashboardPage() {
               const glassColumnShadow = isDragOver
                 ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
                 : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
+              const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
+              const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
               if (isCollapsed) {
                 return (
                   <button
@@ -2223,13 +2241,13 @@ export default function DashboardPage() {
                   >
                     <span
                       className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
-                      style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                      style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                     >
                       <ChevronsLeftRight size={13} />
                     </span>
                     <span
                       className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
-                      style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                      style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                     >
                       {column.projects.length}
                     </span>
@@ -2246,7 +2264,7 @@ export default function DashboardPage() {
                 <div
                   key={column.name}
                   {...dragHandlers}
-                  className="flex w-[280px] shrink-0 flex-col overflow-hidden rounded-[16px] border transition"
+                  className="flex w-[85vw] max-w-[300px] shrink-0 snap-center flex-col overflow-hidden rounded-[16px] border transition sm:w-[280px] sm:max-w-none sm:snap-align-none"
                   style={{
                     height: "100%",
                     borderColor: glassColumnBorder,
@@ -2259,7 +2277,7 @@ export default function DashboardPage() {
                     <div className="flex shrink-0 items-center gap-1.5">
                       <span
                         className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
-                        style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                        style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                       >
                         {column.projects.length}
                       </span>
@@ -2267,7 +2285,7 @@ export default function DashboardPage() {
                         type="button"
                         onClick={() => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: true }))}
                         className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
-                        style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                        style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                         title={`Collapse ${column.name}`}
                         aria-label={`Collapse ${column.name}`}
                       >
@@ -2287,7 +2305,7 @@ export default function DashboardPage() {
             })}
             {!showProjectsLoadingState && dashboardStatusBoardColumns.otherProjects.length > 0 && (
               <div
-                className="flex w-[280px] shrink-0 flex-col overflow-hidden rounded-[16px] border"
+                className="flex w-[85vw] max-w-[300px] shrink-0 snap-center flex-col overflow-hidden rounded-[16px] border sm:w-[280px] sm:max-w-none sm:snap-align-none"
                 style={{
                   height: "100%",
                   borderColor: "rgba(255,255,255,0.3)",

@@ -44,6 +44,7 @@ import {
   markGridVersionSentToClient,
   resyncCompanyProjectTagUsage,
   saveCompanyDocPatch,
+  saveProjectStatsContribution,
   saveGridVersion,
   saveProductComparison,
   syncCompanyClientProfileFromProject,
@@ -55,6 +56,7 @@ import {
   updateProjectTags,
 } from "@/lib/firestore-data";
 import type { CompanyMemberOption } from "@/lib/firestore-data";
+import { bumpCompanyStatCounter, bumpCompanyStatLeaderboard } from "@/lib/company-stats";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { normalizeRoles } from "@/lib/company-roles";
@@ -6180,6 +6182,34 @@ export default function ProjectDetailsPage() {
   const displayItemsRemovePendingItem = itemsRemovePendingItem ?? lastItemsRemovePendingItemRef.current;
   const salesItemsDragGhost = useDragGhost();
   const [notifyBellWobbleKey, setNotifyBellWobbleKey] = useState(0);
+  // The tab row's own sticky wrapper swaps in a compact "name only" strip (merged into the tab
+  // row itself, to its left) the moment that wrapper actually reaches its pinned position at the
+  // top of the viewport — so the shrink happens in the exact same instant it becomes stuck,
+  // reading as one seamless motion, rather than shrinking while it's still floating in its normal
+  // document position (which used to happen: this was previously measured against the real <h1>'s
+  // own position instead, which crosses the trigger point well before the sticky bar — sitting
+  // much further down the header, below Creator/Assigned and Created/Modified — ever reaches top:
+  // 48px itself, leaving a visible gap where the bar looked "shrunk but not yet stuck").
+  const projectNameHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const projectStickyBarRef = useRef<HTMLDivElement | null>(null);
+  const [isProjectHeaderCompact, setIsProjectHeaderCompact] = useState(false);
+  useEffect(() => {
+    let ticking = false;
+    const STICKY_TOP_OFFSET = 48; // matches the fixed GlobalAppTabsBar height (h-12) the sticky tab row sits below
+    const checkScroll = () => {
+      ticking = false;
+      const barEl = projectStickyBarRef.current;
+      setIsProjectHeaderCompact(barEl ? barEl.getBoundingClientRect().top <= STICKY_TOP_OFFSET : false);
+    };
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(checkScroll);
+    };
+    checkScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   const [isDeleteProjectModalOpen, setIsDeleteProjectModalOpen] = useState(false);
   const [deleteProjectNameInput, setDeleteProjectNameInput] = useState("");
   const [deleteProjectModalOrigin, setDeleteProjectModalOrigin] = useState<GlassModalOrigin>(null);
@@ -7311,16 +7341,30 @@ export default function ProjectDetailsPage() {
           parsedOptions.find((option) => option.canonicalKey === defaultKey) ??
           parsedOptions[0] ??
           null;
+        // Legacy docs only ever had `grain: boolean` — a previously-ticked row keeps reading as
+        // "grain" once opened under the company-settings Type dropdown instead of reverting blank.
+        const type = String(item.type ?? "").trim() || (Boolean(item.grain ?? item.isGrain ?? false) ? "grain" : "");
         return {
           name,
           showInSales,
-          grain: Boolean(item.grain ?? item.isGrain ?? false),
+          grain: type === "grain",
           options: parsedOptions,
           defaultOption,
         };
       })
       .filter((row) => row.name && row.showInSales);
   }, [companyDoc, sheetSizeOptions]);
+  // Company Wrapped's lacquer-SQM calc needs a company-wide "how do we lacquer" setting: whichever
+  // Sales Product row(s) are typed Lacquer (1/2 side) determines the sidedness applied to every
+  // lacquer-ticked board's pieces. Read straight off the raw company doc (not the sales-filtered
+  // companySalesProductConfigs above) since this is a manufacturing setting, not a sales-visibility
+  // one — a product hidden from sales quoting should still count.
+  const companyLacquerIsTwoSided = useMemo(() => {
+    const raw = Array.isArray((companyDoc as Record<string, unknown> | null)?.salesJobTypes)
+      ? (((companyDoc as Record<string, unknown> | null)?.salesJobTypes) as unknown[])
+      : [];
+    return raw.some((row) => row && typeof row === "object" && String((row as Record<string, unknown>).type ?? "").trim() === "lacquer-2");
+  }, [companyDoc]);
   const companySalesProductNames = useMemo(
     () => companySalesProductConfigs.map((row) => row.name),
     [companySalesProductConfigs],
@@ -8128,7 +8172,10 @@ export default function ProjectDetailsPage() {
       left: buttonRect.left - containerRect.left,
       width: buttonRect.width,
     });
-  }, [resolvedTab, tabItemsWithAccess]);
+    // isProjectHeaderCompact is included so the underline re-measures (and smoothly re-slides,
+    // via its own existing left/width transition below) when the tab strip shrinks/grows into or
+    // out of its sticky compact size, instead of staying sized for whichever state it last saw.
+  }, [resolvedTab, tabItemsWithAccess, isProjectHeaderCompact]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -16137,6 +16184,11 @@ export default function ProjectDetailsPage() {
     if (ok) {
       setProject({ ...project, projectSettings: nextSettings });
       const categoryKeys = new Set([...Object.keys(beforeByCategory), ...Object.keys(nextByCategory)]);
+      // Company Wrapped: tally hinge quantity deltas across ALL categories by name (e.g. the same
+      // hinge name ordered under both "Base" and "Wall" should count once, combined) — keyed by
+      // row id first so a mid-session rename moves its qty from the old name to the new one instead
+      // of double-counting.
+      const hingeQtyDeltaByName = new Map<string, { display: string; delta: number }>();
       for (const category of categoryKeys) {
         const beforeRows = beforeByCategory[category] ?? [];
         const nextRows = nextByCategory[category] ?? [];
@@ -16146,14 +16198,35 @@ export default function ProjectDetailsPage() {
           const prevRow = beforeById.get(id);
           if (!prevRow) {
             logProjectChange(`Order Hinges (${category}) — Added: ${row.name || id}${row.qty ? ` x${row.qty}` : ""}`);
-            continue;
-          }
-          if (String(prevRow.qty || "") !== String(row.qty || "") || String(prevRow.name || "") !== String(row.name || "")) {
+          } else if (String(prevRow.qty || "") !== String(row.qty || "") || String(prevRow.name || "") !== String(row.name || "")) {
             logProjectChange(`Order Hinges (${category} — ${row.name || prevRow.name || id}) — Qty: ${prevRow.qty || "-"} → ${row.qty || "-"}`);
+          }
+          const name = String(row.name || prevRow?.name || "").trim();
+          const nameDelta = (Number(row.qty) || 0) - (Number(prevRow?.qty) || 0);
+          if (name && nameDelta) {
+            const key = name.toLowerCase();
+            const entry = hingeQtyDeltaByName.get(key) ?? { display: name, delta: 0 };
+            entry.delta += nameDelta;
+            hingeQtyDeltaByName.set(key, entry);
           }
         }
         for (const [id, prevRow] of beforeById) {
-          if (!nextById.has(id)) logProjectChange(`Order Hinges (${category}) — Removed: ${prevRow.name || id}`);
+          if (nextById.has(id)) continue;
+          logProjectChange(`Order Hinges (${category}) — Removed: ${prevRow.name || id}`);
+          const name = String(prevRow.name || "").trim();
+          const removedQty = Number(prevRow.qty) || 0;
+          if (name && removedQty) {
+            const key = name.toLowerCase();
+            const entry = hingeQtyDeltaByName.get(key) ?? { display: name, delta: 0 };
+            entry.delta -= removedQty;
+            hingeQtyDeltaByName.set(key, entry);
+          }
+        }
+      }
+      if (project.companyId) {
+        for (const [key, { display, delta }] of hingeQtyDeltaByName) {
+          if (!delta) continue;
+          void bumpCompanyStatLeaderboard(project.companyId, "hingeUsage", "hingeUsageDisplay", key, display, delta);
         }
       }
     }
@@ -16243,6 +16316,20 @@ export default function ProjectDetailsPage() {
       }
     }
 
+    // Company Wrapped: "top materials this year" is driven by the exact same colour-usage delta
+    // computed above, kept in lockstep with the lifetime boardMaterialUsage tally rather than a
+    // separate parallel count.
+    if (project.companyId) {
+      for (const key of keys) {
+        const prevCount = previousCounts.get(key)?.count ?? 0;
+        const nowCount = nextCounts.get(key)?.count ?? 0;
+        const delta = nowCount - prevCount;
+        if (!delta) continue;
+        const display = nextCounts.get(key)?.value ?? previousCounts.get(key)?.value ?? key;
+        void bumpCompanyStatLeaderboard(project.companyId, "materialUsage", "materialUsageDisplay", key, display, delta);
+      }
+    }
+
     const edgingKeys = new Set<string>([...previousEdgingCounts.keys(), ...nextEdgingCounts.keys()]);
     for (const key of edgingKeys) {
       const prevCount = previousEdgingCounts.get(key)?.count ?? 0;
@@ -16320,6 +16407,14 @@ export default function ProjectDetailsPage() {
     const ok = await saveCompanyDocPatch(project.companyId, { boardMaterialUsage: nextUsage });
     if (ok) {
       setCompanyDoc((prev) => ({ ...(prev ?? {}), boardMaterialUsage: nextUsage }));
+    }
+    // Company Wrapped — same -1/+1 the lifetime tally above just applied, mirrored into the
+    // per-year materials leaderboard.
+    if (oldColour && oldColour.toLowerCase() !== newColour.toLowerCase()) {
+      void bumpCompanyStatLeaderboard(project.companyId, "materialUsage", "materialUsageDisplay", oldColour, oldColour, -1);
+    }
+    if (newColour) {
+      void bumpCompanyStatLeaderboard(project.companyId, "materialUsage", "materialUsageDisplay", newColour, newColour, 1);
     }
   };
 
@@ -17180,6 +17275,27 @@ export default function ProjectDetailsPage() {
             .map(([field, label]) => `${label}: ${String(prevRow[field] ?? "").trim() || "-"}`)
             .join("\n");
           logProjectChange(`Cutlist row removed: ${rowLabel}`, fields);
+        }
+        // Company Wrapped: tally the summed quantity of Door/Drawer/Panel part-type rows, keyed
+        // off the SAME prevByKey/nextByKey diff built above rather than re-diffing from scratch. A
+        // row that changed part type between saves is handled correctly since its old quantity is
+        // subtracted from its OLD category and its new quantity added to its NEW category.
+        if (project?.companyId) {
+          const categoryFor = (partType: string): "door" | "drawer" | "panel" | null =>
+            isDoorPartType(partType) ? "door" : isDrawerPartType(partType) ? "drawer" : isPanelPartType(partType) ? "panel" : null;
+          const qtyDeltaByCategory: Record<"door" | "drawer" | "panel", number> = { door: 0, drawer: 0, panel: 0 };
+          const allCutlistKeys = new Set<string>([...prevByKey.keys(), ...nextByKey.keys()]);
+          for (const key of allCutlistKeys) {
+            const prevRow = prevByKey.get(key);
+            const nextRow = nextByKey.get(key);
+            const prevCategory = prevRow ? categoryFor(String(prevRow.partType || "")) : null;
+            const nextCategory = nextRow ? categoryFor(String(nextRow.partType || "")) : null;
+            if (prevCategory) qtyDeltaByCategory[prevCategory] -= Number(prevRow?.Quantity) || 0;
+            if (nextCategory) qtyDeltaByCategory[nextCategory] += Number(nextRow?.Quantity) || 0;
+          }
+          if (qtyDeltaByCategory.door) void bumpCompanyStatCounter(project.companyId, "doorsQuantity", qtyDeltaByCategory.door);
+          if (qtyDeltaByCategory.drawer) void bumpCompanyStatCounter(project.companyId, "drawersQuantity", qtyDeltaByCategory.drawer);
+          if (qtyDeltaByCategory.panel) void bumpCompanyStatCounter(project.companyId, "panelsQuantity", qtyDeltaByCategory.panel);
         }
       } else {
         pendingCutlistRowsJsonRef.current = "";
@@ -22665,26 +22781,16 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     setProjectGapAllowancesDraft(effectiveProjectGapAllowances);
   }, [effectiveProjectGapAllowances]);
-  const requiredEdgetapeByBoardRowId = useMemo(() => {
-    const out: Record<string, string> = {};
-    const excessPerEndMm = Math.max(
-      0,
-      Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0,
-    );
-    const rules = [...(edgebandingSettings.rules || [])]
-      .map((rule) => ({
-        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
-        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
-      }))
-      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
-      .sort((a, b) => a.upToMeters - b.upToMeters);
-    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
-    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
-    const roundNearestMeters = Math.max(
-      0,
-      Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0,
-    );
-
+  // TRUE per-board edge length actually needing tape — raw geometry only, no excess-per-end
+  // allowance, no minimum-order "add extra meters" rules, no round-to-nearest-roll. Those three
+  // all live in the Company Settings > Production > Edge Tape container (edgebandingSettings) and
+  // exist purely for practical ordering/purchasing (requiredEdgetapeByBoardRowId below still
+  // applies them, unchanged, for the Board Settings/Order displays) — Company Wrapped's "Edge Tape
+  // Used" instead wants the real, unpadded amount actually consumed, so it reads straight off this
+  // shared raw memo. `tapeRunCountByBoardKey` (qty × edge-count per taped edge) lets
+  // requiredEdgetapeByBoardRowId reconstruct the excess-inclusive total afterward without
+  // redoing the piece-explosion/token-parsing work itself.
+  const rawEdgeTapeByBoardKey = useMemo(() => {
     const rowsForEdgeTape: CutlistRow[] = [];
     for (const row of effectiveCutlistRows) {
       if (isCabinetryPartType(row.partType)) {
@@ -22743,22 +22849,21 @@ export default function ProjectDetailsPage() {
     }
 
     const mmByBoardKey: Record<string, number> = {};
+    const tapeRunCountByBoardKey: Record<string, number> = {};
     const parseDim = (value: unknown): number => {
       const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
       if (!match) return 0;
       const n = Number.parseFloat(match[0]);
       return Number.isFinite(n) && n > 0 ? n : 0;
     };
-    const addTapeFromToken = (tokenRaw: string, longDim: number, shortDim: number, qty: number): number => {
+    const tapeFromToken = (tokenRaw: string, longDim: number, shortDim: number, qty: number): { mm: number; runs: number } => {
       const token = String(tokenRaw || "").trim().toUpperCase();
-      if (!token) return 0;
-      if (!["1L", "2L", "1S", "2S"].includes(token)) return 0;
+      if (!token || !["1L", "2L", "1S", "2S"].includes(token)) return { mm: 0, runs: 0 };
       const isLong = token.endsWith("L");
       const edgeCount = token.startsWith("2") ? 2 : 1;
       const dim = isLong ? longDim : shortDim;
-      if (!Number.isFinite(dim) || dim <= 0 || qty <= 0) return 0;
-      const edgeWithExcess = dim + excessPerEndMm * 2;
-      return edgeWithExcess * qty * edgeCount;
+      if (!Number.isFinite(dim) || dim <= 0 || qty <= 0) return { mm: 0, runs: 0 };
+      return { mm: dim * qty * edgeCount, runs: qty * edgeCount };
     };
 
     for (const row of rowsForEdgeTape) {
@@ -22773,15 +22878,48 @@ export default function ProjectDetailsPage() {
       const split = splitClashing(String(row.clashing || ""));
       const left = String(row.clashLeft || split.left || "").trim().toUpperCase();
       const right = String(row.clashRight || split.right || "").trim().toUpperCase();
-      const rowMm = addTapeFromToken(left, longDim, shortDim, qty) + addTapeFromToken(right, longDim, shortDim, qty);
+      const leftTape = tapeFromToken(left, longDim, shortDim, qty);
+      const rightTape = tapeFromToken(right, longDim, shortDim, qty);
+      const rowMm = leftTape.mm + rightTape.mm;
       if (rowMm <= 0) continue;
       mmByBoardKey[boardKey] = (mmByBoardKey[boardKey] ?? 0) + rowMm;
+      tapeRunCountByBoardKey[boardKey] = (tapeRunCountByBoardKey[boardKey] ?? 0) + leftTape.runs + rightTape.runs;
     }
-
+    return { mmByBoardKey, tapeRunCountByBoardKey };
+  }, [
+    effectiveCutlistRows,
+    isCabinetryPartType,
+    isDrawerPartType,
+    isDoorPartType,
+    buildCabinetryDerivedPieces,
+    buildDrawerDerivedPieces,
+    buildConfiguredDoorDerivedPieces,
+    resolveBoardKey,
+  ]);
+  const requiredEdgetapeByBoardRowId = useMemo(() => {
+    const out: Record<string, string> = {};
+    const excessPerEndMm = Math.max(
+      0,
+      Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0,
+    );
+    const rules = [...(edgebandingSettings.rules || [])]
+      .map((rule) => ({
+        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
+        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
+      }))
+      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
+      .sort((a, b) => a.upToMeters - b.upToMeters);
+    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
+    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
+    const roundNearestMeters = Math.max(
+      0,
+      Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0,
+    );
     const formatMeters = (meters: number) => {
       const rounded = Math.round(Math.max(0, meters) * 100) / 100;
       return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
     };
+    const { mmByBoardKey, tapeRunCountByBoardKey } = rawEdgeTapeByBoardKey;
 
     for (const boardRow of productionForm.boardTypes) {
       const boardKey = resolveBoardKey(boardKeyFromRow(boardRow));
@@ -22789,7 +22927,9 @@ export default function ProjectDetailsPage() {
         out[boardRow.id] = "";
         continue;
       }
-      const baseMeters = (mmByBoardKey[boardKey] ?? 0) / 1000;
+      const rawMm = mmByBoardKey[boardKey] ?? 0;
+      const runs = tapeRunCountByBoardKey[boardKey] ?? 0;
+      const baseMeters = (rawMm + excessPerEndMm * 2 * runs) / 1000;
       let extraMeters = 0;
       if (baseMeters > 0) {
         const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
@@ -22810,15 +22950,102 @@ export default function ProjectDetailsPage() {
     edgebandingSettings.roundEnabled,
     edgebandingSettings.roundDirection,
     edgebandingSettings.roundNearestMeters,
-    effectiveCutlistRows,
-    isCabinetryPartType,
-    isDrawerPartType,
-    isDoorPartType,
-    buildCabinetryDerivedPieces,
-    buildDrawerDerivedPieces,
-    buildConfiguredDoorDerivedPieces,
+    rawEdgeTapeByBoardKey,
     resolveBoardKey,
   ]);
+  // Company Wrapped inputs — both requiredSheetCountByBoardRowId/requiredEdgetapeByBoardRowId are
+  // outputs of the nesting/edgebanding simulation above (no stored per-row value to diff on save),
+  // so instead of hooking a commit function, a useEffect below watches these totals for change.
+  // Company Wrapped's "Edge Tape Used" wants the TRUE amount consumed, not the Board Settings/
+  // Order figure — that one adds the excess-per-end allowance and minimum-order padding from the
+  // Company Settings > Production > Edge Tape container, which is deliberately excluded here.
+  const totalEdgeTapeMetersRequired = useMemo(
+    () => Object.values(rawEdgeTapeByBoardKey.mmByBoardKey).reduce((sum, mm) => sum + mm, 0) / 1000,
+    [rawEdgeTapeByBoardKey],
+  );
+  // Actual lacquer coverage in m², not a sheet count: for every Door/Panel cutlist piece cut from a
+  // Lacquer-ticked board, sum its edge area (always counted once) plus its face area (height×width,
+  // doubled only when the company's Sales > Product Type is set to "Lacquer (2 side)" on some
+  // product — see companyLacquerIsTwoSided above). Doors get all 4 edges; Panels only the 2 vertical
+  // ones (thickness×height) per the confirmed formula — neither edge term is ever doubled, only the
+  // face is. Non-manual door rows are exploded into their real per-leaf pieces first (one row can
+  // represent more than one door leaf), mirroring the same derivation requiredEdgetapeByBoardRowId
+  // already does above; manual-mode doors and all panels use their raw row dimensions directly.
+  const totalLacquerSqmRequired = useMemo(() => {
+    let totalMm2 = 0;
+    for (const row of effectiveCutlistRows) {
+      if (!boardLacquerFor(String(row.board || ""))) continue;
+      const isDoor = isDoorPartType(row.partType);
+      const isPanel = isPanelPartType(row.partType);
+      if (!isDoor && !isPanel) continue;
+      const thicknessMm = Number.parseFloat(String(boardThicknessFor(String(row.board || "").trim())).replace(/,/g, ".")) || 0;
+      const pieceAreaMm2 = (h: number, w: number) => {
+        const face = Math.max(0, h) * Math.max(0, w) * (companyLacquerIsTwoSided ? 2 : 1);
+        const edges = isDoor ? 2 * (thicknessMm * h) + 2 * (thicknessMm * w) : 2 * (thicknessMm * h);
+        return face + edges;
+      };
+      if (isDoor && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        for (const piece of buildConfiguredDoorDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          totalMm2 += pieceAreaMm2(Number.parseFloat(piece.height) || 0, Number.parseFloat(piece.width) || 0) * qty;
+        }
+        continue;
+      }
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      totalMm2 += pieceAreaMm2(Number.parseFloat(row.height) || 0, Number.parseFloat(row.width) || 0) * qty;
+    }
+    return totalMm2 / 1_000_000; // mm² → m²
+  }, [
+    effectiveCutlistRows,
+    boardLacquerFor,
+    isDoorPartType,
+    isPanelPartType,
+    boardThicknessFor,
+    companyLacquerIsTwoSided,
+    buildConfiguredDoorDerivedPieces,
+  ]);
+  // Same total orderTotalSheetsRequired (below, computed later from orderBoardSummary) arrives at —
+  // computed independently here since this useEffect must sit above this component's early
+  // "isLoading"/"!project" returns (React hooks can't be called after a conditional return), while
+  // orderBoardSummary is computed further down, after those guards.
+  const totalSheetsRequired = useMemo(
+    () => productionForm.boardTypes.reduce((sum, row) => sum + (requiredSheetCountByBoardRowId[row.id] ?? 0), 0),
+    [productionForm.boardTypes, requiredSheetCountByBoardRowId],
+  );
+  // Company Wrapped: report THIS project's current sheets/edge-tape/lacquer totals as an
+  // idempotent snapshot rather than accumulating a delta — a delta computed from a client-side
+  // "last synced" ref double-counts the moment the same project is open in two tabs (or a second
+  // staff member has it open), since each tab's independent ref sees the same real change and
+  // pushes it again. Overwriting with the true current value is safe no matter how many tabs/
+  // remounts/re-renders trigger it; the Wrapped page sums these across every project on read
+  // (lib/firestore-data.ts: fetchAllProjectStatsContributions), the same "live sum over every
+  // project" shape already used for "Jobs complete this year".
+  const lastSyncedContributionRef = useRef<{ sheets: number; edgeTape: number; lacquerSqm: number } | null>(null);
+  useEffect(() => {
+    if (!project?.companyId || !project?.id) return;
+    // requiredSheetCountByBoardRowId (feeding totalSheetsRequired) is only computed while the
+    // Nesting/Overview production sub-tab is active (shouldComputeNesting) — a performance guard
+    // that forces it to 0 the rest of the time. That 0 isn't a real reading, so freeze "sheets" at
+    // its last known-good value instead of overwriting a true total with a gate-driven zero every
+    // time someone switches to Cutlist/Board Settings/Order.
+    const current = {
+      sheets: shouldComputeNesting ? totalSheetsRequired : (lastSyncedContributionRef.current?.sheets ?? 0),
+      edgeTape: totalEdgeTapeMetersRequired,
+      lacquerSqm: totalLacquerSqmRequired,
+    };
+    const prev = lastSyncedContributionRef.current;
+    if (prev && prev.sheets === current.sheets && prev.edgeTape === current.edgeTape && prev.lacquerSqm === current.lacquerSqm) {
+      return; // nothing actually changed since our own last write — skip the redundant call
+    }
+    lastSyncedContributionRef.current = current;
+    void saveProjectStatsContribution(project.companyId, new Date().getFullYear(), project.id, {
+      sheets: current.sheets,
+      edgeTapeMeters: current.edgeTape,
+      lacquerSqm: current.lacquerSqm,
+    });
+  }, [project?.companyId, project?.id, shouldComputeNesting, totalSheetsRequired, totalEdgeTapeMetersRequired, totalLacquerSqmRequired]);
   const toggleNestingGroup = (key: string) => {
     setNestingCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -42103,16 +42330,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div
             className="-mx-4 -mt-4 md:-mx-5"
             style={{
+              marginBottom: 0,
               backgroundColor: isDarkMode ? "#1c1c1e" : "#F0F2F6",
               boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}, var(--shadow-glass)`,
             }}
           >
           <div className="border-b" style={{ borderBottomColor: "var(--glass-border)" }}>
             <div className="px-4 pb-[10px] pt-4 md:px-5">
+            {/* Row 1: project name/tags (left) — notifications/delete/status (right) */}
             <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-start md:gap-4">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-[32px] font-medium leading-none md:text-[42px]" style={{ color: projectPalette.text }}>{project.name}</h1>
+              <div className="min-w-0 flex flex-wrap items-center gap-2">
+                <h1 ref={projectNameHeadingRef} className="text-[32px] font-medium leading-none md:text-[42px]" style={{ color: projectPalette.text }}>{project.name}</h1>
                   {projectTags.map((tag) => {
                     const isArmed = pendingDeleteTag === tag;
                     const isHovered = hoveredDeleteTag === tag;
@@ -42238,44 +42466,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </>
                   )}
                 </div>
-                <div className="flex flex-col items-start gap-1 pt-2">
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-                      style={{
-                        backgroundColor:
-                          toStr(staffIconColorByUid[String(projectCreatorMember?.uid || "")]) ||
-                          toStr(projectCreatorMember?.badgeColor) ||
-                          toStr(projectCreatorMember?.userColor) ||
-                          toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
-                          "#7D99B3",
-                      }}
-                    >
-                      {initials(creatorDisplayName)}
-                    </div>
-                    <span className="text-[13px]" style={{ color: projectPalette.textMuted }}>Creator: {creatorDisplayName}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-                      style={{
-                        backgroundColor:
-                          toStr(staffIconColorByUid[String(projectAssignedMember?.uid || "")]) ||
-                          toStr(projectAssignedMember?.badgeColor) ||
-                          toStr(projectAssignedMember?.userColor) ||
-                          toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
-                          "#7D99B3",
-                      }}
-                    >
-                      {initials(assignedDisplayName)}
-                    </div>
-                    <span className="text-[13px]" style={{ color: projectPalette.textMuted }}>Assigned: {assignedDisplayName}</span>
-                  </div>
-                </div>
-              </div>
 
-              <div className="w-full text-left md:w-auto md:text-right">
-                <div className="flex items-center gap-2 md:justify-end">
+              <div className="flex items-center gap-2 md:justify-end">
                   {project && user?.uid ? (
                     <button
                       type="button"
@@ -42415,17 +42607,67 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     {isSavingStatus ? "Saving..." : project.statusLabel || "New"}
                   </button>
+              </div>
+            </div>
+
+            {/* Row 2: Creator/Assigned (left) — Created/Modified (right). Stays in this same
+                non-sticky header block (unlike the tab strip below), so it always scrolls away
+                normally and never sticks. */}
+            <div className="flex flex-col items-start justify-between gap-3 pt-3 md:flex-row md:items-start md:gap-4">
+              <div className="flex flex-col items-start gap-1">
+                <div className="flex items-center gap-1.5">
+                  <div
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                    style={{
+                      backgroundColor:
+                        toStr(staffIconColorByUid[String(projectCreatorMember?.uid || "")]) ||
+                        toStr(projectCreatorMember?.badgeColor) ||
+                        toStr(projectCreatorMember?.userColor) ||
+                        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+                        "#7D99B3",
+                    }}
+                  >
+                    {initials(creatorDisplayName)}
+                  </div>
+                  <span className="text-[13px]" style={{ color: projectPalette.textMuted }}>Creator: {creatorDisplayName}</span>
                 </div>
-                <p className="pt-2 text-[13px] md:pt-3" style={{ color: projectPalette.textMuted }}>Created: {dashboardStyleDate(project.createdAt)}</p>
+                <div className="flex items-center gap-1.5">
+                  <div
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                    style={{
+                      backgroundColor:
+                        toStr(staffIconColorByUid[String(projectAssignedMember?.uid || "")]) ||
+                        toStr(projectAssignedMember?.badgeColor) ||
+                        toStr(projectAssignedMember?.userColor) ||
+                        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+                        "#7D99B3",
+                    }}
+                  >
+                    {initials(assignedDisplayName)}
+                  </div>
+                  <span className="text-[13px]" style={{ color: projectPalette.textMuted }}>Assigned: {assignedDisplayName}</span>
+                </div>
+              </div>
+              <div className="w-full text-left md:w-auto md:text-right">
+                <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>Created: {dashboardStyleDate(project.createdAt)}</p>
                 <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>Modified: {dashboardStyleDate(project.updatedAt)}</p>
               </div>
             </div>
             </div>
           </div>
+          </div>
 
-          <div className="border-b" style={{ borderBottomColor: "var(--glass-border)" }}>
+          {/* Rendered as its own top-level sibling (not nested inside the header's bleed div above)
+              so its position: sticky containing block is the full-height tab-content column below,
+              not the ~200px-tall header block — sticky can only hold within its containing block's
+              own box, so nesting it there let it scroll away as soon as that short box ended. */}
+          <div
+            ref={projectStickyBarRef}
+            className="glass-page-header sticky top-12 z-[30] -mx-4 md:-mx-5"
+            style={{ marginTop: 0, backgroundColor: isDarkMode ? "#1c1c1e" : "#F0F2F6" }}
+          >
             <div className="px-4 md:px-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between md:gap-6">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-6">
                 <div ref={projectTabStripRef} className="relative grid grid-cols-4 items-end gap-1 sm:-mx-1 sm:flex sm:gap-4 sm:overflow-x-auto sm:px-1 md:mx-0 md:flex-1 md:gap-10 md:px-2">
                 {tabItemsWithAccess.map((item) => {
                   const active = resolvedTab === item.value;
@@ -42475,9 +42717,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   />
                 ) : null}
                 </div>
+                {/* Carried directly in this same tab-strip row (not a separate strip stacked above
+                    it) so the sticky bar never grows an extra row's worth of height once the real
+                    <h1> above scrolls out of view. Same text size/weight as the tab labels next to
+                    it (not a smaller "compact" size) — sits to the right of the tabs and slides in
+                    from further right (plus a quick fade) as the bar becomes sticky. */}
+                <div
+                  className="min-w-0 shrink-0 overflow-hidden transition-[max-width] duration-300 ease"
+                  style={{ maxWidth: isProjectHeaderCompact ? 320 : 0 }}
+                >
+                  <p
+                    className="truncate whitespace-nowrap text-[16px] font-semibold transition-[transform,opacity] duration-300 ease sm:text-[18px] md:text-[20px]"
+                    style={{
+                      color: projectPalette.text,
+                      transform: isProjectHeaderCompact ? "translateX(0)" : "translateX(24px)",
+                      opacity: isProjectHeaderCompact ? 1 : 0,
+                    }}
+                  >
+                    {project.name}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
           </div>
 
           {project &&
@@ -43180,9 +43441,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div key={resolvedTab} className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
-                <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
+            <div key={resolvedTab} className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+              <aside className="h-full overflow-hidden px-1 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-0 xl:pt-4">
+                <div className="flex flex-col items-stretch gap-1.5 sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
                 {[
                   { label: "Overview", icon: LayoutGrid, key: "overview" as const },
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const },
@@ -43190,7 +43451,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   { label: "Quote", icon: DollarSign, key: "quote" as const },
                   { label: "Specifications", icon: ClipboardList, key: "specifications" as const },
                   { label: "Product Compare", icon: ArrowLeftRight, key: "compare" as const },
-                ].map((item, idx, arr) => {
+                ].map((item) => {
                   const Icon = item.icon;
                   const active = salesNav === item.key;
                   return (
@@ -43202,20 +43463,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         if (item.key === salesNav) return;
                         void leaveQuoteWindow(item.key);
                       }}
-                      className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                      className="relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:shadow-lg hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                       style={{
-                        backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : "transparent",
+                        borderColor: active ? "transparent" : projectPalette.border,
+                        backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : projectPalette.panelBg,
                         color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
+                        boxShadow: active ? "none" : "var(--shadow-sm)",
                       }}
                     >
-                      <span className="pl-4">
-                        <Icon size={13} />
-                      </span>
+                      <Icon size={13} />
                       {item.label}
                     </button>
-                    {idx < arr.length - 1 && (
-                      <div className="my-0.5 h-px w-full sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" style={{ backgroundColor: projectPalette.border }} />
-                    )}
                     </div>
                   );
                 })}
@@ -43559,10 +43817,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div key={resolvedTab} className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[170px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <aside className="h-full overflow-hidden border-b px-1 pb-2 sm:overflow-x-auto xl:overflow-hidden xl:border-b-0 xl:border-r xl:px-0 xl:pb-0" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
-                <div className="flex flex-col items-stretch sm:min-w-max sm:flex-row xl:block xl:min-w-0">
-                {[ 
+            <div key={resolvedTab} className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+              <aside className="h-full overflow-hidden px-1 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-0 xl:pt-4">
+                <div className="flex flex-col items-stretch gap-1.5 sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
+                {[
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
                   { label: "CNC Cutlist", icon: Cpu, key: "cnc" as const },
@@ -43572,7 +43830,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   ...(canRequestProductionUnlock
                     ? [{ label: "Unlock Edit", icon: Lock, key: "unlock" as const }]
                     : []),
-                ].map((item, idx, arr) => {
+                ].map((item) => {
                   const Icon = item.icon;
                   const active =
                     item.key === "unlock" || item.key === "print" || item.key === "remedials"
@@ -43613,20 +43871,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             nestingFullscreen: false,
                           });
                         }}
-                        className="inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap pl-0 pr-2 py-3 text-left text-[13px] font-semibold sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
+                        className="relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:shadow-lg hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                         style={{
-                          backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : "transparent",
+                          borderColor: active ? "transparent" : projectPalette.border,
+                          backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : projectPalette.panelBg,
                           color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
+                          boxShadow: active ? "none" : "var(--shadow-sm)",
                         }}
                       >
-                        <span className="pl-4">
-                          <Icon size={13} />
-                        </span>
+                        <Icon size={13} />
                         {item.label}
                       </button>
-                      {idx < arr.length - 1 && (
-                        <div className="my-0.5 h-px w-full sm:mx-1 sm:my-0 sm:h-auto sm:w-px xl:-ml-px xl:-mr-px xl:h-px xl:w-auto" style={{ backgroundColor: projectPalette.border }} />
-                      )}
                     </div>
                   );
                 })}
@@ -45582,7 +45837,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     }}
                   >
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#000000" }}>Existing Cabinetry</p>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Existing Cabinetry</p>
                     </div>
                     <div className="space-y-2 p-3 text-[12px]">
                       {[
@@ -45591,7 +45846,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         { label: "Fronts Thickness", key: "frontsThickness" as const },
                       ].map((item) => (
                         <div key={item.key} className="grid grid-cols-[1fr_78px_26px] items-center gap-2">
-                          <p className="font-semibold" style={{ color: "#000000" }}>{item.label}</p>
+                          <p className="font-semibold" style={{ color: "var(--text-main)" }}>{item.label}</p>
                             <GlassSelectDropdown
                               fullWidth
                               disabled={productionReadOnly}
@@ -45603,9 +45858,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 void persistProductionForm(nextForm);
                               }}
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
-                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
-                            <p className="font-semibold" style={{ color: "#000000" }}>mm</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
                         </div>
                       ))}
                     </div>
@@ -45641,7 +45896,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
                               style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             />
-                            <p className="font-semibold" style={{ color: "#000000" }}>mm</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
                         </div>
                       ))}
                         <div className="grid grid-cols-[1fr_58px_58px_26px] items-center gap-2">
@@ -45657,7 +45912,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 void persistProductionForm(nextForm);
                               }}
                               className="h-7 rounded-[8px] border px-1 text-[11px]"
-                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                             />
                           <input
                             disabled={productionReadOnly}
@@ -45667,11 +45922,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="h-7 rounded-[8px] border px-2 text-[12px]"
                             style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                             />
-                            <p className="font-semibold" style={{ color: "#000000" }}>mm</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
                         </div>
                         <div className="grid grid-cols-[1fr_auto] items-center gap-2">
                           <p className="font-semibold text-[#334155]">Top Scribers</p>
-                          <div className="flex items-center gap-2 font-semibold" style={{ color: "#000000" }}>
+                          <div className="flex items-center gap-2 font-semibold" style={{ color: "var(--text-main)" }}>
                             <span>No</span>
                             <QuoteExtraToggleSwitch
                               checked={Boolean(productionForm.cabinetry.topScribers)}
@@ -45695,7 +45950,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     }}
                   >
                     <div className="flex h-[50px] items-center border-b px-4" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
-                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "#000000" }}>Hardware</p>
+                      <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Hardware</p>
                     </div>
                     <div className="space-y-3 p-3 text-[12px]">
                       <div className="flex items-center gap-3">
@@ -45703,7 +45958,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <label
                               key={row.name}
                               className="inline-flex items-center gap-1 font-semibold"
-                              style={{ color: "#000000" }}
+                              style={{ color: "var(--text-main)" }}
                               title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
                             >
                             <input
@@ -45717,7 +45972,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         ))}
                       </div>
                       <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                          <p className="font-semibold" style={{ color: "#000000" }}>New Drawer Type</p>
+                          <p className="font-semibold" style={{ color: "var(--text-main)" }}>New Drawer Type</p>
                           <GlassSelectDropdown
                             fullWidth
                             disabled={productionReadOnly || hasDrawerRowsInUse}
@@ -45726,7 +45981,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onChange={(next) => void onChangeDrawerType(next)}
                             title={hasDrawerRowsInUse ? "Locked while drawer rows exist in cutlist" : undefined}
                             className="h-7 rounded-[8px] border px-2 text-[12px]"
-                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                           />
                       </div>
                       {hasDrawerRowsInUse && (
@@ -45735,7 +45990,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </p>
                       )}
                         <div className="grid grid-cols-[92px_1fr] items-center gap-2">
-                            <p className="font-semibold" style={{ color: "#000000" }}>Hinge Type</p>
+                            <p className="font-semibold" style={{ color: "var(--text-main)" }}>Hinge Type</p>
                             <GlassSelectDropdown
                               fullWidth
                               disabled
@@ -45743,13 +45998,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               options={[productionForm.hardware.hardwareCategory]}
                               onChange={() => {}}
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
-                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "#000000" }}
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelMuted, color: "var(--text-main)" }}
                             />
                         </div>
                         <div className="grid grid-cols-[92px_1fr] items-start gap-2">
-                          <p className="font-semibold" style={{ color: "#000000" }}>Handles</p>
+                          <p className="font-semibold" style={{ color: "var(--text-main)" }}>Handles</p>
                           <div className="flex flex-col items-start gap-2 pt-[1px]">
-                            <label className="inline-flex items-center gap-2" style={{ color: "#000000" }}>
+                            <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
                               <input
                                 disabled={productionReadOnly}
                                 type="checkbox"
@@ -45758,7 +46013,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               />
                               <span>Front Fixed</span>
                             </label>
-                            <label className="inline-flex items-center gap-2" style={{ color: "#000000" }}>
+                            <label className="inline-flex items-center gap-2" style={{ color: "var(--text-main)" }}>
                               <input
                                 disabled={productionReadOnly}
                                 type="checkbox"
@@ -45872,7 +46127,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         }
                                       }}
                                       className="h-9 w-full rounded-[8px] border px-3 text-[12px]"
-                                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                     />
                                     {activeBoardColourSuggestionsRowId === row.id && boardColourDropdownRect &&
                                       typeof document !== "undefined" &&
@@ -45911,7 +46166,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   commitBoardColourChange(row.id, colour, previousColour);
                                                 }}
                                                 className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
-                                                style={{ color: "#000000" }}
+                                                style={{ color: "var(--text-main)" }}
                                               >
                                                 {colour}
                                               </button>
@@ -45933,7 +46188,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     getLabel={(opt) => (opt ? `${opt} mm` : "")}
                                     onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
                                     className="h-9 rounded-[8px] border px-3 text-[12px]"
-                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                   />
                                 </div>
                                 <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-2">
@@ -45946,7 +46201,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     options={["", ...boardFinishOptions]}
                                     onChange={(next) => void onBoardFieldCommit(row.id, { finish: next })}
                                     className="h-9 rounded-[8px] border px-3 text-[12px]"
-                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                   />
                                 </div>
                                 <div className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-2">
@@ -45980,7 +46235,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         }
                                       }}
                                       className="h-9 w-full rounded-[8px] border px-3 text-[12px]"
-                                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                      style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                     />
                                     {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
                                       typeof document !== "undefined" &&
@@ -46020,7 +46275,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                                   void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
                                                 }}
                                                 className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
-                                                style={{ color: "#000000" }}
+                                                style={{ color: "var(--text-main)" }}
                                               >
                                                 {edging}
                                               </button>
@@ -46061,7 +46316,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
                                     onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
                                     className="h-9 rounded-[8px] border px-3 text-[12px]"
-                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                   />
                                 </div>
                               </div>
@@ -46130,7 +46385,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     }
                                   }}
                                   className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
-                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                 />
                                 {activeBoardColourSuggestionsRowId === row.id && boardColourDropdownRect &&
                                   typeof document !== "undefined" &&
@@ -46168,7 +46423,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               commitBoardColourChange(row.id, colour, previousColour);
                                             }}
                                             className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
-                                            style={{ color: "#000000" }}
+                                            style={{ color: "var(--text-main)" }}
                                           >
                                             {colour}
                                           </button>
@@ -46187,7 +46442,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 getLabel={(opt) => (opt ? `${opt} mm` : "")}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { thickness: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                               />
                               <GlassSelectDropdown
                                 fullWidth
@@ -46197,7 +46452,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 options={["", ...boardFinishOptions]}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { finish: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                               />
                               <div className="relative z-20">
                                 <input
@@ -46228,7 +46483,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     }
                                   }}
                                   className="h-7 w-full rounded-[8px] border px-2 text-[12px]"
-                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                                 />
                                 {activeBoardEdgingSuggestionsRowId === row.id && boardEdgingDropdownRect &&
                                   typeof document !== "undefined" &&
@@ -46267,7 +46522,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                               void onBoardFieldCommit(row.id, { edging }, false, undefined, true, previousEdging);
                                             }}
                                             className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
-                                            style={{ color: "#000000" }}
+                                            style={{ color: "var(--text-main)" }}
                                           >
                                             {edging}
                                           </button>
@@ -46297,10 +46552,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 options={["", ...sheetSizeOptions.map((opt) => `${opt.h} x ${opt.w}`)]}
                                 onChange={(next) => void onBoardFieldCommit(row.id, { sheetSize: next })}
                                 className="h-7 rounded-[8px] border px-2 text-[12px]"
-                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
+                                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "var(--text-main)" }}
                               />
-                              <p className="text-center text-[12px] font-semibold" style={{ color: "#000000" }}>{requiredSheets}</p>
-                              <p className="text-center text-[12px] font-semibold" style={{ color: "#000000" }}>
+                              <p className="text-center text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{requiredSheets}</p>
+                              <p className="text-center text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
                                 {requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape}
                               </p>
                                   </>

@@ -306,6 +306,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     priority: (String(data.priority ?? "medium") as Project["priority"]),
     updatedAt: toIsoString(data.updatedAtIso ?? data.updatedAt, new Date().toISOString()),
     deletedAt: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
+    completedAtIso: toIsoString(data.completedAtIso ?? data.completedAt, "") || undefined,
     dueDate: String(data.dueDate ?? data.due ?? ""),
     estimatedSheets: Number(data.estimatedSheets ?? rows.length ?? 0),
     assignedTo: String(
@@ -2635,7 +2636,7 @@ function normalizeClientAddressKey(value: unknown): string {
     .replace(/^_+|_+$/g, "");
 }
 
-function isCompletedClientProjectStatus(value: unknown): boolean {
+export function isCompletedClientProjectStatus(value: unknown): boolean {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase()
@@ -3459,6 +3460,207 @@ export async function saveCompanyDocPatchDetailed(
         ? String((error as { code?: unknown }).code ?? fallback)
         : String((error as { message?: unknown } | null)?.message ?? fallback);
     return { ok: false, error: msg };
+  }
+}
+
+// One doc per calendar year at companies/{companyId}/companyStats/{year} — a running,
+// delta-incremented tally ("Company Wrapped") rather than something recomputed from scratch
+// on every read, since these particular fields (cutlist quantities, hinge order quantities,
+// board colour usage) only change at a discrete, well-defined "save" moment — there's exactly
+// one place in the app that commits each one, so a delta computed at that single commit can
+// never be double-applied. See the sync helpers in lib/company-stats.ts, which read/write this
+// doc via the functions below.
+//
+// Sheets used / edge tape used / lacquer m² are NOT part of this doc — they're nesting-engine
+// OUTPUTS that recompute continuously on every render while a project is open, with no discrete
+// "save" moment to hook. An earlier version of this doc tried to delta-track them the same way
+// as the fields above and it silently double-counted (two tabs on the same project, or a
+// performance-gated intermediate reading of 0, would each get treated as a real change). Those
+// three are tracked instead as an idempotent CURRENT-VALUE snapshot per project — see
+// `ProjectStatsContribution`/`saveProjectStatsContribution`/`fetchAllProjectStatsContributions`
+// below — and summed across all of a company's projects on read, the same "live sum over every
+// project" shape already used for "Jobs complete this year".
+export type CompanyStatsDoc = {
+  year: number;
+  doorsQuantity: number;
+  drawersQuantity: number;
+  panelsQuantity: number;
+  materialUsage: Record<string, number>;
+  materialUsageDisplay: Record<string, string>;
+  hingeUsage: Record<string, number>;
+  hingeUsageDisplay: Record<string, string>;
+  updatedAt: unknown;
+  updatedAtIso: string;
+};
+
+function companyStatsDocRef(companyId: string, year: number): DocumentReference {
+  return doc(db!, "companies", companyId, "companyStats", String(year));
+}
+
+function toStatsNumberMap(value: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (value && typeof value === "object") {
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const num = Number(raw);
+      if (Number.isFinite(num)) out[key] = num;
+    }
+  }
+  return out;
+}
+
+function toStatsStringMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (value && typeof value === "object") {
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = String(raw ?? "");
+    }
+  }
+  return out;
+}
+
+function normalizeCompanyStatsDoc(year: number, data: Record<string, unknown>): CompanyStatsDoc {
+  const toNum = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  return {
+    year,
+    doorsQuantity: toNum(data.doorsQuantity),
+    drawersQuantity: toNum(data.drawersQuantity),
+    panelsQuantity: toNum(data.panelsQuantity),
+    materialUsage: toStatsNumberMap(data.materialUsage),
+    materialUsageDisplay: toStatsStringMap(data.materialUsageDisplay),
+    hingeUsage: toStatsNumberMap(data.hingeUsage),
+    hingeUsageDisplay: toStatsStringMap(data.hingeUsageDisplay),
+    updatedAt: data.updatedAt,
+    updatedAtIso: String(data.updatedAtIso || ""),
+  };
+}
+
+export async function fetchCompanyStatsDoc(companyId: string, year: number): Promise<CompanyStatsDoc | null> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) {
+    return null;
+  }
+  try {
+    const snap = await getDoc(companyStatsDocRef(cid, year));
+    if (!snap.exists()) {
+      return null;
+    }
+    return normalizeCompanyStatsDoc(year, (snap.data() ?? {}) as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCompanyStatsDocPatch(
+  companyId: string,
+  year: number,
+  patch: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) {
+    return { ok: false, error: "missing-firebase-or-company-id" };
+  }
+  try {
+    const sanitizedPatch = JSON.parse(JSON.stringify(patch)) as Record<string, unknown>;
+    await setDoc(
+      companyStatsDocRef(cid, year),
+      {
+        ...sanitizedPatch,
+        year,
+        updatedAt: serverTimestamp(),
+        updatedAtIso: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+    return { ok: true };
+  } catch (error) {
+    const fallback = "unknown-save-error";
+    const msg =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? fallback)
+        : String((error as { message?: unknown } | null)?.message ?? fallback);
+    return { ok: false, error: msg };
+  }
+}
+
+// Powers the Wrapped page's year picker — cheap since this subcollection has at most one doc per
+// calendar year the company has ever used the feature in.
+export async function fetchCompanyStatsYears(companyId: string): Promise<number[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) {
+    return [];
+  }
+  try {
+    const snap = await getDocs(collection(db, "companies", cid, "companyStats"));
+    return snap.docs
+      .map((docSnap) => Number(docSnap.id))
+      .filter((year) => Number.isFinite(year))
+      .sort((a, b) => b - a);
+  } catch {
+    return [];
+  }
+}
+
+// One doc per project at companies/{companyId}/companyStats/{year}/projectContributions/{projectId}
+// holding that ONE project's CURRENT sheets/edge-tape/lacquer totals for the year (not a delta).
+// Writing is idempotent by construction — re-writing the same true current value from a second
+// open tab, a remount, or a stale re-render is harmless, since it just overwrites with the same
+// (or corrected) number rather than accumulating on top of it.
+export type ProjectStatsContribution = {
+  sheets: number;
+  edgeTapeMeters: number;
+  lacquerSqm: number;
+  updatedAtIso: string;
+};
+
+function projectStatsContributionDocRef(companyId: string, year: number, projectId: string): DocumentReference {
+  return doc(db!, "companies", companyId, "companyStats", String(year), "projectContributions", projectId);
+}
+
+export async function saveProjectStatsContribution(
+  companyId: string,
+  year: number,
+  projectId: string,
+  contribution: { sheets: number; edgeTapeMeters: number; lacquerSqm: number },
+): Promise<boolean> {
+  const cid = String(companyId || "").trim();
+  const pid = String(projectId || "").trim();
+  if (!db || !cid || !pid) return false;
+  try {
+    await setDoc(
+      projectStatsContributionDocRef(cid, year, pid),
+      {
+        sheets: Number.isFinite(contribution.sheets) ? contribution.sheets : 0,
+        edgeTapeMeters: Number.isFinite(contribution.edgeTapeMeters) ? contribution.edgeTapeMeters : 0,
+        lacquerSqm: Number.isFinite(contribution.lacquerSqm) ? contribution.lacquerSqm : 0,
+        updatedAtIso: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Summed on the Wrapped page — same "live sum over every project" shape already used for "Jobs
+// complete this year", rather than trusting a single running total that could drift.
+export async function fetchAllProjectStatsContributions(companyId: string, year: number): Promise<ProjectStatsContribution[]> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return [];
+  try {
+    const snap = await getDocs(collection(db, "companies", cid, "companyStats", String(year), "projectContributions"));
+    return snap.docs.map((docSnap) => {
+      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
+      const toNum = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+      return {
+        sheets: toNum(data.sheets),
+        edgeTapeMeters: toNum(data.edgeTapeMeters),
+        lacquerSqm: toNum(data.lacquerSqm),
+        updatedAtIso: String(data.updatedAtIso || ""),
+      };
+    });
+  } catch {
+    return [];
   }
 }
 

@@ -53,6 +53,10 @@ export interface Project {
   priority: "low" | "medium" | "high";
   updatedAt: string;
   deletedAt?: string;
+  // Set by updateProjectStatus() the moment status first flips to a "complete" status; stays put
+  // across later status changes/edits unless status leaves and re-enters "complete". Empty string
+  // when the project has never been marked complete.
+  completedAtIso?: string;
   dueDate: string;
   estimatedSheets: number;
   assignedTo: string;

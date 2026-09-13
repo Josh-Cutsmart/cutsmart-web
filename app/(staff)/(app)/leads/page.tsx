@@ -133,6 +133,19 @@ function lightenLeadStatusHex(hex: string, amount: number): string {
   return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
 }
 
+function darkenLeadStatusHex(hex: string, amount: number): string {
+  const safe = normalizeLeadStatusHex(hex) ?? "#64748B";
+  const clamp = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+  const ratio = Math.max(0, Math.min(1, amount));
+  const r = Number.parseInt(safe.slice(1, 3), 16);
+  const g = Number.parseInt(safe.slice(3, 5), 16);
+  const b = Number.parseInt(safe.slice(5, 7), 16);
+  const nr = clamp(r * (1 - ratio));
+  const ng = clamp(g * (1 - ratio));
+  const nb = clamp(b * (1 - ratio));
+  return `#${nr.toString(16).padStart(2, "0")}${ng.toString(16).padStart(2, "0")}${nb.toString(16).padStart(2, "0")}`;
+}
+
 function leadStatusHexToRgba(hex: string, alpha: number): string {
   const safe = normalizeLeadStatusHex(hex) ?? "#64748B";
   const r = Number.parseInt(safe.slice(1, 3), 16);
@@ -666,34 +679,14 @@ export default function LeadsPage() {
       );
     } catch {}
   }, [collapsedStatusColumns, isBoardCardsCompact, compactCardOverrides, isToolbarExpanded, boardPrefsHydrated, currentUserUid, activeCompanyId]);
-  const boardHeaderRef = useRef<HTMLDivElement | null>(null);
-  const [boardColumnHeight, setBoardColumnHeight] = useState<number | null>(null);
-  useLayoutEffect(() => {
-    const headerEl = boardHeaderRef.current;
-    if (!headerEl || typeof window === "undefined") return;
-    const measure = () => {
-      const bottom = headerEl.getBoundingClientRect().bottom;
-      // Leave a bit more than a hairline margin — a horizontal scrollbar on
-      // the column row itself (non-overlay on some platforms) and normal
-      // page bottom breathing room both eat into this, so cutting it too
-      // close makes the board taller than the viewport and forces a
-      // page-level scrollbar instead of sitting flush.
-      setBoardColumnHeight(Math.max(320, window.innerHeight - bottom - 32));
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    // A plain effect-dependency list can't cover every reason the header's
-    // rendered size might change (access-gate resolving, badge counts
-    // loading in, responsive wrapping) — a ResizeObserver on the header
-    // itself re-measures whenever its actual box changes, for any reason,
-    // instead of chasing more state into the dependency array.
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
-    resizeObserver?.observe(headerEl);
-    return () => {
-      window.removeEventListener("resize", measure);
-      resizeObserver?.disconnect();
-    };
-  }, [companyAccessResolved, canAccessLeads, leadsViewMode]);
+  // The board column row is `position: sticky` (see its className below) — it scrolls up with
+  // the page along with the header/toolbar above it until its own top edge reaches just below the
+  // fixed nav bar(s), then locks there; only the columns' own internal scroll moves after that.
+  // This replaced a JS-measured pixel height (header.getBoundingClientRect().bottom, on a resize
+  // listener + ResizeObserver) that only ever sized the row to fit whatever the CURRENT unstuck
+  // scroll position happened to be — useless once the row is actually meant to stick, since the
+  // available height at the stuck position is a fixed value (viewport height minus the fixed nav
+  // bars), not something that needs remeasuring.
   const leadBoardDragGhost = useDragGhost();
   const [listOrder, setListOrder] = useState<"status" | "az" | "za" | "newest" | "oldest">("newest");
   const [isLoading, setIsLoading] = useState(true);
@@ -2745,11 +2738,20 @@ export default function LeadsPage() {
     const assignedInitials = assignedLabel.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("");
     const photoCount = normalizeLeadImageItems(lead).length;
     const isStatusMenuOpen = effectiveCardStatusMenuLeadId === lead.id;
-    const cardBg = accentColor ? lightenLeadStatusHex(accentColor, 0.75) : "var(--glass-bg-strong)";
-    const cardBorder = accentColor ? lightenLeadStatusHex(accentColor, 0.45) : "var(--glass-border)";
-    const boardTextColor = accentColor ? "#000000" : "var(--text-main)";
-    const boardMutedColor = accentColor ? "#000000" : "var(--text-muted)";
-    const toggleButtonBg = accentColor ? "rgba(255,255,255,0.55)" : "var(--panel-muted)";
+    const isDarkMode = themeMode === "dark";
+    const cardBg = accentColor
+      ? isDarkMode
+        ? darkenLeadStatusHex(accentColor, 0.75)
+        : lightenLeadStatusHex(accentColor, 0.75)
+      : "var(--glass-bg-strong)";
+    const cardBorder = accentColor
+      ? isDarkMode
+        ? darkenLeadStatusHex(accentColor, 0.4)
+        : lightenLeadStatusHex(accentColor, 0.45)
+      : "var(--glass-border)";
+    const boardTextColor = accentColor ? (isDarkMode ? "var(--text-main)" : "#000000") : "var(--text-main)";
+    const boardMutedColor = accentColor ? (isDarkMode ? "var(--text-main)" : "#000000") : "var(--text-muted)";
+    const toggleButtonBg = accentColor ? (isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)") : "var(--panel-muted)";
     return (
       <div
         key={lead.id}
@@ -3073,7 +3075,7 @@ export default function LeadsPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div ref={boardHeaderRef} className="glass-page-header relative -mx-4 -mt-4 px-4 pb-3 pt-5 md:-mx-5 md:px-5">
+            <div className="glass-page-header relative -mx-4 -mt-4 px-4 pb-3 pt-5 md:-mx-5 md:px-5">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex min-w-0 flex-wrap items-center gap-5">
                   <div className="flex min-w-0 items-center gap-2">
@@ -3087,10 +3089,10 @@ export default function LeadsPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2 border-l pl-5" style={{ borderColor: "var(--glass-border)" }}>
-                    <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
+                    <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg)", color: "var(--text-muted)" }}>
                       {filteredLeads.length} total
                     </span>
-                    <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
+                    <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg)", color: "var(--text-muted)" }}>
                       {newCount} new
                     </span>
                   </div>
@@ -3111,7 +3113,7 @@ export default function LeadsPage() {
               <div className="mt-5 flex flex-wrap items-center gap-5">
                 <div
                   className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-2.5"
-                  style={{ width: 260, borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                  style={{ width: 260, borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg)" }}
                 >
                   <Search size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
                   <input
@@ -3136,7 +3138,7 @@ export default function LeadsPage() {
                       aria-checked={leadsViewMode === "grid"}
                       onClick={() => setLeadsViewMode((prev) => (prev === "board" ? "grid" : "board"))}
                       className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1"
-                      style={{ borderColor: "var(--glass-border)", backgroundColor: "#FFFFFF" }}
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
                       title="Toggle lead view"
                       aria-label="Toggle lead view"
                     >
@@ -3262,8 +3264,8 @@ export default function LeadsPage() {
               </div>
             ) : (
               <div
-                className="glass-scroll flex items-stretch gap-4 -mx-2 -mt-2 px-2 pb-6 pt-2"
-                style={{ overflowX: "auto", overflowY: "visible" }}
+                className="glass-scroll sticky top-3 flex h-[calc(100dvh-60px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-4 -mx-2 -mt-2 px-2 pb-6 pt-2 sm:snap-none lg:top-[60px] lg:h-[calc(100dvh-92px)] lg:min-h-[320px]"
+                style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {
                   const isDragOver = dragOverStatusColumn === column.name;
@@ -3289,6 +3291,8 @@ export default function LeadsPage() {
                   const glassColumnShadow = isDragOver
                     ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
                     : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
+                  const columnBadgeBg = themeMode === "dark" ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
+                  const columnBadgeText = themeMode === "dark" ? "var(--text-main)" : "#000000";
                   if (isCollapsed) {
                     return (
                       <button
@@ -3298,7 +3302,7 @@ export default function LeadsPage() {
                         onClick={() => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: false }))}
                         className="flex w-[52px] shrink-0 flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
                         style={{
-                          height: boardColumnHeight ?? "calc(100dvh - 260px)",
+                          height: "100%",
                           borderColor: glassColumnBorder,
                           boxShadow: glassColumnShadow,
                           ...glassColumnSurface,
@@ -3308,13 +3312,13 @@ export default function LeadsPage() {
                       >
                         <span
                           className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
-                          style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                          style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                         >
                           <ChevronsLeftRight size={13} />
                         </span>
                         <span
                           className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
-                          style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                          style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                         >
                           {column.leads.length}
                         </span>
@@ -3331,9 +3335,9 @@ export default function LeadsPage() {
                     <div
                       key={column.name}
                       {...dragHandlers}
-                      className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-[16px] border transition"
+                      className="flex w-[85vw] max-w-[320px] shrink-0 snap-center flex-col overflow-hidden rounded-[16px] border transition sm:w-[300px] sm:max-w-none sm:snap-align-none"
                       style={{
-                        height: boardColumnHeight ?? "calc(100dvh - 260px)",
+                        height: "100%",
                         borderColor: glassColumnBorder,
                         boxShadow: glassColumnShadow,
                         ...glassColumnSurface,
@@ -3347,7 +3351,7 @@ export default function LeadsPage() {
                         <div className="flex shrink-0 items-center gap-1.5">
                           <span
                             className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
-                            style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                            style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                           >
                             {column.leads.length}
                           </span>
@@ -3355,7 +3359,7 @@ export default function LeadsPage() {
                             type="button"
                             onClick={() => setCollapsedStatusColumns((prev) => ({ ...prev, [column.name]: true }))}
                             className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
-                            style={{ color: "#000000", backgroundColor: "rgba(255,255,255,0.55)" }}
+                            style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
                             title={`Collapse ${column.name}`}
                             aria-label={`Collapse ${column.name}`}
                           >
@@ -3377,9 +3381,9 @@ export default function LeadsPage() {
                 })}
                 {leadStatusBoardColumns.otherLeads.length > 0 && (
                   <div
-                    className="flex w-[300px] shrink-0 flex-col overflow-hidden rounded-[16px] border"
+                    className="flex w-[85vw] max-w-[320px] shrink-0 snap-center flex-col overflow-hidden rounded-[16px] border sm:w-[300px] sm:max-w-none sm:snap-align-none"
                     style={{
-                      height: boardColumnHeight ?? "calc(100dvh - 260px)",
+                      height: "100%",
                       borderColor: "var(--glass-border)",
                       boxShadow: "var(--shadow-glass)",
                       backgroundColor: "var(--glass-bg-strong)",
@@ -3446,7 +3450,7 @@ export default function LeadsPage() {
                   <div className="ml-auto flex items-center gap-3">
                     <div
                       className="flex h-9 min-w-0 items-center gap-2 rounded-[10px] border px-3"
-                      style={{ width: 340, minWidth: 340, borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                      style={{ width: "min(340px, 40vw)", minWidth: 90, borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
                     >
                       <Search size={14} className="shrink-0" style={{ color: "var(--text-muted)" }} />
                       <input

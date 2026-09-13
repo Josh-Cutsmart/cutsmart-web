@@ -325,6 +325,15 @@ body[data-theme="dark"].cs-app textarea {
   color: #f1f1f1 !important;
 }
 
+/* Inputs that intentionally opt out of the blanket dark-mode background above (e.g. a search
+   input meant to be transparent so its own styled wrapper chip shows through, not a flat gray
+   rectangle sitting inside it) — respects that explicit intent instead of overriding it. */
+body[data-theme="dark"].cs-app input.bg-transparent:not([type="color"]):not([type="checkbox"]):not([type="radio"]),
+body[data-theme="dark"].cs-app textarea.bg-transparent {
+  background: transparent !important;
+  color: #f1f1f1 !important;
+}
+
 body[data-theme="dark"].cs-app input::placeholder,
 body[data-theme="dark"].cs-app textarea::placeholder {
   color: #aaaaaa !important;

@@ -1622,7 +1622,10 @@ export default function SpecsGridEditor({
           type="button"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            setBorderPopoverAnchorRect({ left: rect.left, top: rect.bottom, width: rect.width, height: 0 });
+            const popoverWidth = 230;
+            const viewportWidth = Math.max(120, document.documentElement?.clientWidth || window.innerWidth);
+            const clampedLeft = Math.min(Math.max(8, rect.left), Math.max(8, viewportWidth - popoverWidth - 8));
+            setBorderPopoverAnchorRect({ left: clampedLeft, top: rect.bottom, width: rect.width, height: 0 });
           }}
           className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold"
           style={toolbarButtonStyle}

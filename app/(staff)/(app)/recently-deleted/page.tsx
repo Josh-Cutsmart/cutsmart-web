@@ -745,8 +745,8 @@ function measureStatusPillWidth(options: string[]) {
                 </button>
               </div>
               <div
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-2"
-                style={{ width: 340, minWidth: 340, borderColor: "var(--panel-border)", backgroundColor: "var(--panel-muted)" }}
+                className="inline-flex h-9 min-w-0 items-center gap-2 rounded-[10px] border px-2"
+                style={{ width: "min(340px, 60vw)", minWidth: 90, borderColor: "var(--panel-border)", backgroundColor: "var(--panel-muted)" }}
               >
                 <Search size={14} style={{ color: "var(--text-muted)" }} />
                 <input

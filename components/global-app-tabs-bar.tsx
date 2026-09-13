@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, ChevronDown, LayoutDashboard, X } from "lucide-react";
+import { Bell, LayoutDashboard, Menu, X } from "lucide-react";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
@@ -52,32 +52,10 @@ function formatSingleTabLabel(tab: AppWorkspaceTab, groupLabel: string) {
   return normalizedGroupLabel && tab.groupKey ? `${normalizedGroupLabel}: ${tab.label}` : tab.label;
 }
 
-function splitProjectSubTabLabel(label: string) {
-  const normalizedLabel = String(label || "").trim();
-  if (!normalizedLabel) {
-    return { pill: "", detail: "" };
-  }
-  const colonIndex = normalizedLabel.indexOf(":");
-  if (colonIndex > 0) {
-    return {
-      pill: normalizedLabel.slice(0, colonIndex).trim(),
-      detail: normalizedLabel.slice(colonIndex + 1).trim(),
-    };
-  }
-  const firstSpaceIndex = normalizedLabel.indexOf(" ");
-  if (firstSpaceIndex > 0) {
-    return {
-      pill: normalizedLabel.slice(0, firstSpaceIndex).trim(),
-      detail: normalizedLabel.slice(firstSpaceIndex + 1).trim(),
-    };
-  }
-  return { pill: normalizedLabel, detail: "" };
-}
-
 export function GlobalAppTabsBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden } = useAppTabs();
+  const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden, setMobileNavOpen } = useAppTabs();
   const { user } = useAuth();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isAppTabsMenuOpen, setIsAppTabsMenuOpen] = useState("");
@@ -585,14 +563,18 @@ export function GlobalAppTabsBar() {
     router.push(tab.href);
   };
 
-  // Clicking a project's main tab (its name) always opens General, regardless of
-  // which sub-tab was last active — reuse the existing General tab's local action
-  // if it's already open, otherwise navigate there directly so the project page
-  // bootstraps it.
+  // Clicking a project's tab reopens whichever sub-view (Sales > Initial Cutlist, Production >
+  // Nesting, etc.) that project was last left on, rather than always jumping to General — same
+  // priority as the `activeTab` used for the tab's own label/title below: prefer the tab actually
+  // marked as the current route, then whichever one the project page itself flagged `active`
+  // (its own last-active-view bookkeeping), falling back to the first tab only if neither exists.
   const selectGroupPrimaryTab = (group: (typeof groupedGlobalTabs)[number], target?: EventTarget | null) => {
-    const generalTab = group.tabs.find((tab) => tab.label === "General");
-    if (generalTab) {
-      selectAppTab(generalTab, target);
+    const lastActiveTab =
+      group.tabs.find((tab) => tab.key === displayActiveAppTabKey) ??
+      group.tabs.find((tab) => tab.active) ??
+      group.tabs[0];
+    if (lastActiveTab) {
+      selectAppTab(lastActiveTab, target);
       return;
     }
     blurTopTabTarget(target);
@@ -601,7 +583,7 @@ export function GlobalAppTabsBar() {
     setIsAppTabsMenuOpen("");
     setAppTabsMenuPos(null);
     const projectId = group.groupKey.startsWith("project:") ? group.groupKey.slice("project:".length) : "";
-    router.push(projectId ? `/projects/${projectId}?tab=general` : group.tabs[0]?.href ?? "/dashboard");
+    router.push(projectId ? `/projects/${projectId}?tab=general` : "/dashboard");
   };
 
   const confirmCloseAppTab = (saveState: boolean) => {
@@ -704,8 +686,26 @@ export function GlobalAppTabsBar() {
           style={{ backgroundColor: "var(--glass-border)" }}
         />
         <div ref={appTabsMenuRef} className="relative flex h-full items-center gap-1.5">
+          {/* Mobile-only — this bar is now the ONLY sticky header on phones (the separate
+              hamburger/logo header app-shell.tsx used to render below it was removed), so the
+              menu button that used to live there is folded in here instead, at the same leading
+              position the Dashboard pill occupies on larger screens (see its `lg:flex` below). */}
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(true)}
+            onMouseDown={handleAuxButtonMouseDown}
+            className="mr-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] lg:hidden"
+            style={{ color: shellPalette.textMuted }}
+            aria-label="Open menu"
+          >
+            <Menu size={18} />
+          </button>
           {dashboardTabGroup ? (
-            <div className="flex h-full shrink-0 items-center pr-2.5 mr-1">
+            // Hidden below `lg` — that's exactly where app-shell.tsx swaps the persistent sidebar
+            // for its own hamburger + drawer nav (Dashboard link included there instead), so this
+            // never leaves Dashboard unreachable; it just frees up the tab row's limited width for
+            // project tabs on the same screens that already lost the sidebar.
+            <div className="hidden h-full shrink-0 items-center pr-2.5 mr-1 lg:flex">
               {(() => {
                 const group = dashboardTabGroup;
                 const onlyTab = group.tabs[0];
@@ -740,77 +740,16 @@ export function GlobalAppTabsBar() {
             className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"
           >
             {scrollableTabGroups.map((group) => {
-              const isGrouped = group.tabs.length > 1;
+              // Which sub-view represents this project's tab: whichever one is the current route,
+              // else whichever one the project page itself flagged `active` (its own last-active-
+              // view bookkeeping — this is what makes clicking the tab reopen wherever the user
+              // left off, e.g. Sales > Initial Cutlist or Production > Nesting, instead of always
+              // landing on General), else just the first.
               const activeTab =
                 group.tabs.find((tab) => tab.key === displayActiveAppTabKey) ??
                 group.tabs.find((tab) => tab.active) ??
                 group.tabs[0];
               if (!activeTab) return null;
-              if (!isGrouped) {
-                const onlyTab = group.tabs[0];
-                const isActiveTab = onlyTab.key === displayActiveAppTabKey;
-                const isDragActive = draggedGroupKey === group.groupKey;
-                const isCollapsedDragSource = collapsedDraggedGroupKey === group.groupKey;
-                const groupShiftX = getDraggedGroupShiftX(group.groupKey);
-                const isPressed = pressedGroupKey === group.groupKey || isDragActive;
-                return (
-                  <div
-                    key={group.groupKey}
-                    ref={(node) => {
-                      groupNodeRefs.current[group.groupKey] = node;
-                    }}
-                    data-app-tab-group={group.groupKey}
-                    className="group relative inline-flex h-9 min-w-[140px] max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
-                    onDrop={(event) => handleGroupDrop(group.groupKey, event)}
-                    style={{
-                      backgroundColor: isActiveTab ? shellPalette.panelBg : shellPalette.tabIdleBg,
-                      boxShadow: isActiveTab ? "none" : "var(--shadow-sm)",
-                      opacity: isCollapsedDragSource ? 0 : 1,
-                      transform: groupShiftX > 0 ? `translateX(${groupShiftX}px)` : "translateX(0)",
-                      transition: draggedGroupKey
-                        ? "transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease, width 180ms ease, min-width 180ms ease, max-width 180ms ease, padding 180ms ease, border-width 180ms ease"
-                        : "background-color 120ms ease, box-shadow 180ms ease, opacity 180ms ease",
-                      cursor: isPressed ? "grabbing" : "pointer",
-                      width: isCollapsedDragSource ? 0 : undefined,
-                      minWidth: isCollapsedDragSource ? 0 : undefined,
-                      maxWidth: isCollapsedDragSource ? 0 : undefined,
-                      paddingLeft: isCollapsedDragSource ? 0 : undefined,
-                      paddingRight: isCollapsedDragSource ? 0 : undefined,
-                      borderWidth: isCollapsedDragSource ? 0 : undefined,
-                      gap: isCollapsedDragSource ? 0 : undefined,
-                      overflow: isCollapsedDragSource ? "hidden" : undefined,
-                      pointerEvents: isCollapsedDragSource ? "none" : undefined,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={(event) => selectGroupPrimaryTab(group, event.currentTarget)}
-                      onMouseDown={(event) => handleTopTabMouseDown(group.groupKey, event)}
-                      draggable
-                      onDragStart={(event) => handleGroupDragStart(group.groupKey, event)}
-                      onDragEnd={handleGroupDragEnd}
-                      onMouseUp={() => setPressedGroupKey("")}
-                      className="min-w-0 flex-1 truncate text-left text-[12px] font-bold"
-                      style={{ color: isActiveTab ? shellPalette.text : shellPalette.textMuted, cursor: isPressed ? "grabbing" : "pointer" }}
-                      title={formatSingleTabLabel(onlyTab, group.groupLabel)}
-                    >
-                      {formatSingleTabLabel(onlyTab, group.groupLabel)}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        setCloseTabModalOrigin(captureGlassModalOrigin(e));
-                        setClosingAppTabKey(onlyTab.key);
-                      }}
-                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--panel-border)]"
-                      style={{ color: shellPalette.textMuted }}
-                      aria-label={`Close ${onlyTab.label}`}
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                );
-              }
               const isActiveTab = group.tabs.some((tab) => tab.key === displayActiveAppTabKey);
               const isDragActive = draggedGroupKey === group.groupKey;
               const isCollapsedDragSource = collapsedDraggedGroupKey === group.groupKey;
@@ -823,7 +762,7 @@ export function GlobalAppTabsBar() {
                     groupNodeRefs.current[group.groupKey] = node;
                   }}
                   data-app-tab-group={group.groupKey}
-                  className="group relative inline-flex h-9 min-w-[170px] max-w-[280px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
+                  className="group relative inline-flex h-9 min-w-[140px] max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
                   onDrop={(event) => handleGroupDrop(group.groupKey, event)}
                   style={{
                     backgroundColor: isActiveTab ? shellPalette.panelBg : shellPalette.tabIdleBg,
@@ -853,52 +792,18 @@ export function GlobalAppTabsBar() {
                     onDragStart={(event) => handleGroupDragStart(group.groupKey, event)}
                     onDragEnd={handleGroupDragEnd}
                     onMouseUp={() => setPressedGroupKey("")}
-                    className="inline-flex min-w-0 flex-1 items-center gap-2 text-left"
+                    className="min-w-0 flex-1 truncate text-left text-[12px] font-bold"
                     style={{ color: isActiveTab ? shellPalette.text : shellPalette.textMuted, cursor: isPressed ? "grabbing" : "pointer" }}
-                    title={activeTab.label}
+                    title={formatSingleTabLabel(activeTab, group.groupLabel)}
                   >
-                    <span className="truncate text-[12px] font-bold">{group.groupLabel}</span>
-                    <span
-                      className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[10px] font-bold"
-                      style={{
-                        backgroundColor: isActiveTab ? "var(--brand-soft)" : shellPalette.panelMuted,
-                        color: isActiveTab ? "var(--brand)" : shellPalette.textMuted,
-                      }}
-                    >
-                      {group.tabs.length}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={handleAuxButtonMouseDown}
-                    onClick={(event) => {
-                      if (isAppTabsMenuOpen === group.groupKey) {
-                        setIsAppTabsMenuOpen("");
-                        setAppTabsMenuPos(null);
-                        return;
-                      }
-                      const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
-                      const width = Math.max(260, Math.min(320, Math.round(rect.width + 220)));
-                      const viewportWidth = typeof window !== "undefined" ? window.innerWidth : rect.right + 12;
-                      setAppTabsMenuPos({
-                        left: Math.min(Math.max(8, rect.right - width), Math.max(8, viewportWidth - width - 8)),
-                        top: rect.bottom + 4,
-                        width,
-                      });
-                      setIsAppTabsMenuOpen(group.groupKey);
-                    }}
-                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--panel-border)]"
-                    style={{ color: shellPalette.textMuted }}
-                    aria-label={`Show open tabs for ${group.groupLabel}`}
-                  >
-                    <ChevronDown size={12} className={`${isAppTabsMenuOpen === group.groupKey ? "rotate-180" : ""} transition-transform`} />
+                    {formatSingleTabLabel(activeTab, group.groupLabel)}
                   </button>
                   <button
                     type="button"
                     onMouseDown={handleAuxButtonMouseDown}
                     onClick={(e) => {
                       setCloseTabModalOrigin(captureGlassModalOrigin(e));
-                      setClosingAppTabKey(`${CLOSING_SCOPE_PREFIX}${group.groupKey}`);
+                      setClosingAppTabKey(group.tabs.length > 1 ? `${CLOSING_SCOPE_PREFIX}${group.groupKey}` : activeTab.key);
                     }}
                     className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--panel-border)]"
                     style={{ color: shellPalette.textMuted }}
@@ -921,9 +826,10 @@ export function GlobalAppTabsBar() {
                   return;
                 }
                 const rect = event.currentTarget.getBoundingClientRect();
-                const width = 340;
+                const viewportWidth = Math.max(120, document.documentElement?.clientWidth || window.innerWidth);
+                const width = Math.min(340, Math.max(240, viewportWidth - 16));
                 setNotifPos({
-                  left: Math.min(rect.right - width, window.innerWidth - width - 8),
+                  left: Math.min(Math.max(8, rect.right - width), Math.max(8, viewportWidth - width - 8)),
                   top: rect.bottom + 6,
                   width,
                 });
@@ -948,90 +854,6 @@ export function GlobalAppTabsBar() {
           ) : null}
         </div>
       </div>
-      {isAppTabsMenuOpen &&
-      appTabsMenuPos &&
-      typeof document !== "undefined"
-        ? createPortal(
-            <div
-              ref={appTabsDropdownRef}
-              className="fixed z-[210] overflow-hidden rounded-[12px] border"
-              style={{
-                left: appTabsMenuPos.left,
-                top: appTabsMenuPos.top,
-                width: appTabsMenuPos.width,
-                borderColor: "var(--glass-border)",
-                backgroundColor: "var(--glass-bg-strong)",
-                backdropFilter: "blur(24px) saturate(180%)",
-                WebkitBackdropFilter: "blur(24px) saturate(180%)",
-                boxShadow: "var(--shadow-glass)",
-              }}
-            >
-              {(groupedGlobalTabs.find((group) => group.groupKey === isAppTabsMenuOpen)?.tabs ?? []).map((tab) => {
-                const isActiveTab = tab.key === displayActiveAppTabKey;
-                return (
-                <div
-                  key={tab.key}
-                  className="flex items-center gap-2 border-b px-3 py-2 transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
-                  style={{
-                    borderBottomColor: shellPalette.border,
-                    backgroundColor: isActiveTab ? "var(--brand-soft)" : "transparent",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={(event) => selectAppTab(tab, event.currentTarget)}
-                    onMouseDown={handleAuxButtonMouseDown}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    {(() => {
-                      const parts = splitProjectSubTabLabel(tab.label);
-                      return (
-                        <span className="flex min-w-0 items-center gap-2">
-                          {parts.pill ? (
-                            <span
-                              className="inline-flex shrink-0 items-center rounded-full px-2 py-[2px] text-[10px] font-bold"
-                              style={{
-                                backgroundColor: shellPalette.panelMuted,
-                                border: `1px solid ${shellPalette.border}`,
-                                color: shellPalette.text,
-                              }}
-                            >
-                              {parts.pill}
-                            </span>
-                          ) : null}
-                          <span
-                            className="block min-w-0 truncate text-[12px] font-bold"
-                            style={{ color: isActiveTab ? "var(--brand)" : shellPalette.text }}
-                          >
-                            {parts.detail || tab.label}
-                          </span>
-                        </span>
-                      );
-                    })()}
-                    <span className="block truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
-                      {tab.groupLabel || tab.label}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onMouseDown={handleAuxButtonMouseDown}
-                    onClick={(e) => {
-                      setCloseTabModalOrigin(captureGlassModalOrigin(e));
-                      setClosingAppTabKey(tab.key);
-                    }}
-                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--panel-border)]"
-                    style={{ color: shellPalette.textMuted }}
-                    aria-label={`Close ${tab.label}`}
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-                );
-              })}
-            </div>,
-            document.body,
-          )
-        : null}
       {isNotifOpen && notifPos && typeof document !== "undefined"
         ? createPortal(
             <div

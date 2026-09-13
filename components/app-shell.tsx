@@ -6,13 +6,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import {
-  Building2,
   CalendarDays,
   ImagePlus,
   Inbox,
   LayoutDashboard,
   LogOut,
-  Menu,
+  PartyPopper,
   Plus,
   PlusCircle,
   Search,
@@ -108,6 +107,7 @@ const topNav = [
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
   { href: "/changelog", label: "Changelog", icon: Search },
+  { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
 ];
 
@@ -317,7 +317,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
-  const { chromeHidden, fillMainViewport } = useAppTabs();
+  const { chromeHidden, fillMainViewport, mobileNavOpen, setMobileNavOpen } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -374,7 +374,6 @@ export function AppShell({
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
   const [projectFormError, setProjectFormError] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [navHighlightRect, setNavHighlightRect] = useState<{ top: number; height: number } | null>(null);
   const navListRef = useRef<HTMLDivElement | null>(null);
   const navLinkRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
@@ -415,7 +414,6 @@ export function AppShell({
   const assigneeFieldRef = useRef<HTMLDivElement | null>(null);
   const userInitials = useMemo(() => initials(user?.displayName || "User"), [user?.displayName]);
   const userEmblemColor = String(user?.userColor || "").trim() || companyThemeColor;
-  const isProjectDetailsRoute = useMemo(() => /^\/projects\/[^/]+/.test(String(pathname || "")), [pathname]);
   const [isDesktopViewport, setIsDesktopViewport] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1928,80 +1926,13 @@ export function AppShell({
       data-theme-mode={themeMode}
       style={{ color: shellPalette.text }}
     >
-      {!chromeHidden && (
-      <header
-        className="fixed inset-x-0 top-12 z-[80] flex h-14 items-center justify-between border-b border-[var(--panel-border)] bg-white px-3 lg:hidden"
-        style={{ backgroundColor: shellPalette.panelBg, borderColor: shellPalette.border, color: shellPalette.text }}
-      >
-        <div className="flex items-center gap-2">
-          {!effectiveHideSidebar && (
-            <button
-              type="button"
-              onClick={() => setMobileNavOpen(true)}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border text-[#334155]"
-              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
-              aria-label="Open menu"
-            >
-              <Menu size={18} />
-            </button>
-          )}
-        </div>
-        {isProjectDetailsRoute ? (
-          <>
-            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-              {canCreateProject && (
-                <button
-                  type="button"
-                  onClick={(e) => { setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[image:var(--brand-gradient)] text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                  aria-label="New project"
-                >
-                  <Plus size={20} strokeWidth={2.8} />
-                </button>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => router.push("/dashboard")}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border bg-white text-[#334155]"
-                style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.text }}
-                aria-label="Back to projects"
-                title="Back to projects"
-              >
-                <img
-                  src="/angle-left.png"
-                  alt="Back"
-                  className="h-4 w-4 object-contain"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="flex items-center gap-2">
-              <div className="rounded-[8px] border border-[var(--panel-border)] bg-[var(--brand)] p-1.5 text-white">
-                <Building2 size={14} />
-              </div>
-              <p className="text-[12px] font-bold text-[var(--text-main)]" style={{ color: shellPalette.text }}>CutSmart</p>
-            </div>
-            {canCreateProject && (
-              <button
-                type="button"
-                onClick={(e) => { setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[image:var(--brand-gradient)] text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                aria-label="New project"
-              >
-                <Plus size={20} strokeWidth={2.8} />
-              </button>
-            )}
-          </>
-        )}
-      </header>
-      )}
+      {/* The separate mobile-only header bar (hamburger + CutSmart/back button + New Project) that
+          used to live here was removed — GlobalAppTabsBar's own top-12 bar is now the ONLY sticky
+          header on mobile, with the hamburger button folded into its left edge (where the hidden-
+          on-mobile Dashboard pill used to sit) so it can call setMobileNavOpen via the shared
+          AppTabsProvider context instead. New Project and "back to projects" are still reachable
+          from the drawer this hamburger opens (the sidebar's own New Project button) and from the
+          project's tab close (X) respectively. */}
 
       {!effectiveHideSidebar && mobileNavOpen && (
         <div className="fixed inset-0 z-[120] lg:hidden">
@@ -2312,7 +2243,7 @@ export function AppShell({
       </aside>
 
       <div
-        className={chromeHidden ? "min-w-0" : "min-w-0 pt-[104px] lg:pt-12"}
+        className={chromeHidden ? "min-w-0" : "min-w-0 pt-12"}
         style={{
           width: "100%",
           paddingLeft: 0,
@@ -2333,7 +2264,7 @@ export function AppShell({
                 ? fillMainViewport
                   ? "calc(100dvh - 48px)" // matches this wrapper's own lg:pt-12
                   : "auto"
-                : "calc(100dvh - 104px)",
+                : "calc(100dvh - 48px)", // mobile now reserves only the one GlobalAppTabsBar (h-12)
             overflowX: isDesktopViewport ? "visible" : "clip",
             overflowY: isDesktopViewport ? "visible" : "auto",
             paddingLeft: chromeHidden ? 0 : "max(12px, env(safe-area-inset-left))",

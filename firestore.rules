@@ -95,6 +95,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Per-project changelog entries (Settings > Changelog card on a project). Entries only carry
+    // `projectId`, not `companyId`, so there's no cheap way to scope this to "same company" the
+    // way isCompanyMember() does elsewhere — matches the trust level already used for the legacy
+    // top-level /projects fallback and /appReports above (any signed-in user).
+    match /changelog/{entryId} {
+      allow read, write: if signedIn();
+    }
+
     // Allow each user to store their own profile
     match /users/{uid} {
       allow read: if isSelf(uid);
@@ -135,6 +143,19 @@ service cloud.firestore {
         // keep your existing color-only self update rule
         allow update: if isSelf(uid) && onlyUserColorFieldsOnUpdate();
         allow delete: if false;
+      }
+
+      // Company Wrapped's per-year delta-tallied stats (doors/drawers/panels/materials/hinges).
+      // Same access level as the parent company doc itself.
+      match /companyStats/{year} {
+        allow read, write: if isCompanyMember(companyId);
+
+        // Sheets/edge-tape/lacquer m² aren't tallied on the parent doc above — each project
+        // reports its own current-value snapshot here, summed together when Wrapped is viewed.
+        // Firestore rules don't inherit to subcollections, so this needs its own explicit match.
+        match /projectContributions/{projectId} {
+          allow read, write: if isCompanyMember(companyId);
+        }
       }
 
       match /jobs/{jobId} {
