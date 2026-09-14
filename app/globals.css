@@ -654,6 +654,21 @@ body[data-theme="dark"] .glass-modal-panel ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.38);
 }
 
+/* A board/lead column's card list toggles between overflow-hidden and
+   overflow-y-auto as its panel scrolls into its locked position (see the
+   dashboard/leads board views) — a *visible* scrollbar reserves layout space
+   the instant it appears, which either shifts the cards narrower right at
+   that moment, or (if that space is pre-reserved to avoid the shift) leaves
+   the column permanently narrower on the right than the left. Hiding the
+   scrollbar here sidesteps both: the column keeps its full, even width at
+   all times, and the list is still scrollable by wheel/trackpad/touch, just
+   without a visible thumb. `!important` since this needs to beat the
+   ::-webkit-scrollbar width set by .glass-scroll above regardless of the
+   two classes' order in the compiled CSS. */
+.board-column-scroll::-webkit-scrollbar {
+  display: none !important;
+}
+
 /*
  * Highlights an entire row with a crisp, translucent "liquid glass" tint —
  * a thin tinted border + soft fill, matching the app's glass-card language,
