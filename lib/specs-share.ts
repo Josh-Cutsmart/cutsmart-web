@@ -1,11 +1,9 @@
 import type { Firestore, DocumentReference } from "firebase-admin/firestore";
 
-export const SPECS_SHARE_DEFAULT_LINK_DAYS = 30;
-
 // One small doc doubles as a "client hub": a single link a client can be sent, that independently
 // grows a Specs tab and/or a Quote tab as staff sends each one (see sendSpecsToClient/
 // sendQuoteToClient in app/(app)/projects/[projectId]/page.tsx). The two tabs share only the
-// envelope fields below (who/when/expiry/recipient) — everything else is a fully separate,
+// envelope fields below (who/when/recipient) — everything else is a fully separate,
 // symmetric pair of fields per tab, so sending one can never disturb the other's state (the
 // create route merges rather than overwrites — see app/api/specs-share/create/route.ts).
 export type SpecsShareLinkDoc = {
@@ -13,7 +11,6 @@ export type SpecsShareLinkDoc = {
   companyId: string;
   createdAt: string;
   lastSentAt: string;
-  expiresAt: string;
   clientEmail: string;
   sentByUid: string;
   sentByName: string;
@@ -76,16 +73,14 @@ export function buildSpecsShareUrl(origin: string, projectId: string): string {
 export function buildSpecsConfirmationEmailText({
   projectName,
   link,
-  expiresInDays,
 }: {
   projectName: string;
   link: string;
-  expiresInDays: number;
 }): { subject: string; body: string } {
   const cleanProjectName = String(projectName || "").trim() || "your project";
   return {
     subject: `Please confirm specifications for ${cleanProjectName}`,
-    body: `Please review and confirm the specifications for ${cleanProjectName}:\n\n${link}\n\nThis link is valid for ${expiresInDays} day${expiresInDays === 1 ? "" : "s"}. If you weren't expecting this, you can ignore it.`,
+    body: `Please review and confirm the specifications for ${cleanProjectName}:\n\n${link}\n\nIf you weren't expecting this, you can ignore it.`,
   };
 }
 
@@ -96,22 +91,15 @@ export function buildSpecsConfirmationEmailText({
 export function buildQuoteAcceptanceEmailText({
   projectName,
   link,
-  expiresInDays,
 }: {
   projectName: string;
   link: string;
-  expiresInDays: number;
 }): { subject: string; body: string } {
   const cleanProjectName = String(projectName || "").trim() || "your project";
   return {
     subject: `Please review your quote for ${cleanProjectName}`,
-    body: `Please review and accept the quote for ${cleanProjectName}:\n\n${link}\n\nThis link is valid for ${expiresInDays} day${expiresInDays === 1 ? "" : "s"}. If you weren't expecting this, you can ignore it.`,
+    body: `Please review and accept the quote for ${cleanProjectName}:\n\n${link}\n\nIf you weren't expecting this, you can ignore it.`,
   };
-}
-
-export function isSpecsShareLinkExpired(doc: Pick<SpecsShareLinkDoc, "expiresAt">): boolean {
-  const expiry = Date.parse(doc.expiresAt);
-  return !Number.isFinite(expiry) || Date.now() > expiry;
 }
 
 // The caller's own Firebase Auth session only proves who they are, not that they belong to a

@@ -71,7 +71,6 @@ type PartTypeRow = {
   inCutlists: boolean;
   inNesting: boolean;
 };
-type QuoteExtraRow = { id: string; name: string; price: string; defaultIncluded: boolean; templateContainerId: string; templateBlockId: string; templatePlaceholderKey: string };
 type QuoteHelperRow = { id: string; content: string };
 type DiscountTierRow = { low: string; high: string; discount: string };
 type HardwareRow = { name: string; color: string; default: boolean; drawersJson: string; hingesJson: string; otherJson: string };
@@ -378,14 +377,86 @@ function Panel({
 }) {
   return (
     <section
-      className={`${allowOverflow ? "overflow-visible" : "overflow-hidden"} rounded-[14px] border border-[#D7DEE8] bg-[#F8FAFD] shadow-[0_1px_2px_rgba(16,24,40,0.04)]`}
+      className={`glass-panel-settle-in ${allowOverflow ? "overflow-visible" : "overflow-hidden"} rounded-[16px] border transition`}
+      style={{
+        borderColor: "var(--glass-border)",
+        backgroundColor: "var(--glass-bg-strong)",
+        backdropFilter: "blur(20px) saturate(180%)",
+        WebkitBackdropFilter: "blur(20px) saturate(180%)",
+        boxShadow: "var(--shadow-glass)",
+      }}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-[#DCE3EC] bg-white px-3 py-2">
-        <p className="text-[13px] font-extrabold uppercase tracking-[1px] text-[#1E3A62]">{title}</p>
+      <div
+        className="flex items-center justify-between gap-2 border-b px-3.5 py-2.5"
+        style={{ borderColor: "var(--glass-border)" }}
+      >
+        <p className="text-[13px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>{title}</p>
         {headerRight ? <div className="shrink-0">{headerRight}</div> : null}
       </div>
-      <div className={`${allowOverflow ? "overflow-visible" : ""} bg-[#F8FAFD] p-3`}>{children}</div>
+      <div className={`${allowOverflow ? "overflow-visible" : ""} p-3.5`}>{children}</div>
     </section>
+  );
+}
+
+// Shared field primitives for every settings panel below — label-above-input on narrow screens,
+// a fixed label column once there's room, all colors via CSS vars so light/dark and glass both
+// stay correct without repeating a style object at every call site. Using Tailwind's arbitrary-
+// value syntax (bg-[var(--panel-bg)] etc.) instead of inline `style` keeps these compact enough
+// to read at a glance across the hundreds of fields in this file.
+const fieldInputClass =
+  "h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2.5 text-[12px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)] disabled:opacity-60";
+// Same purpose as fieldInputClass but chromeless — no border/background of its own — for a
+// spreadsheet-style grid where the row/column lines already do the separating and a bordered
+// textbox per cell would just be visual noise. Only becomes visible on focus, so it's still
+// discoverable as editable.
+const gridCellInputClass =
+  "h-8 w-full appearance-none rounded-[6px] border border-transparent bg-transparent px-2 text-[12px] font-medium text-[var(--text-main)] outline-none transition focus:border-[var(--brand)] focus:bg-[var(--panel-bg)] disabled:opacity-60";
+// A global `.cs-app select` base rule (app/globals.css) gives every <select> a white
+// background/border by default — higher specificity than gridCellInputClass's own plain
+// utility classes, so a <select> using gridCellInputClass needs these `!`-important variants
+// layered on top to actually win the chromeless look (and keep working on focus).
+const gridCellSelectOverrideClass = "!border-transparent !bg-transparent !text-[var(--text-main)] focus:!border-[var(--brand)] focus:!bg-[var(--panel-bg)]";
+const fieldLabelClass = "text-[12px] font-bold text-[var(--text-muted)]";
+const secondaryButtonClass =
+  "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[11px] font-bold text-[var(--text-main)] transition hover:brightness-95 disabled:opacity-60";
+const dangerIconButtonClass =
+  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95";
+const dangerIconButtonStyle: React.CSSProperties = {
+  borderColor: "var(--danger-border)",
+  backgroundColor: "var(--danger-soft)",
+  color: "var(--danger-strong)",
+};
+
+function FieldRow({
+  label,
+  children,
+  align = "center",
+}: {
+  label: string;
+  children: React.ReactNode;
+  align?: "center" | "start";
+}) {
+  return (
+    <div
+      className={`grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-[170px_1fr] ${
+        align === "start" ? "sm:items-start" : "sm:items-center"
+      }`}
+    >
+      <p className={`${fieldLabelClass} ${align === "start" ? "sm:pt-1.5" : ""}`}>{label}</p>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
+// A small uppercase divider label for grouping related fields within one panel — purely visual,
+// no new state. Optional `first` drops the top border/margin for a group at the very top.
+function FieldGroupHeading({ children, first = false }: { children: React.ReactNode; first?: boolean }) {
+  return (
+    <p
+      className={`text-[10px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-muted)] ${first ? "" : "border-t border-[var(--glass-border)] pt-3"}`}
+    >
+      {children}
+    </p>
   );
 }
 
@@ -727,26 +798,6 @@ function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
   };
 }
 
-function normalizeQuoteExtras(raw: unknown): QuoteExtraRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item, idx) => {
-      const row = item as Record<string, unknown>;
-      const name = toStr(row.name);
-      return {
-        id: toStr(row.id, `quote_extra_${(name || "row").toLowerCase().replace(/[^a-z0-9]+/g, "_") || "row"}_${idx + 1}`),
-        name,
-        price: toStr(row.price),
-        defaultIncluded: Boolean(row.defaultIncluded ?? row.default),
-        templateContainerId: toStr(row.templateContainerId),
-        templateBlockId: toStr(row.templateBlockId),
-        templatePlaceholderKey: toStr(row.templatePlaceholderKey),
-      };
-    })
-    .filter((r) => r.name);
-}
-
 function normalizeDiscountTiers(raw: unknown): DiscountTierRow[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -901,63 +952,6 @@ function normalizeQuoteHelpers(raw: unknown): QuoteHelperRow[] {
       };
     })
     .filter((row) => row.content);
-}
-
-function normalizeQuoteTemplateContainers(raw: unknown): Array<{ id: string; title: string }> {
-  if (!raw || typeof raw !== "object") return [];
-  const row = raw as Record<string, unknown>;
-  const containers = Array.isArray(row.containers) ? row.containers : [];
-  if (containers.length) {
-    return containers
-      .map((item, idx) => {
-        if (!item || typeof item !== "object") return null;
-        const container = item as Record<string, unknown>;
-        const id = toStr(container.id);
-        if (!id) return null;
-        return {
-          id,
-          title: toStr(container.title, `Container ${idx + 1}`),
-        };
-      })
-      .filter(Boolean) as Array<{ id: string; title: string }>;
-  }
-  const sections = Array.isArray(row.sections) ? row.sections : [];
-  return sections
-    .map((item, idx) => {
-      if (!item || typeof item !== "object") return null;
-      const section = item as Record<string, unknown>;
-      return {
-        id: toStr(section.id, `legacy_container_${idx + 1}`),
-        title: toStr(section.title, `Container ${idx + 1}`),
-      };
-    })
-    .filter(Boolean) as Array<{ id: string; title: string }>;
-}
-
-function normalizeQuoteTemplateBlocks(raw: unknown): Array<{ id: string; label: string }> {
-  if (!raw || typeof raw !== "object") return [];
-  const row = raw as Record<string, unknown>;
-  const containers = Array.isArray(row.containers) ? row.containers : [];
-  const out: Array<{ id: string; label: string }> = [];
-  containers.forEach((containerItem, containerIdx) => {
-    if (!containerItem || typeof containerItem !== "object") return;
-    const container = containerItem as Record<string, unknown>;
-    const columns = Array.isArray(container.columns) ? container.columns : [];
-    columns.forEach((columnItem) => {
-      if (!columnItem || typeof columnItem !== "object") return;
-      const column = columnItem as Record<string, unknown>;
-      const blocks = Array.isArray(column.blocks) ? column.blocks : [];
-      blocks.forEach((blockItem, blockIdx) => {
-        if (!blockItem || typeof blockItem !== "object") return;
-        const block = blockItem as Record<string, unknown>;
-        const id = toStr(block.id);
-        if (!id) return;
-        const label = toStr(block.label, `Element ${containerIdx + 1}.${blockIdx + 1}`);
-        out.push({ id, label });
-      });
-    });
-  });
-  return out;
 }
 
 function parseJsonList(value: string): unknown[] {
@@ -1206,14 +1200,12 @@ export default function CompanySettingsPage() {
   const [itemCategoryExpanded, setItemCategoryExpanded] = useState<Record<number, boolean>>({});
   const [itemCategoryDragIndex, setItemCategoryDragIndex] = useState<number | null>(null);
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
+  const [isItemCategoriesModalOpen, setIsItemCategoriesModalOpen] = useState(false);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([]);
   const [jobTypeExpanded, setJobTypeExpanded] = useState<Record<number, boolean>>({});
   const [jobTypeDragIndex, setJobTypeDragIndex] = useState<number | null>(null);
   const [jobTypeDragOverIndex, setJobTypeDragOverIndex] = useState<number | null>(null);
-  const [quoteExtras, setQuoteExtras] = useState<QuoteExtraRow[]>([]);
   const [quoteHelpers, setQuoteHelpers] = useState<QuoteHelperRow[]>([]);
-  const [quoteExtraDragIndex, setQuoteExtraDragIndex] = useState<number | null>(null);
-  const [quoteExtraDragOverIndex, setQuoteExtraDragOverIndex] = useState<number | null>(null);
   const [quoteHelperDragIndex, setQuoteHelperDragIndex] = useState<number | null>(null);
   const [quoteHelperDragOverIndex, setQuoteHelperDragOverIndex] = useState<number | null>(null);
   const [discountTiers, setDiscountTiers] = useState<DiscountTierRow[]>([]);
@@ -1273,15 +1265,6 @@ export default function CompanySettingsPage() {
     quoteTemplateMarginMm: "10",
     quoteTemplateFooterPinBottom: false,
   });
-  const quoteTemplateContainerOptions = useMemo(
-    () => normalizeQuoteTemplateContainers((company as Record<string, unknown> | null)?.quoteLayoutTemplate),
-    [company],
-  );
-  const quoteTemplateBlockOptions = useMemo(
-    () => normalizeQuoteTemplateBlocks((company as Record<string, unknown> | null)?.quoteLayoutTemplate),
-    [company],
-  );
-  const quoteTemplatePlaceholderOptions = useMemo(() => QUOTE_TEMPLATE_PLACEHOLDERS, []);
   const [notificationsRows, setNotificationsRows] = useState<UserNotificationRow[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [isInvitingStaff, setIsInvitingStaff] = useState(false);
@@ -1304,7 +1287,6 @@ export default function CompanySettingsPage() {
     dateFormat: "DD/MM/YYYY",
     timeZone: "Pacific/Auckland",
     deletedRetentionDays: "90",
-    clientConfirmationLinkDays: "30",
     themeColor: "#2F6BFF",
     logoPath: "",
   });
@@ -1405,7 +1387,6 @@ export default function CompanySettingsPage() {
           dateFormat: toStr(doc.dateFormat, "DD/MM/YYYY"),
           timeZone: toStr(doc.timeZone, "Pacific/Auckland"),
           deletedRetentionDays: toStr(doc.deletedRetentionDays, "90"),
-          clientConfirmationLinkDays: toStr(doc.clientConfirmationLinkDays, "30"),
           themeColor: toStr(doc.themeColor, "#2F6BFF"),
           logoPath: toStr(doc.logoPath),
         });
@@ -1424,7 +1405,6 @@ export default function CompanySettingsPage() {
         setSpecsTemplateGrid(normalizeSpecsGrid(doc.specsTemplateGrid));
         setQuoteGridTemplate(normalizeSpecsGrid(doc.quoteGridTemplate));
         setJobTypes(normalizeJobTypes(doc.salesJobTypes));
-        setQuoteExtras(normalizeQuoteExtras(doc.quoteExtras));
         setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
         setDiscountTiers(normalizeDiscountTiers(doc.salesQuoteDiscountTiers));
         setMinusOffQuoteTotal(Boolean(doc.salesMinusOffQuoteTotal));
@@ -2261,7 +2241,6 @@ export default function CompanySettingsPage() {
         specsTemplateGrid,
         quoteGridTemplate,
         salesJobTypes: jobTypes,
-        quoteExtras,
         salesQuoteHelpers: quoteHelpers,
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
@@ -2502,7 +2481,6 @@ export default function CompanySettingsPage() {
       dateFormat: form.dateFormat,
       timeZone: form.timeZone,
       deletedRetentionDays: Number(form.deletedRetentionDays || 90),
-      clientConfirmationLinkDays: Number(form.clientConfirmationLinkDays || 30),
       themeColor: form.themeColor,
       logoPath: form.logoPath,
       projectStatuses: statuses.map((row, idx) => ({
@@ -2680,21 +2658,6 @@ export default function CompanySettingsPage() {
           };
         })
         .filter(Boolean),
-      quoteExtras: quoteExtras
-        .map((row) => {
-          const name = toStr(row.name);
-          if (!name) return null;
-          return {
-            id: toStr(row.id),
-            name,
-            price: toStr(row.price),
-            defaultIncluded: Boolean(row.defaultIncluded),
-            templateContainerId: toStr(row.templateContainerId),
-            templateBlockId: toStr(row.templateBlockId),
-            templatePlaceholderKey: toStr(row.templatePlaceholderKey),
-          };
-        })
-        .filter(Boolean),
       salesQuoteHelpers: quoteHelpers
         .map((row) => {
           const content = sanitizeQuoteRichTextMarkup(toStr(row.content));
@@ -2783,7 +2746,6 @@ export default function CompanySettingsPage() {
         specsTemplateGrid,
         quoteGridTemplate,
         salesJobTypes: jobTypes,
-        quoteExtras,
           salesQuoteHelpers: quoteHelpers,
           salesQuoteDiscountTiers: discountTiers,
           salesMinusOffQuoteTotal: minusOffQuoteTotal,
@@ -2994,7 +2956,6 @@ export default function CompanySettingsPage() {
     roles,
     itemCategories,
     jobTypes,
-    quoteExtras,
       quoteHelpers,
       discountTiers,
       minusOffQuoteTotal,
@@ -3018,30 +2979,69 @@ export default function CompanySettingsPage() {
   return (
     <>
         {!companyAccessResolved ? (
-          <div className="rounded-[14px] border border-[#D7DEE8] bg-white p-6 text-[13px] font-semibold text-[#475467] shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+          <div
+            className="rounded-[16px] border p-6 text-[13px] font-semibold"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+          >
             Checking access...
           </div>
         ) : !canAccessCompanySettings ? (
-          <div className="rounded-[14px] border border-[#D7DEE8] bg-white p-6 text-[13px] font-semibold text-[#475467] shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+          <div
+            className="rounded-[16px] border p-6 text-[13px] font-semibold"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+          >
             You do not have permission to access Company Settings.
           </div>
         ) : (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between rounded-[12px] border border-[#D7DEE8] bg-white px-3 py-2">
+        <div
+          className="-mt-3 flex flex-col bg-transparent md:-mt-4 lg:-mt-4"
+          style={{
+            marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
+            marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
+          }}
+        >
+          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between gap-3 px-4 md:px-5 lg:top-[48px]">
             <div className="flex items-center gap-2">
-              <Settings size={18} />
-              <h1 className="text-[34px] font-bold text-[#111827]">Settings</h1>
+              <Settings size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
+              <h1 className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Settings</h1>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-[6px] border border-[#DCE3EC] bg-white px-2 py-[2px] text-[11px] font-semibold text-[#94A3B8]">{isLoading ? "Loading..." : saveLabel}</span>
-              <button onClick={() => void save()} disabled={isSaving || isLoading} className="h-9 rounded-[10px] bg-[#1EA44B] px-4 text-[13px] font-bold text-white disabled:opacity-60">{isSaving ? "Saving..." : "Save Changes"}</button>
+            <div className="flex items-center gap-2.5">
+              <span
+                className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+              >
+                {isLoading ? "Loading..." : saveLabel}
+              </span>
+              <button
+                onClick={() => void save()}
+                disabled={isSaving || isLoading}
+                className="h-8 rounded-[10px] px-4 text-[12px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                style={{ backgroundImage: "var(--brand-gradient)", boxShadow: "var(--shadow-sm)" }}
+              >
+                {isSaving ? "Saving..." : "Save Changes"}
+              </button>
             </div>
           </div>
 
-          <div className="grid min-h-[calc(100vh-170px)] gap-3 lg:grid-cols-[190px_1fr]">
-            <aside className="rounded-[14px] border border-[#D7DEE8] bg-white p-2 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search settings..." className="mb-2 h-8 w-full rounded-[8px] border border-[#DCE3EC] bg-[#F4F6FA] px-2 text-[12px] outline-none" />
-              <div className="space-y-1 border-b border-[#E4E9F0] pb-3">
+          <div className="grid gap-3 p-3 md:p-4 lg:grid-cols-[210px_1fr] lg:p-5">
+            <aside
+              className="h-fit rounded-[16px] border p-2.5 lg:sticky lg:top-[116px]"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(20px) saturate(180%)",
+                WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                boxShadow: "var(--shadow-glass)",
+              }}
+            >
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search settings..."
+                className="mb-2 h-8 w-full rounded-[8px] border px-2 text-[12px] outline-none"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+              />
+              <div className="space-y-1 border-b pb-3" style={{ borderColor: "var(--glass-border)" }}>
                 {filteredSections.map((item) => {
                   const Icon = item.icon;
                   const selected = active === item.key;
@@ -3050,10 +3050,10 @@ export default function CompanySettingsPage() {
                       key={item.key}
                       type="button"
                       onClick={() => setActive(item.key)}
-                      className="inline-flex w-full items-center gap-2 rounded-[9px] px-2 py-[7px] text-left text-[12px] font-bold"
+                      className="inline-flex w-full items-center gap-2 rounded-[9px] px-2.5 py-[7px] text-left text-[12px] font-bold transition"
                       style={
                         selected
-                          ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                          ? { backgroundImage: "var(--brand-gradient)", color: "#fff", boxShadow: "var(--shadow-sm)" }
                           : { color: "var(--text-main)" }
                       }
                     >
@@ -3063,15 +3063,19 @@ export default function CompanySettingsPage() {
                   );
                 })}
               </div>
-              <div className="mt-3 rounded-[10px] border border-[#E4E9F0] bg-[#F8FAFD] p-2 text-[11px] text-[#475467]">
-                <p><span className="font-bold text-[#344054]">Company Name</span> {toStr(company?.name, "Unknown")}</p>
-                <p><span className="font-bold text-[#344054]">Company ID</span> {toStr(company?.id, activeCompanyId)}</p>
-                <p><span className="font-bold text-[#344054]">Plan</span> {toStr(company?.planName, "Free")}</p>
-                <p><span className="font-bold text-[#344054]">Join Key</span> {showJoinKey ? toStr(company?.joinKey ?? company?.joinCode, "------") : "------"}</p>
+              <div
+                className="mt-3 rounded-[10px] border p-2 text-[11px]"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+              >
+                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Company Name</span> {toStr(company?.name, "Unknown")}</p>
+                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Company ID</span> {toStr(company?.id, activeCompanyId)}</p>
+                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Plan</span> {toStr(company?.planName, "Free")}</p>
+                <p><span className="font-bold" style={{ color: "var(--text-main)" }}>Join Key</span> {showJoinKey ? toStr(company?.joinKey ?? company?.joinCode, "------") : "------"}</p>
                 <button
                   type="button"
                   onClick={() => setShowJoinKey((v) => !v)}
-                  className="mt-2 h-7 w-full rounded-[8px] border border-[#DCE3EC] bg-[#EEF2F7] text-[11px] font-bold text-[#475467]"
+                  className="mt-2 h-7 w-full rounded-[8px] border text-[11px] font-bold transition hover:brightness-95"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                 >
                   {showJoinKey ? "Hide key" : "Show key"}
                 </button>
@@ -3079,7 +3083,7 @@ export default function CompanySettingsPage() {
             </aside>
 
             <main
-              className="space-y-3 overflow-auto pr-1"
+              className="min-w-0 space-y-3 pb-4"
               onInputCapture={(e) => {
                 const el = e.target as HTMLElement | null;
                 const tag = String(el?.tagName || "").toLowerCase();
@@ -3114,79 +3118,78 @@ export default function CompanySettingsPage() {
               {active === "company" && (
                 <div className="space-y-3">
                   {!canEditCompanySettings && (
-                    <div className="rounded-[10px] border border-[#F7C9CC] bg-[#FDECEC] px-3 py-2 text-[12px] font-semibold text-[#B42318]">
+                    <div
+                      className="rounded-[10px] border px-3 py-2 text-[12px] font-semibold"
+                      style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                    >
                       Verify your account (in User Settings) to edit Company Settings.
                     </div>
                   )}
 
-                <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
+                <div className="grid gap-3 xl:grid-cols-2">
                   <Panel title="Application Preferences">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[180px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Company Name</p>
-                        <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                      </div>
-                      <div className="grid grid-cols-[180px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Default Currency</p>
-                        <input value={form.defaultCurrency} onChange={(e) => setForm((prev) => ({ ...prev, defaultCurrency: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                      </div>
-                      <div className="grid grid-cols-[180px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Measurement Unit</p>
-                        <div className="inline-flex items-center gap-4">
-                          <label className="inline-flex items-center gap-1 font-semibold text-[#475467]"><input type="checkbox" checked={form.measurementUnit === "mm"} onChange={() => setForm((prev) => ({ ...prev, measurementUnit: "mm" }))} />mm</label>
-                          <label className="inline-flex items-center gap-1 font-semibold text-[#475467]"><input type="checkbox" checked={form.measurementUnit === "inches"} onChange={() => setForm((prev) => ({ ...prev, measurementUnit: "inches" }))} />inches</label>
+                    <div className="space-y-3">
+                      <FieldRow label="Company Name">
+                        <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} className={fieldInputClass} />
+                      </FieldRow>
+                      <FieldRow label="Default Currency">
+                        <input value={form.defaultCurrency} onChange={(e) => setForm((prev) => ({ ...prev, defaultCurrency: e.target.value }))} className={fieldInputClass} />
+                      </FieldRow>
+                      <FieldRow label="Measurement Unit">
+                        <div className="inline-flex h-8 items-center gap-4">
+                          <label className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}><input type="checkbox" checked={form.measurementUnit === "mm"} onChange={() => setForm((prev) => ({ ...prev, measurementUnit: "mm" }))} />mm</label>
+                          <label className="inline-flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}><input type="checkbox" checked={form.measurementUnit === "inches"} onChange={() => setForm((prev) => ({ ...prev, measurementUnit: "inches" }))} />inches</label>
                         </div>
-                      </div>
-                      <div className="grid grid-cols-[180px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Date Format</p>
-                        <input value={form.dateFormat} onChange={(e) => setForm((prev) => ({ ...prev, dateFormat: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                      </div>
-                      <div className="grid grid-cols-[180px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Time Zone</p>
-                        <input value={form.timeZone} onChange={(e) => setForm((prev) => ({ ...prev, timeZone: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                      </div>
-                      <div className="grid grid-cols-[180px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Recently Deleted Time</p>
+                      </FieldRow>
+                      <FieldRow label="Date Format">
+                        <input value={form.dateFormat} onChange={(e) => setForm((prev) => ({ ...prev, dateFormat: e.target.value }))} className={fieldInputClass} />
+                      </FieldRow>
+                      <FieldRow label="Time Zone">
+                        <input value={form.timeZone} onChange={(e) => setForm((prev) => ({ ...prev, timeZone: e.target.value }))} className={fieldInputClass} />
+                      </FieldRow>
+                      <FieldRow label="Recently Deleted Time">
                         <select
                           value={form.deletedRetentionDays}
                           onChange={(e) => setForm((prev) => ({ ...prev, deletedRetentionDays: e.target.value }))}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                          className={fieldInputClass}
                         >
                           {deletedRetentionOptions.map((opt) => (
                             <option key={opt.days} value={opt.days}>{opt.label}</option>
                           ))}
                         </select>
-                      </div>
+                      </FieldRow>
                     </div>
                   </Panel>
                   <Panel title="Theme">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[95px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Theme Color</p>
-                        <div className="flex items-center gap-2">
+                    <div className="space-y-3">
+                      <FieldRow label="Theme Color">
+                        <div className="flex h-8 items-center gap-2">
                           <input
                             type="color"
                             value={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : "#2F6BFF"}
                             onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))}
-                            className="h-7 w-9 cursor-pointer rounded-[8px] border border-[#D8DEE8] bg-white p-1"
+                            className="h-8 w-10 shrink-0 cursor-pointer rounded-[8px] border p-1"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
                           />
                           <input
                             value={form.themeColor}
                             onChange={(e) => setForm((prev) => ({ ...prev, themeColor: e.target.value }))}
-                            className="h-7 flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className={fieldInputClass}
                           />
                         </div>
-                      </div>
-                      <div className="grid grid-cols-[95px_1fr_auto] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Company Logo</p>
-                        <div className="inline-flex items-center justify-center overflow-hidden rounded-[16px] border border-[#D8DEE8] bg-white p-3">
-                          {form.logoPath ? (
-                            <img src={form.logoPath} alt="Company logo" className="block max-h-64 max-w-64 object-contain" />
-                          ) : (
-                            <span className="flex h-16 w-16 items-center justify-center text-[11px] font-bold uppercase tracking-[0.4px] text-[#94A3B8]">None</span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
+                      </FieldRow>
+                      <FieldRow label="Company Logo" align="start">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div
+                            className="inline-flex items-center justify-center overflow-hidden rounded-[16px] border p-3"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
+                          >
+                            {form.logoPath ? (
+                              <img src={form.logoPath} alt="Company logo" className="block max-h-24 max-w-24 object-contain" />
+                            ) : (
+                              <span className="flex h-16 w-16 items-center justify-center text-[11px] font-bold uppercase tracking-[0.4px]" style={{ color: "var(--text-muted)" }}>None</span>
+                            )}
+                          </div>
                           <input
                             ref={logoFileInputRef}
                             type="file"
@@ -3201,12 +3204,12 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={() => logoFileInputRef.current?.click()}
                             disabled={isUploadingLogo || isLoading || !activeCompanyId}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467] disabled:opacity-60"
+                            className={secondaryButtonClass}
                           >
                             {isUploadingLogo ? "Uploading..." : "Upload"}
                           </button>
                         </div>
-                      </div>
+                      </FieldRow>
                     </div>
                   </Panel>
                 </div>
@@ -3216,72 +3219,75 @@ export default function CompanySettingsPage() {
               {active === "materials" && (
                 <div className="grid gap-3 xl:grid-cols-2">
                   <Panel title="Sheet Thicknesses">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_1fr_30px] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_1fr_30px] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Thickness</p>
                         <p>Unit</p>
                       </div>
                       {boardThicknesses.map((value, idx) => (
-                        <div key={idx} className="grid grid-cols-[26px_1fr_30px] items-center gap-2">
+                        <div key={idx} className="grid grid-cols-[30px_1fr_30px] items-center gap-2">
                           <button
                             onClick={() => setBoardThicknesses((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
-                          <input value={value} onChange={(e) => setBoardThicknesses((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                          <p className="py-1 font-bold text-[#64748B]">mm</p>
+                          <input value={value} onChange={(e) => setBoardThicknesses((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} className={fieldInputClass} />
+                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>mm</p>
                         </div>
                       ))}
-                      <button onClick={() => setBoardThicknesses((prev) => [...prev, ""])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add</button>
+                      <button onClick={() => setBoardThicknesses((prev) => [...prev, ""])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
                     </div>
                   </Panel>
                   <Panel title="Board Finishes">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Finish</p>
                       </div>
                       {boardFinishes.map((value, idx) => (
-                        <div key={idx} className="grid grid-cols-[26px_1fr] items-center gap-2">
+                        <div key={idx} className="grid grid-cols-[30px_1fr] items-center gap-2">
                           <button
                             onClick={() => setBoardFinishes((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
-                          <input value={value} onChange={(e) => setBoardFinishes((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                          <input value={value} onChange={(e) => setBoardFinishes((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))} className={fieldInputClass} />
                         </div>
                       ))}
-                      <button onClick={() => setBoardFinishes((prev) => [...prev, ""])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add</button>
+                      <button onClick={() => setBoardFinishes((prev) => [...prev, ""])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
                     </div>
                   </Panel>
                   <Panel title="Sheet Sizes">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_1fr_1fr_60px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_1fr_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Height</p>
                         <p>Width</p>
                         <p>Default</p>
                       </div>
                       {sheetSizes.map((row, idx) => (
-                        <div key={idx} className="grid grid-cols-[26px_1fr_1fr_60px] items-center gap-2">
+                        <div key={idx} className="grid grid-cols-[30px_1fr_1fr_70px] items-center gap-2">
                           <button
                             onClick={() => setSheetSizes((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
-                          <input value={row.h} onChange={(e) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, h: e.target.value } : r)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                          <input value={row.w} onChange={(e) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, w: e.target.value } : r)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                          <input value={row.h} onChange={(e) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, h: e.target.value } : r)))} className={fieldInputClass} />
+                          <input value={row.w} onChange={(e) => setSheetSizes((prev) => prev.map((r, i) => (i === idx ? { ...r, w: e.target.value } : r)))} className={fieldInputClass} />
                           {(() => {
                             const hasDefault = sheetSizes.some((r) => r.isDefault);
                             if (hasDefault && !row.isDefault) {
-                              return <div className="h-7" />;
+                              return <div className="h-8" />;
                             }
                             return (
-                              <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]">
+                              <label className="inline-flex items-center gap-1.5 text-[11px] font-bold" style={{ color: "var(--text-main)" }}>
                                 <input
                                   type="checkbox"
                                   checked={row.isDefault}
@@ -3300,12 +3306,12 @@ export default function CompanySettingsPage() {
                           })()}
                         </div>
                       ))}
-                      <button onClick={() => setSheetSizes((prev) => [...prev, { h: "", w: "", isDefault: false }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add</button>
+                      <button onClick={() => setSheetSizes((prev) => [...prev, { h: "", w: "", isDefault: false }])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
                     </div>
                   </Panel>
                   <Panel title="Board Colour Memory">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[22px_26px_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[24px_30px_1fr_70px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p></p>
                         <p>Colour</p>
@@ -3316,7 +3322,7 @@ export default function CompanySettingsPage() {
                         const hasEdgings = row.edgings.length > 0;
                         return (
                           <div key={`board_colour_${idx}`} className="space-y-1">
-                            <div className="grid grid-cols-[22px_26px_1fr_70px] items-center gap-2">
+                            <div className="grid grid-cols-[24px_30px_1fr_70px] items-center gap-2">
                               <button
                                 type="button"
                                 disabled={!hasEdgings}
@@ -3328,42 +3334,57 @@ export default function CompanySettingsPage() {
                                     return next;
                                   })
                                 }
-                                className="inline-flex h-7 w-[22px] items-center justify-center rounded-[6px] text-[#667085] disabled:opacity-30"
+                                className="inline-flex h-8 w-6 items-center justify-center rounded-[6px] disabled:opacity-30"
+                                style={{ color: "var(--text-muted)" }}
                                 title={hasEdgings ? "Show edging tapes used with this colour" : "No edging tapes recorded yet"}
                               >
                                 <ChevronDown size={14} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }} />
                               </button>
                               <button
                                 onClick={() => void onDeleteBoardColourMemoryRow(row.value)}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                className={dangerIconButtonClass}
+                                style={dangerIconButtonStyle}
                               >
                                 <X size={15} strokeWidth={2.8} />
                               </button>
-                              <div className="inline-flex h-7 items-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-[#334155]">
+                              <div
+                                className="inline-flex h-8 items-center rounded-[8px] border px-2.5 text-[12px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              >
                                 {row.value}
                               </div>
-                              <div className="inline-flex h-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] font-semibold text-[#334155]">
+                              <div
+                                className="inline-flex h-8 items-center justify-center rounded-[8px] border px-2 text-[12px] font-semibold"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              >
                                 {String(row.count || "0")}
                               </div>
                             </div>
                             {isExpanded && hasEdgings && (
-                              <div className="ml-[48px] space-y-1 border-l-2 border-[#E4E9F0] pl-2">
-                                <div className="grid grid-cols-[1fr_60px_26px] items-center gap-2 px-1 text-[9px] font-extrabold uppercase tracking-[0.6px] text-[#8B98AC]">
+                              <div className="ml-[52px] space-y-1 border-l-2 pl-2" style={{ borderColor: "var(--glass-border)" }}>
+                                <div className="grid grid-cols-[1fr_60px_26px] items-center gap-2 px-1 text-[9px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                                   <p>Edging</p>
                                   <p className="text-center">Used</p>
                                   <p></p>
                                 </div>
                                 {row.edgings.map((edging, edgingIdx) => (
                                   <div key={`board_edging_${idx}_${edgingIdx}`} className="grid grid-cols-[1fr_60px_26px] items-center gap-2">
-                                    <div className="inline-flex h-6 items-center rounded-[6px] border border-[#E4E9F0] bg-[#FAFBFD] px-2 text-[11px] text-[#475467]">
+                                    <div
+                                      className="inline-flex h-7 items-center rounded-[6px] border px-2 text-[11px]"
+                                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                                    >
                                       {edging.value}
                                     </div>
-                                    <div className="inline-flex h-6 items-center justify-center rounded-[6px] border border-[#E4E9F0] bg-[#FAFBFD] px-2 text-[11px] font-semibold text-[#475467]">
+                                    <div
+                                      className="inline-flex h-7 items-center justify-center rounded-[6px] border px-2 text-[11px] font-semibold"
+                                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                                    >
                                       {String(edging.count || "0")}
                                     </div>
                                     <button
                                       onClick={() => void onDeleteBoardEdgingMemoryRow(row.value, edging.value)}
-                                      className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[6px] border transition hover:brightness-95"
+                                      style={dangerIconButtonStyle}
                                     >
                                       <X size={12} strokeWidth={2.8} />
                                     </button>
@@ -3382,15 +3403,16 @@ export default function CompanySettingsPage() {
                 {active === "integrations" && (
                   <div className="space-y-3">
                     <section
-                      className="overflow-hidden rounded-[14px] border border-[#D7DEE8] shadow-[0_1px_2px_rgba(16,24,40,0.04)] transition-colors"
-                      style={{ backgroundColor: zapierLeads.enabled ? "var(--panel-bg)" : "var(--panel-muted)" }}
+                      className="glass-panel-settle-in overflow-hidden rounded-[16px] border transition-colors"
+                      style={{
+                        borderColor: "var(--glass-border)",
+                        backgroundColor: zapierLeads.enabled ? "var(--glass-bg-strong)" : "var(--panel-muted)",
+                        backdropFilter: "blur(20px) saturate(180%)",
+                        WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                        boxShadow: "var(--shadow-glass)",
+                      }}
                     >
-                      <div
-                        className="space-y-3 px-3 pb-2 pt-4 text-[12px] transition-colors"
-                        style={{
-                          backgroundColor: zapierLeads.enabled ? "var(--panel-bg)" : "var(--panel-muted)",
-                        }}
-                      >
+                      <div className="space-y-3 px-3.5 pb-2.5 pt-4 text-[12px] transition-colors">
                         <div
                           className="grid min-h-[48px] items-center gap-4 md:grid-cols-[auto_minmax(0,1fr)]"
                           style={{ transform: "translateY(2px)" }}
@@ -3414,16 +3436,17 @@ export default function CompanySettingsPage() {
                               aria-label={`Zapier Leads: ${zapierLeads.enabled ? "Enabled" : "Disabled"}`}
                               className="relative inline-flex h-9 w-[74px] items-center rounded-[999px] border px-1 transition-colors"
                               style={{
-                                borderColor: zapierLeads.enabled ? "#65b8ff" : "#D8DEE8",
-                                backgroundColor: zapierLeads.enabled ? "#3ea6ff" : "#E5E7EB",
+                                borderColor: zapierLeads.enabled ? "var(--brand-strong)" : "var(--glass-border)",
+                                backgroundImage: zapierLeads.enabled ? "var(--brand-gradient)" : "none",
+                                backgroundColor: zapierLeads.enabled ? undefined : "var(--panel-muted)",
                               }}
                             >
                               <span
                                 className="absolute left-1 top-[2px] h-[30px] w-[30px] rounded-full transition-transform"
                                 style={{
                                   transform: zapierLeads.enabled ? "translateX(34px)" : "translateX(-1px)",
-                                  backgroundColor: "#ffffff",
-                                  border: "1px solid #D1D5DB",
+                                  backgroundColor: "var(--panel-bg)",
+                                  border: "1px solid var(--glass-border)",
                                   boxShadow: "0 1px 3px rgba(15,23,42,0.14)",
                                 }}
                               />
@@ -3435,8 +3458,8 @@ export default function CompanySettingsPage() {
                               <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-6 w-6 object-contain" />
                             </div>
                             <div className="flex min-w-0 flex-col justify-center" style={{ opacity: zapierLeads.enabled ? 1 : 0.72 }}>
-                              <p className="text-[15px] font-bold text-[#12345B]">Zapier Forms</p>
-                              <p className="mt-1 text-[11px] text-[#6B7280]">
+                              <p className="text-[15px] font-bold text-[var(--text-main)]">Zapier Forms</p>
+                              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
                                 Connect a Zapier Form to your "Leads" tab.
                               </p>
                             </div>
@@ -3469,13 +3492,13 @@ export default function CompanySettingsPage() {
                               }}
                               className="h-9 w-[660px] max-w-full rounded-[8px] border px-3 text-[12px] outline-none transition-colors focus:outline-none focus:ring-0 focus-visible:outline-none"
                               style={{
-                                borderColor: zapierCopyStatus === "copied" ? "#1F6A3B" : "#D8DEE8",
+                                borderColor: zapierCopyStatus === "copied" ? "var(--success-border)" : "var(--glass-border)",
                                 backgroundColor: zapierCopyStatus === "copied"
-                                  ? "#EAF8EF"
+                                  ? "var(--success-soft)"
                                   : zapierLeads.enabled
-                                    ? "#ffffff"
-                                    : "#E5E7EB",
-                                color: zapierCopyStatus === "copied" ? "#1F6A3B" : "#334155",
+                                    ? "var(--panel-bg)"
+                                    : "var(--panel-muted)",
+                                color: zapierCopyStatus === "copied" ? "var(--success-strong)" : "var(--text-main)",
                                 cursor: zapierLeads.enabled ? "pointer" : "default",
                                 textAlign: zapierCopyStatus === "copied" ? "center" : "left",
                               }}
@@ -3490,7 +3513,7 @@ export default function CompanySettingsPage() {
                                 setConfirmZapierRegenerate(false);
                                 setShowLeadFieldsCustomize(true);
                               }}
-                              className="inline-flex h-9 items-center rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                              className="inline-flex h-9 items-center rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-muted)] disabled:opacity-55"
                             >
                               Customize
                             </button>
@@ -3519,9 +3542,9 @@ export default function CompanySettingsPage() {
                               }}
                               className="inline-flex h-9 w-[106px] items-center justify-center rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-55"
                               style={{
-                                borderColor: confirmZapierRegenerate ? "#16A34A" : "#D8DEE8",
-                                backgroundColor: confirmZapierRegenerate ? "#16A34A" : "#ffffff",
-                                color: confirmZapierRegenerate ? "#ffffff" : "#475467",
+                                borderColor: confirmZapierRegenerate ? "var(--success-strong)" : "var(--glass-border)",
+                                backgroundColor: confirmZapierRegenerate ? "var(--success-strong)" : "var(--panel-bg)",
+                                color: confirmZapierRegenerate ? "#ffffff" : "var(--text-muted)",
                               }}
                             >
                               {confirmZapierRegenerate ? "Confirm" : "Regenerate"}
@@ -3536,14 +3559,14 @@ export default function CompanySettingsPage() {
                                 setConfirmZapierRegenerate(false);
                                 setShowZapierHelp(true);
                               }}
-                              className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#D8DEE8] bg-white text-[#475467]"
+                              className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
                             >
                               <CircleHelp size={15} />
                             </button>
                           </div>
                         </div>
                         <div className="hidden grid gap-3 xl:grid-cols-[180px_1fr] xl:items-start">
-                          <p className="font-bold text-[#334155]">Webhook URL</p>
+                          <p className="font-bold text-[var(--text-main)]">Webhook URL</p>
                           <div className="space-y-2">
                             <div className="flex flex-wrap items-center gap-2">
                               <input
@@ -3568,17 +3591,17 @@ export default function CompanySettingsPage() {
                                 }}
                                 className="h-9 min-w-[360px] flex-1 cursor-pointer rounded-[8px] border px-3 text-[12px] transition-colors"
                                 style={{
-                                  borderColor: zapierCopyStatus === "copied" ? "#1EA44B" : "#D8DEE8",
-                                  backgroundColor: zapierCopyStatus === "copied" ? "#EAF8EF" : "#ffffff",
-                                  color: zapierCopyStatus === "copied" ? "#1F6A3B" : "#334155",
+                                  borderColor: zapierCopyStatus === "copied" ? "var(--success-border)" : "var(--glass-border)",
+                                  backgroundColor: zapierCopyStatus === "copied" ? "var(--success-soft)" : "var(--panel-bg)",
+                                  color: zapierCopyStatus === "copied" ? "var(--success-strong)" : "var(--text-main)",
                                 }}
                               />
                             </div>
                           </div>
                         </div>
-                        <div className="hidden rounded-[10px] border border-[#D8DEE8] bg-white p-3">
-                          <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[#12345B]">Zapier Setup</p>
-                          <div className="mt-2 space-y-2 text-[12px] text-[#475467]">
+                        <div className="hidden rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-3">
+                          <p className="text-[12px] font-bold uppercase tracking-[0.8px] text-[var(--text-main)]">Zapier Setup</p>
+                          <div className="mt-2 space-y-2 text-[12px] text-[var(--text-muted)]">
                             <p>1. Trigger: <span className="font-bold">Zapier Forms → New Submission</span></p>
                             <p>2. Action: <span className="font-bold">Webhooks by Zapier → POST</span></p>
                             <p>3. URL: paste the Webhook URL above</p>
@@ -3596,22 +3619,23 @@ export default function CompanySettingsPage() {
               {active === "nesting" && (
                 <div className="w-full xl:w-1/2">
                   <Panel title="Nesting Settings">
-                    <div className="grid gap-2 text-[12px] xl:grid-cols-2">
+                    <div className="grid gap-3 sm:grid-cols-2">
                       {[
                         ["Sheet Height", "sheetHeight"],
                         ["Sheet Width", "sheetWidth"],
                         ["Kerf", "kerf"],
                         ["Margin", "margin"],
                       ].map(([label, key]) => (
-                        <div key={key} className="grid grid-cols-[102px_88px_24px] items-center gap-1">
-                          <p className="font-bold text-[#334155]">{label}</p>
-                          <input
-                            value={nesting[key as keyof typeof nesting]}
-                            onChange={(e) => setNesting((prev) => ({ ...prev, [key]: e.target.value }))}
-                            className="h-7 w-[88px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] text-center"
-                          />
-                          <p className="font-bold text-[#64748B]">mm</p>
-                        </div>
+                        <FieldRow key={key} label={label}>
+                          <div className="flex h-8 items-center gap-2">
+                            <input
+                              value={nesting[key as keyof typeof nesting]}
+                              onChange={(e) => setNesting((prev) => ({ ...prev, [key]: e.target.value }))}
+                              className={`${fieldInputClass} text-center`}
+                            />
+                            <p className="shrink-0 text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>mm</p>
+                          </div>
+                        </FieldRow>
                       ))}
                     </div>
                   </Panel>
@@ -3621,8 +3645,8 @@ export default function CompanySettingsPage() {
               {active === "production" && (
                 <div className="grid gap-3 xl:grid-cols-2">
                   <Panel title="Cutlist Columns">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="flex items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p className="w-7 shrink-0"></p>
                         <p className="min-w-0 flex-1">Column</p>
                         <p className="w-[120px] shrink-0 text-center">Production</p>
@@ -3635,13 +3659,15 @@ export default function CompanySettingsPage() {
                         return (
                           <div
                             key={columnName}
-                            className={`flex items-center gap-2 rounded-[8px] ${
-                              cutlistColumnDragIndex === idx
-                                ? "bg-[#EEF3FA]"
-                                : cutlistColumnDragOverIndex === idx
-                                  ? "bg-[#F7FAFF]"
-                                  : ""
-                            }`}
+                            className="flex items-center gap-2 rounded-[8px] transition-colors"
+                            style={{
+                              backgroundColor:
+                                cutlistColumnDragIndex === idx
+                                  ? "var(--brand-soft)"
+                                  : cutlistColumnDragOverIndex === idx
+                                    ? "var(--panel-muted)"
+                                    : "transparent",
+                            }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               e.dataTransfer.dropEffect = "move";
@@ -3675,12 +3701,16 @@ export default function CompanySettingsPage() {
                                 setCutlistColumnDragIndex(null);
                                 setCutlistColumnDragOverIndex(null);
                               }}
-                              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#98A2B3]"
+                              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                               title="Drag to reorder"
                             >
                               <GripVertical size={14} />
                             </button>
-                            <div className="h-7 min-w-0 flex-1 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] leading-[28px] text-[#334155]">
+                            <div
+                              className="h-8 min-w-0 flex-1 rounded-[8px] border px-2.5 text-[12px] leading-[30px]"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                            >
                               {columnName}
                             </div>
                             <label className="inline-flex w-[120px] shrink-0 items-center justify-center">
@@ -3721,23 +3751,26 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   <Panel title="Production Access">
-                    <div className="grid grid-cols-[150px_1fr] gap-2 text-[12px]">
-                      <p className="font-bold text-[#334155]">Unlock Suffix</p>
-                      <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                      <p className="font-bold text-[#334155]">Unlock Duration (hours)</p>
-                      <input value={unlockHours} onChange={(e) => setUnlockHours(e.target.value)} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                    <div className="space-y-3">
+                      <FieldRow label="Unlock Suffix">
+                        <input value={unlockSuffix} onChange={(e) => setUnlockSuffix(e.target.value)} className={fieldInputClass} />
+                      </FieldRow>
+                      <FieldRow label="Unlock Duration (hours)">
+                        <input value={unlockHours} onChange={(e) => setUnlockHours(e.target.value)} className={fieldInputClass} />
+                      </FieldRow>
                     </div>
                   </Panel>
                   <Panel title="Contractors">
-                    <div className="space-y-2 text-[12px]">
+                    <div className="space-y-1.5">
                       {contractors.map((value, idx) => (
-                        <div key={`contractor_${idx}`} className="grid grid-cols-[26px_1fr] items-center gap-2">
+                        <div key={`contractor_${idx}`} className="grid grid-cols-[30px_1fr] items-center gap-2">
                           <button
                             onClick={() => {
                               setContractors((prev) => prev.filter((_, i) => i !== idx));
                               triggerAutosaveAfterRowDrop();
                             }}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
@@ -3747,13 +3780,13 @@ export default function CompanySettingsPage() {
                               setContractors((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))
                             }
                             placeholder="e.g. Electrician"
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className={fieldInputClass}
                           />
                         </div>
                       ))}
                       <button
                         onClick={() => setContractors((prev) => [...prev, ""])}
-                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                        className={`${secondaryButtonClass} mt-1`}
                       >
                         + Add
                       </button>
@@ -3761,125 +3794,115 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <div className="xl:col-span-2 grid gap-3 xl:grid-cols-2">
                     <Panel title="Edgebanding">
-                      <div className="space-y-2 text-[12px]">
-                        {edgebandingRules.map((rule, idx) => (
-                          <div key={`edgeband_rule_${idx}`} className="grid grid-cols-[26px_110px_110px_100px_110px] items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setEdgebandingRules((prev) => prev.filter((_, i) => i !== idx))}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
-                            >
-                              <X size={15} strokeWidth={2.8} />
-                            </button>
-                            <p className="font-bold text-[#64748B]">if edgetape is</p>
-                            <input
-                              value={rule.upToMeters}
-                              onChange={(e) => setEdgebandingRules((prev) => prev.map((v, i) => (i === idx ? { ...v, upToMeters: e.target.value } : v)))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="font-bold text-[#64748B]">or less, add</p>
-                            <input
-                              value={rule.addMeters}
-                              onChange={(e) => setEdgebandingRules((prev) => prev.map((v, i) => (i === idx ? { ...v, addMeters: e.target.value } : v)))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          onClick={() => setEdgebandingRules((prev) => [...prev, { upToMeters: "", addMeters: "" }])}
-                          className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
-                        >
-                          + Add Rule
-                        </button>
-                        <div className="grid max-w-[280px] grid-cols-[130px_1fr] items-center gap-2 pt-1">
-                          <p className="font-bold text-[#64748B]">Excess per end (mm)</p>
+                      <div className="space-y-3">
+                        <div className="space-y-1.5">
+                          {edgebandingRules.map((rule, idx) => (
+                            <div key={`edgeband_rule_${idx}`} className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setEdgebandingRules((prev) => prev.filter((_, i) => i !== idx))}
+                                className={dangerIconButtonClass}
+                                style={dangerIconButtonStyle}
+                              >
+                                <X size={15} strokeWidth={2.8} />
+                              </button>
+                              <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>if edgetape is</p>
+                              <input
+                                value={rule.upToMeters}
+                                onChange={(e) => setEdgebandingRules((prev) => prev.map((v, i) => (i === idx ? { ...v, upToMeters: e.target.value } : v)))}
+                                className={`${fieldInputClass} w-[90px]`}
+                              />
+                              <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>or less, add</p>
+                              <input
+                                value={rule.addMeters}
+                                onChange={(e) => setEdgebandingRules((prev) => prev.map((v, i) => (i === idx ? { ...v, addMeters: e.target.value } : v)))}
+                                className={`${fieldInputClass} w-[90px]`}
+                              />
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setEdgebandingRules((prev) => [...prev, { upToMeters: "", addMeters: "" }])}
+                            className={secondaryButtonClass}
+                          >
+                            + Add Rule
+                          </button>
+                        </div>
+                        <FieldGroupHeading>Excess & Rounding</FieldGroupHeading>
+                        <FieldRow label="Excess per end (mm)">
                           <input
                             value={edgebandingExcessPerEndMm}
                             onChange={(e) => setEdgebandingExcessPerEndMm(e.target.value)}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className={`${fieldInputClass} max-w-[140px]`}
                           />
-                        </div>
-                        <div className="grid grid-cols-[26px_62px_90px_110px_80px_30px] items-center gap-2 pt-1">
+                        </FieldRow>
+                        <div className="flex flex-wrap items-center gap-2">
                           <input
                             type="checkbox"
                             checked={edgebandingRoundEnabled}
                             onChange={(e) => setEdgebandingRoundEnabled(e.target.checked)}
-                            className="h-4 w-4 justify-self-center"
+                            className="h-4 w-4"
                           />
-                          <p className="font-bold text-[#64748B]">Round</p>
+                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>Round</p>
                           <select
                             value={edgebandingRoundDirection}
                             onChange={(e) => setEdgebandingRoundDirection(e.target.value === "down" ? "down" : "up")}
                             disabled={!edgebandingRoundEnabled}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:opacity-50"
+                            className={`${fieldInputClass} w-[90px]`}
                           >
                             <option value="up">up</option>
                             <option value="down">down</option>
                           </select>
-                          <p className="font-bold text-[#64748B]">to the nearest</p>
+                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>to the nearest</p>
                           <input
                             value={edgebandingRoundNearestMeters}
                             onChange={(e) => setEdgebandingRoundNearestMeters(e.target.value)}
                             disabled={!edgebandingRoundEnabled}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:opacity-50"
+                            className={`${fieldInputClass} w-[80px]`}
                           />
-                          <p className="font-bold text-[#64748B]">m.</p>
+                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>m.</p>
                         </div>
                       </div>
                     </Panel>
                     <Panel title="Gap Allowances">
                       <div className="grid gap-4 xl:grid-cols-2">
                         <div className="space-y-2">
-                          <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#667085]">Base Cabinets</p>
-                          <div className="grid grid-cols-[45px_1fr] items-center gap-2 text-[12px]">
-                            <input
-                              value={gapAllowances.baseBelowBenchToTopOfDoorDrawer}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseBelowBenchToTopOfDoorDrawer: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Below bench to top of door/drawer</p>
-                            <input
-                              value={gapAllowances.baseHorizontalGapNormalHandles}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseHorizontalGapNormalHandles: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Horizontal gap between drawers (Normal handles)</p>
-                            <input
-                              value={gapAllowances.baseHorizontalGapWrapOverHandles}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseHorizontalGapWrapOverHandles: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Horizontal gap between drawers (Wrap over handles)</p>
-                            <input
-                              value={gapAllowances.baseVerticalGapDoorsPanels}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, baseVerticalGapDoorsPanels: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Vertical gap between doors / panels</p>
+                          <FieldGroupHeading first>Base Cabinets</FieldGroupHeading>
+                          <div className="space-y-2">
+                            {[
+                              ["baseBelowBenchToTopOfDoorDrawer", "Below bench to top of door/drawer"],
+                              ["baseHorizontalGapNormalHandles", "Horizontal gap between drawers (Normal handles)"],
+                              ["baseHorizontalGapWrapOverHandles", "Horizontal gap between drawers (Wrap over handles)"],
+                              ["baseVerticalGapDoorsPanels", "Vertical gap between doors / panels"],
+                            ].map(([key, label]) => (
+                              <div key={key} className="flex items-center gap-2.5">
+                                <input
+                                  value={gapAllowances[key as keyof GapAllowancesSettings]}
+                                  onChange={(e) => setGapAllowances((prev) => ({ ...prev, [key]: e.target.value }))}
+                                  className={`${fieldInputClass} w-14 shrink-0 text-center`}
+                                />
+                                <p className="text-[12px]" style={{ color: "var(--text-main)" }}>{label}</p>
+                              </div>
+                            ))}
                           </div>
                         </div>
                         <div className="space-y-2">
-                          <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#667085]">Tall Cabinets</p>
-                          <div className="grid grid-cols-[45px_1fr] items-center gap-2 text-[12px]">
-                            <input
-                              value={gapAllowances.tallTopOfDoorToTopWithScribers}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, tallTopOfDoorToTopWithScribers: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Top of door to top of cabinet (top scribers)</p>
-                            <input
-                              value={gapAllowances.tallTopOfDoorToTopNoScribers}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, tallTopOfDoorToTopNoScribers: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Top of door to top of cabinet (no top scribers)</p>
-                            <input
-                              value={gapAllowances.tallVerticalGapDoorsPanels}
-                              onChange={(e) => setGapAllowances((prev) => ({ ...prev, tallVerticalGapDoorsPanels: e.target.value }))}
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                            />
-                            <p className="text-[#334155]">Vertical gap between doors / panels</p>
+                          <FieldGroupHeading first>Tall Cabinets</FieldGroupHeading>
+                          <div className="space-y-2">
+                            {[
+                              ["tallTopOfDoorToTopWithScribers", "Top of door to top of cabinet (top scribers)"],
+                              ["tallTopOfDoorToTopNoScribers", "Top of door to top of cabinet (no top scribers)"],
+                              ["tallVerticalGapDoorsPanels", "Vertical gap between doors / panels"],
+                            ].map(([key, label]) => (
+                              <div key={key} className="flex items-center gap-2.5">
+                                <input
+                                  value={gapAllowances[key as keyof GapAllowancesSettings]}
+                                  onChange={(e) => setGapAllowances((prev) => ({ ...prev, [key]: e.target.value }))}
+                                  className={`${fieldInputClass} w-14 shrink-0 text-center`}
+                                />
+                                <p className="text-[12px]" style={{ color: "var(--text-main)" }}>{label}</p>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>
@@ -3887,8 +3910,8 @@ export default function CompanySettingsPage() {
                   </div>
                   <div className="xl:col-span-2">
                     <Panel title="Part Types">
-                      <div className="space-y-2 text-[12px]">
-                        <div className="grid grid-cols-[26px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                      <div className="space-y-1.5">
+                        <div className="grid grid-cols-[30px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                           <p></p>
                           <p>Name</p>
                           <p>Color</p>
@@ -3899,10 +3922,10 @@ export default function CompanySettingsPage() {
                           <p>Incl in Nesting</p>
                         </div>
                         {partTypes.map((row, idx) => (
-                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[26px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2">
-                            <button onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
-                            <input value={row.name} onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#7D99B3"}>
+                          <div key={`${row.name}_${idx}`} className="grid grid-cols-[30px_1.2fr_90px_120px_140px_110px_110px_110px] items-center gap-2">
+                            <button onClick={() => setPartTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
+                            <input value={row.name} onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
+                            <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#7D99B3"}>
                               <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
                               <input
                                 type="color"
@@ -3928,7 +3951,7 @@ export default function CompanySettingsPage() {
                                   ),
                                 )
                               }
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                              className={fieldInputClass}
                             >
                               <option value=""></option>
                               <option value="cabinetry">Cabinetry</option>
@@ -3941,7 +3964,7 @@ export default function CompanySettingsPage() {
                               <select
                                 value={row.autoClashLeft}
                                 onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, autoClashLeft: e.target.value } : v)))}
-                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                className={fieldInputClass}
                               >
                                 <option value=""></option>
                                 {autoClashLeftOptions.map((opt) => (
@@ -3951,7 +3974,7 @@ export default function CompanySettingsPage() {
                               <select
                                 value={row.autoClashRight}
                                 onChange={(e) => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, autoClashRight: e.target.value } : v)))}
-                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                className={fieldInputClass}
                               >
                                 <option value=""></option>
                                 {autoClashRightOptions.map((opt) => (
@@ -3964,7 +3987,7 @@ export default function CompanySettingsPage() {
                             <label className="inline-flex items-center justify-center"><input type="checkbox" checked={row.inNesting} onChange={() => setPartTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, inNesting: !v.inNesting } : v)))} /></label>
                           </div>
                         ))}
-                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Part Type</button>
+                        <button onClick={() => setPartTypes((prev) => [...prev, { name: "", color: "#7D99B3", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: false, inCutlists: true, inNesting: true }])} className={`${secondaryButtonClass} mt-1`}>+ Add Part Type</button>
                       </div>
                     </Panel>
                   </div>
@@ -3982,17 +4005,18 @@ export default function CompanySettingsPage() {
                           type="button"
                           onClick={() => void inviteStaffFromTopBar()}
                           disabled={isInvitingStaff || isLoading || !activeCompanyId}
-                          className="h-7 rounded-[8px] border border-[#BFD4FF] bg-[#EAF1FF] px-3 text-[11px] font-bold text-[#244A9A] disabled:opacity-60"
+                          className="h-8 rounded-[8px] border px-3 text-[11px] font-bold disabled:opacity-60"
+                          style={{ borderColor: "var(--brand-soft)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                         >
                           {isInvitingStaff ? "Inviting..." : "Add Staff"}
                         </button>
                       ) : null
                     }
                   >
-                    <div className="space-y-2 text-[12px]">
+                    <div className="space-y-1.5">
                       <div
-                        className="grid gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]"
-                        style={{ gridTemplateColumns: "32px 74px minmax(0,1fr) minmax(0,1fr) 170px 140px" }}
+                        className="grid gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]"
+                        style={{ gridTemplateColumns: "32px 74px minmax(0,1fr) minmax(0,1fr) 170px 140px", color: "var(--text-muted)" }}
                       >
                         <p></p>
                         <p className="text-center">Icon</p>
@@ -4021,15 +4045,16 @@ export default function CompanySettingsPage() {
                                 ? "Owner cannot be removed"
                                 : "Remove staff member"
                             }
-                            className={`inline-flex h-7 w-7 items-center justify-center rounded-[8px] border ${
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition disabled:cursor-not-allowed disabled:opacity-40"
+                            style={
                               normalizeRoleKey(row.roleId || row.role) === "owner"
-                                ? "cursor-not-allowed border-[#E4E7EC] bg-[#F8FAFC] opacity-50"
-                                : "border-[#F7C9CC] bg-[#FDECEC]"
-                            } ${(preparingStaffRemovalUid === row.uid || removingStaffUid === row.uid) ? "opacity-60" : ""}`}
+                                ? { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }
+                                : dangerIconButtonStyle
+                            }
                           >
                             <img src="/trash.png" alt="" className="h-3.5 w-3.5 object-contain" />
                           </button>
-                          <div className="inline-flex h-7 w-full items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white">
+                          <div className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
                             {(() => {
                               const name = toStr(row.displayName, "CU");
                               const parts = name.split(/\s+/).filter(Boolean);
@@ -4076,15 +4101,15 @@ export default function CompanySettingsPage() {
                             }
                             readOnly={!canChangeStaffDisplayName}
                             disabled={savingStaffNameUid === row.uid}
-                            className={`h-7 min-w-0 rounded-[8px] border border-[#D8DEE8] px-2 text-[12px] ${
-                              canChangeStaffDisplayName ? "bg-white" : "bg-[#F8FAFC]"
-                            } ${savingStaffNameUid === row.uid ? "opacity-60" : ""}`}
+                            className={`${fieldInputClass} min-w-0 ${savingStaffNameUid === row.uid ? "opacity-60" : ""}`}
+                            style={{ backgroundColor: canChangeStaffDisplayName ? "var(--panel-bg)" : "var(--panel-muted)" }}
                           />
-                          <input readOnly value={toStr(row.email)} className="h-7 min-w-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                          <input readOnly value={toStr(row.email)} className={`${fieldInputClass} min-w-0`} style={{ backgroundColor: "var(--panel-muted)" }} />
                           <input
                             readOnly
                             value={toStr(row.mobile)}
-                            className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className={fieldInputClass}
+                            style={{ backgroundColor: "var(--panel-muted)" }}
                           />
                           <div
                             ref={openStaffRoleUid === row.uid ? openStaffRoleMenuRef : null}
@@ -4096,12 +4121,12 @@ export default function CompanySettingsPage() {
                               onClick={() =>
                                 setOpenStaffRoleUid((prev) => (prev === row.uid ? "" : row.uid))
                               }
-                              className={`flex h-6 w-full items-center justify-between rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] text-[#0F172A] ${
+                              className={`flex h-7 w-full items-center justify-between rounded-[8px] border px-2 text-[11px] ${
                                 savingStaffRoleUid === row.uid ? "opacity-60" : ""
                               }`}
                               style={{
-                                backgroundColor: roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#FFFFFF",
-                                borderColor: roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#D8DEE8",
+                                backgroundColor: roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "var(--panel-bg)",
+                                borderColor: roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "var(--glass-border)",
                                 color: contrastTextForFill(
                                   roleColorById.get(normalizeRoleKey(row.roleId || row.role)) || "#FFFFFF",
                                 ),
@@ -4113,10 +4138,13 @@ export default function CompanySettingsPage() {
                                   "Choose role",
                                 )}
                               </span>
-                              <span className="ml-2 shrink-0 text-[9px] text-[#667085]">▼</span>
+                              <span className="ml-2 shrink-0 text-[9px]" style={{ color: "inherit", opacity: 0.7 }}>▼</span>
                             </button>
                             {openStaffRoleUid === row.uid ? (
-                              <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-[1400] rounded-[10px] border border-[#D8DEE8] bg-white p-1.5 shadow-[0_16px_40px_rgba(15,23,42,0.16)]">
+                              <div
+                                className="glass-panel-settle-in absolute left-0 right-0 top-[calc(100%+4px)] z-[1400] rounded-[10px] border p-1.5"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", boxShadow: "var(--shadow-glass)" }}
+                              >
                                 <div className="space-y-1">
                                   {staffRoleOptions.map((role) => {
                                     const roleKey = normalizeRoleKey(role.id || role.name);
@@ -4147,8 +4175,8 @@ export default function CompanySettingsPage() {
                                           }
                                           void persistStaffRole(row, roleKey);
                                         }}
-                                        className={`flex h-6 w-full items-center justify-between rounded-[8px] border px-2.5 text-left text-[11px] font-semibold transition-colors ${
-                                          selected ? "ring-1 ring-[#0F2A4A]" : ""
+                                        className={`flex h-7 w-full items-center justify-between rounded-[8px] border px-2.5 text-left text-[11px] font-semibold transition-colors ${
+                                          selected ? "ring-2 ring-[var(--brand)] ring-offset-1" : ""
                                         }`}
                                         style={{
                                           backgroundColor: toStr(role.color, "#7D99B3"),
@@ -4189,8 +4217,8 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                   <Panel title="Roles">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[22px_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[22px_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Role Name</p>
                       </div>
@@ -4262,7 +4290,7 @@ export default function CompanySettingsPage() {
                             return next;
                           });
                         }}
-                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                        className={`${secondaryButtonClass} mt-1`}
                       >
                         + Add Role
                       </button>
@@ -4274,17 +4302,18 @@ export default function CompanySettingsPage() {
                         type="button"
                         aria-label="Close role permissions popup"
                         onClick={() => setActiveRoleModalIndex(null)}
-                        className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+                        className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="relative z-[1601] flex w-full max-w-[760px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-                        <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                      <div className="glass-modal-panel relative z-[1601] flex w-full max-w-[760px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Role Permissions
                           </p>
                           <button
                             type="button"
                             onClick={() => setActiveRoleModalIndex(null)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                           >
                             <X size={16} />
                           </button>
@@ -4292,7 +4321,7 @@ export default function CompanySettingsPage() {
                         <div className="space-y-4 px-4 py-4">
                           <div className="grid grid-cols-[1fr_64px] gap-3">
                             <div className="space-y-1">
-                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#98A2B3]">Role Name</p>
+                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Role Name</p>
                               <input
                                 value={activeRoleModal.name}
                                 onChange={(e) =>
@@ -4302,12 +4331,15 @@ export default function CompanySettingsPage() {
                                     ),
                                   )
                                 }
-                                className="h-9 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                                className={`${fieldInputClass} h-9`}
                               />
                             </div>
                             <div className="space-y-1">
-                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#98A2B3]">Color</p>
-                              <label className="relative inline-flex h-9 w-full overflow-hidden rounded-[10px] border border-[#D8DEE8] bg-white">
+                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Color</p>
+                              <label
+                                className="relative inline-flex h-9 w-full overflow-hidden rounded-[10px] border"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
+                              >
                                 <span className="block h-full w-full" style={{ backgroundColor: activeRoleModal.color || "#7D99B3" }} />
                                 <input
                                   type="color"
@@ -4324,16 +4356,20 @@ export default function CompanySettingsPage() {
                               </label>
                             </div>
                           </div>
-                          <div className="rounded-[12px] border border-[#E4E7EC] bg-[#F8FAFC] p-3">
+                          <div className="rounded-[12px] border p-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
                             <div className="mb-2 flex items-center justify-between">
-                              <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#475467]">Permissions</p>
-                              <span className="text-[11px] font-semibold text-[#667085]">
+                              <p className="text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Permissions</p>
+                              <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
                                 {activeRoleModal.permissions.length} selected
                               </span>
                             </div>
                             <div className="grid grid-cols-2 gap-x-2 gap-y-1">
                               {desktopPermissionKeys.map((perm) => (
-                                <label key={perm} className="inline-flex items-center gap-2 rounded-[8px] bg-white px-2 py-1 text-[11px] font-semibold text-[#334155]">
+                                <label
+                                  key={perm}
+                                  className="inline-flex items-center gap-2 rounded-[8px] px-2 py-1 text-[11px] font-semibold"
+                                  style={{ backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                >
                                   <input
                                     type="checkbox"
                                     checked={activeRoleModal.permissions.includes(perm)}
@@ -4347,7 +4383,7 @@ export default function CompanySettingsPage() {
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center justify-between border-t border-[#E4E7EC] px-4 py-3">
+                        <div className="flex items-center justify-between border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           <button
                             type="button"
                             onClick={() => {
@@ -4356,18 +4392,19 @@ export default function CompanySettingsPage() {
                               setActiveRoleModalIndex(null);
                             }}
                             disabled={activeRoleIsProtected}
-                            className={`rounded-[8px] border px-3 py-1.5 text-[11px] font-bold ${
+                            className="rounded-[8px] border px-3 py-1.5 text-[11px] font-bold disabled:cursor-not-allowed"
+                            style={
                               activeRoleIsProtected
-                                ? "cursor-not-allowed border-[#E4E7EC] bg-[#F8FAFC] text-[#98A2B3]"
-                                : "border-[#F7C9CC] bg-[#FDECEC] text-[#B42318]"
-                            }`}
+                                ? { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }
+                                : dangerIconButtonStyle
+                            }
                           >
                             {activeRoleIsProtected ? "Protected Role" : "Delete Role"}
                           </button>
                           <button
                             type="button"
                             onClick={() => setActiveRoleModalIndex(null)}
-                            className="rounded-[8px] border border-[#D8DEE8] bg-white px-3 py-1.5 text-[11px] font-bold text-[#475467]"
+                            className={secondaryButtonClass}
                           >
                             Done
                           </button>
@@ -4384,11 +4421,11 @@ export default function CompanySettingsPage() {
                           setPendingOwnerTransfer(null);
                           setPendingOwnerTransferTargetUid("");
                         }}
-                        className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+                        className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="relative z-[1701] flex w-full max-w-[520px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-                        <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                      <div className="glass-modal-panel relative z-[1701] flex w-full max-w-[520px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Transfer Owner Role
                           </p>
                           <button
@@ -4397,24 +4434,25 @@ export default function CompanySettingsPage() {
                               setPendingOwnerTransfer(null);
                               setPendingOwnerTransferTargetUid("");
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                           >
                             <X size={16} />
                           </button>
                         </div>
                         <div className="space-y-4 px-4 py-4">
-                          <p className="text-[12px] text-[#475467]">
-                            <span className="font-bold text-[#0F2A4A]">{pendingOwnerTransfer.currentOwnerName}</span>
+                          <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                            <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingOwnerTransfer.currentOwnerName}</span>
                             {" "}
-                            is changing out of the <span className="font-bold text-[#0F2A4A]">Owner</span> role.
+                            is changing out of the <span className="font-bold" style={{ color: "var(--text-main)" }}>Owner</span> role.
                             Choose another staff member to become the new Owner first.
                           </p>
                           <div className="space-y-1">
-                            <p className="text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#98A2B3]">New Owner</p>
+                            <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>New Owner</p>
                             <select
                               value={pendingOwnerTransferTargetUid}
                               onChange={(e) => setPendingOwnerTransferTargetUid(toStr(e.target.value))}
-                              className="h-9 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                              className={`${fieldInputClass} h-9`}
                             >
                               <option value="">Choose staff member</option>
                               {ownerTransferCandidates.map((member) => (
@@ -4425,14 +4463,14 @@ export default function CompanySettingsPage() {
                             </select>
                           </div>
                         </div>
-                        <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           <button
                             type="button"
                             onClick={() => {
                               setPendingOwnerTransfer(null);
                               setPendingOwnerTransferTargetUid("");
                             }}
-                            className="rounded-[8px] border border-[#D8DEE8] bg-white px-3 py-1.5 text-[11px] font-bold text-[#475467]"
+                            className={secondaryButtonClass}
                           >
                             Cancel
                           </button>
@@ -4440,7 +4478,8 @@ export default function CompanySettingsPage() {
                             type="button"
                             onClick={() => void confirmOwnerTransferAndRoleChange()}
                             disabled={!pendingOwnerTransferTargetUid || !!savingStaffRoleUid}
-                            className="rounded-[8px] bg-[#1EA44B] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60"
+                            className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                            style={{ backgroundImage: "var(--brand-gradient)" }}
                           >
                             Confirm Transfer
                           </button>
@@ -4457,11 +4496,11 @@ export default function CompanySettingsPage() {
                           if (removingStaffUid) return;
                           setPendingStaffRemoval(null);
                         }}
-                        className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
+                        className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="relative z-[1726] flex w-full max-w-[560px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-                        <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
-                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                      <div className="glass-modal-panel relative z-[1726] flex w-full max-w-[560px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Remove Staff Member
                           </p>
                           <button
@@ -4470,19 +4509,20 @@ export default function CompanySettingsPage() {
                               if (removingStaffUid) return;
                               setPendingStaffRemoval(null);
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                           >
                             <X size={16} />
                           </button>
                         </div>
                         <div className="space-y-4 px-4 py-4">
                           <div className="space-y-1">
-                            <p className="text-[16px] font-extrabold text-[#0F2A4A]">Are you sure?</p>
-                            <p className="text-[12px] text-[#475467]">
-                              <span className="font-bold text-[#0F2A4A]">{pendingStaffRemoval.displayName}</span>
+                            <p className="text-[16px] font-extrabold" style={{ color: "var(--text-main)" }}>Are you sure?</p>
+                            <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                              <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval.displayName}</span>
                               {" "}
                               has{" "}
-                              <span className="font-bold text-[#0F2A4A]">
+                              <span className="font-bold" style={{ color: "var(--text-main)" }}>
                                 {pendingStaffRemoval.activeProjectCount}
                               </span>
                               {" "}
@@ -4491,7 +4531,7 @@ export default function CompanySettingsPage() {
                           </div>
                           {pendingStaffRemoval.activeProjectCount > 0 ? (
                             <div className="space-y-1">
-                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#98A2B3]">
+                              <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                                 Transfer Projects To
                               </p>
                               <select
@@ -4507,7 +4547,7 @@ export default function CompanySettingsPage() {
                                   )
                                 }
                                 disabled={pendingStaffRemoval.confirmPhase === "type_name" || !!removingStaffUid}
-                                className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                                className={`${fieldInputClass} h-10`}
                               >
                                 <option value="">Choose staff member</option>
                                 {staffRemovalTransferCandidates.map((member) => (
@@ -4517,7 +4557,7 @@ export default function CompanySettingsPage() {
                                 ))}
                               </select>
                               {!staffRemovalTransferCandidates.length ? (
-                                <p className="text-[11px] font-semibold text-[#B42318]">
+                                <p className="text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>
                                   There are no other staff members available to transfer these projects to.
                                 </p>
                               ) : null}
@@ -4525,9 +4565,9 @@ export default function CompanySettingsPage() {
                           ) : null}
                           {pendingStaffRemoval.confirmPhase === "type_name" ? (
                             <div className="space-y-1">
-                              <p className="text-[12px] text-[#475467]">
+                              <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                                 Type{" "}
-                                <span className="font-bold text-[#0F2A4A]">{pendingStaffRemoval.displayName}</span>
+                                <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval.displayName}</span>
                                 {" "}
                                 to remove this user from the company.
                               </p>
@@ -4543,18 +4583,18 @@ export default function CompanySettingsPage() {
                                       : current,
                                   )
                                 }
-                                className="h-10 w-full rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
+                                className={`${fieldInputClass} h-10`}
                                 placeholder={pendingStaffRemoval.displayName}
                               />
                             </div>
                           ) : null}
                         </div>
-                        <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           <button
                             type="button"
                             onClick={() => setPendingStaffRemoval(null)}
                             disabled={!!removingStaffUid}
-                            className="rounded-[8px] border border-[#D8DEE8] bg-white px-3 py-1.5 text-[11px] font-bold text-[#475467]"
+                            className={secondaryButtonClass}
                           >
                             Cancel
                           </button>
@@ -4566,7 +4606,8 @@ export default function CompanySettingsPage() {
                                 !!removingStaffUid ||
                                 toStr(pendingStaffRemoval.typedName) !== toStr(pendingStaffRemoval.displayName)
                               }
-                              className="rounded-[8px] bg-[#B42318] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60"
+                              className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                              style={{ backgroundImage: "var(--danger-gradient)" }}
                             >
                               {removingStaffUid ? "Removing..." : "Confirm"}
                             </button>
@@ -4579,7 +4620,8 @@ export default function CompanySettingsPage() {
                                 (pendingStaffRemoval.activeProjectCount > 0 &&
                                   (!pendingStaffRemoval.transferToUid || !staffRemovalTransferCandidates.length))
                               }
-                              className="rounded-[8px] bg-[#1EA44B] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-60"
+                              className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
+                              style={{ backgroundImage: "var(--brand-gradient)" }}
                             >
                               Confirm
                             </button>
@@ -4596,17 +4638,17 @@ export default function CompanySettingsPage() {
                         onClick={() => setShowZapierHelp(false)}
                         className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
                       />
-                      <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-                        <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+                      <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+                        <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
                           <div className="flex min-w-0 items-center gap-3">
                             <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
                               <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
                             </div>
                             <div>
-                              <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                              <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
                                 Connect Zapier Leads
                               </p>
-                              <p className="text-[11px] text-[#6B7280]">
+                              <p className="text-[11px] text-[var(--text-muted)]">
                                 Use your company webhook URL to connect any Zapier form into CutSmart Leads.
                               </p>
                             </div>
@@ -4614,7 +4656,7 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setShowZapierHelp(false)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
                           >
                             <X size={16} />
                           </button>
@@ -4622,32 +4664,32 @@ export default function CompanySettingsPage() {
                         <div className="flex-1 overflow-y-auto px-5 py-5">
                           <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
                             <div className="space-y-4">
-                              <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What To Do In Zapier</p>
-                                <div className="mt-3 space-y-3 text-[12px] text-[#475467]">
-                                  <p>1. Create a Zap with <span className="font-bold text-[#12345B]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
-                                  <p>2. Add <span className="font-bold text-[#12345B]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
+                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What To Do In Zapier</p>
+                                <div className="mt-3 space-y-3 text-[12px] text-[var(--text-muted)]">
+                                  <p>1. Create a Zap with <span className="font-bold text-[var(--text-main)]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
+                                  <p>2. Add <span className="font-bold text-[var(--text-main)]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
                                   <p>3. Paste your company webhook URL into the Zapier URL field.</p>
-                                  <p>4. Set <span className="font-bold text-[#12345B]">Payload Type</span> to <span className="font-bold text-[#12345B]">JSON</span>.</p>
+                                  <p>4. Set <span className="font-bold text-[var(--text-main)]">Payload Type</span> to <span className="font-bold text-[var(--text-main)]">JSON</span>.</p>
                                   <p>5. Add the lead fields you want to send in the body. The left-side key names become the dynamic fields shown in CutSmart.</p>
                                   <p>6. Test the Zap and then publish it.</p>
                                 </div>
                               </div>
-                              <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Dynamic Field Tip</p>
-                                <p className="mt-3 text-[12px] text-[#475467]">
-                                  If you send keys like <span className="font-bold text-[#12345B]">Email</span>, <span className="font-bold text-[#12345B]">Daytime Phone</span>, <span className="font-bold text-[#12345B]">Suburb</span>, or <span className="font-bold text-[#12345B]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
+                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Dynamic Field Tip</p>
+                                <p className="mt-3 text-[12px] text-[var(--text-muted)]">
+                                  If you send keys like <span className="font-bold text-[var(--text-main)]">Email</span>, <span className="font-bold text-[var(--text-main)]">Daytime Phone</span>, <span className="font-bold text-[var(--text-main)]">Suburb</span>, or <span className="font-bold text-[var(--text-main)]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
                                 </p>
                               </div>
                             </div>
                             <div className="space-y-4">
-                              <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Webhook URL</p>
+                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Webhook URL</p>
                                 <div className="mt-3 flex items-center gap-2">
                                   <input
                                     value={zapierWebhookUrl}
                                     readOnly
-                                    className="h-10 flex-1 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                                    className="h-10 flex-1 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] text-[var(--text-main)]"
                                   />
                                   <button
                                     type="button"
@@ -4661,18 +4703,18 @@ export default function CompanySettingsPage() {
                                         setZapierCopyStatus("Copy failed");
                                       }
                                     }}
-                                    className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                                    className="h-10 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-muted)] disabled:opacity-55"
                                   >
                                     Copy
                                   </button>
                                 </div>
-                                <p className="mt-2 text-[11px] text-[#6B7280]">
+                                <p className="mt-2 text-[11px] text-[var(--text-muted)]">
                                   This URL already includes the secure company token, so you do not need to add separate auth headers in Zapier.
                                 </p>
                               </div>
-                              <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
-                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What Happens Next</p>
-                                <div className="mt-3 space-y-2 text-[12px] text-[#475467]">
+                              <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
+                                <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What Happens Next</p>
+                                <div className="mt-3 space-y-2 text-[12px] text-[var(--text-muted)]">
                                   <p>Leads are saved under this company automatically.</p>
                                   <p>The Leads tab reads them back through the server route.</p>
                                   <p>You can use different field names for different companies because the lead display is dynamic.</p>
@@ -4681,11 +4723,11 @@ export default function CompanySettingsPage() {
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+                        <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
                           <button
                             type="button"
                             onClick={() => setShowZapierHelp(false)}
-                            className="rounded-[10px] border border-[#D8DEE8] bg-white px-4 py-2 text-[12px] font-bold text-[#475467]"
+                            className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
                           >
                             Close
                           </button>
@@ -4697,10 +4739,10 @@ export default function CompanySettingsPage() {
               )}
 
               {active === "dashboard" && (
-                <div className="w-[20vw] space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <Panel title="Completed Project Legend">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p></p>
                         <p>Name</p>
@@ -4709,13 +4751,15 @@ export default function CompanySettingsPage() {
                       {dashboardLegend.map((row, idx) => (
                         <div
                           key={`${row.id}_${idx}`}
-                          className={`grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 rounded-[8px] transition-all ${
-                            legendDragIndex === idx
-                              ? "z-10 bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                              : legendDragOverIndex === idx
-                                ? "bg-white"
-                                : ""
-                          }`}
+                          className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 rounded-[8px] transition-colors"
+                          style={{
+                            backgroundColor:
+                              legendDragIndex === idx
+                                ? "var(--brand-soft)"
+                                : legendDragOverIndex === idx
+                                  ? "var(--panel-muted)"
+                                  : "transparent",
+                          }}
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.dataTransfer.dropEffect = "move";
@@ -4747,20 +4791,22 @@ export default function CompanySettingsPage() {
                               setLegendDragIndex(null);
                               setLegendDragOverIndex(null);
                             }}
-                            className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                            className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                             title="Drag to reorder"
                           >
                             <GripVertical size={14} />
                           </button>
                           <button
                             onClick={() => setDashboardLegend((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                             title="Delete row"
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
-                          <input value={row.name} onChange={(e) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                          <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#2A7A3B"}>
+                          <input value={row.name} onChange={(e) => setDashboardLegend((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
+                          <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#2A7A3B"}>
                             <span className="block h-full w-full" style={{ backgroundColor: row.color || "#2A7A3B" }} />
                             <input
                               type="color"
@@ -4771,12 +4817,12 @@ export default function CompanySettingsPage() {
                           </label>
                         </div>
                       ))}
-                      <button onClick={() => setDashboardLegend((prev) => [...prev, { id: `legend_${prev.length + 1}`, name: "", color: form.themeColor || "#2A7A3B" }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add</button>
+                      <button onClick={() => setDashboardLegend((prev) => [...prev, { id: `legend_${prev.length + 1}`, name: "", color: form.themeColor || "#2A7A3B" }])} className={`${secondaryButtonClass} mt-1`}>+ Add</button>
                     </div>
                   </Panel>
                   <Panel title="Project Statuses">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Del</p>
                         <p>Status Name</p>
@@ -4785,13 +4831,15 @@ export default function CompanySettingsPage() {
                       {statuses.map((row, idx) => (
                         <div
                           key={`project_status_${idx}`}
-                          className={`grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 rounded-[8px] transition-all ${
-                            statusDragIndex === idx
-                              ? "z-10 bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                              : statusDragOverIndex === idx
-                                ? "bg-white"
-                                : ""
-                          }`}
+                          className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 rounded-[8px] transition-colors"
+                          style={{
+                            backgroundColor:
+                              statusDragIndex === idx
+                                ? "var(--brand-soft)"
+                                : statusDragOverIndex === idx
+                                  ? "var(--panel-muted)"
+                                  : "transparent",
+                          }}
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.dataTransfer.dropEffect = "move";
@@ -4823,7 +4871,8 @@ export default function CompanySettingsPage() {
                               setStatusDragIndex(null);
                               setStatusDragOverIndex(null);
                             }}
-                            className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                            className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                             title="Drag to reorder"
                           >
                             <GripVertical size={14} />
@@ -4831,16 +4880,17 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
                           <input
                             value={row.name}
                             onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className={fieldInputClass}
                           />
-                          <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#64748B"}>
+                          <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#64748B"}>
                             <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
                             <input
                               type="color"
@@ -4853,15 +4903,15 @@ export default function CompanySettingsPage() {
                       ))}
                       <button
                         onClick={() => setStatuses((prev) => [...prev, { name: "", color: "#64748B" }])}
-                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                        className={`${secondaryButtonClass} mt-1`}
                       >
                         + Add
                       </button>
                     </div>
                   </Panel>
                   <Panel title="Leads Statuses">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Del</p>
                         <p>Status Name</p>
@@ -4870,13 +4920,15 @@ export default function CompanySettingsPage() {
                       {leadStatuses.map((row, idx) => (
                         <div
                           key={`lead_status_${idx}`}
-                          className={`grid grid-cols-[26px_26px_1fr_46px] items-center gap-2 rounded-[8px] transition-all ${
-                            leadStatusDragIndex === idx
-                              ? "z-10 bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                              : leadStatusDragOverIndex === idx
-                                ? "bg-white"
-                                : ""
-                          }`}
+                          className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 rounded-[8px] transition-colors"
+                          style={{
+                            backgroundColor:
+                              leadStatusDragIndex === idx
+                                ? "var(--brand-soft)"
+                                : leadStatusDragOverIndex === idx
+                                  ? "var(--panel-muted)"
+                                  : "transparent",
+                          }}
                           onDragOver={(e) => {
                             e.preventDefault();
                             e.dataTransfer.dropEffect = "move";
@@ -4908,7 +4960,8 @@ export default function CompanySettingsPage() {
                               setLeadStatusDragIndex(null);
                               setLeadStatusDragOverIndex(null);
                             }}
-                            className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                            className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                             title="Drag to reorder"
                           >
                             <GripVertical size={14} />
@@ -4916,16 +4969,17 @@ export default function CompanySettingsPage() {
                           <button
                             type="button"
                             onClick={() => setLeadStatuses((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
                           <input
                             value={row.name}
                             onChange={(e) => setLeadStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                            className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                            className={fieldInputClass}
                           />
-                          <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#64748B"}>
+                          <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#64748B"}>
                             <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
                             <input
                               type="color"
@@ -4938,35 +4992,39 @@ export default function CompanySettingsPage() {
                       ))}
                       <button
                         onClick={() => setLeadStatuses((prev) => [...prev, { name: "", color: "#64748B" }])}
-                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                        className={`${secondaryButtonClass} mt-1`}
                       >
                         + Add
                       </button>
                     </div>
                   </Panel>
                   <Panel title="Tags">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_1fr_60px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_1fr_60px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Tag</p>
                         <p className="text-center">Count</p>
                       </div>
                       {projectTagUsage.map((row, idx) => (
-                        <div key={`tag_row_${idx}`} className="grid grid-cols-[26px_1fr_60px] items-center gap-2">
+                        <div key={`tag_row_${idx}`} className="grid grid-cols-[30px_1fr_60px] items-center gap-2">
                           <button
                             type="button"
                             onClick={() => setProjectTagUsage((prev) => prev.filter((_, i) => i !== idx))}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
                           >
                             <X size={15} strokeWidth={2.8} />
                           </button>
-                          <input value={row.value} onChange={(e) => setProjectTagUsage((prev) => prev.map((v, i) => (i === idx ? { ...v, value: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                          <div className="inline-flex h-7 w-full items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-center text-[12px] font-semibold text-[#334155]">
+                          <input value={row.value} onChange={(e) => setProjectTagUsage((prev) => prev.map((v, i) => (i === idx ? { ...v, value: e.target.value } : v)))} className={fieldInputClass} />
+                          <div
+                            className="inline-flex h-8 w-full items-center justify-center rounded-[8px] border px-2 text-center text-[12px] font-semibold"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          >
                             {String(row.count || "0")}
                           </div>
                         </div>
                       ))}
-                      <button onClick={() => setProjectTagUsage((prev) => [...prev, { value: "", count: "0" }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Tag</button>
+                      <button onClick={() => setProjectTagUsage((prev) => [...prev, { value: "", count: "0" }])} className={`${secondaryButtonClass} mt-1`}>+ Add Tag</button>
                     </div>
                   </Panel>
                 </div>
@@ -4974,249 +5032,293 @@ export default function CompanySettingsPage() {
 
               {active === "sales" && (
                 <div className="space-y-3">
-                  <Panel title="Lead Form">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[180px_minmax(0,1fr)] items-center gap-3">
-                        <p className="text-[11px] font-bold text-[#475467]">Public Form URL</p>
-                        <input
-                          value={salesLeadFormUrl}
-                          onChange={(e) => setSalesLeadFormUrl(e.target.value)}
-                          placeholder="https://..."
-                          className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-3 text-[12px]"
-                        />
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    <Panel title="Lead Form">
+                      <div className="space-y-3">
+                        <FieldRow label="Public Form URL">
+                          <input
+                            value={salesLeadFormUrl}
+                            onChange={(e) => setSalesLeadFormUrl(e.target.value)}
+                            placeholder="https://..."
+                            className={fieldInputClass}
+                          />
+                        </FieldRow>
                       </div>
+                    </Panel>
+                    <Panel title="Layout Builders">
+                      <div className="flex flex-wrap gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setIsSpecsLayoutModalOpen(true)}
+                          className={secondaryButtonClass}
+                        >
+                          Open Specs Layout Builder
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsQuoteLayoutModalOpen(true)}
+                          className={secondaryButtonClass}
+                        >
+                          Open Quote Layout Builder
+                        </button>
+                      </div>
+                    </Panel>
+                  </div>
+                  <Panel title="Item Categories">
+                    <div className="space-y-3">
+                      <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                        {itemCategories.length} categor{itemCategories.length === 1 ? "y" : "ies"} configured for the Sales item picker.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setIsItemCategoriesModalOpen(true)}
+                        className={secondaryButtonClass}
+                      >
+                        Manage Item Categories
+                      </button>
                     </div>
                   </Panel>
-                  <Panel title="Item Categories">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_26px_72px_1fr_1fr] gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                        <p></p>
-                        <p></p>
-                        <p></p>
-                        <p className="text-center">COLOUR</p>
-                        <p>Name</p>
-                        <p>Sub-categories</p>
-                      </div>
-                      {itemCategories.map((row, idx) => (
-                        <div key={idx} className="space-y-2">
-                          <div
-                            className={`grid grid-cols-[26px_26px_26px_72px_1fr_1fr] gap-2 rounded-[8px] transition-all ${
-                              itemCategoryDragIndex === idx
-                                ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                                : itemCategoryDragOverIndex === idx
-                                  ? "bg-white"
-                                  : ""
-                            }`}
-                            onDragOver={(e) => {
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = "move";
-                            }}
-                            onDragEnter={(e) => {
-                              e.preventDefault();
-                              if (itemCategoryDragIndex == null || itemCategoryDragIndex === idx) return;
-                              setItemCategories((prev) => moveRowTo(prev, itemCategoryDragIndex, idx));
-                              setItemCategoryDragIndex(idx);
-                              setItemCategoryDragOverIndex(idx);
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              setItemCategoryDragIndex(null);
-                              setItemCategoryDragOverIndex(null);
-                              triggerAutosaveAfterRowDrop();
-                            }}
+                  {isItemCategoriesModalOpen ? (
+                    <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close item categories"
+                        onClick={() => setIsItemCategoriesModalOpen(false)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Item Categories</p>
+                          <button
+                            type="button"
+                            onClick={() => setIsItemCategoriesModalOpen(false)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                           >
-                            <button
-                              type="button"
-                              draggable
-                              onDragStart={(e) => {
-                                setItemCategoryDragIndex(idx);
-                                setItemCategoryDragOverIndex(idx);
-                                e.dataTransfer.effectAllowed = "move";
-                                e.dataTransfer.setData("text/plain", `itemcat_${idx}`);
-                              }}
-                              onDragEnd={() => {
-                                setItemCategoryDragIndex(null);
-                                setItemCategoryDragOverIndex(null);
-                              }}
-                              className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
-                              title="Drag to reorder"
-                            >
-                              <GripVertical size={14} />
-                            </button>
-                            <button onClick={() => setItemCategories((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
-                            <button
-                              type="button"
-                              onClick={() => toggleItemCategoryExpanded(idx)}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7]"
-                              title={itemCategoryExpanded[idx] ? "Collapse" : "Expand"}
-                            >
-                              <img
-                                src="/Arrow.png"
-                                alt="Expand"
-                                className={`h-3 w-3 transition-transform ${itemCategoryExpanded[idx] ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
-                              />
-                            </button>
-                            <label className="relative block h-7 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px]" title={row.color || "#7D99B3"}>
-                              <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
-                              <input
-                                type="color"
-                                value={row.color || "#7D99B3"}
-                                onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                              />
-                            </label>
-                            <input value={row.name} onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <div className="flex h-7 flex-wrap items-center gap-1 px-1">
-                              <button
-                                type="button"
-                                onClick={() => addItemCategorySubcategory(idx)}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
-                                title="Add sub-category"
-                              >
-                                <Plus size={13} className="mx-auto" strokeWidth={2.8} />
-                              </button>
-                              {parseSubcategoryNames(row.subcategories).map((sub) => (
-                                <span key={`${idx}_${sub}`} className="inline-flex h-7 items-center gap-1 rounded-[999px] border border-[#D8DEE8] bg-white px-2 text-[11px] text-[#334155]">
-                                  {sub}
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto">
+                          <div
+                            className="grid grid-cols-[30px_30px_30px_72px_1fr_1fr] gap-2 border-b px-4 py-2 text-[10px] font-extrabold uppercase tracking-[0.6px]"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                          >
+                            <p></p>
+                            <p></p>
+                            <p></p>
+                            <p className="text-center">Colour</p>
+                            <p>Name</p>
+                            <p>Sub-categories</p>
+                          </div>
+                          {itemCategories.map((row, idx) => (
+                              <div key={idx}>
+                                <div
+                                  className={`grid grid-cols-[30px_30px_30px_72px_1fr_1fr] items-center gap-2 px-4 py-2 transition-colors ${idx < itemCategories.length - 1 || itemCategoryExpanded[idx] ? "border-b" : ""}`}
+                                  style={{
+                                    borderColor: "var(--glass-border)",
+                                    backgroundColor:
+                                      itemCategoryDragIndex === idx
+                                        ? "var(--brand-soft)"
+                                        : itemCategoryDragOverIndex === idx
+                                          ? "var(--panel-muted)"
+                                          : "transparent",
+                                  }}
+                                  onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = "move";
+                                  }}
+                                  onDragEnter={(e) => {
+                                    e.preventDefault();
+                                    if (itemCategoryDragIndex == null || itemCategoryDragIndex === idx) return;
+                                    setItemCategories((prev) => moveRowTo(prev, itemCategoryDragIndex, idx));
+                                    setItemCategoryDragIndex(idx);
+                                    setItemCategoryDragOverIndex(idx);
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    setItemCategoryDragIndex(null);
+                                    setItemCategoryDragOverIndex(null);
+                                    triggerAutosaveAfterRowDrop();
+                                  }}
+                                >
                                   <button
                                     type="button"
-                                    onClick={() => removeItemCategorySubcategory(idx, sub)}
-                                    className="inline-flex h-4 w-4 items-center justify-center rounded-[6px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
-                                    title="Remove sub-category"
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setItemCategoryDragIndex(idx);
+                                      setItemCategoryDragOverIndex(idx);
+                                      e.dataTransfer.effectAllowed = "move";
+                                      e.dataTransfer.setData("text/plain", `itemcat_${idx}`);
+                                    }}
+                                    onDragEnd={() => {
+                                      setItemCategoryDragIndex(null);
+                                      setItemCategoryDragOverIndex(null);
+                                    }}
+                                    className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                                    title="Drag to reorder"
                                   >
-                                    <X size={11} strokeWidth={2.8} />
+                                    <GripVertical size={14} />
                                   </button>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
+                                  <button onClick={() => setItemCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleItemCategoryExpanded(idx)}
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                                    title={itemCategoryExpanded[idx] ? "Collapse" : "Expand"}
+                                  >
+                                    <ChevronDown
+                                      size={15}
+                                      style={{ transform: itemCategoryExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}
+                                    />
+                                  </button>
+                                  <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#7D99B3"}>
+                                    <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
+                                    <input
+                                      type="color"
+                                      value={row.color || "#7D99B3"}
+                                      onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
+                                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                    />
+                                  </label>
+                                  <input value={row.name} onChange={(e) => setItemCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
+                                  <div className="flex min-h-8 flex-wrap items-center gap-1 px-1 py-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => addItemCategorySubcategory(idx)}
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                                      style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+                                      title="Add sub-category"
+                                    >
+                                      <Plus size={13} className="mx-auto" strokeWidth={2.8} />
+                                    </button>
+                                    {parseSubcategoryNames(row.subcategories).map((sub) => (
+                                      <span
+                                        key={`${idx}_${sub}`}
+                                        className="inline-flex h-7 items-center gap-1 rounded-[999px] border px-2 text-[11px]"
+                                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                      >
+                                        {sub}
+                                        <button
+                                          type="button"
+                                          onClick={() => removeItemCategorySubcategory(idx, sub)}
+                                          className="inline-flex h-4 w-4 items-center justify-center rounded-[6px] border"
+                                          style={dangerIconButtonStyle}
+                                          title="Remove sub-category"
+                                        >
+                                          <X size={11} strokeWidth={2.8} />
+                                        </button>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
 
-                          {itemCategoryExpanded[idx] && (
-                            <div
-                              className="rounded-[10px] border p-2"
-                              style={{ backgroundColor: tintHex(row.color, 0.82), borderColor: row.color || "#7D99B3" }}
-                            >
-                              <div className="mb-2 grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                                <p></p>
-                                <p>Name</p>
-                                <p>Description</p>
-                                <p>Sub Category</p>
-                                <p>Price</p>
-                                <p>Markup %</p>
-                                <p>Output Price</p>
-                              </div>
-                              <div className="space-y-2">
-                                {(row.items ?? []).map((itemRow, itemIdx) => {
-                                  const subcategoryOptions = parseSubcategoryNames(row.subcategories);
-                                  return (
-                                    <div key={`${idx}_item_${itemIdx}`} className="grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2">
+                                {itemCategoryExpanded[idx] && (
+                                  <div
+                                    className={idx < itemCategories.length - 1 ? "border-b" : ""}
+                                    style={{ backgroundColor: tintHex(row.color, 0.9), borderColor: "var(--glass-border)" }}
+                                  >
+                                    <div
+                                      className="grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2 border-b px-4 py-1.5 text-[10px] font-extrabold uppercase tracking-[0.6px]"
+                                      style={{ borderColor: row.color || "#7D93B3", backgroundColor: tintHex(row.color, 0.78), color: "var(--text-muted)" }}
+                                    >
+                                      <p></p>
+                                      <p>Name</p>
+                                      <p>Description</p>
+                                      <p>Sub Category</p>
+                                      <p>Price</p>
+                                      <p>Markup %</p>
+                                      <p>Output Price</p>
+                                    </div>
+                                    {(row.items ?? []).map((itemRow, itemIdx) => {
+                                      const subcategoryOptions = parseSubcategoryNames(row.subcategories);
+                                      const isLastItem = itemIdx === (row.items ?? []).length - 1;
+                                      return (
+                                        <div
+                                          key={`${idx}_item_${itemIdx}`}
+                                          className={`grid grid-cols-[30px_1fr_2.2fr_110px_110px_110px_110px] items-center gap-2 px-4 py-1.5 ${isLastItem ? "" : "border-b"}`}
+                                          style={{ borderColor: row.color || "#7D99B3" }}
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => removeItemCategoryItem(idx, itemIdx)}
+                                            className={dangerIconButtonClass}
+                                            style={dangerIconButtonStyle}
+                                            title="Delete item"
+                                          >
+                                            <X size={15} strokeWidth={2.8} />
+                                          </button>
+                                          <input
+                                            value={itemRow.name}
+                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { name: e.target.value })}
+                                            className={gridCellInputClass}
+                                          />
+                                          <input
+                                            value={itemRow.description}
+                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { description: e.target.value })}
+                                            className={gridCellInputClass}
+                                          />
+                                          <select
+                                            value={itemRow.subcategory}
+                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { subcategory: e.target.value })}
+                                            className={`${gridCellInputClass} ${gridCellSelectOverrideClass}`}
+                                          >
+                                            <option value=""></option>
+                                            {subcategoryOptions.map((sub) => (
+                                              <option key={`${idx}_sub_opt_${sub}`} value={sub}>{sub}</option>
+                                            ))}
+                                          </select>
+                                          <input
+                                            value={itemRow.price}
+                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { price: e.target.value })}
+                                            onBlur={(e) => updateItemCategoryItem(idx, itemIdx, { price: ensureDollarFormat(e.target.value) })}
+                                            className={gridCellInputClass}
+                                            placeholder="$0.00"
+                                          />
+                                          <input
+                                            value={itemRow.markupPercent}
+                                            onChange={(e) => updateItemCategoryItem(idx, itemIdx, { markupPercent: e.target.value })}
+                                            className={gridCellInputClass}
+                                            placeholder="0"
+                                          />
+                                          <p className="truncate px-2 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                            {computeOutputPrice(itemRow.price, itemRow.markupPercent)}
+                                          </p>
+                                        </div>
+                                      );
+                                    })}
+                                    <div className="px-4 py-2">
                                       <button
                                         type="button"
-                                        onClick={() => removeItemCategoryItem(idx, itemIdx)}
-                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
-                                        title="Delete item"
+                                        onClick={() => addItemCategoryItem(idx)}
+                                        className="inline-flex h-8 items-center gap-1 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                                        style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
                                       >
-                                        <X size={15} strokeWidth={2.8} />
+                                        <Plus size={13} strokeWidth={2.8} />
+                                        Add Item
                                       </button>
-                                      <input
-                                        value={itemRow.name}
-                                        onChange={(e) => updateItemCategoryItem(idx, itemIdx, { name: e.target.value })}
-                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                                      />
-                                      <input
-                                        value={itemRow.description}
-                                        onChange={(e) => updateItemCategoryItem(idx, itemIdx, { description: e.target.value })}
-                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                                      />
-                                      <select
-                                        value={itemRow.subcategory}
-                                        onChange={(e) => updateItemCategoryItem(idx, itemIdx, { subcategory: e.target.value })}
-                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                                      >
-                                        <option value=""></option>
-                                        {subcategoryOptions.map((sub) => (
-                                          <option key={`${idx}_sub_opt_${sub}`} value={sub}>{sub}</option>
-                                        ))}
-                                      </select>
-                                      <input
-                                        value={itemRow.price}
-                                        onChange={(e) => updateItemCategoryItem(idx, itemIdx, { price: e.target.value })}
-                                        onBlur={(e) => updateItemCategoryItem(idx, itemIdx, { price: ensureDollarFormat(e.target.value) })}
-                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                                        placeholder="$0.00"
-                                      />
-                                      <input
-                                        value={itemRow.markupPercent}
-                                        onChange={(e) => updateItemCategoryItem(idx, itemIdx, { markupPercent: e.target.value })}
-                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                                        placeholder="0"
-                                      />
-                                      <div className="inline-flex h-7 items-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] font-semibold text-[#334155]">
-                                        {computeOutputPrice(itemRow.price, itemRow.markupPercent)}
-                                      </div>
                                     </div>
-                                  );
-                                })}
+                                  </div>
+                                )}
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => addItemCategoryItem(idx)}
-                                className="mt-2 inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] px-3 text-[11px] font-bold text-[#1F8A4C] hover:bg-[#DDF2E7]"
-                              >
-                                <Plus size={13} strokeWidth={2.8} />
-                                Add Item
-                              </button>
-                            </div>
-                          )}
+                            ))}
+                          <div className="px-4 py-3">
+                            <button onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className={secondaryButtonClass}>+ Add Category</button>
+                          </div>
                         </div>
-                      ))}
-                      <button onClick={() => setItemCategories((prev) => [...prev, { name: "", color: "#7D99B3", subcategories: "", items: [] }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Category</button>
+                        <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={() => setIsItemCategoriesModalOpen(false)}
+                            className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </Panel>
-                  <Panel title="Specs Layout">
-                    <div className="space-y-2 text-[12px]">
-                      <p className="text-[11px] text-[#667085]">
-                        Design the specifications template as a real spreadsheet — any cells, rows, columns, or formatting you like. Whatever you type into a cell becomes that cell&apos;s starting content on every new project&apos;s specifications sheet.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setIsSpecsLayoutModalOpen(true)}
-                        className="rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-1.5 text-[11px] font-bold text-[#344054] hover:bg-[#EEF2F7]"
-                      >
-                        Open Specs Layout Builder
-                      </button>
-                    </div>
-                  </Panel>
-                  <Panel title="Client Confirmation">
-                    <div className="grid grid-cols-[1fr_140px] items-center gap-2 text-[12px]">
-                      <p className="text-[11px] text-[#667085]">
-                        How long a client confirmation link (emailed with a specifications sheet) stays valid before it expires.
-                      </p>
-                      <select
-                        value={form.clientConfirmationLinkDays}
-                        onChange={(e) => setForm((prev) => ({ ...prev, clientConfirmationLinkDays: e.target.value }))}
-                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
-                      >
-                        {deletedRetentionOptions.map((opt) => (
-                          <option key={opt.days} value={opt.days}>{opt.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </Panel>
-                  <Panel title="Quote Layout">
-                    <div className="space-y-2 text-[12px]">
-                      <p className="text-[11px] text-[#667085]">
-                        Design the quote template the same way — any cells, rows, columns, or formatting you like. Highlight rows and &quot;Link Rows as Group&quot; with a Price to create a toggleable quote extra directly in the sheet.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setIsQuoteLayoutModalOpen(true)}
-                        className="rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-1.5 text-[11px] font-bold text-[#344054] hover:bg-[#EEF2F7]"
-                      >
-                        Open Quote Layout Builder
-                      </button>
-                    </div>
-                  </Panel>
+                  ) : null}
                   {isSpecsLayoutModalOpen ? (
                     <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
                       <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
@@ -5253,7 +5355,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
-                          <div className="min-h-0 overflow-hidden rounded-[10px] border border-[#D8DEE8]">
+                          <div className="min-h-0 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
                             {companyAccessResolved ? (
                               <SpecsGridEditor
                                 key={specsTemplateEditorKey}
@@ -5266,19 +5368,22 @@ export default function CompanySettingsPage() {
                                 companyRoleOptions={specsGroupRoleOptions}
                               />
                             ) : (
-                              <div className="flex h-full items-center justify-center text-[12px] text-[#98A2B3]">Loading template…</div>
+                              <div className="flex h-full items-center justify-center text-[12px]" style={{ color: "var(--text-muted)" }}>Loading template…</div>
                             )}
                           </div>
-                          <div className="overflow-y-auto rounded-[14px] border border-[#D7DEE8] bg-white p-3 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
-                            <p className="text-[13px] font-semibold text-[#12345B]">Placeholders</p>
-                            <p className="mt-1 text-[11px] text-[#667085]">
+                          <div
+                            className="overflow-y-auto rounded-[14px] border p-3"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", boxShadow: "var(--shadow-sm)" }}
+                          >
+                            <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Placeholders</p>
+                            <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
                               Type these tokens into a cell. They&apos;ll be replaced with that project&apos;s real data the first time its specifications sheet is created from this template.
                             </p>
                             <div className="mt-3 space-y-2">
                               {QUOTE_TEMPLATE_PLACEHOLDERS.map((item) => (
-                                <div key={item.token} className="rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2">
-                                  <p className="text-[11px] font-semibold text-[#344054]">{item.label}</p>
-                                  <p className="mt-1 break-all font-mono text-[11px] text-[#667085]">{item.token}</p>
+                                <div key={item.token} className="rounded-[10px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                                  <p className="text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>{item.label}</p>
+                                  <p className="mt-1 break-all font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>{item.token}</p>
                                 </div>
                               ))}
                             </div>
@@ -5360,7 +5465,7 @@ export default function CompanySettingsPage() {
                         </div>
                       </div>
                       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
-                          <div className="min-h-0 overflow-hidden rounded-[10px] border border-[#D8DEE8]">
+                          <div className="min-h-0 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
                             {companyAccessResolved ? (
                               <SpecsGridEditor
                                 key={quoteTemplateEditorKey}
@@ -5374,25 +5479,28 @@ export default function CompanySettingsPage() {
                                 companyRoleOptions={specsGroupRoleOptions}
                               />
                             ) : (
-                              <div className="flex h-full items-center justify-center text-[12px] text-[#98A2B3]">Loading template…</div>
+                              <div className="flex h-full items-center justify-center text-[12px]" style={{ color: "var(--text-muted)" }}>Loading template…</div>
                             )}
                           </div>
-                          <div className="overflow-y-auto rounded-[14px] border border-[#D7DEE8] bg-white p-3 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
-                            <p className="text-[13px] font-semibold text-[#12345B]">Placeholders</p>
-                            <p className="mt-1 text-[11px] text-[#667085]">
+                          <div
+                            className="overflow-y-auto rounded-[14px] border p-3"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", boxShadow: "var(--shadow-sm)" }}
+                          >
+                            <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Placeholders</p>
+                            <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
                               Type these tokens into a cell. They&apos;ll be replaced with that project&apos;s real data the first time its quote is created from this template.
                             </p>
                             <div className="mt-3 space-y-2">
                               {QUOTE_TEMPLATE_PLACEHOLDERS.map((item) => (
-                                <div key={item.token} className="rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2">
-                                  <p className="text-[11px] font-semibold text-[#344054]">{item.label}</p>
-                                  <p className="mt-1 break-all font-mono text-[11px] text-[#667085]">{item.token}</p>
+                                <div key={item.token} className="rounded-[10px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                                  <p className="text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>{item.label}</p>
+                                  <p className="mt-1 break-all font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>{item.token}</p>
                                 </div>
                               ))}
                             </div>
-                            <div className="mt-4 rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFD] px-3 py-2">
-                              <p className="text-[11px] font-semibold text-[#344054]">Quote Extras</p>
-                              <p className="mt-1 text-[11px] text-[#667085]">
+                            <div className="mt-4 rounded-[10px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                              <p className="text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>Quote Extras</p>
+                              <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
                                 Highlight some rows and right-click a row number → &quot;Link Rows as Group&quot;. Give the group a Price and it automatically becomes a toggleable quote extra — no separate setup needed.
                               </p>
                             </div>
@@ -5438,9 +5546,10 @@ export default function CompanySettingsPage() {
                       </div>
                     </div>
                   ) : null}
-                  <Panel title="Product">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="grid grid-cols-[26px_26px_26px_1fr_120px_130px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                  <div className="grid gap-3 xl:grid-cols-[auto_560px] xl:justify-start">
+                    <Panel title="Product">
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[30px_30px_30px_minmax(0,220px)_120px_130px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p></p>
                         <p></p>
@@ -5452,13 +5561,15 @@ export default function CompanySettingsPage() {
                       {jobTypes.map((row, idx) => (
                         <div key={idx} className="space-y-2">
                           <div
-                            className={`grid grid-cols-[26px_26px_26px_1fr_120px_130px_90px] items-center gap-2 rounded-[8px] transition-all ${
-                              jobTypeDragIndex === idx
-                                ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                              : jobTypeDragOverIndex === idx
-                                  ? "bg-white"
-                                  : ""
-                            }`}
+                            className="grid grid-cols-[30px_30px_30px_minmax(0,220px)_120px_130px_90px] items-center gap-2 rounded-[8px] transition-colors"
+                            style={{
+                              backgroundColor:
+                                jobTypeDragIndex === idx
+                                  ? "var(--brand-soft)"
+                                  : jobTypeDragOverIndex === idx
+                                    ? "var(--panel-muted)"
+                                    : "transparent",
+                            }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               e.dataTransfer.dropEffect = "move";
@@ -5490,16 +5601,18 @@ export default function CompanySettingsPage() {
                                 setJobTypeDragIndex(null);
                                 setJobTypeDragOverIndex(null);
                               }}
-                              className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                              className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                               title="Drag to reorder"
                             >
                               <GripVertical size={14} />
                             </button>
-                            <button onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
+                            <button onClick={() => setJobTypes((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
                             <button
                               type="button"
                               onClick={() => toggleJobTypeExpanded(idx)}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7]"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
                               title={jobTypeExpanded[idx] ? "Collapse" : "Expand"}
                             >
                               <img
@@ -5508,8 +5621,11 @@ export default function CompanySettingsPage() {
                                 className={`h-3 w-3 transition-transform ${jobTypeExpanded[idx] ? "[transform:rotate(90deg)_scaleX(-1)]" : "[transform:rotate(270deg)_scaleX(-1)]"}`}
                               />
                             </button>
-                            <input value={row.name} onChange={(e) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                            <div className="inline-flex h-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#475467]">
+                            <input value={row.name} onChange={(e) => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
+                            <div
+                              className="inline-flex h-8 items-center justify-center rounded-[8px] border px-2 text-[11px] font-semibold"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                            >
                               {row.sheetPrices?.length || 0} options
                             </div>
                             <select
@@ -5519,7 +5635,7 @@ export default function CompanySettingsPage() {
                                   prev.map((v, i) => (i === idx ? { ...v, type: e.target.value as JobTypeProductType } : v)),
                                 )
                               }
-                              className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-1 text-[11px] font-semibold text-[#475467]"
+                              className={`${fieldInputClass} font-semibold`}
                             >
                               <option value="">-</option>
                               <option value="grain">Grain</option>
@@ -5527,12 +5643,12 @@ export default function CompanySettingsPage() {
                               <option value="lacquer-2">Lacquer (2 side)</option>
                               <option value="melteca">Melteca</option>
                             </select>
-                            <label className="inline-flex items-center justify-center text-[11px] font-bold text-[#475467]"><input type="checkbox" checked={row.showInSales} onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: !v.showInSales } : v)))} /></label>
+                            <label className="inline-flex items-center justify-center text-[11px] font-bold" style={{ color: "var(--text-muted)" }}><input type="checkbox" checked={row.showInSales} onChange={() => setJobTypes((prev) => prev.map((v, i) => (i === idx ? { ...v, showInSales: !v.showInSales } : v)))} /></label>
                           </div>
 
                           {jobTypeExpanded[idx] && (
-                            <div className="rounded-[10px] border border-[#D8DEE8] bg-white p-2">
-                              <div className="mb-2 grid grid-cols-[30px_220px_140px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                            <div className="rounded-[10px] border p-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                              <div className="mb-2 grid grid-cols-[30px_220px_140px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                                 <p></p>
                                 <p>Sheet Size</p>
                                 <p>Price/Sheet</p>
@@ -5543,7 +5659,8 @@ export default function CompanySettingsPage() {
                                     <button
                                       type="button"
                                       onClick={() => removeJobTypeSheetPrice(idx, spIdx)}
-                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                      className={dangerIconButtonClass}
+                                      style={dangerIconButtonStyle}
                                       title="Delete sheet size option"
                                     >
                                       <X size={15} strokeWidth={2.8} />
@@ -5551,7 +5668,7 @@ export default function CompanySettingsPage() {
                                     <select
                                       value={sp.sheetSize}
                                       onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { sheetSize: e.target.value })}
-                                      className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                      className={fieldInputClass}
                                     >
                                       <option value=""></option>
                                       {sheetSizes.map((ss, sIdx) => {
@@ -5563,7 +5680,7 @@ export default function CompanySettingsPage() {
                                       value={sp.pricePerSheet}
                                       onChange={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: e.target.value })}
                                       onBlur={(e) => updateJobTypeSheetPrice(idx, spIdx, { pricePerSheet: ensureDollarFormat(e.target.value) })}
-                                      className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                      className={fieldInputClass}
                                       placeholder="$0.00"
                                     />
                                   </div>
@@ -5572,7 +5689,8 @@ export default function CompanySettingsPage() {
                               <button
                                 type="button"
                                 onClick={() => addJobTypeSheetPrice(idx)}
-                                className="mt-2 inline-flex h-7 items-center gap-1 rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] px-3 text-[11px] font-bold text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                                className="mt-2 inline-flex h-8 items-center gap-1 rounded-[8px] border px-3 text-[11px] font-bold transition hover:brightness-95"
+                                style={{ borderColor: "var(--success-border)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
                               >
                                 <Plus size={13} strokeWidth={2.8} />
                                 Add Sheet Size
@@ -5598,192 +5716,27 @@ export default function CompanySettingsPage() {
                             },
                           ])
                         }
-                        className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                        className={`${secondaryButtonClass} mt-1`}
                       >
                         + Add Product
                       </button>
                     </div>
                   </Panel>
-                  <div className="grid gap-3 xl:grid-cols-[3fr_1fr]">
-                    <div className="space-y-3">
-                      <Panel title="Quote Extras">
-                        <div className="space-y-2 text-[12px]">
-                          <div className="grid grid-cols-[26px_26px_1fr_90px_70px_1fr_1fr_1fr] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
-                            <p>Del</p>
-                            <p></p>
-                            <p>Name</p>
-                            <p>Price</p>
-                            <p>Default</p>
-                            <p>Container</p>
-                            <p>Element</p>
-                            <p>Placeholder</p>
-                          </div>
-                          {quoteExtras.map((row, idx) => (
-                            <div
-                              key={row.id || idx}
-                              className={`grid grid-cols-[26px_26px_1fr_90px_70px_1fr_1fr_1fr] items-center gap-2 rounded-[8px] transition-all ${
-                                quoteExtraDragIndex === idx
-                                  ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                                  : quoteExtraDragOverIndex === idx
-                                    ? "bg-white"
-                                    : ""
-                              }`}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = "move";
-                              }}
-                              onDragEnter={(e) => {
-                                e.preventDefault();
-                                if (quoteExtraDragIndex == null || quoteExtraDragIndex === idx) return;
-                                setQuoteExtras((prev) => moveRowTo(prev, quoteExtraDragIndex, idx));
-                                setQuoteExtraDragIndex(idx);
-                                setQuoteExtraDragOverIndex(idx);
-                              }}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                setQuoteExtraDragIndex(null);
-                                setQuoteExtraDragOverIndex(null);
-                                triggerAutosaveAfterRowDrop();
-                              }}
-                            >
-                              <button onClick={() => setQuoteExtras((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
-                              <button
-                                type="button"
-                                draggable
-                                onDragStart={(e) => {
-                                  setQuoteExtraDragIndex(idx);
-                                  setQuoteExtraDragOverIndex(idx);
-                                  e.dataTransfer.effectAllowed = "move";
-                                  e.dataTransfer.setData("text/plain", `quoteextra_${idx}`);
-                                }}
-                                onDragEnd={() => {
-                                  setQuoteExtraDragIndex(null);
-                                  setQuoteExtraDragOverIndex(null);
-                                }}
-                                className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
-                                title="Drag to reorder"
-                              >
-                                <GripVertical size={14} />
-                              </button>
-                              <input value={row.name} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                              <input value={row.price} onChange={(e) => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, price: e.target.value } : v)))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
-                              <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]"><input type="checkbox" checked={row.defaultIncluded} onChange={() => setQuoteExtras((prev) => prev.map((v, i) => (i === idx ? { ...v, defaultIncluded: !v.defaultIncluded } : v)))} />Default</label>
-                              <select
-                                value={row.templateContainerId}
-                                onChange={(e) =>
-                                  setQuoteExtras((prev) =>
-                                    prev.map((v, i) =>
-                                      i === idx
-                                        ? {
-                                            ...v,
-                                            templateContainerId: e.target.value,
-                                            templateBlockId: e.target.value ? "" : v.templateBlockId,
-                                            templatePlaceholderKey: e.target.value ? "" : v.templatePlaceholderKey,
-                                          }
-                                        : v,
-                                    ),
-                                  )
-                                }
-                                disabled={Boolean(row.templateBlockId || row.templatePlaceholderKey)}
-                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
-                              >
-                                <option value=""></option>
-                                {quoteTemplateContainerOptions.map((option) => (
-                                  <option key={option.id} value={option.id}>
-                                    {option.title}
-                                  </option>
-                                ))}
-                              </select>
-                              <select
-                                value={row.templateBlockId}
-                                onChange={(e) =>
-                                  setQuoteExtras((prev) =>
-                                    prev.map((v, i) =>
-                                      i === idx
-                                        ? {
-                                            ...v,
-                                            templateBlockId: e.target.value,
-                                            templateContainerId: e.target.value ? "" : v.templateContainerId,
-                                            templatePlaceholderKey: e.target.value ? "" : v.templatePlaceholderKey,
-                                          }
-                                        : v,
-                                    ),
-                                  )
-                                }
-                                disabled={Boolean(row.templateContainerId || row.templatePlaceholderKey)}
-                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
-                              >
-                                <option value=""></option>
-                                {quoteTemplateBlockOptions.map((option) => (
-                                  <option key={option.id} value={option.id}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <select
-                                value={row.templatePlaceholderKey}
-                                onChange={(e) =>
-                                  setQuoteExtras((prev) =>
-                                    prev.map((v, i) =>
-                                      i === idx
-                                        ? {
-                                            ...v,
-                                            templatePlaceholderKey: e.target.value,
-                                            templateContainerId: e.target.value ? "" : v.templateContainerId,
-                                            templateBlockId: e.target.value ? "" : v.templateBlockId,
-                                          }
-                                        : v,
-                                    ),
-                                  )
-                                }
-                                disabled={Boolean(row.templateContainerId || row.templateBlockId)}
-                                className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px] disabled:bg-[#F8FAFC] disabled:text-[#98A2B3]"
-                              >
-                                <option value=""></option>
-                                {quoteTemplatePlaceholderOptions.map((option) => (
-                                  <option key={option.key} value={option.key}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          ))}
-                          <button
-                            onClick={() =>
-                              setQuoteExtras((prev) => [
-                                ...prev,
-                                {
-                                  id: `quote_extra_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                                  name: "",
-                                  price: "",
-                                  defaultIncluded: false,
-                                  templateContainerId: "",
-                                  templateBlockId: "",
-                                  templatePlaceholderKey: "",
-                                },
-                              ])
-                            }
-                            className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
-                          >
-                            + Add Extra
-                          </button>
-                        </div>
-                      </Panel>
-                      <Panel title="Quote Helpers">
+                  <Panel title="Quote Helpers">
                         <div className="space-y-3">
-                          <p className="text-[12px] text-[#667085]">
-                            Add reusable helper snippets here. They will appear in the live quote sidebar under Quote Extras and insert at the current cursor position in the project text field.
+                          <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                            Add reusable helper snippets here. They will appear in the live quote sidebar and insert at the current cursor position in the project text field.
                           </p>
                           {quoteHelpers.map((row, idx) => (
                             <div
                               key={row.id || idx}
-                              className={`rounded-[12px] border border-[#D8DEE8] bg-white p-3 transition-all ${
-                                quoteHelperDragIndex === idx
-                                  ? "opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                                  : quoteHelperDragOverIndex === idx
-                                    ? "shadow-[0_4px_14px_rgba(15,23,42,0.08)]"
-                                    : ""
-                              }`}
+                              className="rounded-[12px] border p-3 transition-all"
+                              style={{
+                                borderColor: "var(--glass-border)",
+                                backgroundColor: quoteHelperDragOverIndex === idx ? "var(--panel-muted)" : "var(--panel-bg)",
+                                opacity: quoteHelperDragIndex === idx ? 0.8 : 1,
+                                boxShadow: quoteHelperDragIndex === idx ? "var(--shadow-md)" : "none",
+                              }}
                               onDragOver={(e) => {
                                 e.preventDefault();
                                 e.dataTransfer.dropEffect = "move";
@@ -5806,7 +5759,8 @@ export default function CompanySettingsPage() {
                                 <button
                                   type="button"
                                   onClick={() => setQuoteHelpers((prev) => prev.filter((_, helperIdx) => helperIdx !== idx))}
-                                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                  className={`${dangerIconButtonClass} shrink-0`}
+                                  style={dangerIconButtonStyle}
                                   title="Delete helper"
                                 >
                                   <X size={15} strokeWidth={2.8} />
@@ -5825,7 +5779,8 @@ export default function CompanySettingsPage() {
                                       setQuoteHelperDragIndex(null);
                                       setQuoteHelperDragOverIndex(null);
                                     }}
-                                    className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                                    className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
                                     title="Drag to reorder"
                                   >
                                     <GripVertical size={14} />
@@ -5852,7 +5807,8 @@ export default function CompanySettingsPage() {
                                             ),
                                         );
                                       }}
-                                      className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#F8FAFD] text-[11px] font-bold text-[#344054]"
+                                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[11px] font-bold"
+                                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                                     >
                                       {item.label}
                                     </button>
@@ -5878,7 +5834,8 @@ export default function CompanySettingsPage() {
                                       ),
                                     );
                                   }}
-                                  className="block min-h-[28px] min-w-0 overflow-hidden rounded-[10px] border border-[#D8DEE8] bg-white px-3 py-1.5 text-[12px] leading-[1.5] outline-none empty:before:text-[#98A2B3] empty:before:content-['Type_helper_text_here...']"
+                                  className="block min-h-[32px] min-w-0 overflow-hidden rounded-[10px] border px-3 py-1.5 text-[12px] leading-[1.5] outline-none empty:content-['Type_helper_text_here...']"
+                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                                 />
                               </div>
                             </div>
@@ -5894,17 +5851,17 @@ export default function CompanySettingsPage() {
                                 },
                               ])
                             }
-                            className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                            className={secondaryButtonClass}
                           >
                             + Add Helper
                           </button>
                         </div>
                       </Panel>
-                    </div>
-                    <Panel title="Quote Discount">
-                      <div className="space-y-2 text-[12px]">
-                        <label className="inline-flex items-center gap-2 font-bold text-[#334155]"><input type="checkbox" checked={minusOffQuoteTotal} onChange={() => setMinusOffQuoteTotal((v) => !v)} />minus off quote total</label>
-                        <div className="grid grid-cols-[26px_26px_1fr_1fr_1fr] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                  </div>
+                  <Panel title="Quote Discount">
+                      <div className="space-y-3">
+                        <label className="inline-flex items-center gap-2 text-[12px] font-bold" style={{ color: "var(--text-main)" }}><input type="checkbox" checked={minusOffQuoteTotal} onChange={() => setMinusOffQuoteTotal((v) => !v)} />minus off quote total</label>
+                        <div className="grid grid-cols-[30px_30px_1fr_1fr_1fr] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                           <p></p>
                           <p></p>
                           <p className="text-center">Low</p>
@@ -5914,13 +5871,15 @@ export default function CompanySettingsPage() {
                         {discountTiers.map((row, idx) => (
                           <div
                             key={idx}
-                            className={`grid grid-cols-[26px_26px_1fr_1fr_1fr] items-center gap-2 rounded-[8px] transition-all ${
-                              discountTierDragIndex === idx
-                                ? "bg-white opacity-80 shadow-[0_8px_24px_rgba(15,23,42,0.18)]"
-                                : discountTierDragOverIndex === idx
-                                  ? "bg-white"
-                                  : ""
-                            }`}
+                            className="grid grid-cols-[30px_30px_1fr_1fr_1fr] items-center gap-2 rounded-[8px] transition-colors"
+                            style={{
+                              backgroundColor:
+                                discountTierDragIndex === idx
+                                  ? "var(--brand-soft)"
+                                  : discountTierDragOverIndex === idx
+                                    ? "var(--panel-muted)"
+                                    : "transparent",
+                            }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               e.dataTransfer.dropEffect = "move";
@@ -5952,43 +5911,43 @@ export default function CompanySettingsPage() {
                                 setDiscountTierDragIndex(null);
                                 setDiscountTierDragOverIndex(null);
                               }}
-                              className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                              className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
                               title="Drag to reorder"
                             >
                               <GripVertical size={14} />
                             </button>
-                            <button onClick={() => setDiscountTiers((prev) => prev.filter((_, i) => i !== idx))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
+                            <button onClick={() => setDiscountTiers((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
                             <input
                               value={row.low}
                               onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, low: e.target.value } : v)))}
                               onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, low: formatDiscountCurrency(e.target.value) } : v)))}
-                              className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                              className={fieldInputClass}
                             />
                             <input
                               value={row.high}
                               onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, high: e.target.value } : v)))}
                               onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, high: formatDiscountCurrency(e.target.value) } : v)))}
-                              className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                              className={fieldInputClass}
                             />
                             <input
                               value={row.discount}
                               onChange={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, discount: e.target.value } : v)))}
                               onBlur={(e) => setDiscountTiers((prev) => prev.map((v, i) => (i === idx ? { ...v, discount: formatDiscountCurrency(e.target.value) } : v)))}
-                              className="h-7 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                              className={fieldInputClass}
                             />
                           </div>
                         ))}
-                        <button onClick={() => setDiscountTiers((prev) => [...prev, { low: "", high: "", discount: "" }])} className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]">+ Add Tier</button>
+                        <button onClick={() => setDiscountTiers((prev) => [...prev, { low: "", high: "", discount: "" }])} className={`${secondaryButtonClass} mt-1`}>+ Add Tier</button>
                       </div>
                     </Panel>
-                  </div>
                 </div>
               )}
 
               {active === "hardware" && (
                 <Panel title="Hardware">
-                  <div className="space-y-2 text-[12px]">
-                    <div className="grid grid-cols-[28px_28px_28px_1fr_110px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-[28px_28px_28px_1fr_110px_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                       <p></p>
                       <p></p>
                       <p></p>
@@ -5999,11 +5958,12 @@ export default function CompanySettingsPage() {
                     {hardware.map((row, idx) => (
                       <div
                         key={idx}
-                        className={`space-y-2 transition-all ${
+                        className="space-y-2 rounded-[8px] transition-all"
+                        style={
                           hardwareDragOverIndex === idx
-                            ? "rounded-[8px] bg-[#EEF4FF] ring-1 ring-[#AFC6E9] shadow-[0_4px_14px_rgba(47,107,255,0.15)]"
-                            : ""
-                        }`}
+                            ? { backgroundColor: "var(--brand-soft)", boxShadow: "var(--shadow-sm)" }
+                            : undefined
+                        }
                         onDragOver={(e) => {
                           e.preventDefault();
                           e.dataTransfer.dropEffect = "move";
@@ -6049,7 +6009,7 @@ export default function CompanySettingsPage() {
                         >
                           <GripVertical size={14} />
                         </button>
-                        <button onClick={() => setHardware((prev) => sanitizeHardwareRows(prev.filter((_, i) => i !== idx)))} className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"><X size={15} strokeWidth={2.8} /></button>
+                        <button onClick={() => setHardware((prev) => sanitizeHardwareRows(prev.filter((_, i) => i !== idx)))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
                         <button
                           type="button"
                           onClick={() => toggleHardwareExpanded(idx)}
@@ -6091,7 +6051,7 @@ export default function CompanySettingsPage() {
                         </label>
                         {hardware.some((h) => h.default) ? (
                           row.default ? (
-                            <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]">
+                            <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
                               <input
                                 type="checkbox"
                                 checked
@@ -6107,7 +6067,7 @@ export default function CompanySettingsPage() {
                             <span className="inline-block h-7" />
                           )
                         ) : (
-                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]">
+                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
                             <input
                               type="checkbox"
                               checked={Boolean(row.default)}
@@ -6126,7 +6086,7 @@ export default function CompanySettingsPage() {
                             className="space-y-2 rounded-[8px] border p-2"
                             style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
                           >
-                            <div className="inline-flex rounded-[10px] border border-[#D8DEE8] bg-[#F8FAFC] p-1">
+                            <div className="inline-flex rounded-[10px] border p-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
                               {(["drawers", "hinges", "other"] as const).map((tab) => {
                                 const selected = (hardwareActiveTab[idx] ?? "drawers") === tab;
                                 return (
@@ -6152,7 +6112,7 @@ export default function CompanySettingsPage() {
                                 style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
                               >
                           <div className="flex items-center justify-between">
-                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#1E3A62]">Drawers</p>
+                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-main)]">Drawers</p>
                             <button
                               onClick={() =>
                                 updateHardwareJsonList(idx, "drawersJson", (items) => [
@@ -6160,13 +6120,13 @@ export default function CompanySettingsPage() {
                                   { name: "", bottoms: { widthMinus: "", depthMinus: "" }, backs: { widthMinus: "" }, hardwareLengths: [], spaceRequirement: "", default: items.length === 0 },
                                 ])
                               }
-                              className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                              className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
                             >
                               + Add Drawer
                             </button>
                           </div>
                           <div className="space-y-2">
-                            <div className="grid grid-cols-[26px_26px_26px_1fr_84px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[#667085]">
+                            <div className="grid grid-cols-[26px_26px_26px_1fr_84px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-muted)]">
                               <p></p>
                               <p></p>
                               <p></p>
@@ -6184,8 +6144,8 @@ export default function CompanySettingsPage() {
                                     key={drawerIdx}
                                     className={`space-y-2 rounded-[8px] border p-2 ${
                                       drawerDragHardwareIndex === idx && drawerDragOverIndex === drawerIdx
-                                        ? "border-[#AFC6E9] bg-[#EEF4FF]"
-                                        : "border-[#E4E7EC] bg-white"
+                                        ? "border-[var(--brand)] bg-[var(--brand-soft)]"
+                                        : "border-[var(--glass-border)] bg-[var(--panel-bg)]"
                                     }`}
                                     onDragOver={(e) => {
                                       e.preventDefault();
@@ -6222,7 +6182,7 @@ export default function CompanySettingsPage() {
                                           setDrawerDragIndex(null);
                                           setDrawerDragOverIndex(null);
                                         }}
-                                        className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] text-[#475467] active:cursor-grabbing"
+                                        className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] text-[var(--text-muted)] active:cursor-grabbing"
                                         title="Drag to reorder"
                                       >
                                         <GripVertical size={14} />
@@ -6230,14 +6190,14 @@ export default function CompanySettingsPage() {
                                       <button
                                         type="button"
                                         onClick={() => updateHardwareJsonList(idx, "drawersJson", (items) => items.filter((_, i) => i !== drawerIdx))}
-                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
                                       >
                                         <X size={15} strokeWidth={2.8} />
                                       </button>
                                       <button
                                         type="button"
                                         onClick={() => toggleDrawerRowExpanded(idx, drawerIdx)}
-                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7]"
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)]"
                                         title={isExpanded ? "Collapse" : "Expand"}
                                       >
                                         <img
@@ -6254,11 +6214,11 @@ export default function CompanySettingsPage() {
                                           )
                                         }
                                         placeholder="Drawer name"
-                                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                        className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                       />
                                       {hasDrawerDefault ? (
                                         Boolean(drawer.default) ? (
-                                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]">
+                                          <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
                                             <input
                                               type="checkbox"
                                               checked
@@ -6276,7 +6236,7 @@ export default function CompanySettingsPage() {
                                           <span className="inline-block h-7" />
                                         )
                                       ) : (
-                                        <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[#475467]">
+                                        <label className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--text-muted)]">
                                           <input
                                             type="checkbox"
                                             checked={Boolean(drawer.default)}
@@ -6295,8 +6255,8 @@ export default function CompanySettingsPage() {
                                     {isExpanded && (
                                       <div className="space-y-2 pl-[84px]">
                                         <div className="flex items-center gap-2 text-[12px]">
-                                          <p className="w-[70px] font-bold text-[#1E3A62]">Bottoms:</p>
-                                          <span className="text-[#475467]">Width</span>
+                                          <p className="w-[70px] font-bold text-[var(--text-main)]">Bottoms:</p>
+                                          <span className="text-[var(--text-muted)]">Width</span>
                                           <input
                                             value={readDrawerBottomWidth(drawer)}
                                             onChange={(e) =>
@@ -6304,9 +6264,9 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "bottomWidth", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[90px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                            className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                           />
-                                          <span className="text-[#475467]">Depth</span>
+                                          <span className="text-[var(--text-muted)]">Depth</span>
                                           <input
                                             value={readDrawerBottomDepth(drawer)}
                                             onChange={(e) =>
@@ -6314,13 +6274,13 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "bottomDepth", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[90px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                            className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                           />
                                         </div>
 
                                         <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                                          <p className="w-[70px] font-bold text-[#1E3A62]">Backs:</p>
-                                          <span className="text-[#475467]">Width</span>
+                                          <p className="w-[70px] font-bold text-[var(--text-main)]">Backs:</p>
+                                          <span className="text-[var(--text-muted)]">Width</span>
                                           <input
                                             value={readDrawerBackWidth(drawer)}
                                             onChange={(e) =>
@@ -6328,13 +6288,13 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backWidth", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[90px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                            className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                           />
-                                          <span className="ml-2 text-[#475467]">Heights</span>
+                                          <span className="ml-2 text-[var(--text-muted)]">Heights</span>
                                           <button
                                             type="button"
                                             onClick={() => toggleDrawerHeightsExpanded(idx, drawerIdx)}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7]"
+                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)]"
                                             title={(drawerHeightsExpanded[`${idx}:${drawerIdx}:heights`] ?? false) ? "Collapse heights" : "Expand heights"}
                                           >
                                             <img
@@ -6354,7 +6314,7 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", [...current, value]) : v)),
                                               );
                                             }}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success-strong)] hover:brightness-95"
                                             title="Add back height"
                                           >
                                             <Plus size={13} strokeWidth={2.8} />
@@ -6368,14 +6328,14 @@ export default function CompanySettingsPage() {
                                                   {heightRows.map((height, hIdx) => (
                                                     <span
                                                       key={`${drawerIdx}_height_chip_${hIdx}`}
-                                                      className="inline-flex h-6 min-w-[28px] items-center justify-center rounded-[999px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#334155]"
+                                                      className="inline-flex h-6 min-w-[28px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]"
                                                       title={height}
                                                     >
                                                       {readDrawerHeightLabel(height)}
                                                     </span>
                                                   ))}
                                                   {heightRows.length === 0 && (
-                                                    <span className="text-[11px] text-[#667085]">No heights</span>
+                                                    <span className="text-[11px] text-[var(--text-muted)]">No heights</span>
                                                   )}
                                                 </div>
                                               );
@@ -6385,7 +6345,7 @@ export default function CompanySettingsPage() {
                                             if (!firstHeight) {
                                               return (
                                                 <div className="self-start">
-                                                  <span className="text-[11px] text-[#667085]">No heights</span>
+                                                  <span className="text-[11px] text-[var(--text-muted)]">No heights</span>
                                                 </div>
                                               );
                                             }
@@ -6401,7 +6361,7 @@ export default function CompanySettingsPage() {
                                                         items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                       );
                                                     }}
-                                                    className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                    className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
                                                   >
                                                     <X size={13} strokeWidth={2.8} />
                                                   </button>
@@ -6416,10 +6376,10 @@ export default function CompanySettingsPage() {
                                                         items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                       );
                                                     }}
-                                                    className="h-7 w-[92px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                                    className="h-7 w-[92px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                                     title={firstHeight}
                                                   />
-                                                  <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#334155]">
+                                                  <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]">
                                                     {readDrawerHeightNumber(firstHeight) || "-"}
                                                   </span>
                                                 </div>
@@ -6438,7 +6398,7 @@ export default function CompanySettingsPage() {
                                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                               );
                                                             }}
-                                                            className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                            className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
                                                           >
                                                             <X size={13} strokeWidth={2.8} />
                                                           </button>
@@ -6453,10 +6413,10 @@ export default function CompanySettingsPage() {
                                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "backHeights", nextHeights) : v)),
                                                               );
                                                             }}
-                                                            className="h-7 w-[92px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                                            className="h-7 w-[92px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                                             title={height}
                                                           />
-                                                          <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#334155]">
+                                                          <span className="inline-flex h-7 min-w-[56px] items-center justify-center rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)]">
                                                             {readDrawerHeightNumber(height) || "-"}
                                                           </span>
                                                         </div>
@@ -6470,7 +6430,7 @@ export default function CompanySettingsPage() {
                                         </div>
 
                                         <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                                          <p className="w-[120px] font-bold text-[#1E3A62]">Hardware Lengths:</p>
+                                          <p className="w-[120px] font-bold text-[var(--text-main)]">Hardware Lengths:</p>
                                           <button
                                             type="button"
                                             onClick={() => {
@@ -6482,7 +6442,7 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", [...current, value]) : v)),
                                               );
                                             }}
-                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#A9DDBF] bg-[#EAF8F0] text-[#1F8A4C] hover:bg-[#DDF2E7]"
+                                            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success-strong)] hover:brightness-95"
                                             title="Add hardware length"
                                           >
                                             <Plus size={13} strokeWidth={2.8} />
@@ -6499,7 +6459,7 @@ export default function CompanySettingsPage() {
                                                       items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", nextLengths) : v)),
                                                     );
                                                   }}
-                                                  className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                                  className="inline-flex h-6 w-6 items-center justify-center rounded-[7px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
                                                 >
                                                   <X size={13} strokeWidth={2.8} />
                                                 </button>
@@ -6512,7 +6472,7 @@ export default function CompanySettingsPage() {
                                                       items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "hardwareLengths", nextLengths) : v)),
                                                     );
                                                   }}
-                                                  className="h-7 w-[90px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                                  className="h-7 w-[90px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                                 />
                                               </div>
                                             ))}
@@ -6520,7 +6480,7 @@ export default function CompanySettingsPage() {
                                         </div>
 
                                         <div className="flex items-center gap-2 text-[12px]">
-                                          <p className="w-[120px] font-bold text-[#1E3A62]">Depth Requirement</p>
+                                          <p className="w-[120px] font-bold text-[var(--text-main)]">Depth Requirement</p>
                                           <input
                                             value={readDrawerSpaceRequirement(drawer)}
                                             onChange={(e) =>
@@ -6528,7 +6488,7 @@ export default function CompanySettingsPage() {
                                                 items.map((v, i) => (i === drawerIdx ? writeDrawerField(v, "spaceRequirement", e.target.value) : v)),
                                               )
                                             }
-                                            className="h-7 w-[120px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                            className="h-7 w-[120px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                           />
                                         </div>
                                       </div>
@@ -6547,10 +6507,10 @@ export default function CompanySettingsPage() {
                                 style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
                               >
                           <div className="flex items-center justify-between">
-                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#1E3A62]">Hinges</p>
+                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-main)]">Hinges</p>
                             <button
                               onClick={() => updateHardwareJsonList(idx, "hingesJson", (items) => [...items, { name: "" }])}
-                              className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                              className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
                             >
                               + Add Hinge
                             </button>
@@ -6558,11 +6518,11 @@ export default function CompanySettingsPage() {
                           <div className="space-y-2">
                             <div className="grid grid-cols-4 gap-2">
                               {parseJsonObjects(row.hingesJson).map((hinge, hingeIdx) => (
-                                <div key={hingeIdx} className="grid grid-cols-[26px_1fr] items-center gap-2 rounded-[8px] border border-[#D8DEE8] bg-white p-1">
+                                <div key={hingeIdx} className="grid grid-cols-[26px_1fr] items-center gap-2 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-1">
                                   <button
                                     type="button"
                                     onClick={() => updateHardwareJsonList(idx, "hingesJson", (items) => items.filter((_, i) => i !== hingeIdx))}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
                                   >
                                     <X size={15} strokeWidth={2.8} />
                                   </button>
@@ -6574,7 +6534,7 @@ export default function CompanySettingsPage() {
                                       )
                                     }
                                     placeholder="Hinge name"
-                                    className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                    className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                   />
                                 </div>
                               ))}
@@ -6589,10 +6549,10 @@ export default function CompanySettingsPage() {
                                 style={{ backgroundColor: tintHex(row.color || "#7D99B3", 0.82), borderColor: row.color || "#7D99B3" }}
                               >
                           <div className="flex items-center justify-between">
-                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[#1E3A62]">Other</p>
+                            <p className="text-[11px] font-extrabold uppercase tracking-[0.6px] text-[var(--text-main)]">Other</p>
                             <button
                               onClick={() => updateHardwareJsonList(idx, "otherJson", (items) => [...items, { name: "" }])}
-                              className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                              className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
                             >
                               + Add Other
                             </button>
@@ -6600,11 +6560,11 @@ export default function CompanySettingsPage() {
                           <div className="space-y-2">
                             <div className="grid grid-cols-4 gap-2">
                               {parseJsonObjects(row.otherJson).map((other, otherIdx) => (
-                                <div key={otherIdx} className="grid grid-cols-[26px_1fr] items-center gap-2 rounded-[8px] border border-[#D8DEE8] bg-white p-1">
+                                <div key={otherIdx} className="grid grid-cols-[26px_1fr] items-center gap-2 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-1">
                                   <button
                                     type="button"
                                     onClick={() => updateHardwareJsonList(idx, "otherJson", (items) => items.filter((_, i) => i !== otherIdx))}
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[#F4B5B5] bg-[#FCEAEA] text-[#C62828]"
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger-strong)]"
                                   >
                                     <X size={15} strokeWidth={2.8} />
                                   </button>
@@ -6616,7 +6576,7 @@ export default function CompanySettingsPage() {
                                       )
                                     }
                                     placeholder="Other name"
-                                    className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                                    className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]"
                                   />
                                 </div>
                               ))}
@@ -6635,7 +6595,7 @@ export default function CompanySettingsPage() {
                         setHardwareExpanded((prev) => ({ ...prev, [nextIndex]: false }));
                         setHardwareActiveTab((prev) => ({ ...prev, [nextIndex]: "drawers" }));
                       }}
-                      className="rounded-[8px] bg-[#EEF2F7] px-3 py-1 text-[11px] font-bold text-[#475467]"
+                      className="rounded-[8px] bg-[var(--panel-muted)] px-3 py-1 text-[11px] font-bold text-[var(--text-muted)]"
                     >
                       + Add Hardware
                     </button>
@@ -6652,7 +6612,7 @@ export default function CompanySettingsPage() {
                           type="button"
                           onClick={() => void markAllNotifications(true)}
                           disabled={notificationsLoading}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467] disabled:opacity-60"
+                          className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 text-[11px] font-bold text-[var(--text-muted)] disabled:opacity-60"
                         >
                           Mark All Read
                         </button>
@@ -6660,24 +6620,24 @@ export default function CompanySettingsPage() {
                           type="button"
                           onClick={() => void markAllNotifications(false)}
                           disabled={notificationsLoading}
-                          className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467] disabled:opacity-60"
+                          className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 text-[11px] font-bold text-[var(--text-muted)] disabled:opacity-60"
                         >
                           Mark All Unread
                         </button>
-                        <p className="text-[11px] text-[#667085]">{notificationsLoading ? "Loading..." : `${notificationsRows.length} notifications`}</p>
+                        <p className="text-[11px] text-[var(--text-muted)]">{notificationsLoading ? "Loading..." : `${notificationsRows.length} notifications`}</p>
                       </div>
-                      <div className="max-h-[420px] space-y-2 overflow-auto rounded-[8px] border border-[#E4E7EC] bg-white p-2">
+                      <div className="max-h-[420px] space-y-2 overflow-auto rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-2">
                         {notificationsRows.length === 0 && (
-                          <p className="text-[12px] text-[#667085]">No notifications found.</p>
+                          <p className="text-[12px] text-[var(--text-muted)]">No notifications found.</p>
                         )}
                         {notificationsRows.map((row) => (
-                          <div key={row.id} className={`rounded-[8px] border px-2 py-2 ${row.read ? "border-[#E4E7EC] bg-white" : "border-[#CFE0FF] bg-[#EEF4FF]"}`}>
+                          <div key={row.id} className={`rounded-[8px] border px-2 py-2 ${row.read ? "border-[var(--glass-border)] bg-[var(--panel-bg)]" : "border-[var(--brand)] bg-[var(--brand-soft)]"}`}>
                             <div className="flex items-center justify-between gap-2">
-                              <p className="text-[12px] font-bold text-[#1F2937]">{row.title || "Notification"}</p>
-                              <span className="rounded-[999px] border border-[#D8DEE8] bg-white px-2 py-[1px] text-[10px] font-bold uppercase tracking-[0.5px] text-[#475467]">{row.type || "info"}</span>
+                              <p className="text-[12px] font-bold text-[var(--text-main)]">{row.title || "Notification"}</p>
+                              <span className="rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 py-[1px] text-[10px] font-bold uppercase tracking-[0.5px] text-[var(--text-muted)]">{row.type || "info"}</span>
                             </div>
-                            <p className="mt-1 text-[12px] text-[#334155]">{row.message || "-"}</p>
-                            <p className="mt-1 text-[11px] text-[#667085]">{formatNotificationDateTime(row.createdAtIso)}</p>
+                            <p className="mt-1 text-[12px] text-[var(--text-main)]">{row.message || "-"}</p>
+                            <p className="mt-1 text-[11px] text-[var(--text-muted)]">{formatNotificationDateTime(row.createdAtIso)}</p>
                           </div>
                         ))}
                       </div>
@@ -6691,32 +6651,32 @@ export default function CompanySettingsPage() {
                   <Panel title="Quote Output Templates">
                     <div className="grid gap-2 text-[12px] xl:grid-cols-2">
                       <div className="space-y-2">
-                        <p className="font-bold text-[#334155]">Header HTML</p>
+                        <p className="font-bold text-[var(--text-main)]">Header HTML</p>
                         <textarea
                           value={backupTemplate.quoteTemplateHeaderHtml}
                           onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateHeaderHtml: e.target.value }))}
-                          className="min-h-[120px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] text-[#334155]"
+                          className="min-h-[120px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 py-1 text-[11px] text-[var(--text-main)]"
                         />
                       </div>
                       <div className="space-y-2">
-                        <p className="font-bold text-[#334155]">Footer HTML</p>
+                        <p className="font-bold text-[var(--text-main)]">Footer HTML</p>
                         <textarea
                           value={backupTemplate.quoteTemplateFooterHtml}
                           onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateFooterHtml: e.target.value }))}
-                          className="min-h-[120px] rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] text-[#334155]"
+                          className="min-h-[120px] rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 py-1 text-[11px] text-[var(--text-main)]"
                         />
                       </div>
                     </div>
                     <div className="mt-2 grid gap-2 text-[12px] xl:grid-cols-[1fr_1fr_1fr]">
                       <div className="grid grid-cols-[110px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Page Size</p>
-                        <input value={backupTemplate.quoteTemplatePageSize} onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplatePageSize: e.target.value }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                        <p className="font-bold text-[var(--text-main)]">Page Size</p>
+                        <input value={backupTemplate.quoteTemplatePageSize} onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplatePageSize: e.target.value }))} className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]" />
                       </div>
                       <div className="grid grid-cols-[110px_1fr] items-center gap-2">
-                        <p className="font-bold text-[#334155]">Margin (mm)</p>
-                        <input value={backupTemplate.quoteTemplateMarginMm} onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateMarginMm: e.target.value.replace(/[^\d]/g, "") }))} className="h-7 rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]" />
+                        <p className="font-bold text-[var(--text-main)]">Margin (mm)</p>
+                        <input value={backupTemplate.quoteTemplateMarginMm} onChange={(e) => setBackupTemplate((prev) => ({ ...prev, quoteTemplateMarginMm: e.target.value.replace(/[^\d]/g, "") }))} className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[12px]" />
                       </div>
-                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[#334155]">
+                      <label className="inline-flex items-center gap-2 text-[12px] font-bold text-[var(--text-main)]">
                         <input type="checkbox" checked={backupTemplate.quoteTemplateFooterPinBottom} onChange={() => setBackupTemplate((prev) => ({ ...prev, quoteTemplateFooterPinBottom: !prev.quoteTemplateFooterPinBottom }))} />
                         Footer Pin Bottom
                       </label>
@@ -6724,16 +6684,16 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <Panel title="Backup Snapshot">
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="text-[12px] text-[#475467]">Desktop-key snapshot from current company document for backup verification.</p>
+                      <p className="text-[12px] text-[var(--text-muted)]">Desktop-key snapshot from current company document for backup verification.</p>
                       <button
                         type="button"
                         onClick={downloadBackupSnapshot}
-                        className="h-7 rounded-[8px] border border-[#D8DEE8] bg-[#EEF2F7] px-3 text-[11px] font-bold text-[#475467]"
+                        className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 text-[11px] font-bold text-[var(--text-muted)]"
                       >
                         Export JSON
                       </button>
                     </div>
-                    <pre className="max-h-[360px] overflow-auto rounded-[8px] border border-[#E4E7EC] bg-white p-2 text-[11px] text-[#334155]">
+                    <pre className="max-h-[360px] overflow-auto rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-2 text-[11px] text-[var(--text-main)]">
 {JSON.stringify({
   companyId: activeCompanyId,
   deletedRetentionDays: form.deletedRetentionDays,
@@ -6761,17 +6721,17 @@ export default function CompanySettingsPage() {
               onClick={() => setShowZapierHelp(false)}
               className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
             />
-            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-              <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
                 <div className="flex min-w-0 items-center gap-3">
                   <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
                     <img src="/logos/Zapier-logo.png" alt="Zapier" className="h-5 w-5 object-contain" />
                   </div>
                   <div>
-                    <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                    <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
                       Connect Zapier Leads
                     </p>
-                    <p className="text-[11px] text-[#6B7280]">
+                    <p className="text-[11px] text-[var(--text-muted)]">
                       Use your company webhook URL to connect any Zapier form into CutSmart Leads.
                     </p>
                   </div>
@@ -6779,7 +6739,7 @@ export default function CompanySettingsPage() {
                 <button
                   type="button"
                   onClick={() => setShowZapierHelp(false)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
                 >
                   <X size={16} />
                 </button>
@@ -6787,32 +6747,32 @@ export default function CompanySettingsPage() {
               <div className="flex-1 overflow-y-auto px-5 py-5">
                 <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
                   <div className="space-y-4">
-                    <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What To Do In Zapier</p>
-                      <div className="mt-3 space-y-3 text-[12px] text-[#475467]">
-                        <p>1. Create a Zap with <span className="font-bold text-[#12345B]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
-                        <p>2. Add <span className="font-bold text-[#12345B]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
+                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What To Do In Zapier</p>
+                      <div className="mt-3 space-y-3 text-[12px] text-[var(--text-muted)]">
+                        <p>1. Create a Zap with <span className="font-bold text-[var(--text-main)]">Zapier Forms -&gt; New Submission</span> as the trigger.</p>
+                        <p>2. Add <span className="font-bold text-[var(--text-main)]">Webhooks by Zapier -&gt; POST</span> as the action.</p>
                         <p>3. Paste your company webhook URL into the Zapier URL field.</p>
-                        <p>4. Set <span className="font-bold text-[#12345B]">Payload Type</span> to <span className="font-bold text-[#12345B]">JSON</span>.</p>
+                        <p>4. Set <span className="font-bold text-[var(--text-main)]">Payload Type</span> to <span className="font-bold text-[var(--text-main)]">JSON</span>.</p>
                         <p>5. Add the lead fields you want to send in the body. The left-side key names become the dynamic fields shown in CutSmart.</p>
                         <p>6. Test the Zap and then publish it.</p>
                       </div>
                     </div>
-                    <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Dynamic Field Tip</p>
-                      <p className="mt-3 text-[12px] text-[#475467]">
-                        If you send keys like <span className="font-bold text-[#12345B]">Email</span>, <span className="font-bold text-[#12345B]">Daytime Phone</span>, <span className="font-bold text-[#12345B]">Suburb</span>, or <span className="font-bold text-[#12345B]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
+                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Dynamic Field Tip</p>
+                      <p className="mt-3 text-[12px] text-[var(--text-muted)]">
+                        If you send keys like <span className="font-bold text-[var(--text-main)]">Email</span>, <span className="font-bold text-[var(--text-main)]">Daytime Phone</span>, <span className="font-bold text-[var(--text-main)]">Suburb</span>, or <span className="font-bold text-[var(--text-main)]">Kitchen Age</span>, those exact names become the lead fields CutSmart shows for this company.
                       </p>
                     </div>
                   </div>
                   <div className="space-y-4">
-                    <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Webhook URL</p>
+                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Webhook URL</p>
                       <div className="mt-3 flex items-center gap-2">
                         <input
                           value={zapierWebhookUrl}
                           readOnly
-                          className="h-10 flex-1 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] text-[#334155]"
+                          className="h-10 flex-1 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] text-[var(--text-main)]"
                         />
                         <button
                           type="button"
@@ -6826,18 +6786,18 @@ export default function CompanySettingsPage() {
                               setZapierCopyStatus("Copy failed");
                             }
                           }}
-                          className="h-10 rounded-[10px] border border-[#D8DEE8] bg-white px-3 text-[12px] font-bold text-[#475467] disabled:opacity-55"
+                          className="h-10 rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-3 text-[12px] font-bold text-[var(--text-muted)] disabled:opacity-55"
                         >
                           Copy
                         </button>
                       </div>
-                      <p className="mt-2 text-[11px] text-[#6B7280]">
+                      <p className="mt-2 text-[11px] text-[var(--text-muted)]">
                         This URL already includes the secure company token, so you do not need to add separate auth headers in Zapier.
                       </p>
                     </div>
-                    <div className="rounded-[14px] border border-[#D8DEE8] bg-[#F8FAFC] p-4">
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">What Happens Next</p>
-                      <div className="mt-3 space-y-2 text-[12px] text-[#475467]">
+                    <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-muted)] p-4">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">What Happens Next</p>
+                      <div className="mt-3 space-y-2 text-[12px] text-[var(--text-muted)]">
                         <p>Leads are saved under this company automatically.</p>
                         <p>The Leads tab reads them back through the server route.</p>
                         <p>You can use different field names for different companies because the lead display is dynamic.</p>
@@ -6846,11 +6806,11 @@ export default function CompanySettingsPage() {
                   </div>
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+              <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
                 <button
                   type="button"
                   onClick={() => setShowZapierHelp(false)}
-                  className="rounded-[10px] border border-[#D8DEE8] bg-white px-4 py-2 text-[12px] font-bold text-[#475467]"
+                  className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
                 >
                   Close
                 </button>
@@ -6866,51 +6826,51 @@ export default function CompanySettingsPage() {
               onClick={() => setShowLeadFieldsCustomize(false)}
               className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
             />
-            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[940px] flex-col overflow-hidden rounded-[16px] border border-[#D7DEE8] bg-white shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
-              <div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3">
+            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[940px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
                 <div>
-                  <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[#0F2A4A]">
+                  <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
                     Customize Lead Fields
                   </p>
-                  <p className="text-[11px] text-[#6B7280]">
+                  <p className="text-[11px] text-[var(--text-muted)]">
                     Choose which webhook fields show in the main row, which stay in the detail view, and which ones autofill New Project.
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowLeadFieldsCustomize(false)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#667085]"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
                 >
                   <X size={16} />
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto px-5 py-5">
-                <div className="rounded-[14px] border border-[#D8DEE8] bg-white p-4">
+                <div className="rounded-[14px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[#12345B]">Lead Fields</p>
-                      <p className="mt-1 text-[12px] text-[#6B7280]">
+                      <p className="text-[11px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-main)]">Lead Fields</p>
+                      <p className="mt-1 text-[12px] text-[var(--text-muted)]">
                         Drag to reorder. The order you set here controls both the compact lead row and the expanded details.
                       </p>
-                      <p className="mt-1 text-[12px] text-[#6B7280]">
-                        Use the <span className="font-bold text-[#12345B]">Use For</span> column to tell CutSmart which incoming field should fill client name, phone, email, address, or notes when creating a project.
+                      <p className="mt-1 text-[12px] text-[var(--text-muted)]">
+                        Use the <span className="font-bold text-[var(--text-main)]">Use For</span> column to tell CutSmart which incoming field should fill client name, phone, email, address, or notes when creating a project.
                       </p>
                     </div>
                     {leadFieldsLoading ? (
-                      <span className="text-[11px] font-semibold text-[#94A3B8]">Loading fields...</span>
+                      <span className="text-[11px] font-semibold text-[var(--text-muted)]">Loading fields...</span>
                     ) : (
-                      <span className="text-[11px] font-semibold text-[#94A3B8]">
+                      <span className="text-[11px] font-semibold text-[var(--text-muted)]">
                         {mergedLeadFieldLayout.length} field{mergedLeadFieldLayout.length === 1 ? "" : "s"}
                       </span>
                     )}
                   </div>
                   {mergedLeadFieldLayout.length === 0 ? (
-                    <p className="mt-4 rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-4 text-[12px] text-[#6B7280]">
+                    <p className="mt-4 rounded-[10px] border border-dashed border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 py-4 text-[12px] text-[var(--text-muted)]">
                       No lead fields detected yet. Submit at least one Zapier lead and the available webhook fields will appear here.
                     </p>
                   ) : (
                     <div className="mt-4 space-y-2">
-                      <div className="grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 px-2 text-[10px] font-extrabold uppercase tracking-[0.7px] text-[#94A3B8]">
+                      <div className="grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 px-2 text-[10px] font-extrabold uppercase tracking-[0.7px] text-[var(--text-muted)]">
                         <p></p>
                         <p>Field</p>
                         <p className="text-center">Use For</p>
@@ -6922,10 +6882,10 @@ export default function CompanySettingsPage() {
                           key={field.key}
                           className={`grid grid-cols-[32px_minmax(0,1fr)_148px_92px_92px] items-center gap-2 rounded-[10px] border px-2 py-2 ${
                             leadFieldDragIndex === idx
-                              ? "border-[#B7C7E5] bg-[#EEF3FA]"
+                              ? "border-[var(--brand)] bg-[var(--brand-soft)]"
                               : leadFieldDragOverIndex === idx
-                                ? "border-[#D8DEE8] bg-[#F3F6FA]"
-                                : "border-[#E4E7EC] bg-[#F8FAFC]"
+                                ? "border-[var(--glass-border)] bg-[var(--panel-muted)]"
+                                : "border-[var(--glass-border)] bg-[var(--panel-muted)]"
                           }`}
                           onDragOver={(event) => {
                             event.preventDefault();
@@ -6966,14 +6926,14 @@ export default function CompanySettingsPage() {
                               setLeadFieldDragIndex(null);
                               setLeadFieldDragOverIndex(null);
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#D8DEE8] bg-white text-[#98A2B3]"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] text-[var(--text-muted)]"
                             title="Drag to reorder"
                           >
                             <GripVertical size={14} />
                           </button>
                           <div className="min-w-0">
-                            <p className="truncate text-[12px] font-semibold text-[#334155]">{field.label}</p>
-                            <p className="truncate text-[10px] text-[#94A3B8]">{field.key}</p>
+                            <p className="truncate text-[12px] font-semibold text-[var(--text-main)]">{field.label}</p>
+                            <p className="truncate text-[10px] text-[var(--text-muted)]">{field.key}</p>
                           </div>
                           <label className="flex items-center justify-center">
                             <select
@@ -6996,7 +6956,7 @@ export default function CompanySettingsPage() {
                                 }));
                                 triggerToggleAutosave();
                               }}
-                              className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[11px] font-semibold text-[#334155] outline-none"
+                              className="h-8 w-full rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 text-[11px] font-semibold text-[var(--text-main)] outline-none"
                             >
                               {LEAD_PROJECT_FIELD_TARGET_OPTIONS.map((option) => (
                                 <option key={option.value || "none"} value={option.value}>
@@ -7043,11 +7003,11 @@ export default function CompanySettingsPage() {
                   )}
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 border-t border-[#E4E7EC] px-4 py-3">
+              <div className="flex items-center justify-end gap-2 border-t border-[var(--glass-border)] px-4 py-3">
                 <button
                   type="button"
                   onClick={() => setShowLeadFieldsCustomize(false)}
-                  className="rounded-[10px] border border-[#D8DEE8] bg-white px-4 py-2 text-[12px] font-bold text-[#475467]"
+                  className="rounded-[10px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-4 py-2 text-[12px] font-bold text-[var(--text-muted)]"
                 >
                   Close
                 </button>

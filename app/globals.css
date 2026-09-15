@@ -432,6 +432,25 @@ body[data-theme="dark"].cs-app .notes-rich li {
   transform-origin: center;
 }
 
+/* Soft settle-in for a glass panel/card appearing on mount or on a section switch — a light
+ * fade + gentle rise, no overshoot (unlike glass-bubble-pop, this is for content-sized cards
+ * appearing in a list/grid, not a small transient badge). Panels stagger this with their own
+ * animationDelay for a subtle cascade rather than all popping in at once. */
+@keyframes glass-panel-settle-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.glass-panel-settle-in {
+  animation: glass-panel-settle-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 /* Quick fade-and-shrink dismissal for a validation-error speech bubble anchored to a cell/field. */
 @keyframes cutlist-warning-bubble-out-frames {
   0% {

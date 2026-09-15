@@ -406,6 +406,10 @@ export default function DashboardPage() {
       const target = mainScrolls ? mainEl : document.documentElement;
       if (target) target.style.overflowY = blocked ? "hidden" : "";
     };
+    // Backs the natural-height cache inside `check()` — see the comment down there for why this
+    // isn't just remeasured every scroll frame.
+    let cachedFullHeight = 0;
+    let cachedFullHeightKey = "";
     const check = () => {
       raf = 0;
       // Each column's card list has a fixed, viewport-relative height from the moment it
@@ -419,6 +423,7 @@ export default function DashboardPage() {
         setCardListsScrollable(false);
         setPageScrollBlocked(false);
         getColumns().forEach((col) => { col.style.height = ""; });
+        cachedFullHeightKey = "";
         return;
       }
       const stuckTop = Number.parseFloat(getComputedStyle(el).top) || 0;
@@ -452,11 +457,23 @@ export default function DashboardPage() {
       const columns = getColumns();
       const firstCol = columns[0];
       if (!firstCol) return;
-      // Clear any height this same function set last tick before measuring — otherwise "full
-      // height" would be read back as whatever (possibly shrunken) height was applied previously,
-      // not the column's true natural size. This reset+measure happens within one synchronous
-      // tick (nothing paints in between), so it's not visible as a flash.
-      columns.forEach((col) => { col.style.height = ""; });
+      // The column's natural (fully-grown) height doesn't change from one scroll frame to the
+      // next — only how much of it is currently revealed does — so it's cached here instead of
+      // being remeasured on every single scroll-driven call. Remeasuring meant resetting height
+      // to "" and immediately reading getBoundingClientRect(), a write-then-read that forces a
+      // synchronous layout reflow; doing that (plus repainting every column's backdrop-filter
+      // blur) on every scroll frame for the whole lock-in transition is what showed up as
+      // stutter, especially visible right at the moving bottom edge, worse on mobile GPUs. The
+      // cache key covers the two things that actually DO change it: the column count (data
+      // load/filter swapping which columns exist) and the viewport size (resize/orientation).
+      const fullHeightCacheKey = `${columns.length}:${window.innerWidth}x${window.innerHeight}`;
+      if (fullHeightCacheKey !== cachedFullHeightKey) {
+        const prevHeight = firstCol.style.height;
+        firstCol.style.height = "";
+        cachedFullHeight = firstCol.getBoundingClientRect().height;
+        firstCol.style.height = prevHeight;
+        cachedFullHeightKey = fullHeightCacheKey;
+      }
       const colRect = firstCol.getBoundingClientRect();
       // BOTTOM_PAD gives the revealed edge breathing room from the viewport bottom — matching the
       // wrapper's own pt-[10px] above the columns, the row's px-[10px]/pb-[10px], and the
@@ -468,13 +485,11 @@ export default function DashboardPage() {
       // padding between the wrapper and the columns — they're all the same size and position, so
       // the first one stands in for all of them.
       const BOTTOM_PAD = 10;
-      const fullHeight = colRect.height;
-      const grownHeight = Math.min(fullHeight, Math.max(0, window.innerHeight - BOTTOM_PAD - colRect.top));
-      if (grownHeight < fullHeight - 0.5) {
-        columns.forEach((col) => { col.style.height = `${grownHeight}px`; });
-      }
-      // else: leave height "" (already reset above) — fully grown, so the column's natural 100%
-      // (of the row) is exactly right and stays correct on its own through any later resize.
+      const grownHeight = Math.min(cachedFullHeight, Math.max(0, window.innerHeight - BOTTOM_PAD - colRect.top));
+      const nextHeight = grownHeight < cachedFullHeight - 0.5 ? `${grownHeight}px` : "";
+      columns.forEach((col) => {
+        if (col.style.height !== nextHeight) col.style.height = nextHeight;
+      });
     };
     boardCheckRef.current = check;
     const onScroll = () => {
@@ -571,6 +586,13 @@ export default function DashboardPage() {
   }, [dashboardViewMode]);
   const projectBoardDragGhost = useDragGhost();
   const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
+  // `statusRows` starts out as a generic placeholder (see normalizeStatuses(undefined) above) —
+  // the company's real, configured statuses/colors only land once the company doc fetch below
+  // resolves. The board view's own loading gate (`showProjectsLoadingState`) goes false as soon
+  // as PROJECTS have loaded, which happens earlier and independently — so without this, the
+  // board would render a beat of columns in the placeholder names/colors before snapping to the
+  // real ones the instant the company doc arrives, visible as a flash on every load.
+  const [statusRowsLoaded, setStatusRowsLoaded] = useState(false);
   const [dashboardLegendRows, setDashboardLegendRows] = useState<DashboardLegendRow[]>([]);
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
   const [roleRows, setRoleRows] = useState<RoleRow[]>([]);
@@ -760,6 +782,7 @@ export default function DashboardPage() {
     const load = async () => {
       if (!cancelled) {
         setIsLoading(true);
+        setStatusRowsLoaded(false);
       }
       try {
         const storedCompanyId =
@@ -799,6 +822,7 @@ export default function DashboardPage() {
           );
           if (cancelled) return;
           setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
+          setStatusRowsLoaded(true);
           setDashboardLegendRows(normalizeDashboardLegend((companyDoc as Record<string, unknown> | null)?.dashboardCompleteLegend));
           setCompanyMembers(members);
           setRoleRows(normalizeRoleRows((companyDoc as Record<string, unknown> | null)?.roles));
@@ -806,6 +830,7 @@ export default function DashboardPage() {
           if (themeColor) setCompanyThemeColor(themeColor);
         } else {
           setStatusRows(normalizeStatuses(undefined));
+          setStatusRowsLoaded(true);
           setDashboardLegendRows([]);
           setCompanyMembers([]);
           setRoleRows([]);
@@ -815,6 +840,7 @@ export default function DashboardPage() {
         setAllProjects([]);
         setCreatorColorByUid({});
         setStatusRows(normalizeStatuses(undefined));
+        setStatusRowsLoaded(true);
         setDashboardLegendRows([]);
         setCompanyMembers([]);
         setRoleRows([]);
@@ -2414,10 +2440,10 @@ export default function DashboardPage() {
             className="glass-scroll flex snap-x snap-mandatory items-stretch gap-[10px] overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none"
             style={{ flex: "1 1 auto", minHeight: 0 }}
           >
-            {showProjectsLoadingState && (
+            {(showProjectsLoadingState || !statusRowsLoaded) && (
               <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
             )}
-            {!showProjectsLoadingState && filtered.length === 0 && (
+            {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
               <div className="flex flex-col items-center gap-3 px-4 py-10">
                 <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
                 <button
@@ -2429,7 +2455,7 @@ export default function DashboardPage() {
                 </button>
               </div>
             )}
-            {!showProjectsLoadingState && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
+            {!showProjectsLoadingState && statusRowsLoaded && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
               const isDragOver = dragOverProjectStatusColumn === column.name;
               const isCollapsed = Boolean(collapsedProjectStatusColumns[column.name]);
               const dragHandlers = {
@@ -2551,7 +2577,7 @@ export default function DashboardPage() {
                 </div>
               );
             })}
-            {!showProjectsLoadingState && dashboardStatusBoardColumns.otherProjects.length > 0 && (
+            {!showProjectsLoadingState && statusRowsLoaded && dashboardStatusBoardColumns.otherProjects.length > 0 && (
               // See the column cases above for why the shadow and reveal height sit on this
               // outer shell rather than on the column div below.
               <div

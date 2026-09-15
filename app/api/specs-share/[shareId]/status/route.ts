@@ -33,7 +33,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     ok: true,
     exists: true,
     clientEmail: shareDoc.clientEmail,
-    expiresAt: shareDoc.expiresAt,
     submittedAt: shareDoc.submittedAt || null,
     submittedByName: shareDoc.submittedByName || null,
     versionId: shareDoc.versionId || null,

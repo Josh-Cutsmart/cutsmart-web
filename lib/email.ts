@@ -42,14 +42,12 @@ export type SendSpecsConfirmationEmailInput = {
   to: string;
   projectName: string;
   link: string;
-  expiresInDays: number;
 };
 
 export async function sendSpecsConfirmationEmail({
   to,
   projectName,
   link,
-  expiresInDays,
 }: SendSpecsConfirmationEmailInput): Promise<SendVerificationEmailResult> {
   const apiKey = process.env.RESEND_API_KEY || "";
   const from = process.env.RESEND_FROM_EMAIL || "";
@@ -60,7 +58,7 @@ export async function sendSpecsConfirmationEmail({
   if (!cleanTo) {
     return { ok: false, error: "missing-recipient" };
   }
-  const { subject, body } = buildSpecsConfirmationEmailText({ projectName, link, expiresInDays });
+  const { subject, body } = buildSpecsConfirmationEmailText({ projectName, link });
   try {
     const resend = new Resend(apiKey);
     const { error } = await resend.emails.send({

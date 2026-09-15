@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getQuoteShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { getProjectDocRefAdmin, getQuoteShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
 
@@ -9,7 +9,7 @@ import { projectNotifySubscriberUids } from "@/lib/project-notify";
 // consequential record than a specs confirmation, and the acceptance is written BOTH onto this
 // small specsShareLinks doc (for the staff status chip) AND directly onto the bound
 // quoteGridVersions/{id} document itself, so the permanent record survives even if this share link
-// is later revoked or expires.
+// is later revoked.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ shareId: string }> }) {
   if (!adminDb || !hasFirebaseAdminConfig) {
     return NextResponse.json({ ok: false, error: "missing-firebase-admin-config" }, { status: 500 });
@@ -28,10 +28,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
   }
   const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
-
-  if (isSpecsShareLinkExpired(shareDoc)) {
-    return NextResponse.json({ ok: false, error: "expired" }, { status: 400 });
-  }
 
   // Idempotent — a returning visit that's already accepted just confirms the existing state
   // rather than erroring, since the client page may call this again if its own local state was
@@ -57,8 +53,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const nowIso = new Date().toISOString();
   try {
     await shareRef.set({ quoteAcceptedAt: nowIso, quoteAcceptedByName: name }, { merge: true });
-    // Permanent record on the version document itself — the specsShareLinks doc can be revoked or
-    // can expire, but this frozen quoteGridVersions doc (and its acceptance) stays forever.
+    // Permanent record on the version document itself — the specsShareLinks doc can be revoked,
+    // but this frozen quoteGridVersions doc (and its acceptance) stays forever.
     await target.ref.set({ acceptedAtIso: nowIso, acceptedByName: name }, { merge: true });
   } catch (err) {
     console.error("[specs-share/accept] write failed:", err);

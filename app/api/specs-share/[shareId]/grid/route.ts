@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getSpecsShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { getProjectDocRefAdmin, getSpecsShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 
 // No access code — the link itself (this shareId) is the only secret, per the user's explicit
@@ -17,10 +17,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
   }
   const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
-
-  if (isSpecsShareLinkExpired(shareDoc)) {
-    return NextResponse.json({ ok: false, error: "expired" }, { status: 400 });
-  }
 
   // A hub link that only ever had the Quote sent (quoteVersionId present, versionId absent) must
   // never fall through to getSpecsShareGridTarget's legacy live-project fallback below — that

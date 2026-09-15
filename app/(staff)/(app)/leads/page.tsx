@@ -753,6 +753,10 @@ export default function LeadsPage() {
       const target = mainScrolls ? mainEl : document.documentElement;
       if (target) target.style.overflowY = blocked ? "hidden" : "";
     };
+    // Backs the natural-height cache inside `check()` — see the comment down there for why this
+    // isn't just remeasured every scroll frame.
+    let cachedFullHeight = 0;
+    let cachedFullHeightKey = "";
     const check = () => {
       raf = 0;
       // Each column's card list has a fixed, viewport-relative height from the moment it
@@ -766,6 +770,7 @@ export default function LeadsPage() {
         setCardListsScrollable(false);
         setPageScrollBlocked(false);
         getColumns().forEach((col) => { col.style.height = ""; });
+        cachedFullHeightKey = "";
         return;
       }
       const stuckTop = Number.parseFloat(getComputedStyle(el).top) || 0;
@@ -799,11 +804,23 @@ export default function LeadsPage() {
       const columns = getColumns();
       const firstCol = columns[0];
       if (!firstCol) return;
-      // Clear any height this same function set last tick before measuring — otherwise "full
-      // height" would be read back as whatever (possibly shrunken) height was applied previously,
-      // not the column's true natural size. This reset+measure happens within one synchronous
-      // tick (nothing paints in between), so it's not visible as a flash.
-      columns.forEach((col) => { col.style.height = ""; });
+      // The column's natural (fully-grown) height doesn't change from one scroll frame to the
+      // next — only how much of it is currently revealed does — so it's cached here instead of
+      // being remeasured on every single scroll-driven call. Remeasuring meant resetting height
+      // to "" and immediately reading getBoundingClientRect(), a write-then-read that forces a
+      // synchronous layout reflow; doing that (plus repainting every column's backdrop-filter
+      // blur) on every scroll frame for the whole lock-in transition is what showed up as
+      // stutter, especially visible right at the moving bottom edge, worse on mobile GPUs. The
+      // cache key covers the two things that actually DO change it: the column count (data
+      // load/filter swapping which columns exist) and the viewport size (resize/orientation).
+      const fullHeightCacheKey = `${columns.length}:${window.innerWidth}x${window.innerHeight}`;
+      if (fullHeightCacheKey !== cachedFullHeightKey) {
+        const prevHeight = firstCol.style.height;
+        firstCol.style.height = "";
+        cachedFullHeight = firstCol.getBoundingClientRect().height;
+        firstCol.style.height = prevHeight;
+        cachedFullHeightKey = fullHeightCacheKey;
+      }
       const colRect = firstCol.getBoundingClientRect();
       // BOTTOM_PAD gives the revealed edge breathing room from the viewport bottom — matching the
       // row's own pt-2/px-2/pb-2 (and the gap-2 between columns) so every side of a column has the
@@ -814,13 +831,11 @@ export default function LeadsPage() {
       // regardless of any padding between the row and the columns — they're all the same size and
       // position, so the first one stands in for all of them.
       const BOTTOM_PAD = 8;
-      const fullHeight = colRect.height;
-      const grownHeight = Math.min(fullHeight, Math.max(0, window.innerHeight - BOTTOM_PAD - colRect.top));
-      if (grownHeight < fullHeight - 0.5) {
-        columns.forEach((col) => { col.style.height = `${grownHeight}px`; });
-      }
-      // else: leave height "" (already reset above) — fully grown, so the column's natural 100%
-      // (of the row) is exactly right and stays correct on its own through any later resize.
+      const grownHeight = Math.min(cachedFullHeight, Math.max(0, window.innerHeight - BOTTOM_PAD - colRect.top));
+      const nextHeight = grownHeight < cachedFullHeight - 0.5 ? `${grownHeight}px` : "";
+      columns.forEach((col) => {
+        if (col.style.height !== nextHeight) col.style.height = nextHeight;
+      });
     };
     boardCheckRef.current = check;
     const onScroll = () => {

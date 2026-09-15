@@ -263,26 +263,6 @@ function normalizePersonLookup(value: unknown): string {
     .replace(/\s+/g, " ");
 }
 
-function normalizeSalesQuoteExtras(raw: unknown): SalesQuoteExtraRow[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item) => item && typeof item === "object")
-    .map((item, idx) => {
-      const row = item as Record<string, unknown>;
-      const name = String(row.name ?? "").trim();
-      return {
-        id: String(row.id ?? `quote_extra_${(name || "row").toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${idx + 1}`).trim(),
-        name,
-        price: String(row.price ?? "").trim(),
-        defaultIncluded: Boolean(row.defaultIncluded ?? row.default),
-        templateContainerId: String(row.templateContainerId ?? "").trim(),
-        templateBlockId: String(row.templateBlockId ?? "").trim(),
-        templatePlaceholderKey: String(row.templatePlaceholderKey ?? "").trim(),
-      };
-    })
-    .filter((row) => row.name);
-}
-
 function normalizeSalesQuoteHelpers(raw: unknown): SalesQuoteHelperRow[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -1266,15 +1246,6 @@ const PROJECT_GAP_ALLOWANCE_SECTIONS: Array<{
   },
 ];
 
-type SalesQuoteExtraRow = {
-  id: string;
-  name: string;
-  price: string;
-  defaultIncluded: boolean;
-  templateContainerId: string;
-  templateBlockId: string;
-  templatePlaceholderKey: string;
-};
 type SalesQuoteHelperRow = {
   id: string;
   content: string;
@@ -5672,7 +5643,6 @@ export default function ProjectDetailsPage() {
   // "Send Quote to Client" has been used at least once.
   const [specsShareStatus, setSpecsShareStatus] = useState<{
     clientEmail: string;
-    expiresAt: string;
     submittedAt: string | null;
     submittedByName: string | null;
     // The specificationsVersions doc this link actually reads/writes (see
@@ -7202,90 +7172,10 @@ export default function ProjectDetailsPage() {
     [salesPayload],
   );
   const salesRoomNames = useMemo(() => salesRoomRows.map((row) => row.name), [salesRoomRows]);
-  const companyQuoteExtras = useMemo(
-    () => normalizeSalesQuoteExtras((companyDoc as Record<string, unknown> | null)?.quoteExtras),
-    [companyDoc],
-  );
-  const salesQuoteExtrasIncluded = useMemo(() => {
-    const raw = (salesPayload as Record<string, unknown>).quoteExtrasIncluded;
-    if (!Array.isArray(raw)) return [] as string[];
-    return raw.map((item) => String(item ?? "").trim()).filter(Boolean);
-  }, [salesPayload]);
-  const buildSalesQuoteExtraSet = (includedKeys: string[]) => {
-    const set = new Set<string>();
-    for (const key of includedKeys) {
-      set.add(key);
-      const matchedById = companyQuoteExtras.find((row) => row.id === key);
-      if (matchedById?.name) set.add(matchedById.name);
-      const matchedByName = companyQuoteExtras.find((row) => row.name === key);
-      if (matchedByName?.id) set.add(matchedByName.id);
-    }
-    return set;
-  };
-  const activeSalesQuoteExtraSet = useMemo(
-    () => buildSalesQuoteExtraSet(salesQuoteExtrasIncluded),
-    [companyQuoteExtras, salesQuoteExtrasIncluded],
-  );
-  const displayedSalesQuoteExtras = useMemo(
-    () =>
-      companyQuoteExtras.map((row) => ({
-        ...row,
-        included: activeSalesQuoteExtraSet.has(row.id) || activeSalesQuoteExtraSet.has(row.name),
-      })),
-    [activeSalesQuoteExtraSet, companyQuoteExtras],
-  );
   const salesQuoteHelpers = useMemo(
     () => normalizeSalesQuoteHelpers((companyDoc as Record<string, unknown> | null)?.salesQuoteHelpers),
     [companyDoc],
   );
-  const buildQuoteExtraVisibilityMap = (
-    rows: Array<SalesQuoteExtraRow & { included: boolean }>,
-    keySelector: (row: SalesQuoteExtraRow) => string,
-  ) => {
-    const grouped = new Map<string, boolean[]>();
-    rows.forEach((row) => {
-      const key = keySelector(row).trim();
-      if (!key) return;
-      const list = grouped.get(key) ?? [];
-      list.push(Boolean(row.included));
-      grouped.set(key, list);
-    });
-    return grouped;
-  };
-  const buildHiddenQuoteExtraKeySet = (visibilityMap: Map<string, boolean[]>) => {
-    const hidden = new Set<string>();
-    visibilityMap.forEach((states, key) => {
-      if (states.length > 0 && !states.some(Boolean)) hidden.add(key);
-    });
-    return hidden;
-  };
-  const liveQuoteExtraContainerVisibility = useMemo(
-    () => buildQuoteExtraVisibilityMap(displayedSalesQuoteExtras, (row) => String(row.templateContainerId || "")),
-    [displayedSalesQuoteExtras],
-  );
-  const liveHiddenQuoteContainerIdSet = useMemo(
-    () => buildHiddenQuoteExtraKeySet(liveQuoteExtraContainerVisibility),
-    [liveQuoteExtraContainerVisibility],
-  );
-  const liveQuoteExtraBlockVisibility = useMemo(
-    () => buildQuoteExtraVisibilityMap(displayedSalesQuoteExtras, (row) => String(row.templateBlockId || "")),
-    [displayedSalesQuoteExtras],
-  );
-  const liveHiddenQuoteBlockIdSet = useMemo(
-    () => buildHiddenQuoteExtraKeySet(liveQuoteExtraBlockVisibility),
-    [liveQuoteExtraBlockVisibility],
-  );
-  const liveQuoteExtraPlaceholderVisibility = useMemo(
-    () => buildQuoteExtraVisibilityMap(displayedSalesQuoteExtras, (row) => String(row.templatePlaceholderKey || "")),
-    [displayedSalesQuoteExtras],
-  );
-  const liveDisabledQuotePlaceholderKeySet = useMemo(
-    () => buildHiddenQuoteExtraKeySet(liveQuoteExtraPlaceholderVisibility),
-    [liveQuoteExtraPlaceholderVisibility],
-  );
-  const activeHiddenQuoteContainerIdSet = liveHiddenQuoteContainerIdSet;
-  const activeHiddenQuoteBlockIdSet = liveHiddenQuoteBlockIdSet;
-  const activeDisabledQuotePlaceholderKeySet = liveDisabledQuotePlaceholderKeySet;
   const rawSalesProductRows = useMemo(() => {
     const payload = salesPayload as Record<string, unknown>;
     const candidates = [
@@ -11606,13 +11496,7 @@ export default function ProjectDetailsPage() {
       product_count: String(selectedSalesProductNames.length),
     };
   }, [assignedDisplayName, companyDoc, creatorDisplayName, displayedSalesQuoteDiscountTotal, displayedSalesQuoteFinalTotal, includedSalesRoomsForQuote, project, projectAssignedMember, projectCreatorMember, selectedSalesProductNames]);
-  const effectiveQuoteTemplateReplacements = useMemo(() => {
-    const next = { ...quoteTemplateReplacements };
-    activeDisabledQuotePlaceholderKeySet.forEach((key) => {
-      next[key] = "";
-    });
-    return next;
-  }, [activeDisabledQuotePlaceholderKeySet, quoteTemplateReplacements]);
+  const effectiveQuoteTemplateReplacements = quoteTemplateReplacements;
   const persistSalesPatch = async (nextSalesRaw: Record<string, unknown>) => {
     const activeProject = projectRef.current ?? project;
     if (!activeProject) return false;
@@ -15847,39 +15731,6 @@ export default function ProjectDetailsPage() {
     );
     setIsSavingSalesRooms(true);
     const ok = await persistSalesPatch(nextSales);
-    setIsSavingSalesRooms(false);
-  };
-
-  const onToggleSalesQuoteExtraIncluded = async (extra: SalesQuoteExtraRow, included: boolean) => {
-    if (!project || isSavingSalesRooms || !salesAccess.edit) return;
-    const activeBlockId = String(activeQuoteProjectTextEditBlockId ?? "").trim();
-    if (activeBlockId && quoteProjectTextEditorRef.current) {
-      await persistActiveQuoteProjectTextFromEditor(quoteProjectTextEditorRef.current, activeBlockId);
-    }
-    const targetIds = new Set([String(extra.id || "").trim(), String(extra.name || "").trim()].filter(Boolean));
-    const nextIncluded = salesQuoteExtrasIncluded.filter((item) => !targetIds.has(String(item || "").trim()));
-    if (included) nextIncluded.push(String(extra.id || extra.name || "").trim());
-    const nextSales = {
-      ...salesPayload,
-      quoteProjectText: buildLiveQuoteProjectTextMap(),
-      quoteExtrasIncluded: Array.from(new Set(nextIncluded.filter(Boolean))),
-    } as Record<string, unknown>;
-    setIsSavingSalesRooms(true);
-    const ok = await persistSalesPatch(nextSales);
-    if (ok) {
-      quoteContainerRefs.current = {};
-      quotePreviewPageRefs.current = {};
-      quotePrintSheetRef.current = null;
-      setQuoteContainerPagination(null);
-      setQuoteProjectTextPagination(null);
-      setQuoteProjectTextMetrics(null);
-      setQuoteProjectTextPreviewMode(null);
-      setActiveQuotePreviewPageId("quote_page_1");
-      if (quotePreviewScrollRef.current) {
-        quotePreviewScrollRef.current.scrollTo({ top: 0, behavior: "auto" });
-      }
-      setQuoteLayoutRevision((prev) => prev + 1);
-    }
     setIsSavingSalesRooms(false);
   };
 
@@ -24166,17 +24017,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     () =>
       quoteLayoutTemplate.containers.filter((container) => {
         if (!container.enabled) return false;
-        if (activeHiddenQuoteContainerIdSet.has(String(container.id || "").trim())) return false;
         return container.columns.some((column) =>
-          column.blocks.some(
-            (block) =>
-              block.enabled &&
-              !activeHiddenQuoteBlockIdSet.has(String(block.id || "").trim()) &&
-              quoteBlockCountsAsContent(block),
-          ),
+          column.blocks.some((block) => block.enabled && quoteBlockCountsAsContent(block)),
         );
       }),
-    [activeHiddenQuoteBlockIdSet, activeHiddenQuoteContainerIdSet, quoteLayoutTemplate.containers],
+    [quoteLayoutTemplate.containers],
   );
   const quotePreviewPaper = useMemo(
     () => quotePaperDimensionsFor(quoteLayoutTemplate.pageSize),
@@ -24201,11 +24046,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const container = paginatedContainers[i];
       for (const column of container.columns) {
         for (const item of column.blocks) {
-          if (
-            item.enabled &&
-            !activeHiddenQuoteBlockIdSet.has(String(item.id || "").trim()) &&
-            item.type === "projectText"
-          ) {
+          if (item.enabled && item.type === "projectText") {
             candidates.push({ container, block: item, orderedIndex: i });
           }
         }
@@ -24224,7 +24065,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     return candidates[candidates.length - 1] ?? null;
   }, [
-    activeHiddenQuoteBlockIdSet,
     activeQuoteProjectTextEditBlockId,
     topQuoteContainers,
     flowQuoteContainers,
@@ -24410,7 +24250,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         ok?: boolean;
         exists?: boolean;
         clientEmail?: string;
-        expiresAt?: string;
         submittedAt?: string | null;
         submittedByName?: string | null;
         versionId?: string | null;
@@ -24425,7 +24264,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         data.exists
           ? {
               clientEmail: data.clientEmail || "",
-              expiresAt: data.expiresAt || "",
               submittedAt: data.submittedAt || null,
               submittedByName: data.submittedByName || null,
               versionId: data.versionId || null,
@@ -24589,7 +24427,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
-        expiresAt?: string;
         subject?: string;
         body?: string;
       };
@@ -24621,7 +24458,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       // consistent with that.
       setSpecsShareStatus((prev) => ({
         clientEmail,
-        expiresAt: data.expiresAt || "",
         submittedAt: null,
         submittedByName: null,
         versionId: sentVersionId,
@@ -24749,7 +24585,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         error?: string;
-        expiresAt?: string;
         subject?: string;
         body?: string;
       };
@@ -24775,7 +24610,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       }
       setSpecsShareStatus((prev) => ({
         clientEmail,
-        expiresAt: data.expiresAt || "",
         submittedAt: prev?.submittedAt || null,
         submittedByName: prev?.submittedByName || null,
         versionId: prev?.versionId || null,
@@ -25566,7 +25400,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const totalFormatted = options?.totalFormattedOverride ?? formatCurrencyValue(displayedSalesQuoteFinalTotal);
       const isReadOnlyRender = Boolean(options?.readOnlyMode || options?.thumbnailMode);
       if (!block.enabled) return null;
-      if (activeHiddenQuoteBlockIdSet.has(String(block.id || "").trim())) return null;
       if (block.type === "divider") {
         return <div key={`${keyPrefix}_${block.id}`} className="my-1 h-px w-full bg-[#CBD5E1]" />;
       }
@@ -25804,12 +25637,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const containerHasProjectText =
       Boolean(options?.projectTextBlockId) ||
       container.columns.some((column) =>
-        column.blocks.some(
-          (block) =>
-            block.enabled &&
-            !activeHiddenQuoteBlockIdSet.has(String(block.id || "").trim()) &&
-            block.type === "projectText",
-        ),
+        column.blocks.some((block) => block.enabled && block.type === "projectText"),
       );
     return (
       <div
@@ -25955,7 +25783,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const quotePreviewIncludedRooms = includedSalesRoomsForQuote;
   const quotePreviewProjectTextMap = quoteLiveProjectTextMap;
   const quotePreviewTotalFormatted = formatCurrencyValue(displayedSalesQuoteFinalTotal);
-  const sidebarDisplayedSalesQuoteExtras = displayedSalesQuoteExtras;
   const onQuotePreviewScroll = () => {
     const scroller = quotePreviewScrollRef.current;
     if (!scroller || displayedQuotePreviewPages.length <= 1) return;
@@ -26218,61 +26045,38 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
       }}
     >
-      <div className="flex h-[50px] items-center border-b px-4" style={{ borderBottomColor: "var(--glass-border)" }}>
-        <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>QUOTE EXTRAS</p>
+      <div className="flex h-[50px] items-center justify-between border-b px-4" style={{ borderBottomColor: "var(--glass-border)" }}>
+        <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>QUOTE HELPERS</p>
+        {!activeQuoteProjectTextEditBlockId ? (
+          <span className="text-[10px] font-semibold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Select text field</span>
+        ) : null}
       </div>
       <div className="space-y-4 p-4 pb-8 text-[12px]">
-        {sidebarDisplayedSalesQuoteExtras.length > 0 ? (
+        {salesQuoteHelpers.length > 0 ? (
           <div className="space-y-2">
-            {sidebarDisplayedSalesQuoteExtras.map((item) => (
-              <label key={`quote_preview_extra_${item.id}`} className="flex items-center gap-2" style={{ color: "var(--text-main)" }}>
-                <input
-                  type="checkbox"
-                  checked={item.included}
-                  disabled={salesReadOnly || isSavingSalesRooms || isViewingQuoteSnapshot}
-                  onChange={(e) => void onToggleSalesQuoteExtraIncluded(item, e.target.checked)}
-                  className="h-[12px] w-[12px]"
+            {salesQuoteHelpers.map((helper) => (
+              <button
+                key={`quote_helper_${helper.id}`}
+                type="button"
+                disabled={!activeQuoteProjectTextEditBlockId || salesReadOnly || isSavingQuoteProjectText || isViewingQuoteSnapshot}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertSalesQuoteHelperAtCursor(helper);
+                }}
+                className="w-full rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+              >
+                <div
+                  className="text-[12px] leading-[1.45]"
+                  style={{ color: "var(--text-main)" }}
+                  dangerouslySetInnerHTML={{ __html: renderQuoteRichTextHtml(helper.content) }}
                 />
-                <span className="font-semibold">{item.name}</span>
-              </label>
+              </button>
             ))}
           </div>
         ) : (
-          <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No quote extras configured.</p>
+          <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No quote helpers configured.</p>
         )}
-        <div className="border-t pt-4" style={{ borderColor: "var(--glass-border)" }}>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-[13px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>QUOTE HELPERS</p>
-            {!activeQuoteProjectTextEditBlockId ? (
-              <span className="text-[10px] font-semibold uppercase tracking-[0.8px]" style={{ color: "var(--text-muted)" }}>Select text field</span>
-            ) : null}
-          </div>
-          {salesQuoteHelpers.length > 0 ? (
-            <div className="space-y-2">
-              {salesQuoteHelpers.map((helper) => (
-                <button
-                  key={`quote_helper_${helper.id}`}
-                  type="button"
-                  disabled={!activeQuoteProjectTextEditBlockId || salesReadOnly || isSavingQuoteProjectText || isViewingQuoteSnapshot}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    insertSalesQuoteHelperAtCursor(helper);
-                  }}
-                  className="w-full rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
-                >
-                  <div
-                    className="text-[12px] leading-[1.45]"
-                    style={{ color: "var(--text-main)" }}
-                    dangerouslySetInnerHTML={{ __html: renderQuoteRichTextHtml(helper.content) }}
-                  />
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No quote helpers configured.</p>
-          )}
-        </div>
         <div className="border-t pt-4" style={{ borderColor: "var(--glass-border)" }}>
           <div className="mb-2 flex items-center justify-between gap-2">
             <p className="text-[13px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>QUOTE HISTORY</p>

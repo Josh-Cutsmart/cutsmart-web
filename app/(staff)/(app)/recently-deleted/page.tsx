@@ -1,7 +1,8 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, RotateCcw, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
+import { Check, ChevronRight, RotateCcw, Search, Trash2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess } from "@/lib/membership";
 import {
@@ -15,6 +16,7 @@ import {
 import type { CompanyLeadRow } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
 const RESERVED_LEAD_FIELD_KEYS = new Set(["companyid", "source", "status"]);
 const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
@@ -180,7 +182,7 @@ function normalizeLeadFieldLayout(raw: unknown): LeadFieldLayoutRow[] {
         showInRow: Boolean(row.showInRow),
         showInDetail: row.showInDetail == null ? true : Boolean(row.showInDetail),
         order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
-        projectFieldTarget: ([ 
+        projectFieldTarget: ([
           "",
           "clientName",
           "clientPhone",
@@ -347,10 +349,13 @@ export default function RecentlyDeletedPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState("");
   const [hoveredRestoreId, setHoveredRestoreId] = useState("");
   const [hoveredDeleteId, setHoveredDeleteId] = useState("");
-  const [hoveredRowId, setHoveredRowId] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
-  const [expandedProjectId, setExpandedProjectId] = useState("");
-  const [expandedLeadId, setExpandedLeadId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [projectModalOrigin, setProjectModalOrigin] = useState<GlassModalOrigin>(null);
+  const projectModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const [selectedLeadId, setSelectedLeadId] = useState("");
+  const [leadModalOrigin, setLeadModalOrigin] = useState<GlassModalOrigin>(null);
+  const leadModalPanelRef = useRef<HTMLDivElement | null>(null);
   const [leadFieldLayout, setLeadFieldLayout] = useState<LeadFieldLayoutRow[]>([]);
   const [leadStatusRows, setLeadStatusRows] = useState<StatusRow[]>(normalizeLeadStatuses(undefined));
   const [activeTab, setActiveTab] = useState<"leads" | "projects">("projects");
@@ -557,26 +562,8 @@ export default function RecentlyDeletedPage() {
         const normalized = normalizeLeadFieldKey(field.key);
         if (!normalized || map.has(normalized)) continue;
         map.set(normalized, { key: field.key, label: field.label });
-  }
-}
-
-function measureStatusPillWidth(options: string[]) {
-  const labels = options.map((option) => String(option || "").trim()).filter(Boolean);
-  if (!labels.length) return 60;
-  if (typeof document === "undefined") {
-    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
-    return Math.max(60, Math.ceil(longest * 6.6 + 10));
-  }
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-  if (!context) {
-    const longest = labels.reduce((max, label) => Math.max(max, label.length), 0);
-    return Math.max(60, Math.ceil(longest * 6.6 + 10));
-  }
-  context.font = '700 11px "Segoe UI", Arial, sans-serif';
-  const widest = labels.reduce((max, label) => Math.max(max, context.measureText(label).width), 0);
-  return Math.max(60, Math.ceil(widest + 10));
-}
+      }
+    }
     return Array.from(map.values());
   }, [deletedLeads]);
 
@@ -618,13 +605,6 @@ function measureStatusPillWidth(options: string[]) {
     return statusPillColors(statusLabel);
   };
 
-  const deletedLeadGridTemplate = useMemo(() => {
-    const parts = ["118px", "40px", `${leadStatusPillWidth}px`];
-    for (const _ of leadRowFields) parts.push("minmax(150px,1fr)");
-    parts.push("132px");
-    return parts.join(" ");
-  }, [leadRowFields, leadStatusPillWidth]);
-
   const onRestore = async (project: Project) => {
     if (restoringId || deletingId || !user?.verified) return;
     clearConfirmRestoreTimeout();
@@ -634,7 +614,7 @@ function measureStatusPillWidth(options: string[]) {
     if (ok) {
       setDeletedProjects((prev) => prev.filter((row) => row.id !== project.id));
       setConfirmRestoreId((prev) => (prev === project.id ? "" : prev));
-      setExpandedProjectId((prev) => (prev === project.id ? "" : prev));
+      setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
     }
     setRestoringId("");
   };
@@ -663,7 +643,7 @@ function measureStatusPillWidth(options: string[]) {
     if (ok) {
       setDeletedProjects((prev) => prev.filter((row) => row.id !== project.id));
       setConfirmDeleteId((prev) => (prev === project.id ? "" : prev));
-      setExpandedProjectId((prev) => (prev === project.id ? "" : prev));
+      setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
     }
     setDeletingId("");
   };
@@ -683,13 +663,30 @@ function measureStatusPillWidth(options: string[]) {
     await onPermanentDelete(project);
   };
 
-  const toggleProjectExpand = (project: Project) => {
-    setExpandedProjectId((prev) => (prev === project.id ? "" : project.id));
+  const openProjectDetail = (project: Project, e: ReactMouseEvent<HTMLElement>) => {
+    setProjectModalOrigin(captureGlassModalOrigin(e));
+    setSelectedProjectId(project.id);
   };
 
-  const toggleLeadExpand = (lead: CompanyLeadRow) => {
-    setExpandedLeadId((prev) => (prev === lead.id ? "" : lead.id));
+  const closeProjectDetail = () => setSelectedProjectId("");
+
+  const openLeadDetail = (lead: CompanyLeadRow, e: ReactMouseEvent<HTMLElement>) => {
+    setLeadModalOrigin(captureGlassModalOrigin(e));
+    setSelectedLeadId(lead.id);
   };
+
+  const closeLeadDetail = () => setSelectedLeadId("");
+
+  const shouldRenderProjectModal = useGlassModalPopOrigin(Boolean(selectedProjectId), projectModalOrigin, projectModalPanelRef);
+  const shouldRenderLeadModal = useGlassModalPopOrigin(Boolean(selectedLeadId), leadModalOrigin, leadModalPanelRef);
+  const selectedProject = useMemo(
+    () => deletedProjects.find((row) => row.id === selectedProjectId) || null,
+    [deletedProjects, selectedProjectId],
+  );
+  const selectedLead = useMemo(
+    () => deletedLeads.find((row) => row.id === selectedLeadId) || null,
+    [deletedLeads, selectedLeadId],
+  );
 
   useEffect(() => {
     return () => {
@@ -698,466 +695,452 @@ function measureStatusPillWidth(options: string[]) {
     };
   }, []);
 
+  const glassCardStyle: React.CSSProperties = {
+    borderColor: "var(--glass-border)",
+    backgroundColor: "var(--glass-bg-strong)",
+    backdropFilter: "blur(20px) saturate(180%)",
+    WebkitBackdropFilter: "blur(20px) saturate(180%)",
+    boxShadow: "var(--shadow-glass)",
+  };
+
+  const restoreButtonStyle = (isConfirming: boolean, isHovered: boolean): React.CSSProperties =>
+    isConfirming
+      ? {
+          color: "var(--success-strong)",
+          borderColor: "var(--success-border)",
+          backgroundColor: "var(--success-soft)",
+        }
+      : {
+          color: "var(--brand-strong)",
+          borderColor: isHovered ? "var(--brand-strong)" : "var(--glass-border)",
+          backgroundColor: isHovered ? "var(--brand-soft)" : "var(--panel-muted)",
+        };
+
+  const deleteButtonStyle = (isConfirming: boolean, isHovered: boolean): React.CSSProperties =>
+    isConfirming
+      ? {
+          color: "var(--success-strong)",
+          borderColor: "var(--success-border)",
+          backgroundColor: "var(--success-soft)",
+        }
+      : {
+          color: "var(--danger-strong)",
+          borderColor: "var(--danger-border)",
+          backgroundColor: isHovered ? "var(--danger-soft)" : "var(--panel-muted)",
+        };
+
   return (
-        <section
-          className="-mx-4 -mb-4 -mt-4 min-h-screen pb-4 pt-0 md:-mx-5"
-          style={{ backgroundColor: "var(--panel-bg)" }}
-        >
-          <div
-            className="flex h-[56px] flex-wrap items-center justify-between gap-3 border-b px-4 md:px-5"
-            style={{ borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)" }}
+    <div
+      className="-mt-3 flex flex-col bg-transparent md:-mt-4 lg:-mt-4"
+      style={{
+        marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
+        marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
+      }}
+    >
+      <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 flex-wrap items-center justify-between gap-3 px-4 md:px-5 lg:top-[48px]">
+        <div className="inline-flex min-w-0 items-center gap-2">
+          <Trash2 size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
+          <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            Recently Deleted
+          </p>
+          <span
+            className="hidden shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold normal-case tracking-normal sm:inline-flex"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
           >
-            <div className="inline-flex min-w-0 items-center gap-2">
-              <Trash2 size={16} color="var(--text-main)" strokeWidth={2.1} />
-              <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                <span style={{ color: "var(--text-main)" }}>Recently Deleted</span>
-                <span className="px-2" style={{ color: "var(--text-muted)" }}>|</span>
-                <span style={{ color: "var(--text-muted)" }}>{companyName}</span>
-              </p>
-            </div>
-            <div className="inline-flex items-center gap-3">
-              <div className="inline-flex items-center gap-2">
-                {canAccessDeletedLeads ? (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("leads")}
-                    className="inline-flex h-8 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold uppercase tracking-[0.7px] transition-colors"
-                    style={
-                      activeTab === "leads"
-                        ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
-                        : { backgroundColor: "transparent", color: "var(--text-muted)" }
-                    }
-                  >
-                    Leads
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("projects")}
-                  className="inline-flex h-8 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold uppercase tracking-[0.7px] transition-colors"
-                  style={
-                    activeTab === "projects"
-                      ? { backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
-                      : { backgroundColor: "transparent", color: "var(--text-muted)" }
-                  }
-                >
-                  Projects
-                </button>
-              </div>
-              <div
-                className="inline-flex h-9 min-w-0 items-center gap-2 rounded-[10px] border px-2"
-                style={{ width: "min(340px, 60vw)", minWidth: 90, borderColor: "var(--panel-border)", backgroundColor: "var(--panel-muted)" }}
+            {companyName}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex gap-1.5">
+            {canAccessDeletedLeads ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab("leads")}
+                className="h-8 rounded-[10px] border px-3 text-[11px] font-bold uppercase tracking-[0.5px] transition"
+                style={
+                  activeTab === "leads"
+                    ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand)", color: "#fff", boxShadow: "var(--shadow-sm)" }
+                    : { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }
+                }
               >
-                <Search size={14} style={{ color: "var(--text-muted)" }} />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={activeTab === "projects" ? "Search deleted projects..." : "Search deleted leads..."}
-                  className="h-8 w-full bg-transparent text-[12px] outline-none"
-                  style={{ color: "var(--text-main)" }}
-                />
-              </div>
-            </div>
+                Leads
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setActiveTab("projects")}
+              className="h-8 rounded-[10px] border px-3 text-[11px] font-bold uppercase tracking-[0.5px] transition"
+              style={
+                activeTab === "projects"
+                  ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand)", color: "#fff", boxShadow: "var(--shadow-sm)" }
+                  : { backgroundColor: "var(--panel-bg)", borderColor: "var(--glass-border)", color: "var(--text-main)" }
+              }
+            >
+              Projects
+            </button>
           </div>
+          <div
+            className="inline-flex h-9 min-w-0 items-center gap-2 rounded-[10px] border px-3"
+            style={{ width: "min(300px, 55vw)", minWidth: 90, borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+          >
+            <Search size={14} style={{ color: "var(--text-muted)" }} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={activeTab === "projects" ? "Search deleted projects..." : "Search deleted leads..."}
+              className="h-8 w-full bg-transparent text-[12px] outline-none"
+              style={{ color: "var(--text-main)" }}
+            />
+          </div>
+        </div>
+      </div>
 
-          <div className="overflow-auto">
-            {activeTab === "projects" ? (
-            <table className="w-full min-w-[920px] text-[12px]">
-              <thead>
-                <tr>
-                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Project Name</th>
-                  <th className="h-[38px] border-b py-[7px] pl-[10px] text-left align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Creator</th>
-                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Deleted</th>
-                  <th className="h-[38px] border-b py-[7px] text-center align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Permanent Delete</th>
-                  <th className="h-[38px] w-[180px] border-b py-[7px] text-center align-middle text-[11px] font-bold" style={{ borderColor: "var(--panel-border)", color: "var(--text-muted)" }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading && (
-                  <tr>
-                    <td className="py-3 pl-[10px] pr-[10px]" style={{ color: "var(--text-muted)" }} colSpan={5}>Loading deleted projects...</td>
-                  </tr>
-                )}
-
-                {!isLoading && filtered.length === 0 && (
-                  <tr>
-                    <td className="py-4 pl-[10px] pr-[10px]" style={{ color: "var(--text-muted)" }} colSpan={5}>No deleted projects.</td>
-                  </tr>
-                )}
-
-                {filtered.map((project, idx) => {
-                  const deletedAt = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
-                  const deletedAtMs = new Date(deletedAt).getTime();
-                  const retentionDays = retentionDaysByCompany[String(project.companyId || "").trim()] ?? 90;
-                  const remainingMs =
-                    Number.isFinite(deletedAtMs)
-                      ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
-                      : Number.POSITIVE_INFINITY;
-                  const isConfirming = confirmRestoreId === project.id;
-                  const isDeleteConfirming = confirmDeleteId === project.id;
-                  const isExpanded = expandedProjectId === project.id;
-                  const productSummary = getProjectProductSummary(project);
-                  const clientAddressCombined = [String(project.clientAddress || "").trim(), String(project.region || "").trim()]
-                    .filter(Boolean)
-                    .join(", ");
-                  return (
-                    <Fragment key={`recently_deleted_${project.id}`}>
-                      <tr
-                        onMouseEnter={() => setHoveredRowId(project.id)}
-                        onMouseLeave={() => setHoveredRowId((prev) => (prev === project.id ? "" : prev))}
-                        onClick={() => toggleProjectExpand(project)}
-                        className="cursor-pointer [&>td]:transition-colors"
-                      >
-                        <td
-                          className="border-b py-[7px] pl-[10px] font-bold"
-                          style={{
-                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
-                            borderColor: "var(--panel-border)",
-                            color: "var(--text-main)",
-                          }}
-                        >
-                          {project.name}
-                        </td>
-                        <td
-                          className="border-b py-[7px] pl-[10px]"
-                          style={{
-                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
-                            borderColor: "var(--panel-border)",
-                            color: "var(--text-main)",
-                          }}
-                        >
-                          <div className="inline-flex items-center gap-2">
-                            <span
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                              style={{
-                                backgroundColor:
-                                  creatorColorByUid[String(project.createdByUid || "").trim()] || companyThemeColor,
-                              }}
-                            >
-                              {initialsFromName(project.createdByName || "")}
-                            </span>
-                            <span>{project.createdByName || "-"}</span>
-                          </div>
-                        </td>
-                        <td
-                          className="border-b py-[7px] text-center"
-                          style={{
-                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
-                            borderColor: "var(--panel-border)",
-                            color: "var(--text-main)",
-                          }}
-                        >
-                          {formatDeletedDate(deletedAt)}
-                        </td>
-                        <td
-                          className="border-b py-[7px] text-center"
-                          style={{
-                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
-                            borderColor: "var(--panel-border)",
-                          }}
-                        >
-                          <span
-                            className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border px-2 py-[3px] text-[11px] font-bold"
-                            style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
-                          >
-                            {formatRemaining(remainingMs)}
-                          </span>
-                        </td>
-                        <td
-                          className="w-[180px] border-b py-[7px]"
-                          style={{
-                            backgroundColor: hoveredRowId === project.id ? "var(--brand-soft)" : idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
-                            borderColor: "var(--panel-border)",
-                          }}
-                        >
-                          <div className="flex w-full justify-center">
-                            <button
-                              type="button"
-                              disabled={restoringId === project.id || deletingId === project.id}
-                              onMouseEnter={() => setHoveredRestoreId(project.id)}
-                              onMouseLeave={() => setHoveredRestoreId((prev) => (prev === project.id ? "" : prev))}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void onRestoreClick(project);
-                              }}
-                              className="inline-flex w-[132px] items-center justify-center gap-1 rounded-[8px] px-2 py-1 text-[11px] font-bold transition-all duration-150 disabled:opacity-55"
-                              style={{
-                                width: 132,
-                                minWidth: 132,
-                                maxWidth: 132,
-                                color: isConfirming ? "var(--success-strong)" : "var(--brand-strong)",
-                                border: `1px solid ${
-                                  isConfirming
-                                    ? hoveredRestoreId === project.id
-                                      ? "var(--success-border)"
-                                      : "var(--success-border)"
-                                    : hoveredRestoreId === project.id
-                                      ? "var(--brand)"
-                                      : "var(--brand-soft)"
-                                }`,
-                                background: isConfirming
-                                  ? hoveredRestoreId === project.id
-                                    ? "var(--success-soft)"
-                                    : "var(--success-soft)"
-                                  : hoveredRestoreId === project.id
-                                    ? "var(--brand-soft)"
-                                    : "var(--panel-muted)",
-                                boxShadow:
-                                  hoveredRestoreId === project.id ? "0 1px 0 rgba(30,58,138,0.15)" : "none",
-                              }}
-                            >
-                              {isConfirming ? <Check size={12} /> : <RotateCcw size={12} />}
-                              {restoringId === project.id ? "Restoring..." : isConfirming ? "Confirm" : "Restore"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                      {isExpanded && (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="relative border-b px-[10px] py-[8px]"
-                            style={{
-                              borderColor: "var(--panel-border)",
-                              backgroundColor: idx % 2 === 0 ? "var(--panel-muted)" : "var(--panel-bg)",
-                            }}
-                          >
-                              <div className="grid grid-cols-4 text-[12px]">
-                              <div className="px-3 py-2">
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Client</p>
-                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
-                                  <div><span>Client Name: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.customer || "-"}</span></div>
-                                  <div><span>Phone: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.clientPhone || "-"}</span></div>
-                                  <div><span>Email: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.clientEmail || "-"}</span></div>
-                                  <div><span>Address: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{clientAddressCombined || "-"}</span></div>
-                                </div>
-                              </div>
-                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "var(--panel-border)" }}>
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Overview</p>
-                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
-                                  <div><span>Status: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.statusLabel || "-"}</span></div>
-                                  <div><span>Creator: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.createdByName || "-"}</span></div>
-                                  <div><span>Assigned To: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.assignedTo || "-"}</span></div>
-                                </div>
-                              </div>
-                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "var(--panel-border)" }}>
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Dates</p>
-                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
-                                  <div><span>Created: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.createdAt || "")}</span></div>
-                                  <div><span>Modified: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.updatedAt || "")}</span></div>
-                                  <div><span>Deleted: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.deletedAt || "")}</span></div>
-                                </div>
-                              </div>
-                              <div className="border-l px-3 py-2" style={{ borderLeftColor: "var(--panel-border)" }}>
-                                <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Product</p>
-                                <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
-                                  <div><span>Pieces in job: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{productSummary.pieces}</span></div>
-                                  <div><span>Sheets: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{productSummary.sheets}</span></div>
-                                </div>
-                              </div>
-                              </div>
-                              <div className="absolute inset-0 z-20 flex items-end justify-end pr-[20px] pb-[10px]">
-                                <button
-                                  type="button"
-                                  disabled={deletingId === project.id || restoringId === project.id}
-                                  onMouseEnter={() => setHoveredDeleteId(project.id)}
-                                  onMouseLeave={() => setHoveredDeleteId((prev) => (prev === project.id ? "" : prev))}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void onPermanentDeleteClick(project);
-                                  }}
-                                  className="inline-flex w-[132px] items-center justify-center gap-1 rounded-[8px] px-2 py-1 text-[11px] font-bold transition-all duration-150 disabled:opacity-55"
-                                  style={{
-                                    width: 132,
-                                    minWidth: 132,
-                                    maxWidth: 132,
-                                    transform: "translateX(-10px)",
-                                    color: isDeleteConfirming ? "var(--success-strong)" : "var(--danger-strong)",
-                                    border: `1px solid ${
-                                      isDeleteConfirming
-                                        ? hoveredDeleteId === project.id
-                                          ? "var(--success-border)"
-                                          : "var(--success-border)"
-                                        : hoveredDeleteId === project.id
-                                          ? "var(--danger-border)"
-                                          : "var(--danger-border)"
-                                    }`,
-                                    background: isDeleteConfirming
-                                      ? hoveredDeleteId === project.id
-                                        ? "var(--success-soft)"
-                                        : "var(--success-soft)"
-                                      : hoveredDeleteId === project.id
-                                        ? "var(--danger-soft)"
-                                        : "var(--danger-soft)",
-                                  }}
-                                >
-                                  {isDeleteConfirming ? <Check size={12} /> : <Trash2 size={12} />}
-                                  {deletingId === project.id ? "Deleting..." : isDeleteConfirming ? "Confirm" : "Permanent Delete"}
-                                </button>
-                              </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-            ) : (
-              <div className="overflow-x-auto">
-                {isLoading ? (
-                  <div className="px-4 py-8 text-[13px] font-semibold text-[#6B7280]">
-                    Loading deleted leads...
-                  </div>
-                ) : filteredDeletedLeads.length === 0 ? (
-                  <div className="px-4 py-10 text-center text-[13px] font-semibold text-[#6B7280]">
-                    No deleted leads.
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      className="grid min-w-full h-[38px] items-center gap-3 border-b px-4 py-[7px] text-[11px] font-bold uppercase tracking-[0.8px]"
-                      style={{
-                        gridTemplateColumns: deletedLeadGridTemplate,
-                        borderColor: "var(--panel-border)",
-                        backgroundColor: "var(--panel-muted)",
-                        color: "var(--text-muted)",
-                      }}
-                    >
-                      <p>Permanent Delete</p>
-                      <p></p>
-                      <p>Status</p>
-                      {leadRowFields.length === 0 ? <p>No visible lead fields</p> : leadRowFields.map((column) => <p key={column.key}>{column.label}</p>)}
-                      <p className="text-right">Received</p>
-                    </div>
-                    {filteredDeletedLeads.map((lead, idx) => {
-                      const leadFields = getLeadDynamicFields(lead);
-                      const isExpanded = expandedLeadId === lead.id;
-                      const deletedAt = String(lead.deletedAtIso || lead.updatedAtIso || lead.createdAtIso || lead.submittedAtIso || "").trim();
-                      const deletedAtMs = new Date(deletedAt).getTime();
-                      const retentionDays = retentionDaysByCompany[String(lead.companyId || "").trim()] ?? 90;
-                      const remainingMs =
-                        Number.isFinite(deletedAtMs)
-                          ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
-                          : Number.POSITIVE_INFINITY;
-                      return (
-                        <Fragment key={`recently_deleted_lead_${lead.id}`}>
-                          <button
-                            type="button"
-                            onClick={() => toggleLeadExpand(lead)}
-                            className="grid min-w-full items-center gap-3 border-b px-4 py-[7px] text-left text-[12px] transition-colors"
-                            style={{
-                              gridTemplateColumns: deletedLeadGridTemplate,
-                              borderColor: "var(--panel-border)",
-                              backgroundColor: idx % 2 === 0 ? "var(--panel-bg)" : "var(--panel-muted)",
-                              color: "var(--text-main)",
-                            }}
-                          >
-                            <div className="text-left">
-                              <span
-                                className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border px-2 py-[3px] text-[11px] font-bold"
-                                style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
-                              >
-                                {formatRemaining(remainingMs)}
-                              </span>
-                            </div>
-                            <span
-                              className="flex h-6 w-6 items-center justify-center rounded-full"
-                              style={{ backgroundColor: isExpanded ? "var(--panel-bg)" : "transparent", color: "var(--text-main)" }}
-                              aria-hidden="true"
-                            >
-                              {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                            </span>
-                            <div className="-ml-1 flex justify-center">
-                              <span
-                                className="inline-flex h-7 shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold whitespace-nowrap"
-                                style={{ ...deletedLeadStatusPillStyle(lead.status || "Archived"), width: leadStatusPillWidth }}
-                              >
-                                {lead.status || "Archived"}
-                              </span>
-                            </div>
-                            {leadRowFields.length === 0 ? (
-                              <span className="min-w-0 text-left text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                No preview fields configured yet.
-                              </span>
-                            ) : (
-                              leadRowFields.map((column) => {
-                                const match = leadFields.find(
-                                  (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
-                                );
-                                return (
-                                  <span key={`${lead.id}:${column.key}`} className="min-w-0 overflow-hidden text-left">
-                                    <p className="truncate whitespace-nowrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                      {match?.value || "-"}
-                                    </p>
-                                  </span>
-                                );
-                              })
-                            )}
-                            <div className="text-right">
-                              <p className="whitespace-nowrap text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                                {formatDeletedDate(deletedAt)}
-                              </p>
-                            </div>
-                          </button>
-                          {isExpanded ? (
-                            <div
-                              className="border-b px-4 pb-4 pt-3"
-                              style={{
-                                borderColor: "var(--panel-border)",
-                                backgroundColor: idx % 2 === 0 ? "var(--panel-muted)" : "var(--panel-bg)",
-                              }}
-                            >
-                              <div className="mb-3 flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-2">
-                                  <span
-                                    className="inline-flex min-w-[94px] items-center justify-center rounded-[999px] border px-2 py-[3px] text-[11px] font-bold"
-                                    style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
-                                  >
-                                    {formatRemaining(remainingMs)}
-                                  </span>
-                                </div>
-                                <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>
-                                  Lead Details
-                                </p>
-                              </div>
-                              {leadDetailFields.length === 0 ? (
-                                <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                                  No detail fields configured yet.
-                                </p>
-                              ) : (
-                                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                                  {leadDetailFields.map((column) => {
-                                    const match = leadFields.find(
-                                      (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
-                                    );
-                                    return (
-                                      <div
-                                        key={`${lead.id}:detail:${column.key}`}
-                                        className="rounded-[12px] border px-3 py-2"
-                                        style={{ borderColor: "var(--panel-border)", backgroundColor: "var(--panel-bg)" }}
-                                      >
-                                        <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>
-                                          {column.label}
-                                        </p>
-                                        <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                                          {match?.value || "-"}
-                                        </p>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          ) : null}
-                        </Fragment>
-                      );
-                    })}
-                  </>
-                )}
+      <div className="space-y-1.5 p-3 md:p-4 lg:p-5">
+        {activeTab === "projects" ? (
+          <>
+            {isLoading && (
+              <div className="rounded-[16px] border p-4 text-[13px] font-semibold" style={{ ...glassCardStyle, color: "var(--text-muted)" }}>
+                Loading deleted projects...
               </div>
             )}
-          </div>
-        </section>
+            {!isLoading && filtered.length === 0 && (
+              <div className="rounded-[16px] border p-6 text-center text-[13px] font-semibold" style={{ ...glassCardStyle, color: "var(--text-muted)" }}>
+                No deleted projects.
+              </div>
+            )}
+            {filtered.map((project) => {
+              const deletedAt = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
+              const deletedAtMs = new Date(deletedAt).getTime();
+              const retentionDays = retentionDaysByCompany[String(project.companyId || "").trim()] ?? 90;
+              const remainingMs =
+                Number.isFinite(deletedAtMs)
+                  ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
+                  : Number.POSITIVE_INFINITY;
+              const isConfirmingRestore = confirmRestoreId === project.id;
+              return (
+                <div
+                  key={`recently_deleted_${project.id}`}
+                  className="overflow-hidden rounded-[16px] border transition"
+                  style={glassCardStyle}
+                >
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => openProjectDetail(project, e)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setProjectModalOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                        setSelectedProjectId(project.id);
+                      }
+                    }}
+                    className="flex w-full cursor-pointer flex-wrap items-center gap-2.5 px-3.5 py-2 text-left transition hover:brightness-[0.98]"
+                  >
+                    <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: "var(--text-muted)" }} aria-hidden="true">
+                      <ChevronRight size={15} />
+                    </span>
+                    <span
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                      style={{ backgroundColor: creatorColorByUid[String(project.createdByUid || "").trim()] || companyThemeColor }}
+                    >
+                      {initialsFromName(project.createdByName || "")}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{project.name}</p>
+                      <p className="truncate text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                        {project.createdByName || "-"} · Deleted {formatDeletedDate(deletedAt)}
+                      </p>
+                    </div>
+                    <span
+                      className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-bold"
+                      style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
+                    >
+                      {formatRemaining(remainingMs)}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={restoringId === project.id || deletingId === project.id}
+                      onMouseEnter={() => setHoveredRestoreId(project.id)}
+                      onMouseLeave={() => setHoveredRestoreId((prev) => (prev === project.id ? "" : prev))}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onRestoreClick(project);
+                      }}
+                      className="inline-flex h-7 w-[118px] shrink-0 items-center justify-center gap-1.5 rounded-[8px] border text-[11px] font-bold transition-all duration-150 disabled:opacity-55"
+                      style={restoreButtonStyle(isConfirmingRestore, hoveredRestoreId === project.id)}
+                    >
+                      {isConfirmingRestore ? <Check size={12} /> : <RotateCcw size={12} />}
+                      {restoringId === project.id ? "Restoring..." : isConfirmingRestore ? "Confirm" : "Restore"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        ) : (
+          <>
+            {isLoading ? (
+              <div className="rounded-[16px] border p-4 text-[13px] font-semibold" style={{ ...glassCardStyle, color: "var(--text-muted)" }}>
+                Loading deleted leads...
+              </div>
+            ) : filteredDeletedLeads.length === 0 ? (
+              <div className="rounded-[16px] border p-6 text-center text-[13px] font-semibold" style={{ ...glassCardStyle, color: "var(--text-muted)" }}>
+                No deleted leads.
+              </div>
+            ) : (
+              filteredDeletedLeads.map((lead) => {
+                const leadFields = getLeadDynamicFields(lead);
+                const deletedAt = String(lead.deletedAtIso || lead.updatedAtIso || lead.createdAtIso || lead.submittedAtIso || "").trim();
+                const deletedAtMs = new Date(deletedAt).getTime();
+                const retentionDays = retentionDaysByCompany[String(lead.companyId || "").trim()] ?? 90;
+                const remainingMs =
+                  Number.isFinite(deletedAtMs)
+                    ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
+                    : Number.POSITIVE_INFINITY;
+                return (
+                  <div
+                    key={`recently_deleted_lead_${lead.id}`}
+                    className="overflow-hidden rounded-[16px] border transition"
+                    style={glassCardStyle}
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => openLeadDetail(lead, e)}
+                      className="flex w-full flex-wrap items-center gap-2.5 px-3.5 py-2 text-left transition hover:brightness-[0.98]"
+                    >
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center" style={{ color: "var(--text-muted)" }} aria-hidden="true">
+                        <ChevronRight size={15} />
+                      </span>
+                      <span
+                        className="inline-flex h-6 shrink-0 items-center justify-center rounded-[8px] px-2.5 text-[11px] font-bold whitespace-nowrap"
+                        style={{ ...deletedLeadStatusPillStyle(lead.status || "Archived"), width: leadStatusPillWidth }}
+                      >
+                        {lead.status || "Archived"}
+                      </span>
+                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-0.5">
+                        {leadRowFields.length === 0 ? (
+                          <span className="min-w-0 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                            No preview fields configured yet.
+                          </span>
+                        ) : (
+                          leadRowFields.map((column) => {
+                            const match = leadFields.find(
+                              (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
+                            );
+                            return (
+                              <p key={`${lead.id}:${column.key}`} className="min-w-0 truncate text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                                {match?.value || "-"}
+                              </p>
+                            );
+                          })
+                        )}
+                      </div>
+                      <p className="hidden shrink-0 whitespace-nowrap text-[11px] font-semibold sm:block" style={{ color: "var(--text-muted)" }}>
+                        {formatDeletedDate(deletedAt)}
+                      </p>
+                      <span
+                        className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-bold"
+                        style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
+                      >
+                        {formatRemaining(remainingMs)}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </>
+        )}
+      </div>
+
+      {shouldRenderProjectModal && selectedProject && typeof document !== "undefined" && createPortal(
+        (() => {
+          const project = selectedProject;
+          const deletedAt = String(project.deletedAt || project.updatedAt || project.createdAt || "").trim();
+          const deletedAtMs = new Date(deletedAt).getTime();
+          const retentionDays = retentionDaysByCompany[String(project.companyId || "").trim()] ?? 90;
+          const remainingMs =
+            Number.isFinite(deletedAtMs)
+              ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
+              : Number.POSITIVE_INFINITY;
+          const isConfirmingDelete = confirmDeleteId === project.id;
+          const productSummary = getProjectProductSummary(project);
+          const clientAddressCombined = [String(project.clientAddress || "").trim(), String(project.region || "").trim()]
+            .filter(Boolean)
+            .join(", ");
+          return (
+            <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+              <button
+                type="button"
+                aria-label="Close project details backdrop"
+                onClick={closeProjectDetail}
+                className="glass-modal-backdrop absolute inset-0"
+              />
+              <div ref={projectModalPanelRef} className="glass-modal-panel relative w-full max-w-[720px] overflow-hidden">
+                <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
+                  <p className="truncate pr-3 text-[15px] font-bold" style={{ color: "var(--text-main)" }}>{project.name}</p>
+                  <button
+                    type="button"
+                    onClick={closeProjectDetail}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                    aria-label="Close"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="glass-scroll max-h-[70vh] overflow-y-auto p-4 sm:p-6">
+                  <div className="mb-4 flex items-center gap-2">
+                    <span
+                      className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                      style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
+                    >
+                      {formatRemaining(remainingMs)} remaining
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 text-[12px] sm:grid-cols-2">
+                    <div>
+                      <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Client</p>
+                      <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                        <div><span>Client Name: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.customer || "-"}</span></div>
+                        <div><span>Phone: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.clientPhone || "-"}</span></div>
+                        <div><span>Email: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.clientEmail || "-"}</span></div>
+                        <div><span>Address: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{clientAddressCombined || "-"}</span></div>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Overview</p>
+                      <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                        <div><span>Status: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.statusLabel || "-"}</span></div>
+                        <div><span>Creator: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.createdByName || "-"}</span></div>
+                        <div><span>Assigned To: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{project.assignedTo || "-"}</span></div>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Dates</p>
+                      <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                        <div><span>Created: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.createdAt || "")}</span></div>
+                        <div><span>Modified: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.updatedAt || "")}</span></div>
+                        <div><span>Deleted: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{formatDateOnly(project.deletedAt || "")}</span></div>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Product</p>
+                      <div className="space-y-1.5" style={{ color: "var(--text-muted)" }}>
+                        <div><span>Pieces in job: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{productSummary.pieces}</span></div>
+                        <div><span>Sheets: </span><span className="font-semibold" style={{ color: "var(--text-main)" }}>{productSummary.sheets}</span></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-5 flex justify-end">
+                    <button
+                      type="button"
+                      disabled={deletingId === project.id || restoringId === project.id}
+                      onMouseEnter={() => setHoveredDeleteId(project.id)}
+                      onMouseLeave={() => setHoveredDeleteId((prev) => (prev === project.id ? "" : prev))}
+                      onClick={() => void onPermanentDeleteClick(project)}
+                      className="inline-flex h-8 w-[152px] items-center justify-center gap-1.5 rounded-[8px] border text-[11px] font-bold transition-all duration-150 disabled:opacity-55"
+                      style={deleteButtonStyle(isConfirmingDelete, hoveredDeleteId === project.id)}
+                    >
+                      {isConfirmingDelete ? <Check size={12} /> : <Trash2 size={12} />}
+                      {deletingId === project.id ? "Deleting..." : isConfirmingDelete ? "Confirm" : "Permanent Delete"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
+
+      {shouldRenderLeadModal && selectedLead && typeof document !== "undefined" && createPortal(
+        (() => {
+          const lead = selectedLead;
+          const leadFields = getLeadDynamicFields(lead);
+          const deletedAt = String(lead.deletedAtIso || lead.updatedAtIso || lead.createdAtIso || lead.submittedAtIso || "").trim();
+          const deletedAtMs = new Date(deletedAt).getTime();
+          const retentionDays = retentionDaysByCompany[String(lead.companyId || "").trim()] ?? 90;
+          const remainingMs =
+            Number.isFinite(deletedAtMs)
+              ? deletedAtMs + retentionDays * 24 * 60 * 60 * 1000 - nowMs
+              : Number.POSITIVE_INFINITY;
+          return (
+            <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+              <button
+                type="button"
+                aria-label="Close lead details backdrop"
+                onClick={closeLeadDetail}
+                className="glass-modal-backdrop absolute inset-0"
+              />
+              <div ref={leadModalPanelRef} className="glass-modal-panel relative w-full max-w-[720px] overflow-hidden">
+                <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span
+                      className="inline-flex h-7 shrink-0 items-center justify-center rounded-[10px] px-3 text-[11px] font-bold whitespace-nowrap"
+                      style={{ ...deletedLeadStatusPillStyle(lead.status || "Archived"), width: leadStatusPillWidth }}
+                    >
+                      {lead.status || "Archived"}
+                    </span>
+                    <p className="truncate text-[15px] font-bold" style={{ color: "var(--text-main)" }}>{lead.name || "Lead"}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeLeadDetail}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                    aria-label="Close"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="glass-scroll max-h-[70vh] overflow-y-auto p-4 sm:p-6">
+                  <div className="mb-4 flex flex-wrap items-center gap-2">
+                    <span
+                      className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                      style={{ color: "var(--danger-strong)", borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)" }}
+                    >
+                      {formatRemaining(remainingMs)} remaining
+                    </span>
+                    <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                      Deleted {formatDeletedDate(deletedAt)}
+                    </span>
+                  </div>
+                  {leadDetailFields.length === 0 ? (
+                    <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                      No detail fields configured yet.
+                    </p>
+                  ) : (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {leadDetailFields.map((column) => {
+                        const match = leadFields.find(
+                          (field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(column.key),
+                        );
+                        return (
+                          <div
+                            key={`${lead.id}:detail:${column.key}`}
+                            className="rounded-[12px] border px-3 py-2"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                          >
+                            <p className="text-[10px] font-extrabold uppercase tracking-[0.7px]" style={{ color: "var(--text-muted)" }}>
+                              {column.label}
+                            </p>
+                            <p className="mt-2 whitespace-pre-wrap text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                              {match?.value || "-"}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
+    </div>
   );
 }

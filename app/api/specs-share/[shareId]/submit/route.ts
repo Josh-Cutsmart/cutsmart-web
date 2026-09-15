@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getSpecsShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { getProjectDocRefAdmin, getSpecsShareGridTarget, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 import { projectNotifySubscriberUids } from "@/lib/project-notify";
 
@@ -21,10 +21,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
   }
   const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
-
-  if (isSpecsShareLinkExpired(shareDoc)) {
-    return NextResponse.json({ ok: false, error: "expired" }, { status: 400 });
-  }
 
   // Idempotent — a returning visit that's already submitted just confirms the existing state
   // rather than erroring, since the client page may call this again if its own local state was
@@ -65,7 +61,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       { merge: true },
     );
     // Permanent record on the version document itself, mirroring Quote's own accept route — the
-    // specsShareLinks doc can be revoked or can expire, but this frozen specificationsVersions doc
+    // specsShareLinks doc can be revoked, but this frozen specificationsVersions doc
     // (and its submission) stays forever, and the staff sidebar's own bubble reads THIS field, not
     // the hub doc's, to color itself green. Only when actually version-bound (target.kind ===
     // "version") — a legacy link predating that field has no version doc to write onto.

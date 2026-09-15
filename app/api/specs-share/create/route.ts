@@ -3,7 +3,6 @@ import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
 import { verifyBearerUid } from "@/lib/api-auth";
 import {
-  SPECS_SHARE_DEFAULT_LINK_DAYS,
   buildQuoteAcceptanceEmailText,
   buildSpecsConfirmationEmailText,
   buildSpecsShareUrl,
@@ -57,13 +56,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "project-not-found" }, { status: 404 });
   }
 
-  const companySnap = await adminDb.collection("companies").doc(companyId).get();
-  const rawDays = Number((companySnap.data() as Record<string, unknown> | undefined)?.clientConfirmationLinkDays ?? SPECS_SHARE_DEFAULT_LINK_DAYS);
-  const linkValidityDays = Number.isFinite(rawDays) && rawDays > 0 ? rawDays : SPECS_SHARE_DEFAULT_LINK_DAYS;
-
   const sentByName = String((membershipSnap.data() as Record<string, unknown> | undefined)?.displayName ?? "").trim();
   const nowIso = new Date().toISOString();
-  const expiresAt = new Date(Date.now() + linkValidityDays * 24 * 60 * 60 * 1000).toISOString();
   const link = buildSpecsShareUrl(new URL(request.url).origin, projectId);
 
   // Not sent via Resend for now — the user doesn't want the client's email to come from an
@@ -74,8 +68,8 @@ export async function POST(request: NextRequest) {
   // just unused for now, for whenever real sending is switched back on).
   const { subject, body: emailBody } =
     kind === "quote"
-      ? buildQuoteAcceptanceEmailText({ projectName, link, expiresInDays: linkValidityDays })
-      : buildSpecsConfirmationEmailText({ projectName, link, expiresInDays: linkValidityDays });
+      ? buildQuoteAcceptanceEmailText({ projectName, link })
+      : buildSpecsConfirmationEmailText({ projectName, link });
 
   const shareRef = adminDb.collection("specsShareLinks").doc(projectId);
   const existingSnap = await shareRef.get();
@@ -96,7 +90,6 @@ export async function POST(request: NextRequest) {
     companyId,
     createdAt: existing?.createdAt || nowIso,
     lastSentAt: nowIso,
-    expiresAt,
     clientEmail,
     sentByUid: uid,
     sentByName,
@@ -112,5 +105,5 @@ export async function POST(request: NextRequest) {
 
   await shareRef.set(patch, { merge: true });
 
-  return NextResponse.json({ ok: true, kind, expiresAt, clientEmail, link, subject, body: emailBody, versionId });
+  return NextResponse.json({ ok: true, kind, clientEmail, link, subject, body: emailBody, versionId });
 }

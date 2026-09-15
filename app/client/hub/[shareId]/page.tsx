@@ -13,7 +13,6 @@ type Tab = "specs" | "quote";
 
 const ERROR_MESSAGES: Record<string, string> = {
   "not-found": "This link isn't valid. Please check the email again.",
-  "expired": "This link has expired. Ask for a new one to be sent.",
   "project-not-found": "We couldn't find this project for this link.",
   "no-specifications-sheet": "There's no specifications sheet on this project yet.",
   "no-quote": "There's no quote on this project yet.",

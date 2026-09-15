@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminDb, hasFirebaseAdminConfig } from "@/lib/firebase-admin";
-import { isSpecsShareLinkExpired, getProjectDocRefAdmin, getQuoteShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
+import { getProjectDocRefAdmin, getQuoteShareGridTarget, resolveAssignedContactAdmin, type SpecsShareLinkDoc } from "@/lib/specs-share";
 import { normalizeSpecsGrid } from "@/lib/specs-grid-types";
 
 // Quote's own version of .../grid/route.ts — same public, no-access-code shape (see that file's
@@ -19,10 +19,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ ok: false, error: "not-found" }, { status: 404 });
   }
   const shareDoc = shareSnap.data() as SpecsShareLinkDoc;
-
-  if (isSpecsShareLinkExpired(shareDoc)) {
-    return NextResponse.json({ ok: false, error: "expired" }, { status: 400 });
-  }
 
   const projectRef = await getProjectDocRefAdmin(adminDb, shareDoc.projectId, shareDoc.companyId);
   if (!projectRef) {
