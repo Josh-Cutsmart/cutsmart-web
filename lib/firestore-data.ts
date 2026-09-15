@@ -1,7 +1,6 @@
 import {
   collection,
   collectionGroup,
-  deleteField,
   deleteDoc,
   doc,
   documentId,
@@ -18,7 +17,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { db, hasFirebaseConfig } from "@/lib/firebase";
+import { auth, db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
 import { normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
@@ -2108,6 +2107,13 @@ export async function saveCompanyMemberRole(
   }
 }
 
+// Removing a staff member runs server-side (app/api/company/remove-member) rather than as direct
+// client-SDK writes — firestore.rules has always had `allow delete: if false` on
+// companies/{companyId}/memberships/{uid} with no exception (the actual "who can remove staff"
+// check, lib/membership.ts's staff.remove/owner resolution, needs a search through the company
+// doc's `roles` array that Firestore rules can't express), so a direct client delete here was
+// guaranteed to fail with permission-denied for every caller, always. The route re-derives that
+// same permission server-side with the Admin SDK instead.
 export async function removeCompanyMemberDetailed(
   companyId: string,
   uid: string,
@@ -2118,248 +2124,30 @@ export async function removeCompanyMemberDetailed(
 ): Promise<{ ok: boolean; error?: string; transferredProjects: number }> {
   const cid = String(companyId || "").trim();
   const userId = String(uid || "").trim();
-  const transferToUid = String(options?.transferToUid || "").trim();
-  const transferToName = String(options?.transferToName || "").trim();
-  if (!db || !cid || !userId) {
+  if (!auth?.currentUser || !cid || !userId) {
     return { ok: false, error: "missing-firebase-company-or-user-id", transferredProjects: 0 };
   }
-
-  const nowIso = new Date().toISOString();
-  let transferredProjects = 0;
-
   try {
-    const jobsSnap = await getDocs(collection(db, "companies", cid, "jobs"));
-    for (const jobDoc of jobsSnap.docs) {
-      const data = (jobDoc.data() ?? {}) as Record<string, unknown>;
-      if (Boolean(data.isDeleted)) {
-        continue;
-      }
-      const project = normalizeJobProject(cid, jobDoc);
-      if (String(project.assignedToUid || "").trim() !== userId) {
-        continue;
-      }
-      if (isCompletedClientProjectStatus(project.statusLabel || project.status)) {
-        continue;
-      }
-
-      const transferPatch: Record<string, unknown> = transferToUid
-        ? {
-            assignedToUid: transferToUid,
-            assignedToName: transferToName,
-            assignedTo: transferToName,
-          }
-        : {
-            assignedToUid: deleteField(),
-            assignedToName: deleteField(),
-            assignedTo: deleteField(),
-          };
-      const ok = await updateProjectPatch(project, transferPatch);
-      if (!ok) {
-        return { ok: false, error: "project-transfer-failed", transferredProjects };
-      }
-      transferredProjects += 1;
-    }
-  } catch (error) {
-    const message =
-      error && typeof error === "object" && "code" in error
-        ? String((error as { code?: unknown }).code ?? "project-transfer-scan-failed")
-        : String((error as { message?: unknown } | null)?.message ?? "project-transfer-scan-failed");
-    return { ok: false, error: message, transferredProjects };
-  }
-
-  const membershipRefMap = new Map<string, ReturnType<typeof doc>>();
-  const addMembershipRef = (ref: ReturnType<typeof doc> | null | undefined) => {
-    if (!ref) return;
-    membershipRefMap.set(ref.path, ref);
-  };
-
-  addMembershipRef(doc(db, "companies", cid, "memberships", userId));
-  addMembershipRef(doc(db, "companies", cid, "members", userId));
-
-  try {
-    const membershipByUid = await getDocs(
-      query(collection(db, "companies", cid, "memberships"), where("uid", "==", userId), limit(20)),
-    );
-    for (const membershipDoc of membershipByUid.docs) {
-      addMembershipRef(membershipDoc.ref);
-    }
-  } catch {
-    // continue into broader fallbacks
-  }
-
-  try {
-    const membersByUid = await getDocs(
-      query(collection(db, "companies", cid, "members"), where("uid", "==", userId), limit(20)),
-    );
-    for (const memberDoc of membersByUid.docs) {
-      addMembershipRef(memberDoc.ref);
-    }
-  } catch {
-    // continue into broader fallbacks
-  }
-
-  try {
-    const membershipScan = await getDocs(query(collection(db, "companies", cid, "memberships"), limit(500)));
-    for (const membershipDoc of membershipScan.docs) {
-      const data = (membershipDoc.data() ?? {}) as Record<string, unknown>;
-      if (String(data.uid ?? "").trim() === userId || String(membershipDoc.id ?? "").trim() === userId) {
-        addMembershipRef(membershipDoc.ref);
-      }
-    }
-  } catch {
-    // ignore fallback scan errors
-  }
-
-  try {
-    const membersScan = await getDocs(query(collection(db, "companies", cid, "members"), limit(500)));
-    for (const memberDoc of membersScan.docs) {
-      const data = (memberDoc.data() ?? {}) as Record<string, unknown>;
-      if (String(data.uid ?? "").trim() === userId || String(memberDoc.id ?? "").trim() === userId) {
-        addMembershipRef(memberDoc.ref);
-      }
-    }
-  } catch {
-    // ignore fallback scan errors
-  }
-
-  try {
-    const membershipGroupByUid = await getDocs(
-      query(collectionGroup(db, "memberships"), where("uid", "==", userId), limit(50)),
-    );
-    for (const membershipDoc of membershipGroupByUid.docs) {
-      if (String(membershipDoc.ref.parent.parent?.id ?? "").trim() !== cid) continue;
-      addMembershipRef(membershipDoc.ref);
-    }
-  } catch {
-    // ignore collection-group fallback errors
-  }
-
-  try {
-    const membershipGroupByDocId = await getDocs(
-      query(collectionGroup(db, "memberships"), where(documentId(), "==", userId), limit(50)),
-    );
-    for (const membershipDoc of membershipGroupByDocId.docs) {
-      if (String(membershipDoc.ref.parent.parent?.id ?? "").trim() !== cid) continue;
-      addMembershipRef(membershipDoc.ref);
-    }
-  } catch {
-    // ignore collection-group fallback errors
-  }
-
-  try {
-    const membersGroupByDocId = await getDocs(
-      query(collectionGroup(db, "members"), where(documentId(), "==", userId), limit(50)),
-    );
-    for (const memberDoc of membersGroupByDocId.docs) {
-      if (String(memberDoc.ref.parent.parent?.id ?? "").trim() !== cid) continue;
-      addMembershipRef(memberDoc.ref);
-    }
-  } catch {
-    // ignore collection-group fallback errors
-  }
-
-  try {
-    for (const membershipRef of membershipRefMap.values()) {
-      await deleteDoc(membershipRef);
-    }
-  } catch (error) {
-    const message =
-      error && typeof error === "object" && "code" in error
-        ? String((error as { code?: unknown }).code ?? "membership-delete-failed")
-        : String((error as { message?: unknown } | null)?.message ?? "membership-delete-failed");
-    return { ok: false, error: message, transferredProjects };
-  }
-
-  try {
-    await updateDoc(doc(db, "companies", cid), {
-      [`staffDisplayNamesByUid.${userId}`]: deleteField(),
-      [`staffRoleIdsByUid.${userId}`]: deleteField(),
-      updatedAt: serverTimestamp(),
-      updatedAtIso: nowIso,
+    const idToken = await auth.currentUser.getIdToken();
+    const res = await fetch("/api/company/remove-member", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({
+        companyId: cid,
+        uid: userId,
+        transferToUid: String(options?.transferToUid || "").trim(),
+        transferToName: String(options?.transferToName || "").trim(),
+      }),
     });
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; transferredProjects?: number };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || `request-failed-${res.status}`, transferredProjects: Number(data.transferredProjects || 0) };
+    }
+    return { ok: true, transferredProjects: Number(data.transferredProjects || 0) };
   } catch (error) {
-    const message =
-      error && typeof error === "object" && "code" in error
-        ? String((error as { code?: unknown }).code ?? "company-member-cleanup-failed")
-        : String((error as { message?: unknown } | null)?.message ?? "company-member-cleanup-failed");
-    return { ok: false, error: message, transferredProjects };
+    const message = error instanceof Error ? error.message : "remove-member-request-failed";
+    return { ok: false, error: message, transferredProjects: 0 };
   }
-
-  try {
-    const remainingMembershipCompanyIds = new Set<string>();
-    try {
-      const remainingByUid = await getDocs(
-        query(collectionGroup(db, "memberships"), where("uid", "==", userId), limit(100)),
-      );
-      for (const membershipDoc of remainingByUid.docs) {
-        const companyIdFromRef = String(membershipDoc.ref.parent.parent?.id ?? "").trim();
-        if (companyIdFromRef && companyIdFromRef !== cid) {
-          remainingMembershipCompanyIds.add(companyIdFromRef);
-        }
-      }
-    } catch {
-      // continue
-    }
-    try {
-      const remainingByDocId = await getDocs(
-        query(collectionGroup(db, "memberships"), where(documentId(), "==", userId), limit(100)),
-      );
-      for (const membershipDoc of remainingByDocId.docs) {
-        const companyIdFromRef = String(membershipDoc.ref.parent.parent?.id ?? "").trim();
-        if (companyIdFromRef && companyIdFromRef !== cid) {
-          remainingMembershipCompanyIds.add(companyIdFromRef);
-        }
-      }
-    } catch {
-      // continue
-    }
-    try {
-      const remainingMembersByDocId = await getDocs(
-        query(collectionGroup(db, "members"), where(documentId(), "==", userId), limit(100)),
-      );
-      for (const memberDoc of remainingMembersByDocId.docs) {
-        const companyIdFromRef = String(memberDoc.ref.parent.parent?.id ?? "").trim();
-        if (companyIdFromRef && companyIdFromRef !== cid) {
-          remainingMembershipCompanyIds.add(companyIdFromRef);
-        }
-      }
-    } catch {
-      // continue
-    }
-
-    const nextCompanyId = Array.from(remainingMembershipCompanyIds)[0] ?? "";
-    const userRef = doc(db, "users", userId);
-    const userSnap = await getDoc(userRef);
-    if (userSnap.exists()) {
-      const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
-      const nestedCompany =
-        userData.company && typeof userData.company === "object"
-          ? (userData.company as Record<string, unknown>)
-          : null;
-      const userPatch: Record<string, unknown> = {};
-      if (String(userData.companyId ?? "").trim() === cid) {
-        userPatch.companyId = nextCompanyId || deleteField();
-      }
-      if (String(userData.activeCompanyId ?? "").trim() === cid) {
-        userPatch.activeCompanyId = nextCompanyId || deleteField();
-      }
-      if (String(nestedCompany?.id ?? "").trim() === cid) {
-        userPatch["company.id"] = nextCompanyId || deleteField();
-      }
-      if (String(nestedCompany?.companyId ?? "").trim() === cid) {
-        userPatch["company.companyId"] = nextCompanyId || deleteField();
-      }
-      if (Object.keys(userPatch).length) {
-        userPatch.updatedAt = serverTimestamp();
-        userPatch.updatedAtIso = nowIso;
-        await updateDoc(userRef, userPatch);
-      }
-    }
-  } catch {
-    // membership removal is the critical access gate; profile fallback cleanup is best-effort
-  }
-
-  return { ok: true, transferredProjects };
 }
 
 export async function fetchCompanyDoc(companyId: string): Promise<Record<string, unknown> | null> {
