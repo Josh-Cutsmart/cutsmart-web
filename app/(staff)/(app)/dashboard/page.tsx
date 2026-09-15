@@ -358,6 +358,15 @@ export default function DashboardPage() {
     if (!el) return;
     let raf = 0;
     const mainEl = document.querySelector("main");
+    // The page-scroll-blocked backstop below (see setPageScrollBlocked) only has an un-stick path
+    // via the `wheel` event, which never fires for a touch-driven scroll — a coarse-pointer device
+    // that engages the block while mid-scroll inside a column would then have no way to ever
+    // un-block the page again (exactly "the page won't scroll back up"). Touch doesn't need the
+    // backstop anyway: `.glass-scroll` has no overscroll-behavior set, so native touch scroll-
+    // chaining already hands the gesture back to the page on its own once a column's card list
+    // hits its own scroll boundary, the same way any ordinary nested scrollable does. Computed
+    // once — pointer capability doesn't change over the component's lifetime.
+    const isCoarsePointer = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
     // Each column's card list toggles overflow-y directly on the DOM (not via React state) for
     // the same reason clip-path is written directly below: going through setState here would add
     // a render cycle between "scroll crossed the lock threshold" and "the column can actually be
@@ -453,7 +462,7 @@ export default function DashboardPage() {
       // Blocked on the same EARLY_SCROLLABLE_PX lead as the card lists go scrollable, not just
       // once `isLocked` — so the page is already unable to scroll by the exact tick that finishes
       // locking, and that tick's wheel event has nothing left to resolve to except the column.
-      setPageScrollBlocked(nearlyLocked && !unsticking);
+      setPageScrollBlocked(!isCoarsePointer && nearlyLocked && !unsticking);
       const columns = getColumns();
       const firstCol = columns[0];
       if (!firstCol) return;

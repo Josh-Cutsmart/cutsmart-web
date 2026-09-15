@@ -307,6 +307,14 @@ function toStr(v: unknown, fallback = "") {
   return t || fallback;
 }
 
+// Case-insensitive compare for the "type this name to confirm" safety check — a name typed with
+// different casing than it happens to be stored in (or auto-capitalized by a mobile keyboard,
+// which most browsers do by default on a plain text input) is still unambiguously the right
+// answer, and the exact-match version of this check was failing those silently.
+function namesMatchForConfirmation(a: unknown, b: unknown): boolean {
+  return toStr(a).toLowerCase() === toStr(b).toLowerCase();
+}
+
 function formatNotificationDateTime(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "-";
@@ -1275,6 +1283,11 @@ export default function CompanySettingsPage() {
   const [pendingStaffRemoval, setPendingStaffRemoval] = useState<PendingStaffRemovalState | null>(null);
   const [preparingStaffRemovalUid, setPreparingStaffRemovalUid] = useState("");
   const [removingStaffUid, setRemovingStaffUid] = useState("");
+  // Shown inline in the Remove Staff Member popup itself — a validation/API failure here used to
+  // only ever reach the tiny "Desktop parity data mode" status pill in the page's own sticky
+  // header (via setSaveLabel), which sits far from this modal and is easy to miss entirely. From
+  // the user's seat, clicking Confirm then looked like nothing happened at all.
+  const [staffRemovalError, setStaffRemovalError] = useState("");
   const [showJoinKey, setShowJoinKey] = useState(false);
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
@@ -1927,6 +1940,7 @@ export default function CompanySettingsPage() {
         const status = String(project.statusLabel || project.status || "").trim().toLowerCase();
         return status !== "complete" && status !== "completed";
       }).length;
+      setStaffRemovalError("");
       setPendingStaffRemoval({
         uid,
         displayName: toStr(row.displayName || row.email || row.uid),
@@ -1944,13 +1958,14 @@ export default function CompanySettingsPage() {
   const advanceStaffRemovalConfirmation = () => {
     if (!pendingStaffRemoval) return;
     if (normalizeRoleKey(pendingStaffRemoval.roleId) === "owner") {
-      setSaveLabel("Owner cannot be removed from the company");
+      setStaffRemovalError("Owner cannot be removed from the company");
       return;
     }
     if (pendingStaffRemoval.activeProjectCount > 0 && !toStr(pendingStaffRemoval.transferToUid)) {
-      setSaveLabel("Choose who to transfer active projects to");
+      setStaffRemovalError("Choose who to transfer active projects to");
       return;
     }
+    setStaffRemovalError("");
     setPendingStaffRemoval((current) =>
       current
         ? {
@@ -1964,13 +1979,14 @@ export default function CompanySettingsPage() {
   const confirmStaffRemoval = async () => {
     if (!pendingStaffRemoval || !activeCompanyId || !canEditCompanySettings) return;
     if (normalizeRoleKey(pendingStaffRemoval.roleId) === "owner") {
-      setSaveLabel("Owner cannot be removed from the company");
+      setStaffRemovalError("Owner cannot be removed from the company");
       return;
     }
-    if (toStr(pendingStaffRemoval.typedName) !== toStr(pendingStaffRemoval.displayName)) {
-      setSaveLabel("Type the staff member name exactly to confirm");
+    if (!namesMatchForConfirmation(pendingStaffRemoval.typedName, pendingStaffRemoval.displayName)) {
+      setStaffRemovalError("Type the staff member name exactly to confirm");
       return;
     }
+    setStaffRemovalError("");
     const transferTarget = staff.find((member) => toStr(member.uid) === toStr(pendingStaffRemoval.transferToUid));
     setRemovingStaffUid(pendingStaffRemoval.uid);
     const result = await removeCompanyMemberDetailed(activeCompanyId, pendingStaffRemoval.uid, {
@@ -1982,7 +1998,7 @@ export default function CompanySettingsPage() {
     });
     setRemovingStaffUid("");
     if (!result.ok) {
-      setSaveLabel(`Staff removal failed (${result.error || "unknown"})`);
+      setStaffRemovalError(`Staff removal failed (${result.error || "unknown"})`);
       return;
     }
     setStaff((prev) => prev.filter((member) => toStr(member.uid) !== pendingStaffRemoval.uid));
@@ -4495,6 +4511,7 @@ export default function CompanySettingsPage() {
                         onClick={() => {
                           if (removingStaffUid) return;
                           setPendingStaffRemoval(null);
+                          setStaffRemovalError("");
                         }}
                         className="glass-modal-backdrop absolute inset-0"
                       />
@@ -4508,6 +4525,7 @@ export default function CompanySettingsPage() {
                             onClick={() => {
                               if (removingStaffUid) return;
                               setPendingStaffRemoval(null);
+                              setStaffRemovalError("");
                             }}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
                             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
@@ -4573,7 +4591,8 @@ export default function CompanySettingsPage() {
                               </p>
                               <input
                                 value={pendingStaffRemoval.typedName}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  setStaffRemovalError("");
                                   setPendingStaffRemoval((current) =>
                                     current
                                       ? {
@@ -4581,18 +4600,29 @@ export default function CompanySettingsPage() {
                                           typedName: e.target.value,
                                         }
                                       : current,
-                                  )
-                                }
+                                  );
+                                }}
+                                autoCapitalize="off"
+                                autoCorrect="off"
+                                spellCheck={false}
                                 className={`${fieldInputClass} h-10`}
                                 placeholder={pendingStaffRemoval.displayName}
                               />
                             </div>
                           ) : null}
+                          {staffRemovalError ? (
+                            <p className="text-[12px] font-semibold" style={{ color: "var(--danger-strong)" }}>
+                              {staffRemovalError}
+                            </p>
+                          ) : null}
                         </div>
                         <div className="flex items-center justify-end gap-2 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
                           <button
                             type="button"
-                            onClick={() => setPendingStaffRemoval(null)}
+                            onClick={() => {
+                              setPendingStaffRemoval(null);
+                              setStaffRemovalError("");
+                            }}
                             disabled={!!removingStaffUid}
                             className={secondaryButtonClass}
                           >
@@ -4604,7 +4634,7 @@ export default function CompanySettingsPage() {
                               onClick={() => void confirmStaffRemoval()}
                               disabled={
                                 !!removingStaffUid ||
-                                toStr(pendingStaffRemoval.typedName) !== toStr(pendingStaffRemoval.displayName)
+                                !namesMatchForConfirmation(pendingStaffRemoval.typedName, pendingStaffRemoval.displayName)
                               }
                               className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
                               style={{ backgroundImage: "var(--danger-gradient)" }}
