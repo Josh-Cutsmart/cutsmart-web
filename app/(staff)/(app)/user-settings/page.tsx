@@ -2,14 +2,27 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Mail, MailCheck, Palette, ShieldCheck, Smartphone, UserCog } from "lucide-react";
+import { Building2, Check, ClipboardList, Mail, MailCheck, Pencil, Plus, ShieldCheck, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { auth } from "@/lib/firebase";
-import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
+import {
+  deleteChecklistTemplate,
+  fetchChecklistTemplates,
+  fetchCompanyDoc,
+  fetchProjects,
+  saveChecklistTemplate,
+  saveUserProfilePatchDetailed,
+} from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
+import type { ChecklistTemplate } from "@/lib/types";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
+import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
+
+function newChecklistLocalId(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_color";
@@ -27,8 +40,18 @@ export default function UserSettingsPage() {
   const [companyName, setCompanyName] = useState("");
   const [companyRoleLabel, setCompanyRoleLabel] = useState("");
   const [companyRoleColor, setCompanyRoleColor] = useState("");
-  const [themeSource, setThemeSource] = useState("unknown");
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [isColorPopoverOpen, setIsColorPopoverOpen] = useState(false);
+  const [colorPopoverAnchor, setColorPopoverAnchor] = useState<ColorPickerAnchorRect | null>(null);
+  const [isNameEditing, setIsNameEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [isMobileEditing, setIsMobileEditing] = useState(false);
+  const [mobileDraft, setMobileDraft] = useState("");
+  const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
+  const [isChecklistEditorOpen, setIsChecklistEditorOpen] = useState(false);
+  const [checklistEditorId, setChecklistEditorId] = useState("");
+  const [checklistNameDraft, setChecklistNameDraft] = useState("");
+  const [checklistRowsDraft, setChecklistRowsDraft] = useState<string[]>([""]);
   const [isVerifyBoxOpen, setIsVerifyBoxOpen] = useState(false);
   const [verifyCode, setVerifyCode] = useState("");
   const [verifyError, setVerifyError] = useState("");
@@ -39,6 +62,7 @@ export default function UserSettingsPage() {
   const pendingSaveRef = useRef(false);
   const isSavingRef = useRef(false);
   const lastSavedSnapshotRef = useRef("");
+  const emblemSwatchRef = useRef<HTMLButtonElement | null>(null);
 
   // queueAutoSave's setTimeout closure freezes displayName/userColor/mobile at
   // whatever they were when it was scheduled — one render stale whenever a setter
@@ -126,7 +150,6 @@ export default function UserSettingsPage() {
 
       if (/^#[0-9A-Fa-f]{6}$/.test(storedThemeColor)) {
         setCompanyColor(storedThemeColor);
-        setThemeSource("company-settings-cache");
       }
 
       let resolvedId = "";
@@ -143,7 +166,6 @@ export default function UserSettingsPage() {
         const themeColor = String((doc as Record<string, unknown> | null)?.themeColor ?? "").trim();
         if (/^#[0-9A-Fa-f]{6}$/.test(themeColor)) {
           setCompanyColor(themeColor);
-          setThemeSource("company-doc");
           if (typeof window !== "undefined") {
             window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, cid);
             window.localStorage.setItem(ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY, themeColor);
@@ -260,6 +282,83 @@ export default function UserSettingsPage() {
     saveThemeMode(mode);
   };
 
+  const startEditingName = () => {
+    setNameDraft(activeDisplayName);
+    setIsNameEditing(true);
+  };
+
+  const commitNameEdit = () => {
+    setDisplayName(nameDraft);
+    setIsNameEditing(false);
+    queueAutoSave();
+  };
+
+  const startEditingMobile = () => {
+    setMobileDraft(mobile);
+    setIsMobileEditing(true);
+  };
+
+  const commitMobileEdit = () => {
+    setMobile(mobileDraft);
+    setIsMobileEditing(false);
+    queueAutoSave();
+  };
+
+  useEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid) return;
+    void fetchChecklistTemplates(uid).then(setChecklistTemplates);
+  }, [user?.uid]);
+
+  const openNewChecklistEditor = () => {
+    setChecklistEditorId("");
+    setChecklistNameDraft("");
+    setChecklistRowsDraft([""]);
+    setIsChecklistEditorOpen(true);
+  };
+
+  const openExistingChecklistEditor = (template: ChecklistTemplate) => {
+    setChecklistEditorId(template.id);
+    setChecklistNameDraft(template.name);
+    setChecklistRowsDraft(template.items.length ? template.items.map((item) => item.text) : [""]);
+    setIsChecklistEditorOpen(true);
+  };
+
+  const closeChecklistEditor = () => {
+    setIsChecklistEditorOpen(false);
+  };
+
+  const saveChecklistDraft = async () => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid) return;
+    const name = checklistNameDraft.trim();
+    if (!name) return;
+    const items = checklistRowsDraft
+      .map((text) => text.trim())
+      .filter(Boolean)
+      .map((text) => ({ id: newChecklistLocalId("item"), text }));
+    if (!items.length) return;
+    const template: ChecklistTemplate = { id: checklistEditorId || newChecklistLocalId("checklist"), name, items };
+    const ok = await saveChecklistTemplate(uid, template);
+    if (ok) {
+      setChecklistTemplates((prev) => {
+        const next = prev.filter((t) => t.id !== template.id);
+        next.push(template);
+        return next.sort((a, b) => a.name.localeCompare(b.name));
+      });
+      setIsChecklistEditorOpen(false);
+    }
+  };
+
+  const removeChecklistTemplate = async (templateId: string) => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid) return;
+    const ok = await deleteChecklistTemplate(uid, templateId);
+    if (ok) {
+      setChecklistTemplates((prev) => prev.filter((t) => t.id !== templateId));
+    }
+  };
+
   const startVerifyCooldown = (seconds: number) => {
     if (verifyCooldownTimerRef.current) window.clearInterval(verifyCooldownTimerRef.current);
     setVerifyResendCooldown(seconds);
@@ -363,12 +462,6 @@ export default function UserSettingsPage() {
   const profileDirty = profileSnapshot !== lastSavedSnapshotRef.current;
   const saveStatusLabel = isSaving ? "Saving..." : profileDirty ? "Unsaved changes" : saveMsg || "Saved";
   const saveStatusTone = isSaving ? "#8ab4f8" : profileDirty ? "#B54708" : "#027A48";
-  const companyColorSourceLabel =
-    themeSource === "company-doc"
-      ? "Live company color"
-      : themeSource === "company-settings-cache"
-        ? "Cached company color"
-        : "Default company color";
 
   const glassCardStyle = {
     borderColor: "var(--glass-border)",
@@ -417,15 +510,70 @@ export default function UserSettingsPage() {
       <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
         <aside className="rounded-[18px] border p-5" style={glassCardStyle}>
           <div className="flex flex-col items-center text-center">
-            <div
-              className="inline-flex h-24 w-24 items-center justify-center rounded-full text-[30px] font-extrabold text-white"
-              style={{ backgroundColor: effectiveColor, boxShadow: "var(--shadow-glass)" }}
-            >
-              {profileInitials}
+            <div className="group relative">
+              <div
+                className="inline-flex h-24 w-24 items-center justify-center rounded-full text-[30px] font-extrabold text-white"
+                style={{ backgroundColor: effectiveColor, boxShadow: "var(--shadow-glass)" }}
+              >
+                {profileInitials}
+              </div>
+              <button
+                ref={emblemSwatchRef}
+                type="button"
+                onClick={() => {
+                  const rect = emblemSwatchRef.current?.getBoundingClientRect();
+                  if (rect) setColorPopoverAnchor({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                  setIsColorPopoverOpen(true);
+                }}
+                aria-label="Change emblem color"
+                className="absolute inset-0 flex h-24 w-24 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100"
+                style={{ backgroundColor: "rgba(0,0,0,0.45)" }}
+              >
+                <Pencil size={22} color="#ffffff" />
+              </button>
             </div>
-            <h2 className="mt-4 text-[20px] font-extrabold leading-tight" style={{ color: "var(--text-main)" }}>
-              {activeDisplayName}
-            </h2>
+            <div className="mt-4 flex h-9 items-center justify-center">
+              {isNameEditing ? (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onBlur={commitNameEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    }}
+                    className="h-9 w-[190px] rounded-[8px] border px-2 text-center text-[18px] font-extrabold outline-none"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  />
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={commitNameEdit}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border"
+                    style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                    aria-label="Save name"
+                  >
+                    <Check size={16} />
+                  </button>
+                </div>
+              ) : (
+                <div className="group relative inline-flex max-w-full items-center">
+                  <h2 className="truncate text-[20px] font-extrabold leading-tight" style={{ color: "var(--text-main)" }}>
+                    {activeDisplayName}
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={startEditingName}
+                    className="absolute left-full ml-1.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--panel-muted)]"
+                    style={{ color: "var(--text-muted)" }}
+                    aria-label="Edit name"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                </div>
+              )}
+            </div>
             <p className="mt-1 flex items-center gap-1.5 text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
               <Mail size={13} />
               {user?.email || "-"}
@@ -491,7 +639,55 @@ export default function UserSettingsPage() {
             </div>
           </div>
 
-          <div className="mt-6 space-y-3">
+          <div className="mt-5 flex items-center justify-center">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isDarkMode}
+              aria-label={`Theme mode: ${isDarkMode ? "Dark" : "Light"}`}
+              onClick={() => onSelectThemeMode(isDarkMode ? "light" : "dark")}
+              className="relative inline-flex h-10 w-[148px] items-center rounded-[999px] border px-1 transition-colors"
+              style={{
+                borderColor: isDarkMode ? "var(--brand-strong)" : "var(--glass-border)",
+                backgroundImage: isDarkMode ? "var(--brand-gradient)" : "none",
+                backgroundColor: isDarkMode ? undefined : "var(--panel-muted)",
+              }}
+            >
+              <span
+                className="absolute left-1 top-[3px] h-[32px] w-[67px] rounded-[999px] transition-transform"
+                style={{
+                  transform: isDarkMode ? "translateX(71px)" : "translateX(-1px)",
+                  backgroundColor: "var(--panel-bg)",
+                  border: "1px solid var(--glass-border)",
+                  boxShadow: "var(--shadow-glass)",
+                }}
+              />
+              <span className="relative z-10 flex w-full items-center justify-between px-3 text-[12px] font-bold">
+                <span
+                  style={{
+                    color: isDarkMode ? "#ffffff" : "var(--brand-strong)",
+                    transform: isDarkMode ? "scale(0.92)" : "scale(1.05)",
+                    transformOrigin: "left center",
+                    transition: "transform 140ms ease, color 140ms ease",
+                  }}
+                >
+                  Light
+                </span>
+                <span
+                  style={{
+                    color: isDarkMode ? "#ffffff" : "var(--text-muted)",
+                    transform: `${isDarkMode ? "scale(1.05)" : "scale(0.92)"} translateX(-2px)`,
+                    transformOrigin: "right center",
+                    transition: "transform 140ms ease, color 140ms ease",
+                  }}
+                >
+                  Dark
+                </span>
+              </span>
+            </button>
+          </div>
+
+          <div className="mt-5 space-y-3">
             <div className="rounded-[14px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
               <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>
                 <Building2 size={11} />
@@ -510,193 +706,219 @@ export default function UserSettingsPage() {
                 </span>
               ) : null}
             </div>
-            <div className="rounded-[14px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+            <div className="group rounded-[14px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
               <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>
                 <Smartphone size={11} />
                 Mobile
               </p>
-              <p className="mt-1 text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{mobile || "-"}</p>
-            </div>
-            <div className="rounded-[14px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-              <div className="flex items-center justify-between gap-2">
-                <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>
-                  <Palette size={11} />
-                  Emblem Color
-                </p>
-                <span className="inline-flex h-5 w-5 shrink-0 rounded-full border" style={{ backgroundColor: effectiveColor, borderColor: "var(--glass-border)" }} />
+              <div className="mt-1 flex h-8 items-center justify-between gap-2">
+                {isMobileEditing ? (
+                  <>
+                    <input
+                      autoFocus
+                      value={mobileDraft}
+                      onChange={(e) => setMobileDraft(e.target.value)}
+                      onBlur={commitMobileEdit}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      }}
+                      className="h-8 min-w-0 flex-1 rounded-[8px] border px-2 text-[14px] outline-none"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                    />
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={commitMobileEdit}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border"
+                      style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                      aria-label="Save mobile number"
+                    >
+                      <Check size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="truncate text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{mobile || "-"}</p>
+                    <button
+                      type="button"
+                      onClick={startEditingMobile}
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] opacity-0 transition-opacity group-hover:opacity-100 hover:bg-[var(--panel-bg)]"
+                      style={{ color: "var(--text-muted)" }}
+                      aria-label="Edit mobile number"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </>
+                )}
               </div>
-              <p className="mt-1 text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{effectiveColor}</p>
             </div>
           </div>
         </aside>
 
         <div className="space-y-5">
           <div className="rounded-[18px] border p-5" style={glassCardStyle}>
-            <div className="mb-5">
-              <h3 className="text-[15px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                Profile Details
-              </h3>
-              <p className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
-                Update how your information appears across the app. Changes save automatically when you finish editing.
-              </p>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="block">
-                <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Display Name</span>
-                <input
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  onBlur={() => queueAutoSave()}
-                  placeholder="Enter your name"
-                  className="h-11 w-full rounded-[10px] border px-3 text-[13px] outline-none"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                />
-              </label>
-              <label className="block">
-                <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Mobile Number</span>
-                <input
-                  value={mobile}
-                  onChange={(e) => setMobile(e.target.value)}
-                  onBlur={() => queueAutoSave()}
-                  placeholder="Enter mobile number"
-                  className="h-11 w-full rounded-[10px] border px-3 text-[13px] outline-none"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                />
-              </label>
-              <div className="rounded-[10px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-                <p className="text-[11px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Email</p>
-                <p className="mt-2 text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{user?.email || "-"}</p>
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-[15px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                  Checklists
+                </h3>
+                <p className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
+                  Create reusable checklists here, then add them to a project from Design {"->"} Project Management.
+                </p>
               </div>
-              <div className="rounded-[10px] border px-4 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-                <p className="text-[11px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Role</p>
-                <p className="mt-2 text-[14px] font-semibold" style={{ color: "var(--text-main)" }}>{user?.role || "-"}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-[18px] border p-5" style={glassCardStyle}>
-            <div className="mb-5">
-              <h3 className="text-[15px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                Appearance
-              </h3>
-              <p className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
-                Personalize your emblem color and the theme on this device.
-              </p>
-            </div>
-
-            <div className="rounded-[14px] border p-4" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <p className="text-[12px] font-bold" style={{ color: "var(--text-main)" }}>User Emblem Color</p>
-                  <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    Leave the value blank to inherit the company color.
-                  </p>
-                </div>
-                <div className="inline-flex items-center gap-3 rounded-[12px] border px-3 py-3" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
-                  <div
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[13px] font-extrabold text-white"
-                    style={{ backgroundColor: effectiveColor }}
-                  >
-                    {profileInitials}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-[12px] font-bold" style={{ color: "var(--text-main)" }}>{activeDisplayName}</p>
-                    <p className="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>{companyColorSourceLabel}</p>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-center">
-                <input
-                  type="color"
-                  value={/^#[0-9A-Fa-f]{6}$/.test(userColor) ? userColor : effectiveColor}
-                  onChange={(e) => {
-                    setUserColor(e.target.value);
-                    queueAutoSave();
-                  }}
-                  className="h-11 w-14 cursor-pointer rounded-[10px] border p-1"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
-                />
-                <input
-                  value={userColor}
-                  onChange={(e) => setUserColor(e.target.value)}
-                  onBlur={() => queueAutoSave()}
-                  placeholder="Leave blank to use company color"
-                  className="h-11 w-full rounded-[10px] border px-3 text-[13px] outline-none xl:max-w-[320px]"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                />
+              {!isChecklistEditorOpen && (
                 <button
                   type="button"
-                  onClick={() => void applyCompanyDefault()}
-                  className="h-11 rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  onClick={openNewChecklistEditor}
+                  className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                 >
-                  Use Company Default
+                  <Plus size={14} />
+                  Create Checklist
                 </button>
-              </div>
+              )}
             </div>
 
-            <div className="mt-4 rounded-[14px] border p-4" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-              <p className="text-[12px] font-bold" style={{ color: "var(--text-main)" }}>App Theme</p>
-              <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                Applies only on this device for your app.
-              </p>
-              <div className="mt-4 flex flex-wrap items-center gap-4">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={isDarkMode}
-                  aria-label={`Theme mode: ${isDarkMode ? "Dark" : "Light"}`}
-                  onClick={() => onSelectThemeMode(isDarkMode ? "light" : "dark")}
-                  className="relative inline-flex h-10 w-[148px] items-center rounded-[999px] border px-1 transition-colors"
-                  style={{
-                    borderColor: isDarkMode ? "var(--brand-strong)" : "var(--glass-border)",
-                    backgroundImage: isDarkMode ? "var(--brand-gradient)" : "none",
-                    backgroundColor: isDarkMode ? undefined : "var(--panel-muted)",
-                  }}
-                >
-                  <span
-                    className="absolute left-1 top-[3px] h-[32px] w-[67px] rounded-[999px] transition-transform"
-                    style={{
-                      transform: isDarkMode ? "translateX(71px)" : "translateX(-1px)",
-                      backgroundColor: "var(--panel-bg)",
-                      border: "1px solid var(--glass-border)",
-                      boxShadow: "var(--shadow-glass)",
-                    }}
+            {isChecklistEditorOpen ? (
+              <div className="rounded-[14px] border p-4" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                <label className="block">
+                  <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Checklist Name</span>
+                  <input
+                    autoFocus
+                    value={checklistNameDraft}
+                    onChange={(e) => setChecklistNameDraft(e.target.value)}
+                    placeholder="e.g. Site Handover"
+                    className="h-10 w-full max-w-[320px] rounded-[10px] border px-3 text-[13px] outline-none"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                   />
-                  <span className="relative z-10 flex w-full items-center justify-between px-3 text-[12px] font-bold">
-                    <span
-                      style={{
-                        color: isDarkMode ? "#ffffff" : "var(--brand-strong)",
-                        transform: isDarkMode ? "scale(0.92)" : "scale(1.05)",
-                        transformOrigin: "left center",
-                        transition: "transform 140ms ease, color 140ms ease",
-                      }}
-                    >
-                      Light
-                    </span>
-                    <span
-                      style={{
-                        color: isDarkMode ? "#ffffff" : "var(--text-muted)",
-                        transform: `${isDarkMode ? "scale(1.05)" : "scale(0.92)"} translateX(-2px)`,
-                        transformOrigin: "right center",
-                        transition: "transform 140ms ease, color 140ms ease",
-                      }}
-                    >
-                      Dark
-                    </span>
-                  </span>
+                </label>
+
+                <div className="mt-4 space-y-2">
+                  {checklistRowsDraft.map((rowText, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <input
+                        value={rowText}
+                        onChange={(e) =>
+                          setChecklistRowsDraft((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            setChecklistRowsDraft((prev) => [...prev, ""]);
+                          }
+                        }}
+                        placeholder={`Item ${idx + 1}`}
+                        className="h-10 w-full rounded-[10px] border px-3 text-[13px] outline-none"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                      />
+                      <button
+                        type="button"
+                        disabled={checklistRowsDraft.length <= 1}
+                        onClick={() => setChecklistRowsDraft((prev) => prev.filter((_, i) => i !== idx))}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-bg)] disabled:opacity-30"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label="Remove row"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setChecklistRowsDraft((prev) => [...prev, ""])}
+                  className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                >
+                  <Plus size={14} />
+                  Add Row
                 </button>
-                <div className="flex items-center gap-2 rounded-[10px] border px-3 py-2" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
-                  <span className="inline-flex h-3 w-3 rounded-full" style={{ backgroundColor: isDarkMode ? "#0f0f0f" : "#ffffff", border: "1px solid var(--glass-border)" }} />
-                  <span className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                    {isDarkMode ? "Dark theme active" : "Light theme active"}
-                  </span>
+
+                <div className="mt-4 flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!checklistNameDraft.trim() || !checklistRowsDraft.some((v) => v.trim())}
+                    onClick={() => void saveChecklistDraft()}
+                    className="h-10 rounded-[10px] px-4 text-[12px] font-bold text-white disabled:opacity-55"
+                    style={{ backgroundImage: "var(--brand-gradient)" }}
+                  >
+                    Save Checklist
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeChecklistEditor}
+                    className="h-10 rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
-            </div>
+            ) : checklistTemplates.length ? (
+              <div className="space-y-2">
+                {checklistTemplates.map((template) => (
+                  <div
+                    key={template.id}
+                    className="flex items-center justify-between gap-3 rounded-[14px] border px-4 py-3"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <ClipboardList size={15} style={{ color: "var(--text-muted)" }} />
+                      <div className="min-w-0">
+                        <p className="truncate text-[13px] font-bold" style={{ color: "var(--text-main)" }}>{template.name}</p>
+                        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                          {template.items.length} item{template.items.length === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => openExistingChecklistEditor(template)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-bg)]"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label={`Edit ${template.name}`}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void removeChecklistTemplate(template.id)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] transition hover:bg-[var(--danger-soft)]"
+                        style={{ color: "var(--danger-strong)" }}
+                        aria-label={`Delete ${template.name}`}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-2 rounded-[14px] border py-8 text-center" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
+                <ClipboardList size={22} style={{ color: "var(--text-muted)", opacity: 0.6 }} />
+                <p className="text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>No checklists yet.</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
+
+      <SidebarColorPickerPopover
+        isOpen={isColorPopoverOpen}
+        anchorRect={colorPopoverAnchor}
+        currentColor={effectiveColor}
+        onSelect={(hex) => {
+          setUserColor(hex);
+          queueAutoSave();
+        }}
+        onUseCompanyDefault={() => {
+          void applyCompanyDefault();
+          setIsColorPopoverOpen(false);
+        }}
+        onClose={() => setIsColorPopoverOpen(false)}
+      />
     </div>
   );
 }

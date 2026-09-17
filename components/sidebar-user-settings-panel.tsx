@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, MailCheck, Pencil } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Check, ChevronDown, LogOut, MailCheck, Pencil, Settings } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchCompanyDoc, fetchProjects, saveUserProfilePatchDetailed } from "@/lib/firestore-data";
@@ -23,10 +24,13 @@ function initials(name: string) {
 export function SidebarUserSettingsPanel({
   isOpen,
   onRequestClose,
+  onRequestLogout,
 }: {
   isOpen: boolean;
   onRequestClose: () => void;
+  onRequestLogout: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
+  const router = useRouter();
   const { user, setUserColorLocal, setUserProfileLocal } = useAuth();
   const [companyColor, setCompanyColor] = useState("#2F6BFF");
   const [userColor, setUserColor] = useState(user?.userColor || "");
@@ -283,15 +287,41 @@ export function SidebarUserSettingsPanel({
 
   return (
     <div className="flex h-full flex-col pt-1">
-      <button
-        type="button"
-        onClick={onRequestClose}
-        className="inline-flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
-        style={{ color: "var(--text-muted)" }}
-        aria-label="Back"
-      >
-        <ChevronDown size={16} />
-      </button>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-1">
+        <span aria-hidden="true" />
+        <button
+          type="button"
+          onClick={onRequestClose}
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center justify-self-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
+          style={{ color: "var(--text-muted)" }}
+          aria-label="Back"
+          title="Collapse"
+        >
+          <ChevronDown size={16} />
+        </button>
+        <div className="mr-2 flex items-center justify-self-end gap-1">
+          <button
+            type="button"
+            onClick={() => router.push("/user-settings")}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
+            style={{ color: "var(--text-muted)" }}
+            aria-label="User Settings"
+            title="User Settings"
+          >
+            <Settings size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={onRequestLogout}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
+            style={{ color: "var(--text-muted)" }}
+            aria-label="Log out"
+            title="Log out"
+          >
+            <LogOut size={14} />
+          </button>
+        </div>
+      </div>
 
       <div className="mt-1 flex flex-col items-center text-center">
         <div className="group relative">
@@ -392,23 +422,19 @@ export function SidebarUserSettingsPanel({
 
       <div className="mt-3 mb-3 space-y-3">
         <div className="border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Company</p>
-            {(companyRoleLabel || user?.role) ? (
+          <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Company</p>
+          <p className="mt-1 truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{companyName || "-"}</p>
+          {(companyRoleLabel || user?.role) ? (
+            <div className="mt-2 flex items-center gap-2">
               <p className="text-[10px] font-bold uppercase tracking-[0.9px]" style={{ color: "var(--text-muted)" }}>Role</p>
-            ) : null}
-          </div>
-          <div className="mt-1 flex items-center justify-between gap-2">
-            <p className="truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>{companyName || "-"}</p>
-            {(companyRoleLabel || user?.role) ? (
               <span
                 className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-bold"
                 style={{ backgroundColor: companyRoleColor || "#7D99B3", color: contrastTextForFill(companyRoleColor || "#7D99B3") }}
               >
                 {companyRoleLabel || user?.role}
               </span>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="group border px-3 py-2.5" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}>

@@ -14,7 +14,11 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     }
   }, [isLoading, router, user]);
 
-  if (isLoading) {
+  // Also covers the one-frame gap between isLoading flipping false and this component's own
+  // redirect effect above actually firing (effects run after render/commit) — a real, if brief,
+  // "nothing renders" window that used to return null here. A redirect is already inbound in that
+  // case, so keep showing the spinner instead of a blank page for that frame.
+  if (isLoading || !user) {
     return (
       <div className="flex h-[60vh] w-full items-center justify-center">
         <div
@@ -24,10 +28,6 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
         />
       </div>
     );
-  }
-
-  if (!user) {
-    return null;
   }
 
   return <>{children}</>;

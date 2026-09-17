@@ -11,6 +11,7 @@ import { storage } from "@/lib/firebase";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import {
   LEAD_PROJECT_CREATED_EVENT,
   OPEN_NEW_PROJECT_EVENT,
@@ -1797,6 +1798,34 @@ export default function LeadsPage() {
       cancelled = true;
     };
   }, [activeCompanyId, canAccessLeads]);
+
+  // companyMembers/currentUserPinColor above are both one-time fetches (fetchCompanyMembers/
+  // fetchUserColorMapByUids) with no live Firestore listener — a badge color changed elsewhere in
+  // the same tab (Company Settings, the personal profile panel) only reaches this page via this
+  // event, same pattern already used by dashboard/company-settings/app-shell/recently-deleted.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onUserColorUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserColorUpdatedDetail>).detail;
+      const uid = String(detail?.uid || "").trim();
+      const color = String(detail?.color || "").trim();
+      if (!uid) return;
+      setCompanyMembers((prev) =>
+        prev.map((member) =>
+          String(member.uid || "").trim() === uid
+            ? { ...member, badgeColor: color || undefined, userColor: color || undefined }
+            : member,
+        ),
+      );
+      if (String(user?.uid || "").trim() === uid) {
+        setCurrentUserPinColor(color);
+      }
+    };
+    window.addEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    return () => {
+      window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
+    };
+  }, [user?.uid]);
 
   useEffect(() => {
     setLeadImageExpandedAnnotationIds({});

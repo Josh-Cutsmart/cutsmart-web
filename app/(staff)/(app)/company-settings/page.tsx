@@ -1220,6 +1220,10 @@ export default function CompanySettingsPage() {
   const [discountTierDragIndex, setDiscountTierDragIndex] = useState<number | null>(null);
   const [discountTierDragOverIndex, setDiscountTierDragOverIndex] = useState<number | null>(null);
   const [minusOffQuoteTotal, setMinusOffQuoteTotal] = useState(false);
+  // Defaults true (allowed) — this only ever RESTRICTS an existing capability (the "Reopen for
+  // editing" safety-valve buttons on a sent/submitted Quote or Specifications sheet), so an
+  // existing company that's never touched this setting should keep working exactly as before.
+  const [salesAllowReopenForEditing, setSalesAllowReopenForEditing] = useState(true);
   const [salesLeadFormUrl, setSalesLeadFormUrl] = useState("");
   const quoteHelperRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hardware, setHardware] = useState<HardwareRow[]>([]);
@@ -1232,7 +1236,7 @@ export default function CompanySettingsPage() {
   const [drawerDragHardwareIndex, setDrawerDragHardwareIndex] = useState<number | null>(null);
   const [drawerDragIndex, setDrawerDragIndex] = useState<number | null>(null);
   const [drawerDragOverIndex, setDrawerDragOverIndex] = useState<number | null>(null);
-  const [nesting, setNesting] = useState({ sheetHeight: "2440", sheetWidth: "1220", kerf: "5", margin: "10" });
+  const [nesting, setNesting] = useState({ sheetHeight: "2440", sheetWidth: "1220", kerf: "5", margin: "10", minPieceSize: "100" });
   const [cutlistProduction, setCutlistProduction] = useState<string[]>([]);
   const [cutlistInitial, setCutlistInitial] = useState<string[]>([]);
   const [cutlistColumnOrder, setCutlistColumnOrder] = useState<string[]>([...cutlistColumnDefaults]);
@@ -1421,6 +1425,7 @@ export default function CompanySettingsPage() {
         setQuoteHelpers(normalizeQuoteHelpers(doc.salesQuoteHelpers));
         setDiscountTiers(normalizeDiscountTiers(doc.salesQuoteDiscountTiers));
         setMinusOffQuoteTotal(Boolean(doc.salesMinusOffQuoteTotal));
+        setSalesAllowReopenForEditing(doc.salesAllowReopenForEditing !== false);
         setSalesLeadFormUrl(toStr(doc.salesLeadFormUrl));
         const hardwareRows = normalizeHardware(doc.hardwareSettings);
         setHardware(sanitizeHardwareRows(hardwareRows));
@@ -1429,6 +1434,7 @@ export default function CompanySettingsPage() {
           sheetWidth: toStr(nestingRaw.sheetWidth, "1220"),
           kerf: toStr(nestingRaw.kerf, "5"),
           margin: toStr(nestingRaw.margin, "10"),
+          minPieceSize: toStr(nestingRaw.minPieceSize, "100"),
         });
         const nextCutlistProduction = normalizeStringList(cutCols.production, []);
         const nextCutlistInitial = normalizeStringList(cutCols.initialMeasure, []);
@@ -2260,6 +2266,7 @@ export default function CompanySettingsPage() {
         salesQuoteHelpers: quoteHelpers,
         salesQuoteDiscountTiers: discountTiers,
         salesMinusOffQuoteTotal: minusOffQuoteTotal,
+        salesAllowReopenForEditing,
         salesLeadFormUrl,
         backupTemplate,
         hardware,
@@ -2577,6 +2584,7 @@ export default function CompanySettingsPage() {
         sheetWidth: Number(nesting.sheetWidth || 1220),
         kerf: Number(nesting.kerf || 5),
         margin: Number(nesting.margin || 10),
+        minPieceSize: Number(nesting.minPieceSize || 100),
       },
       cutlistColumnsByContext: {
         production: cutlistProduction.filter(Boolean),
@@ -2688,6 +2696,7 @@ export default function CompanySettingsPage() {
         .map((row) => ({ low: toStr(row.low), high: toStr(row.high), discount: toStr(row.discount) }))
         .filter((row) => row.low && row.high && row.discount),
       salesMinusOffQuoteTotal: Boolean(minusOffQuoteTotal),
+      salesAllowReopenForEditing: Boolean(salesAllowReopenForEditing),
       salesLeadFormUrl: toStr(salesLeadFormUrl),
       integrations: {
         ...(((company as Record<string, unknown> | null)?.integrations as Record<string, unknown> | undefined) ?? {}),
@@ -2765,6 +2774,7 @@ export default function CompanySettingsPage() {
           salesQuoteHelpers: quoteHelpers,
           salesQuoteDiscountTiers: discountTiers,
           salesMinusOffQuoteTotal: minusOffQuoteTotal,
+          salesAllowReopenForEditing,
           salesLeadFormUrl,
           integrations: {
             ...((((prev ?? {}) as Record<string, unknown>).integrations as Record<string, unknown> | undefined) ?? {}),
@@ -2975,6 +2985,7 @@ export default function CompanySettingsPage() {
       quoteHelpers,
       discountTiers,
       minusOffQuoteTotal,
+      salesAllowReopenForEditing,
       salesLeadFormUrl,
       zapierLeads,
       backupTemplate,
@@ -3641,6 +3652,7 @@ export default function CompanySettingsPage() {
                         ["Sheet Width", "sheetWidth"],
                         ["Kerf", "kerf"],
                         ["Margin", "margin"],
+                        ["Minimum Piece Size", "minPieceSize"],
                       ].map(([label, key]) => (
                         <FieldRow key={key} label={label}>
                           <div className="flex h-8 items-center gap-2">
@@ -5094,6 +5106,19 @@ export default function CompanySettingsPage() {
                       </div>
                     </Panel>
                   </div>
+                  <Panel title="Client Confirmation">
+                    <label className="inline-flex items-center gap-2 text-[12px] font-bold" style={{ color: "var(--text-main)" }}>
+                      <input
+                        type="checkbox"
+                        checked={salesAllowReopenForEditing}
+                        onChange={() => setSalesAllowReopenForEditing((v) => !v)}
+                      />
+                      Allow staff to reopen a sent/submitted Quote or Specifications sheet for editing
+                    </label>
+                    <p className="mt-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      Turn off to hide the &quot;Reopen for Editing&quot; button once a Quote has been sent or a Specifications sheet submitted — the only way back to an editable copy is then Resetting to Template.
+                    </p>
+                  </Panel>
                   <Panel title="Item Categories">
                     <div className="space-y-3">
                       <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>

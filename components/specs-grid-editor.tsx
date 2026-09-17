@@ -127,6 +127,11 @@ export type SpecsGridEditorProps = {
   // don't duplicate each other. The company template builder ignores this (it has no sidebar of its
   // own to defer to) and always shows the inline bar.
   hideSectionsBar?: boolean;
+  // Shows the "Mark for Confirmation" toolbar button and the resulting Pending/Yes/No cell overlay
+  // — a client-confirmation workflow that only makes sense on Specifications (where a client
+  // confirms individual answers), not on Quote. Off by default so a caller has to opt in
+  // explicitly; the Specifications instance passes true, the Quote instance leaves it unset.
+  allowConfirmationMarking?: boolean;
   // Company roles offered in the group editor modal's "Allow editable by" checklist — omit (or pass
   // []) to hide that section entirely, e.g. in the company-settings template builder, where there's
   // no per-viewer permission concept yet (it only starts mattering once cloned into a real project).
@@ -487,6 +492,7 @@ export default function SpecsGridEditor({
   toolbarFixedLeftPx,
   groupsSupportPricing,
   hideSectionsBar,
+  allowConfirmationMarking,
   companyRoleOptions,
   canEditSpecsGroup,
   lockUngroupedBlankCells,
@@ -1680,7 +1686,7 @@ export default function SpecsGridEditor({
           {canUnmerge ? <TableCellsSplit size={14} /> : <TableCellsMerge size={14} />}
           {canUnmerge ? "Unmerge" : "Merge"}
         </button>
-        {isProjectSheetView ? (
+        {isProjectSheetView && allowConfirmationMarking ? (
           <>
             <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
             {(() => {
@@ -2339,17 +2345,20 @@ export default function SpecsGridEditor({
                           confirmedYes/confirmedAt itself, only the public
                           app/api/specs-share/[shareId]/answer route does, and only ever onto the
                           specific SAVED VERSION document bound at send time — never back onto the
-                          live sheet (see isViewingSavedVersion's own comment). So this only renders
-                          at all while a saved version is open; the live grid's own copy of
-                          confirmedYes/confirmedAt is permanently stale the moment a version's been
-                          sent, and would misleadingly show "Pending" forever regardless of the real
-                          answer. Fills the ENTIRE cell (matching the client's own full-cell Yes/No
-                          fill — see components/specs-grid-client-view.tsx) rather than a small
-                          corner badge, so staff can read a cell's status at a glance without
-                          needing to zoom in — same treatment for "Pending" (still-unanswered) as
-                          for a real Yes/No, just neutral colors so it doesn't misleadingly read as
-                          an actual answer. */}
-                      {isProjectSheetView && cell.confirmable && isViewingSavedVersion ? (
+                          live sheet (see isViewingSavedVersion's own comment). A real Yes/No answer
+                          therefore only ever renders while that saved version is open — the live
+                          grid's own copy of confirmedYes/confirmedAt is permanently stale the
+                          moment a version's been sent, and would misleadingly show a frozen answer
+                          forever regardless of what the client's actually since said. "Pending" has
+                          no such staleness risk (an unanswered marked cell really is pending,
+                          whether you're looking at the live sheet or a saved version, since nothing
+                          about "no answer yet" can go stale) and shows on both. Fills the ENTIRE
+                          cell (matching the client's own full-cell Yes/No fill — see
+                          components/specs-grid-client-view.tsx) rather than a small corner badge,
+                          so staff can read a cell's status at a glance without needing to zoom in —
+                          same treatment for "Pending" (still-unanswered) as for a real Yes/No, just
+                          neutral colors so it doesn't misleadingly read as an actual answer. */}
+                      {isProjectSheetView && allowConfirmationMarking && cell.confirmable && (isViewingSavedVersion || cell.confirmedYes === undefined) ? (
                         cell.confirmedYes === undefined ? (
                           <div
                             className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] font-bold"

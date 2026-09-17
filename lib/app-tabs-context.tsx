@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@/lib/auth-context";
 
 export type AppWorkspaceTab = {
   key: string;
@@ -43,6 +44,10 @@ type AppTabsContextValue = {
 };
 
 const APP_TABS_STORAGE_KEY = "cutsmart_global_app_tabs_v1";
+// Same key/precedence company-settings, dashboard, leads, etc. already use to resolve "which
+// company is active" — a manual override in localStorage first, falling back to the signed-in
+// account's own membership.
+const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 
 type AppTabOrderRegistry = {
   tabOrders: Record<string, number>;
@@ -69,6 +74,7 @@ function buildOrderRegistry(tabs: AppWorkspaceTab[]): AppTabOrderRegistry {
 const AppTabsContext = createContext<AppTabsContextValue | null>(null);
 
 export function AppTabsProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [tabs, setTabs] = useState<AppWorkspaceTab[]>([]);
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
@@ -81,14 +87,41 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
     scopeOrders: {},
     groupOrders: {},
   });
+  // Persisted tabs used to live under one single, unscoped key — meaning an account that left one
+  // company and created/joined another kept seeing that OLD company's project tabs forever (the
+  // tab itself is harmless — it just 404s as "project not found" — but it shouldn't be there at
+  // all once nothing left in this browser's auth/company context can actually reach it). Scoping
+  // the storage key to whichever company is currently active isolates one company's tabs from
+  // another's, same precedence (stored override, else the account's own membership) already used
+  // to resolve "the active company" elsewhere — see e.g. company-settings/page.tsx's
+  // loadCompanyAccess.
+  const activeCompanyId = useMemo(() => {
+    if (typeof window === "undefined") return String(user?.companyId || "").trim();
+    const stored = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    return stored || String(user?.companyId || "").trim();
+  }, [user?.companyId]);
+  const tabsStorageKey = activeCompanyId ? `${APP_TABS_STORAGE_KEY}:${activeCompanyId}` : APP_TABS_STORAGE_KEY;
+  // Set synchronously by the hydration effect below and consumed synchronously by the persist
+  // effect right after it (both effects run in the same commit) — without this, the persist
+  // effect would fire first with the PREVIOUS company's still-in-state `tabs` and immediately
+  // overwrite the newly-hydrated company's storage with stale data, before React has even applied
+  // the setTabs() call the hydration effect just made.
+  const skipNextPersistRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    skipNextPersistRef.current = true;
     try {
-      const raw = window.localStorage.getItem(APP_TABS_STORAGE_KEY);
-      if (!raw) return;
+      const raw = window.localStorage.getItem(tabsStorageKey);
+      if (!raw) {
+        setTabs([]);
+        return;
+      }
       const parsed = JSON.parse(raw) as AppWorkspaceTab[];
-      if (!Array.isArray(parsed)) return;
+      if (!Array.isArray(parsed)) {
+        setTabs([]);
+        return;
+      }
       const normalizedTabs = parsed
         .filter((tab) => {
           if (!tab || typeof tab !== "object") return false;
@@ -102,17 +135,22 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setTabs(normalizedTabs);
     } catch {
       // Ignore bad local storage state.
+      setTabs([]);
     }
-  }, []);
+  }, [tabsStorageKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
     try {
-      window.localStorage.setItem(APP_TABS_STORAGE_KEY, JSON.stringify(tabs));
+      window.localStorage.setItem(tabsStorageKey, JSON.stringify(tabs));
     } catch {
       // Ignore local storage write failures.
     }
-  }, [tabs]);
+  }, [tabs, tabsStorageKey]);
 
   const registerScopeTabs = useCallback((
     scopeKey: string,

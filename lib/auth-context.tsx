@@ -39,6 +39,18 @@ const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 // slower and more failure-prone than a warm reload — bound how long the membership/profile fetch
 // is allowed to hang so a stalled network call can never leave the loading screen stuck forever.
 const MEMBERSHIP_LOAD_TIMEOUT_MS = 12000;
+// Same "cold connection can hang forever" concern as MEMBERSHIP_LOAD_TIMEOUT_MS above, but for the
+// auth *subscription* itself — onAuthStateChanged does its own internal IndexedDB-backed
+// auth-state restore before ever invoking its callback, and on a cold tab/flaky first connection
+// that restore can stall or never resolve at all, leaving isLoading stuck true forever (every
+// downstream screen — ProtectedRoute, "/"'s "Checking saved sign-in..." gate, the whole (app)
+// layout — hangs with it, since only the fetch AFTER this callback fires is time-boxed). This is
+// the "sometimes nothing loads until I refresh" bug: a refresh benefits from an already-warm
+// connection/IndexedDB, a cold tab doesn't always get one. If the callback hasn't fired within
+// this window, fall back to treating the tab as signed-out so the app is at least usable — if the
+// real callback was just slow (not actually stuck) and fires a moment later, it still runs
+// normally and corrects this fallback with the real signed-in state.
+const AUTH_CALLBACK_TIMEOUT_MS = 10000;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -115,6 +127,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const firebaseAuth = auth;
     let active = true;
     let unsubscribeAuth: (() => void) | null = null;
+    let authCallbackFired = false;
+    const fallbackTimer = window.setTimeout(() => {
+      if (!active || authCallbackFired) return;
+      setUser(null);
+      setIsLoading(false);
+      setIsDemoMode(false);
+    }, AUTH_CALLBACK_TIMEOUT_MS);
 
     const boot = async () => {
       try {
@@ -126,7 +145,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (!active) return;
+      try {
       unsubscribeAuth = onAuthStateChanged(firebaseAuth, (firebaseUser) => {
+      authCallbackFired = true;
+      window.clearTimeout(fallbackTimer);
       const loadMembership = async () => {
         if (!firebaseUser) {
           if (!active) {
@@ -190,12 +212,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       void loadMembership();
       });
+      } catch {
+        // onAuthStateChanged threw synchronously (corrupted IndexedDB, restricted storage state,
+        // etc.) — same treat-as-signed-out fallback as the timeout above, just immediate since
+        // there's no callback left to ever wait on.
+        window.clearTimeout(fallbackTimer);
+        if (active) {
+          setUser(null);
+          setIsLoading(false);
+          setIsDemoMode(false);
+        }
+      }
     };
 
     void boot();
 
     return () => {
       active = false;
+      window.clearTimeout(fallbackTimer);
       if (unsubscribeAuth) unsubscribeAuth();
     };
   }, []);

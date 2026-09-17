@@ -42,6 +42,12 @@
   --glass-border: rgba(15, 23, 42, 0.07);
   --glass-highlight: rgba(255, 255, 255, 0.5);
   --shadow-glass: 0 8px 32px rgba(31, 41, 55, 0.10), 0 1px 1px rgba(31, 41, 55, 0.05);
+  /* components/glass-scrollbar-thumb.tsx's custom thumb color — see that file's own comment for
+   * why a plain native scrollbar can't be used wherever content needs to scroll under a glass
+   * header (native scrollbars render in a compositing layer that ignores normal z-index/opacity
+   * entirely, so nothing in page CSS can make one stop at/under a header). */
+  --custom-scrollbar-thumb: rgba(15, 23, 42, 0.28);
+  --custom-scrollbar-thumb-hover: rgba(15, 23, 42, 0.42);
 }
 
 :root[data-theme="dark"] {
@@ -85,6 +91,8 @@
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-highlight: rgba(255, 255, 255, 0.05);
   --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.5), 0 1px 1px rgba(0, 0, 0, 0.3);
+  --custom-scrollbar-thumb: rgba(226, 232, 240, 0.32);
+  --custom-scrollbar-thumb-hover: rgba(226, 232, 240, 0.48);
 }
 
 * {
@@ -386,6 +394,25 @@ body[data-theme="dark"].cs-app .notes-rich li {
   to {
     transform: translateX(0);
     opacity: 1;
+  }
+}
+
+/* A plain fade/settle-in, no overshoot — each container/sub-nav button gets its own randomized
+ * animation-delay (re-rolled on every tab switch, not a fixed CSS stagger) so they arrive at
+ * slightly different moments instead of all appearing at once. --project-tab-enter-x is set per
+ * element by JS to match whichever direction the slide above is actually travelling (positive for
+ * slide-from-right, negative for slide-from-left, 0 when there's no slide at all) so this settles
+ * in along the same line of travel instead of a fixed, direction-agnostic offset. See
+ * app/(staff)/(app)/projects/[projectId]/page.tsx's projectTabContentRef effect for the JS side.
+ */
+@keyframes project-tab-bounce-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--project-tab-enter-x, 0px));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -727,6 +754,22 @@ body[data-theme="dark"] .row-glow {
   --row-glow-color: rgba(248, 113, 113, 0.1);
   --row-glow-border: rgba(248, 113, 113, 0.3);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Hides a scroll container's OWN native scrollbar — used together with
+ * components/glass-scrollbar-thumb.tsx, which draws a plain-div replacement thumb instead. A
+ * native scrollbar can't be made to stop at/under a glass header: it renders in its own
+ * compositing layer that ignores z-index and opacity entirely (confirmed empirically — a fully
+ * opaque, higher-z-index cover div placed directly over one still doesn't hide it), so nothing in
+ * page CSS can cap it. A plain div thumb has none of that problem — normal stacking applies to it
+ * like any other element, so an existing sticky/fixed header with a higher z-index already
+ * correctly paints over it with no extra work. */
+.hide-native-scrollbar {
+  scrollbar-width: none;
+}
+
+.hide-native-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* "Ring" wobble for a bell icon on click — a quick swing that settles back to rest, like the

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
@@ -626,11 +627,13 @@ export default function DashboardPage() {
   const completedCardRef = useRef<HTMLDivElement | null>(null);
   const completedModalTimerRef = useRef<number | null>(null);
   const completedDateInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const completedProjectsScrollRef = useRef<HTMLDivElement | null>(null);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffModalExpanded, setStaffModalExpanded] = useState(false);
   const [staffCardRect, setStaffCardRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const staffCardRef = useRef<HTMLDivElement | null>(null);
   const staffModalTimerRef = useRef<number | null>(null);
+  const staffMembersScrollRef = useRef<HTMLDivElement | null>(null);
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
   const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
   const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
@@ -1713,7 +1716,7 @@ export default function DashboardPage() {
                         })}
                       </div>
                     </div>
-                    <div className="glass-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
+                    <div ref={completedProjectsScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-4">
                       {!completedProjectsByMonth.length ? (
                         <div
                           className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
@@ -1967,7 +1970,7 @@ export default function DashboardPage() {
                         <X size={16} />
                       </button>
                     </div>
-                    <div className="glass-scroll min-h-0 flex-1 overflow-auto px-5 py-2">
+                    <div ref={staffMembersScrollRef} className="glass-scroll hide-native-scrollbar min-h-0 flex-1 overflow-auto px-5 py-2">
                       {!companyMembers.length ? (
                         <div
                           className="flex flex-col items-center gap-2 rounded-[14px] border border-dashed px-4 py-10 text-center"
@@ -2868,7 +2871,9 @@ export default function DashboardPage() {
 
             </div>
             {completedProjectsModal}
+            {showCompletedProjectsModal && <GlassScrollbarThumb scrollRef={completedProjectsScrollRef} zIndexClassName="z-[8]" />}
             {staffModal}
+            {showStaffModal && <GlassScrollbarThumb scrollRef={staffMembersScrollRef} zIndexClassName="z-[8]" />}
             {openingProjectOverlay}
             <DragGhostLayer controller={projectBoardDragGhost} />
           </>

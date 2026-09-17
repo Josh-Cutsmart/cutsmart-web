@@ -22,7 +22,7 @@ import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
 import { normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
 import type { ProductComparison } from "@/lib/cutlist-types";
-import type { Cutlist, Project, ProjectChange, ProjectImageItem, SalesQuote } from "@/lib/types";
+import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
 
 function toIsoString(value: unknown, fallback = "") {
@@ -194,6 +194,29 @@ function normalizeProjectImageItems(value: unknown): ProjectImageItem[] {
   return items;
 }
 
+function normalizeProjectChecklists(value: unknown): ProjectChecklist[] {
+  if (!Array.isArray(value)) return [];
+  const checklists: ProjectChecklist[] = [];
+  for (const entry of value) {
+    const row = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
+    const id = String(row?.id ?? "").trim();
+    const name = String(row?.name ?? "").trim();
+    if (!id || !name) continue;
+    const rawItems = Array.isArray(row?.items) ? row.items : [];
+    const items = rawItems
+      .map((item) => {
+        const itemRow = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+        const itemId = String(itemRow?.id ?? "").trim();
+        const text = String(itemRow?.text ?? "").trim();
+        if (!itemId || !text) return null;
+        return { id: itemId, text, checked: Boolean(itemRow?.checked) };
+      })
+      .filter((item): item is { id: string; text: string; checked: boolean } => item !== null);
+    checklists.push({ id, name, items, addedAt: String(row?.addedAt ?? "").trim() || undefined });
+  }
+  return checklists;
+}
+
 function normalizeProject(id: string, data: Record<string, unknown>): Project {
   const rows = parseCutlistRows(data);
   const clientBlock =
@@ -331,6 +354,7 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     dashboardCompleteStatusId: String(data.dashboardCompleteStatusId ?? "").trim() || undefined,
     projectSettings: settings,
     cutlist: parseCutlistContainer(data) ?? undefined,
+    checklists: normalizeProjectChecklists(data.checklists),
   };
 }
 
@@ -1970,8 +1994,10 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
       const roleId = roleOverridesByUid[uid] || membershipRoleId;
       const email = String(data.email ?? "").trim();
       const mobile = String(data.mobile ?? data.phone ?? "").trim();
+      // userColor first on both — see fetchUserColorMapByUids' own comment on why badgeColor can't
+      // be trusted as the primary source (frozen by Firestore rules once ever set).
       const userColor = String(data.userColor ?? data.badgeColor ?? data.avatarColor ?? data.color ?? data.colour ?? "").trim();
-      const badgeColor = String(data.badgeColor ?? data.userColor ?? data.avatarColor ?? data.color ?? data.colour ?? "").trim();
+      const badgeColor = String(data.userColor ?? data.badgeColor ?? data.avatarColor ?? data.color ?? data.colour ?? "").trim();
       const displayNameOverride = displayNameOverridesByUid[uid];
       out.push({
         uid,
@@ -2003,7 +2029,7 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
             userData.userColor ?? userData.badgeColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
           ).trim();
           const profileBadgeColor = String(
-            userData.badgeColor ?? userData.userColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
+            userData.userColor ?? userData.badgeColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
           ).trim();
           if (!displayNameOverridesByUid[uid] && !member.membershipDisplayName && profileDisplayName) {
             member.displayName = profileDisplayName;
@@ -3819,6 +3845,68 @@ export async function saveUserProfilePatchDetailed(
   return { ok: false, error: lastError || "membership-write-failed" };
 }
 
+function normalizeChecklistTemplate(id: string, raw: Record<string, unknown>): ChecklistTemplate {
+  const rawItems = Array.isArray(raw.items) ? raw.items : [];
+  const items = rawItems
+    .map((item, idx) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const text = String(row.text ?? "").trim();
+      if (!text) return null;
+      return { id: String(row.id ?? `${id}_item_${idx}`), text };
+    })
+    .filter((item): item is { id: string; text: string } => item !== null);
+  return {
+    id,
+    name: String(raw.name ?? "").trim() || "Untitled Checklist",
+    items,
+    updatedAt: String(raw.updatedAtIso ?? "").trim() || undefined,
+  };
+}
+
+export async function fetchChecklistTemplates(uid: string): Promise<ChecklistTemplate[]> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId) return [];
+  try {
+    const snap = await getDocs(collection(db, "users", userId, "checklistTemplates"));
+    return snap.docs
+      .map((d) => normalizeChecklistTemplate(d.id, d.data() as Record<string, unknown>))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    console.warn("[fetchChecklistTemplates] read failed:", error);
+    return [];
+  }
+}
+
+export async function saveChecklistTemplate(uid: string, template: ChecklistTemplate): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  if (!db || !userId || !template?.id) return false;
+  try {
+    await setDoc(doc(db, "users", userId, "checklistTemplates", template.id), {
+      name: template.name,
+      items: template.items,
+      updatedAtIso: new Date().toISOString(),
+    });
+    return true;
+  } catch (error) {
+    console.warn("[saveChecklistTemplate] write failed:", error);
+    return false;
+  }
+}
+
+export async function deleteChecklistTemplate(uid: string, templateId: string): Promise<boolean> {
+  const userId = String(uid || "").trim();
+  const id = String(templateId || "").trim();
+  if (!db || !userId || !id) return false;
+  try {
+    await deleteDoc(doc(db, "users", userId, "checklistTemplates", id));
+    return true;
+  } catch (error) {
+    console.warn("[deleteChecklistTemplate] delete failed:", error);
+    return false;
+  }
+}
+
 function normalizeSeenUpdateNoticeVersions(raw: unknown): string[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -3965,9 +4053,15 @@ export async function fetchUserColorMapByUids(
             }
           }
           if (!membership) return;
+          // userColor first, not badgeColor: the membership doc's Firestore rule
+          // (onlyUserColorFieldsOnUpdate) only ever allows userColor to be updated on this
+          // subcollection — badgeColor can't be written here through the normal profile-save flow,
+          // so once it's set it's frozen forever. Checking it first meant a changed color would
+          // save correctly (to userColor) but the frozen badgeColor kept winning on every re-read —
+          // "changes live, reverts on reload."
           const color = String(
-            membership.badgeColor ??
-              membership.userColor ??
+            membership.userColor ??
+              membership.badgeColor ??
               membership.avatarColor ??
               membership.color ??
               membership.colour ??

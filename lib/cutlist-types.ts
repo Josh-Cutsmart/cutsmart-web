@@ -39,6 +39,10 @@ export type CutlistRow = {
   cabinetryKind?: "base" | "wall";
   cabinetryClashBottom?: boolean;
   cabinetryClashBottomManual?: boolean;
+  // Base cabinets get 2 Rails instead of a full Top by default (see buildCabinetryDerivedPieces) —
+  // this opts a specific Base cabinet back into a full Top anyway. Wall cabinets always keep a
+  // full Top regardless of this flag; it only has an effect on cabinetryKind === "base" rows.
+  cabinetryFullTop?: boolean;
   hingesUp?: string[];
   hingesDown?: string[];
   hingeSide?: "" | "LH" | "RH" | "Mirror";

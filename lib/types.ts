@@ -77,6 +77,32 @@ export interface Project {
   dashboardCompleteStatusId?: string;
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
+  checklists?: ProjectChecklist[];
+}
+
+export interface ProjectChecklistItem {
+  id: string;
+  text: string;
+  checked: boolean;
+}
+
+export interface ProjectChecklist {
+  id: string;
+  name: string;
+  items: ProjectChecklistItem[];
+  addedAt?: string;
+}
+
+export interface ChecklistTemplateItem {
+  id: string;
+  text: string;
+}
+
+export interface ChecklistTemplate {
+  id: string;
+  name: string;
+  items: ChecklistTemplateItem[];
+  updatedAt?: string;
 }
 
 export interface ProjectChange {

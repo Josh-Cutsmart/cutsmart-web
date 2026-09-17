@@ -64,7 +64,18 @@ service cloud.firestore {
     // Join-code lookup docs (safe for non-members)
     match /companyJoinCodes/{codeKey} {
       allow read: if signedIn();
-      allow write: if false; // create/update from trusted flow only
+
+      // Written once, right after creating a company, by that company's own owner (see
+      // onCreateCompany in app/(staff)/company-onboarding/page.tsx) — same trust pattern as
+      // isOwnerBootstrapForCompany above: the caller must already own the company this code
+      // points at. Used to be `if false` with no exception at all, which made company creation
+      // fail with permission-denied for every single user, always.
+      allow create, update: if signedIn()
+        && request.resource.data.companyId is string
+        && exists(/databases/$(database)/documents/companies/$(request.resource.data.companyId))
+        && get(/databases/$(database)/documents/companies/$(request.resource.data.companyId)).data.ownerUid == request.auth.uid;
+
+      allow delete: if false;
     }
 
     // Global rule to allow collectionGroup("invites") lookups for signed-in users
@@ -121,6 +132,16 @@ service cloud.firestore {
         allow update: if isSelf(uid);
         allow delete: if isSelf(uid);
       }
+
+      // Saved checklist templates (User Settings > Create Checklist). Owner-only in every
+      // direction — these are personal templates, never shared with teammates directly (a
+      // project's own "checklists" field is what actually gets shared once one is added there).
+      match /checklistTemplates/{templateId} {
+        allow read: if isSelf(uid);
+        allow create: if isSelf(uid);
+        allow update: if isSelf(uid);
+        allow delete: if isSelf(uid);
+      }
     }
 
     match /companies/{companyId} {
@@ -143,6 +164,16 @@ service cloud.firestore {
         // keep your existing color-only self update rule
         allow update: if isSelf(uid) && onlyUserColorFieldsOnUpdate();
         allow delete: if false;
+      }
+
+      // Client records (Clients tab/CRM) — had no rule at all before this, which silently denied
+      // every read/write to it (Firestore has no rule = deny, and rules never inherit to
+      // subcollections — see companyStats' own comment on that). Includes the "__meta" doc written
+      // right after a company is created (see onCreateCompany in
+      // app/(staff)/company-onboarding/page.tsx), which is what originally surfaced this gap as a
+      // permission-denied on company creation itself.
+      match /clients/{clientId} {
+        allow read, write: if isCompanyMember(companyId);
       }
 
       // Company Wrapped's per-year delta-tallied stats (doors/drawers/panels/materials/hinges).

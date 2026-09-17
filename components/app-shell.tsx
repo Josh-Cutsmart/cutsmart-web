@@ -2185,7 +2185,12 @@ export function AppShell({
                   transition: "opacity 200ms ease",
                 }}
               >
-                <div className="flex items-center gap-2 rounded-[10px] px-2 py-2 transition hover:bg-[var(--panel-muted)]">
+                <button
+                  type="button"
+                  onClick={openUserSettingsPanel}
+                  className="flex w-full items-center gap-2 rounded-[10px] px-2 py-2 text-left transition hover:bg-[var(--panel-muted)]"
+                  aria-label="Open user settings"
+                >
                   <div
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
                     style={{ backgroundColor: userEmblemColor }}
@@ -2198,27 +2203,7 @@ export function AppShell({
                       <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={openUserSettingsPanel}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-border)]"
-                    style={{ color: shellPalette.textMuted }}
-                    aria-label="User Settings"
-                    title="User Settings"
-                  >
-                    <Settings size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-border)]"
-                    style={{ color: shellPalette.textMuted }}
-                    aria-label="Log out"
-                    title="Log out"
-                  >
-                    <LogOut size={14} />
-                  </button>
-                </div>
+                </button>
               </div>
 
               <div
@@ -2230,7 +2215,11 @@ export function AppShell({
                   transition: "opacity 220ms ease",
                 }}
               >
-                <SidebarUserSettingsPanel isOpen={isUserSettingsPanelOpen} onRequestClose={closeUserSettingsPanel} />
+                <SidebarUserSettingsPanel
+                  isOpen={isUserSettingsPanelOpen}
+                  onRequestClose={closeUserSettingsPanel}
+                  onRequestLogout={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                />
               </div>
             </div>
           </div>
