@@ -4,6 +4,25 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "CutSmart Web",
   description: "CutSmart web workspace for sales and production cutlists.",
+  manifest: "/manifest.json",
+  // Makes "Add to Home Screen" on iOS launch as a standalone app (no Safari
+  // title/URL bar or bottom toolbar) instead of a plain bookmark — see
+  // public/manifest.json for the Android/other-PWA equivalent (display: "standalone").
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "CutSmart",
+  },
+  icons: {
+    // iOS ignores manifest.json's icons entirely — it only reads this apple-touch-icon.
+    apple: "/apple-touch-icon.png",
+  },
+  other: {
+    // Next's appleWebApp.capable only emits the newer unprefixed "mobile-web-app-capable" —
+    // older iOS versions only recognize this Apple-specific one, so both are needed to
+    // reliably get standalone (no Safari chrome) mode across iOS versions.
+    "apple-mobile-web-app-capable": "yes",
+  },
 };
 
 export const viewport: Viewport = {
@@ -12,6 +31,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
+  themeColor: "#2563eb",
 };
 
 export default function RootLayout({

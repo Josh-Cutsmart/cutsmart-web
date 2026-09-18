@@ -46835,8 +46835,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div className="space-y-2 p-3 text-[12px]">
                       {[
                         { label: "Base Cab Height", key: "baseCabHeight" as const },
-                        { label: "Foot Distance Back", key: "footDistanceBack" as const },
                         { label: "Tall Cab Height", key: "tallCabHeight" as const },
+                        { label: "Foot Distance Back", key: "footDistanceBack" as const },
                         { label: "Foot Height", key: "footHeight" as const },
                       ].map((item) => (
                         <div key={item.key} className="grid grid-cols-[1fr_58px_26px] items-center gap-2">
@@ -46847,7 +46847,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               onChange={(e) => onCabinetryDraftChange(item.key, e.target.value)}
                               onBlur={() => void onCabinetryBlurSave()}
                               className="h-7 rounded-[8px] border px-2 text-[12px]"
-                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                              style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
                             />
                             <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
                         </div>
@@ -46873,7 +46873,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             onChange={(e) => onCabinetryDraftChange("hobCentre", e.target.value)}
                             onBlur={() => void onCabinetryBlurSave()}
                             className="h-7 rounded-[8px] border px-2 text-[12px]"
-                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
+                            style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: "#000000" }}
                             />
                             <p className="font-semibold" style={{ color: "var(--text-main)" }}>mm</p>
                         </div>
