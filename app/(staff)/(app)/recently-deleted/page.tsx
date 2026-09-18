@@ -18,6 +18,7 @@ import type { CompanyLeadRow } from "@/lib/firestore-data";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { retryAsync } from "@/lib/load-retry";
 
 const RESERVED_LEAD_FIELD_KEYS = new Set(["companyid", "source", "status"]);
 const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
@@ -391,12 +392,16 @@ export default function RecentlyDeletedPage() {
 
   const load = useCallback(async () => {
     setIsLoading(true);
+    // The whole body below used to have no try/catch — any single rejection along this long
+    // chain of Firestore reads meant setIsLoading(false) at the end was never reached, leaving
+    // "Loading deleted projects..."/"Loading deleted leads..." stuck on screen forever.
+    try {
     const storedCompanyId =
       typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
     const directCompanyId = String(user?.companyId || "").trim();
     const preferredCompanyIds = Array.from(new Set([storedCompanyId, directCompanyId].filter(Boolean)));
-    await purgeExpiredDeletedProjects(user?.uid, preferredCompanyIds);
-    const rows = await fetchDeletedProjects(user?.uid, preferredCompanyIds);
+    await retryAsync(() => purgeExpiredDeletedProjects(user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 300 });
+    const rows = await retryAsync(() => fetchDeletedProjects(user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 300 });
     setDeletedProjects(rows);
     const companyIds = Array.from(new Set(rows.map((row) => String(row.companyId || "").trim()).filter(Boolean)));
     const selectedCompanyId = storedCompanyId || companyIds[0] || "";
@@ -404,7 +409,7 @@ export default function RecentlyDeletedPage() {
     const userColorMap = await fetchUserColorMapByUids(creatorUids, selectedCompanyId);
     setCreatorColorByUid(userColorMap);
     if (selectedCompanyId && user?.uid) {
-      const access = await fetchCompanyAccess(selectedCompanyId, user.uid);
+      const access = await retryAsync(() => fetchCompanyAccess(selectedCompanyId, user.uid), { attempts: 2, delayMs: 300 });
       const role = String(access?.role || "").trim().toLowerCase();
       const permitted =
         role === "owner" ||
@@ -418,13 +423,13 @@ export default function RecentlyDeletedPage() {
       setCanAccessDeletedLeads(false);
     }
     if (selectedCompanyId) {
-      const leads = await fetchArchivedLeadsFromApi(selectedCompanyId);
+      const leads = await retryAsync(() => fetchArchivedLeadsFromApi(selectedCompanyId), { attempts: 2, delayMs: 300 });
       setDeletedLeads(leads);
     } else {
       setDeletedLeads([]);
     }
     if (selectedCompanyId) {
-      const selectedCompanyDoc = await fetchCompanyDoc(selectedCompanyId);
+      const selectedCompanyDoc = await retryAsync(() => fetchCompanyDoc(selectedCompanyId), { attempts: 2, delayMs: 300 });
       const selectedDoc = (selectedCompanyDoc as Record<string, unknown> | null) ?? null;
       const integrations =
         selectedDoc && typeof selectedDoc.integrations === "object" && selectedDoc.integrations !== null
@@ -456,13 +461,12 @@ export default function RecentlyDeletedPage() {
 
     if (!companyIds.length) {
       setRetentionDaysByCompany({});
-      setIsLoading(false);
       return;
     }
 
     const entries = await Promise.all(
       companyIds.map(async (companyId) => {
-        const doc = await fetchCompanyDoc(companyId);
+        const doc = await retryAsync(() => fetchCompanyDoc(companyId), { attempts: 2, delayMs: 300 });
         const themeColor = String((doc as Record<string, unknown> | null)?.themeColor ?? "").trim();
         if (themeColor) setCompanyThemeColor(themeColor);
         const raw = Number((doc as Record<string, unknown> | null)?.deletedRetentionDays ?? 90);
@@ -471,7 +475,9 @@ export default function RecentlyDeletedPage() {
       }),
     );
     setRetentionDaysByCompany(Object.fromEntries(entries));
-    setIsLoading(false);
+    } finally {
+      setIsLoading(false);
+    }
   }, [user?.uid]);
 
   useEffect(() => {

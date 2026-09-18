@@ -26,6 +26,7 @@ import {
 import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { retryAsync } from "@/lib/load-retry";
 import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
@@ -1389,23 +1390,32 @@ export default function CompanySettingsPage() {
         // ignore project-based fallback errors
       }
 
-      let selectedCompanyId = "";
-      let doc: Record<string, unknown> | null = null;
-      for (const companyId of candidateIds) {
-        // Try each candidate until we find a readable company doc.
-        const hit = await fetchCompanyDoc(companyId);
-        if (hit) {
-          selectedCompanyId = companyId;
-          doc = hit;
-          break;
+      // Everything from here down used to have no try/catch at all — any single rejection (a
+      // network/Firestore hiccup on any of the reads below) meant setIsLoading(false) at the end
+      // was never reached, leaving the page stuck showing its loading state (Save/upload/invite
+      // controls permanently disabled) forever. Wrapping it — with retries on the reads most
+      // likely to hit a transient blip — means a rejection now just falls through to `finally`
+      // instead of hanging.
+      try {
+        let selectedCompanyId = "";
+        let doc: Record<string, unknown> | null = null;
+        for (const companyId of candidateIds) {
+          // Try each candidate until we find a readable company doc.
+          const hit = await retryAsync(() => fetchCompanyDoc(companyId), { attempts: 2, delayMs: 300 });
+          if (hit) {
+            selectedCompanyId = companyId;
+            doc = hit;
+            break;
+          }
         }
-      }
 
-      setActiveCompanyId(selectedCompanyId);
-      const members = selectedCompanyId ? await fetchCompanyMembers(selectedCompanyId) : [];
-      setCompany(doc);
-      setStaff(members);
-      if (doc) {
+        setActiveCompanyId(selectedCompanyId);
+        const members = selectedCompanyId
+          ? await retryAsync(() => fetchCompanyMembers(selectedCompanyId), { attempts: 2, delayMs: 300 })
+          : [];
+        setCompany(doc);
+        setStaff(members);
+        if (doc) {
         const nestingRaw = (doc.nestingSettings ?? {}) as Record<string, unknown>;
         const appPrefsRaw = (doc.applicationPreferences ?? {}) as Record<string, unknown>;
         const cutCols = (doc.cutlistColumnsByContext ?? {}) as Record<string, unknown>;
@@ -1486,13 +1496,15 @@ export default function CompanySettingsPage() {
           quoteTemplateMarginMm: toStr(doc.quoteTemplateMarginMm, "10"),
           quoteTemplateFooterPinBottom: Boolean(doc.quoteTemplateFooterPinBottom),
         });
+        }
+        setNotificationsLoading(true);
+        const notifications = await retryAsync(() => fetchUserNotifications(user.uid), { attempts: 2, delayMs: 300 });
+        setNotificationsRows(notifications);
+        setIsHydrated(true);
+      } finally {
+        setNotificationsLoading(false);
+        setIsLoading(false);
       }
-      setNotificationsLoading(true);
-      const notifications = await fetchUserNotifications(user.uid);
-      setNotificationsRows(notifications);
-      setNotificationsLoading(false);
-      setIsHydrated(true);
-      setIsLoading(false);
     };
     void run();
   }, [user?.uid, user?.companyId]);

@@ -19,6 +19,7 @@ import {
   updateNotesToDisplayHtml,
 } from "@/lib/update-notes-utils";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { retryAsync } from "@/lib/load-retry";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -171,11 +172,14 @@ export default function ChangelogPage() {
     let cancelled = false;
     const loadReports = async () => {
       setReportsLoading(true);
-      const rows = await fetchAppReports();
-      if (!cancelled) {
-        setReports(rows);
-        setReportsLoading(false);
-        setReportVisibleCount(entriesPerPage);
+      try {
+        const rows = await retryAsync(() => fetchAppReports(), { attempts: 2, delayMs: 350 });
+        if (!cancelled) {
+          setReports(rows);
+          setReportVisibleCount(entriesPerPage);
+        }
+      } finally {
+        if (!cancelled) setReportsLoading(false);
       }
     };
     void loadReports();

@@ -26020,9 +26020,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   ]);
   if (isLoading) {
     return (
-      <Card>
-        <CardContent className="pt-5 text-sm text-[#475467]">Loading project...</CardContent>
-      </Card>
+      <div className="flex min-h-[70vh] items-center justify-center">
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 pt-5 text-sm text-[#475467]">
+            Loading project...
+            <div
+              className="h-9 w-9 animate-spin rounded-full border-[3px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+              role="status"
+              aria-label="Loading"
+            />
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 

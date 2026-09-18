@@ -20,7 +20,8 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // case, so keep showing the spinner instead of a blank page for that frame.
   if (isLoading || !user) {
     return (
-      <div className="flex h-[60vh] w-full items-center justify-center">
+      <div className="flex h-[60vh] w-full flex-col items-center justify-center gap-4">
+        <p className="text-sm font-semibold text-[var(--text-muted)]">Loading...</p>
         <div
           className="h-9 w-9 animate-spin rounded-full border-[3px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
           role="status"

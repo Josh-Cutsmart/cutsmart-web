@@ -7,6 +7,7 @@ import { auth, hasFirebaseConfig } from "@/lib/firebase";
 import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
+import { retryAsync } from "@/lib/load-retry";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
@@ -234,19 +235,26 @@ export default function HomePage() {
         typeof window !== "undefined"
           ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
           : "";
-      const companyId = await resolveCompanyIdForUid(
-        String(user.uid || "").trim(),
-        preferredCompanyId ? [preferredCompanyId] : [],
-      );
-      if (cancelled) return;
-      if (companyId) {
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
+      try {
+        const companyId = await retryAsync(
+          () => resolveCompanyIdForUid(String(user.uid || "").trim(), preferredCompanyId ? [preferredCompanyId] : []),
+          { attempts: 2, delayMs: 350 },
+        );
+        if (cancelled) return;
+        if (companyId) {
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(ACTIVE_COMPANY_STORAGE_KEY, companyId);
+          }
+          router.replace("/dashboard");
+          return;
         }
-        router.replace("/dashboard");
-        return;
+        router.replace("/company-onboarding");
+      } catch {
+        // A network/Firestore hiccup here used to leave "Opening your workspace..." on screen
+        // forever, since nothing ever called router.replace — sending them to the dashboard
+        // anyway (it does its own retried company resolution) beats an infinite loading screen.
+        if (!cancelled) router.replace("/dashboard");
       }
-      router.replace("/company-onboarding");
     };
     void routeRememberedUser();
     return () => {
@@ -276,6 +284,11 @@ export default function HomePage() {
           <p className="mt-2 text-[18px] font-semibold text-[#0F172A]">
             {user?.uid ? "Opening your workspace..." : "Checking saved sign-in..."}
           </p>
+          <div
+            className="mx-auto mt-4 h-9 w-9 animate-spin rounded-full border-[3px] border-[rgba(15,23,42,0.12)] border-t-[#2F6BFF]"
+            role="status"
+            aria-label="Loading"
+          />
         </div>
       </div>
     );
