@@ -7,10 +7,10 @@ import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import {
   CalendarDays,
+  ChevronRight,
   ImagePlus,
   Inbox,
   LayoutDashboard,
-  LogOut,
   PartyPopper,
   Plus,
   PlusCircle,
@@ -19,8 +19,6 @@ import {
   Tag,
   Trash2,
   Users,
-  UserCog,
-  X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -51,6 +49,7 @@ import {
   type NewProjectPrefillPayload,
 } from "@/lib/new-project-bridge";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
@@ -110,8 +109,6 @@ const topNav = [
   { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
 ];
-
-const bottomNav = [{ href: "/user-settings", label: "User Settings", icon: UserCog }];
 
 function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
   const target = String(key || "").trim().toLowerCase();
@@ -317,7 +314,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
-  const { chromeHidden, fillMainViewport, mobileNavOpen, setMobileNavOpen } = useAppTabs();
+  const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -377,17 +374,83 @@ export function AppShell({
   const [navHighlightRect, setNavHighlightRect] = useState<{ top: number; height: number } | null>(null);
   const navListRef = useRef<HTMLDivElement | null>(null);
   const navLinkRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
+  const mobileNavPanelRef = useRef<HTMLDivElement | null>(null);
+  // The page's own content wrapper (everything below the fixed global top bar) — pushed
+  // sideways in sync with the drawer's own slide so opening it reads as shoving the page over
+  // rather than just laying an overlay on top of static content underneath.
+  const mainPushRef = useRef<HTMLDivElement | null>(null);
+  const { shouldRender: shouldRenderMobileNav, touchHandlers: mobileNavTouchHandlers } = useSwipeToClose(
+    mobileNavOpen,
+    () => setMobileNavOpen(false),
+    mobileNavPanelRef,
+    { edge: "left", pushRef: mainPushRef },
+  );
   const [isUserSettingsPanelOpen, setIsUserSettingsPanelOpen] = useState(false);
   const desktopAsideRef = useRef<HTMLElement | null>(null);
   const bottomRestContentRef = useRef<HTMLDivElement | null>(null);
   const bottomPanelContentRef = useRef<HTMLDivElement | null>(null);
   const [restContentHeight, setRestContentHeight] = useState<number | null>(null);
   const [panelContentHeight, setPanelContentHeight] = useState<number | null>(null);
+  // Same rest-row/panel crossfade as the desktop sidebar's bottom section (shares
+  // isUserSettingsPanelOpen — only one of the two is ever actually mounted+visible at a time,
+  // gated by the same lg: breakpoint the drawer/sidebar split already uses), but with its own
+  // height measurements: the mobile drawer's full-screen flex column lets the surrounding nav
+  // list just shrink/scroll naturally via flex-1 as this section grows, so it doesn't need
+  // desktop's own slack/push-with-clearance math — plain flex reflow does the same job.
+  const mobileBottomRestRef = useRef<HTMLDivElement | null>(null);
+  const mobileBottomPanelRef = useRef<HTMLDivElement | null>(null);
+  const [mobileRestContentHeight, setMobileRestContentHeight] = useState<number | null>(null);
+  const [mobilePanelContentHeight, setMobilePanelContentHeight] = useState<number | null>(null);
+  // Depends on shouldRenderMobileNav (not just []) — the drawer (and these refs) only exist in
+  // the DOM once it's been opened at least once, so a mount-only effect would find them null on
+  // first render and never attach. Same lesson as the project page's header-height ResizeObserver
+  // elsewhere in this codebase.
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    const restEl = mobileBottomRestRef.current;
+    const panelEl = mobileBottomPanelRef.current;
+    if (!restEl || !panelEl) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = Math.ceil(entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
+        if (entry.target === restEl) setMobileRestContentHeight(height);
+        else if (entry.target === panelEl) setMobilePanelContentHeight(height);
+      }
+    });
+    observer.observe(restEl);
+    observer.observe(panelEl);
+    setMobileRestContentHeight(restEl.getBoundingClientRect().height);
+    setMobilePanelContentHeight(panelEl.getBoundingClientRect().height);
+    return () => observer.disconnect();
+  }, [shouldRenderMobileNav]);
   const [showUpdateNotice, setShowUpdateNotice] = useState(false);
   const [updateNoticeVersion, setUpdateNoticeVersion] = useState("");
   const [updateNoticeText, setUpdateNoticeText] = useState("");
   const [companyThemeColor, setCompanyThemeColor] = useState("#2F6BFF");
   const [companyLogoPath, setCompanyLogoPath] = useState("");
+  // Warms the browser's own image cache the moment the logo URL is known, rather than waiting
+  // for the mobile nav drawer to actually mount its own <img> the first time it's opened — the
+  // desktop sidebar's identical <img> (further down) doesn't help here since it's display:none
+  // on mobile (an ancestor's `hidden lg:flex`), which still skips the fetch in most browsers.
+  //
+  // A <link rel="preload"> element in <head>, not `new Image()`: a bare `new Image()` with
+  // nothing holding a reference to it is eligible for garbage collection while its request is
+  // still in flight, and at least Safari/WebKit can actually cancel the fetch when that happens
+  // instead of letting it finish in the background — which is exactly the "opens, then the logo
+  // pops in a few seconds later" symptom this was meant to fix. A <link> is a real, persistent
+  // DOM node (this effect holds the only reference, so it stays alive for as long as the
+  // component does), which every major browser recognizes as a dedicated preload hint.
+  useEffect(() => {
+    if (!companyLogoPath || typeof document === "undefined") return;
+    const link = document.createElement("link");
+    link.rel = "preload";
+    link.as = "image";
+    link.href = companyLogoPath;
+    document.head.appendChild(link);
+    return () => {
+      link.remove();
+    };
+  }, [companyLogoPath]);
   const [companyDisplayName, setCompanyDisplayName] = useState("");
   const [isZapierLeadsEnabled, setIsZapierLeadsEnabled] = useState(false);
   const [companyTagSuggestions, setCompanyTagSuggestions] = useState<string[]>([]);
@@ -995,6 +1058,7 @@ export function AppShell({
         return;
       }
       const origin = (e as CustomEvent<{ origin?: GlassModalOrigin }>).detail?.origin ?? null;
+      setAssigneeUid("");
       setNewProjectOrigin(origin);
       setShowNewProject(true);
     };
@@ -1085,10 +1149,9 @@ export function AppShell({
       } else {
         setStaffOptions([]);
       }
-      if (!assigneeUid && user?.uid) setAssigneeUid(user.uid);
     };
     void load();
-  }, [showNewProject, user?.companyId, user?.uid, assigneeUid, canCreateForOthers]);
+  }, [showNewProject, user?.companyId, user?.uid, canCreateForOthers]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -1139,7 +1202,9 @@ export function AppShell({
 
   useEffect(() => {
     if (typeof document === "undefined") return;
-    if (mobileNavOpen) {
+    // Tied to shouldRenderMobileNav (not the raw mobileNavOpen) so the page behind doesn't
+    // unlock and potentially jump while the drawer is still visibly sliding closed.
+    if (shouldRenderMobileNav) {
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = "";
@@ -1147,7 +1212,7 @@ export function AppShell({
     return () => {
       document.body.style.overflow = "";
     };
-  }, [mobileNavOpen]);
+  }, [shouldRenderMobileNav]);
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -1550,6 +1615,11 @@ export function AppShell({
     const onPointerDown = (event: MouseEvent) => {
       const targetNode = event.target as Node;
       if (desktopAsideRef.current?.contains(targetNode)) return;
+      // The mobile drawer's own sliding user-settings card is a second, separate instance of
+      // this same "inside" check — without it, any click inside the mobile panel (an edit
+      // button, a field, anything) reads as "outside" and immediately closes the panel it was
+      // just clicked in.
+      if (mobileNavPanelRef.current?.contains(targetNode)) return;
       const popoverEl = targetNode instanceof Element ? targetNode.closest('[data-sidebar-color-popover="true"]') : null;
       if (popoverEl) return;
       closeUserSettingsPanel();
@@ -1659,12 +1729,11 @@ export function AppShell({
     try {
       const projectId = createProjectId();
       const nowIso = new Date().toISOString();
-      const assignedName = canCreateForOthers
-        ? selectedAssignee?.name || user?.displayName || "Unassigned"
-        : user?.displayName || "Unassigned";
-      const assignedUid = canCreateForOthers
-        ? selectedAssignee?.uid || user?.uid || ""
-        : user?.uid || "";
+      // Leave blank rather than defaulting to the creator — an unassigned project should stay
+      // unassigned until someone deliberately assigns it, so every render site's "no assignee"
+      // fallback (creator's name/email/phone) actually has a chance to kick in.
+      const assignedName = canCreateForOthers ? selectedAssignee?.name || "" : "";
+      const assignedUid = canCreateForOthers ? selectedAssignee?.uid || "" : "";
       let uploadedImageUrls: string[] = [];
       const storageClient = storage;
       if (photos.length && storageClient) {
@@ -1934,27 +2003,38 @@ export function AppShell({
           from the drawer this hamburger opens (the sidebar's own New Project button) and from the
           project's tab close (X) respectively. */}
 
-      {!effectiveHideSidebar && mobileNavOpen && (
+      {!effectiveHideSidebar && shouldRenderMobileNav && (
         <div className="fixed inset-0 z-[120] lg:hidden">
           <button
             type="button"
+            data-swipe-backdrop="true"
             className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close menu backdrop"
           />
           <aside
-            className="relative z-[121] flex h-full w-[260px] flex-col overflow-hidden border-r"
+            ref={mobileNavPanelRef}
+            {...mobileNavTouchHandlers}
+            className="relative z-[121] flex h-full w-full flex-col overflow-hidden"
             style={{
-              backgroundColor: "var(--glass-bg-strong)",
-              backdropFilter: "blur(24px) saturate(180%)",
-              WebkitBackdropFilter: "blur(24px) saturate(180%)",
-              borderColor: "var(--glass-border)",
-              boxShadow: "var(--shadow-glass)",
+              backgroundColor: "var(--panel-bg)",
               color: shellPalette.text,
+              touchAction: "pan-y",
             }}
           >
-            <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
-              <div className="flex min-h-[44px] items-center">
+            {/* Alongside the swipe-to-close gesture — an explicit tap target in the corner the
+                drawer will retreat toward (right, since it slides back out to the left). */}
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(false)}
+              className="absolute right-3 top-3 z-10 inline-flex h-9 w-9 items-center justify-center rounded-[8px] border"
+              style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
+              aria-label="Close menu"
+            >
+              <ChevronRight size={18} />
+            </button>
+            <div className="flex items-center border-b border-[var(--panel-border)] px-4 py-3" style={{ borderColor: shellPalette.border }}>
+              <div className="flex min-h-[44px] w-full items-center">
                 {companyLogoPath ? (
                   <img
                     src={companyLogoPath}
@@ -1969,15 +2049,6 @@ export function AppShell({
                   <p className="text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
                 ) : null}
               </div>
-              <button
-                type="button"
-                onClick={() => setMobileNavOpen(false)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border text-[#475467]"
-                style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
-                aria-label="Close menu"
-              >
-                <X size={15} />
-              </button>
             </div>
 
             <div className="flex min-h-0 h-full flex-1 flex-col px-3 pb-3 pt-3">
@@ -1985,17 +2056,18 @@ export function AppShell({
                 <button
                   type="button"
                   onClick={(e) => {
+                    setAssigneeUid("");
                     setNewProjectOrigin(captureGlassModalOrigin(e));
                     setShowNewProject(true);
                     setMobileNavOpen(false);
                   }}
-                  className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+                  className="mb-3 flex h-14 w-full shrink-0 items-center justify-center gap-2 rounded-[12px] bg-[image:var(--brand-gradient)] text-[17px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
                 >
-                  <PlusCircle size={16} />
+                  <PlusCircle size={20} />
                   New Project
                 </button>
               )}
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1">
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
                 {visibleTopNav.map((item) => {
                   const active = pathname?.startsWith(item.href);
                   const Icon = item.icon;
@@ -2004,64 +2076,79 @@ export function AppShell({
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition",
+                        "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-semibold transition",
                         active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
                       )}
                       style={{
                         color: active ? "var(--brand)" : shellPalette.textMuted,
                       }}
                     >
-                      <Icon size={17} />
+                      <Icon size={22} />
                       {item.label}
                     </Link>
                   );
                 })}
               </div>
 
-              <div className="shrink-0 space-y-0.5 border-t border-[var(--panel-border)] pt-3" style={{ borderColor: shellPalette.border }}>
-                {bottomNav.map((item) => {
-                  const active = pathname?.startsWith(item.href);
-                  const Icon = item.icon;
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={cn(
-                        "flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition",
-                        active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
-                      )}
-                      style={{
-                        color: active ? "var(--brand)" : shellPalette.textMuted,
-                      }}
-                    >
-                      <Icon size={17} />
-                      {item.label}
-                    </Link>
-                  );
-                })}
-                <div className="mt-1 flex items-center gap-2 rounded-[10px] px-2 py-2 transition hover:bg-[var(--panel-muted)]">
+              {/* Same rest-row/panel crossfade as the desktop sidebar's bottom section — tapping
+                  the avatar row slides up SidebarUserSettingsPanel (which has its own cog button
+                  to the full /user-settings page), instead of a separate bottomNav link straight
+                  there. */}
+              <div
+                className="shrink-0 overflow-hidden border-t border-[var(--panel-border)]"
+                style={{
+                  borderColor: shellPalette.border,
+                  height: (isUserSettingsPanelOpen ? mobilePanelContentHeight : mobileRestContentHeight) ?? undefined,
+                  transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
+                }}
+              >
+                <div className="grid items-start">
                   <div
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
-                    style={{ backgroundColor: userEmblemColor }}
+                    ref={mobileBottomRestRef}
+                    className="pt-3"
+                    style={{
+                      gridArea: "1 / 1",
+                      opacity: isUserSettingsPanelOpen ? 0 : 1,
+                      pointerEvents: isUserSettingsPanelOpen ? "none" : "auto",
+                      transition: "opacity 200ms ease",
+                    }}
                   >
-                    {userInitials}
+                    <button
+                      type="button"
+                      onClick={openUserSettingsPanel}
+                      className="flex w-full items-center gap-3 rounded-[12px] px-3 py-3 text-left transition hover:bg-[var(--panel-muted)]"
+                      aria-label="Open user settings"
+                    >
+                      <div
+                        className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[14px] font-extrabold text-white"
+                        style={{ backgroundColor: userEmblemColor }}
+                      >
+                        {userInitials}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="m-0 block truncate text-[16px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
+                        {isDemoMode && (
+                          <span className="block truncate text-[12px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                        )}
+                      </div>
+                    </button>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</span>
-                    {isDemoMode && (
-                      <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-border)]"
-                    style={{ color: shellPalette.textMuted }}
-                    aria-label="Log out"
-                    title="Log out"
+                  <div
+                    ref={mobileBottomPanelRef}
+                    className="pt-3"
+                    style={{
+                      gridArea: "1 / 1",
+                      opacity: isUserSettingsPanelOpen ? 1 : 0,
+                      pointerEvents: isUserSettingsPanelOpen ? "auto" : "none",
+                      transition: "opacity 220ms ease",
+                    }}
                   >
-                    <LogOut size={14} />
-                  </button>
+                    <SidebarUserSettingsPanel
+                      isOpen={isUserSettingsPanelOpen}
+                      onRequestClose={closeUserSettingsPanel}
+                      onRequestLogout={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -2105,7 +2192,7 @@ export function AppShell({
           {canCreateProject && (
             <button
               type="button"
-              onClick={(e) => { setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
+              onClick={(e) => { setAssigneeUid(""); setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
               className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
             >
               <PlusCircle size={16} />
@@ -2232,6 +2319,7 @@ export function AppShell({
       </aside>
 
       <div
+        ref={mainPushRef}
         className={chromeHidden ? "min-w-0" : "min-w-0 pt-12"}
         style={{
           width: "100%",
@@ -2259,8 +2347,22 @@ export function AppShell({
             paddingLeft: chromeHidden ? 0 : "max(12px, env(safe-area-inset-left))",
             paddingRight: chromeHidden ? 0 : "max(12px, env(safe-area-inset-right))",
             paddingBottom: chromeHidden || isDesktopViewport ? 0 : "max(12px, env(safe-area-inset-bottom))",
+            // Lets a page (e.g. project details' sticky header) opt out of this
+            // element's own top padding entirely, so its sticky bars can sit flush
+            // at <main>'s top edge with zero gap on load — without needing a
+            // negative margin on any ancestor of a position:sticky element, which
+            // reproducibly froze the sticky element in place while everything else
+            // in the flow visually shifted.
+            paddingTop: !chromeHidden && reduceMainTopPadding ? 0 : undefined,
             marginLeft: "0",
             WebkitOverflowScrolling: "touch",
+            // <main> itself was fully transparent, relying on body's own fixed gradient
+            // background to show through everywhere, including its own reserved
+            // safe-area-inset-bottom padding on mobile — on at least one real device this reads
+            // as a flat grey band at the very bottom instead of the app's actual background,
+            // rather than the intended gradient. Giving it its own explicit background closes
+            // that gap regardless of the exact cause.
+            backgroundColor: "var(--bg-app)",
           }}
         >
           {/* height:100% is a no-op unless <main> itself has a definite height

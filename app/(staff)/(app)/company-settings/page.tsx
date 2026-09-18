@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Bell, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
+import { useAppTabs } from "@/lib/app-tabs-context";
 import {
   addUserNotification,
   createCompanyInviteDetailed,
@@ -1123,6 +1124,17 @@ function writeDrawerField(item: Record<string, unknown>, field: string, value: s
 
 export default function CompanySettingsPage() {
   const { user } = useAuth();
+  const { setReduceMainTopPadding } = useAppTabs();
+  // This page's own sticky header used a negative top margin on its ancestor to cancel <main>'s
+  // default top padding, which reproducibly froze the header at its unshifted (i.e. under the
+  // fixed global top bar) position on load instead of the intended flush-below-it start — the
+  // exact bug already diagnosed and fixed for project details (see that page's own comments).
+  // Opting out of <main>'s own top padding here directly, the same way, fixes it without a
+  // negative margin.
+  useEffect(() => {
+    setReduceMainTopPadding(true);
+    return () => setReduceMainTopPadding(false);
+  }, [setReduceMainTopPadding]);
   const searchParams = useSearchParams();
   const [active, setActive] = useState<SettingsSection>("company");
   useEffect(() => {
@@ -3021,7 +3033,7 @@ export default function CompanySettingsPage() {
           </div>
         ) : (
         <div
-          className="-mt-3 flex flex-col bg-transparent md:-mt-4 lg:-mt-4"
+          className="flex flex-col bg-transparent"
           style={{
             marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
             marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
@@ -3030,7 +3042,7 @@ export default function CompanySettingsPage() {
           <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between gap-3 px-4 md:px-5 lg:top-[48px]">
             <div className="flex items-center gap-2">
               <Settings size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-              <h1 className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Settings</h1>
+              <h1 className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Settings</h1>
             </div>
             <div className="flex items-center gap-2.5">
               <span
@@ -5378,7 +5390,7 @@ export default function CompanySettingsPage() {
                     <div data-specs-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
                       <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
                         <div className="inline-flex items-center gap-3">
-                          <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                          <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                             <ClipboardList size={14} />
                             <span>Specs Layout Builder</span>
                           </div>
@@ -5488,7 +5500,7 @@ export default function CompanySettingsPage() {
                     <div data-quote-layout-modal="true" className="fixed inset-0 z-[1000] flex flex-col bg-[var(--bg-app)]">
                       <div className="glass-page-header flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
                         <div className="inline-flex items-center gap-3">
-                          <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                          <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                             <ClipboardList size={14} />
                             <span>Quote Layout Builder</span>
                           </div>

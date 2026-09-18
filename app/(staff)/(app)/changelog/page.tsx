@@ -524,7 +524,7 @@ export default function ChangelogPage() {
             <div className="flex min-w-0 flex-wrap items-center gap-5">
               <div className="inline-flex min-w-0 items-center gap-2">
                 <Search size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-                <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                   Changelog
                 </p>
               </div>

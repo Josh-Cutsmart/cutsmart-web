@@ -3,8 +3,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
-import { Bell, LayoutDashboard, Menu, X } from "lucide-react";
+import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { useAuth } from "@/lib/auth-context";
@@ -17,18 +18,18 @@ import {
 
 const NOTIF_POLL_INTERVAL_MS = 50000;
 
+// Same "16 Sept 2026 | 8:57pm" shape as dashboardStyleDate elsewhere in the app (e.g. project
+// details' Created/Modified rows) — en-NZ's own short-month convention gives "Sept" rather than
+// the more common "Sep".
 function formatNotificationTime(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const diffMs = Date.now() - d.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "Just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+  const date = new Intl.DateTimeFormat("en-NZ", { day: "2-digit", month: "short", year: "numeric" }).format(d);
+  const time = new Intl.DateTimeFormat("en-NZ", { hour: "numeric", minute: "2-digit", hour12: true })
+    .format(d)
+    .toLowerCase()
+    .replace(" ", "");
+  return `${date} | ${time}`;
 }
 
 let pendingActiveAppTabKeyMemory = "";
@@ -71,6 +72,33 @@ export function GlobalAppTabsBar() {
   const notifDropdownRef = useRef<HTMLDivElement | null>(null);
   const notifUnreadCount = notifRows.filter((row) => !row.read).length;
   const [notifBellWobbleKey, setNotifBellWobbleKey] = useState(0);
+  // Matches app-shell.tsx's own breakpoint (min-width: 1024px) — below it, opening notifications
+  // shows a full-screen slide-out panel (same treatment as the mobile nav drawer) instead of the
+  // small anchored dropdown, which doesn't have room to work well at phone widths.
+  const [isDesktopViewport, setIsDesktopViewport] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setIsDesktopViewport(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  const mobileNotifPanelRef = useRef<HTMLDivElement | null>(null);
+  // This component lives outside AppShell's own tree (see app/(staff)/layout.tsx), so the page
+  // content it pushes in sync with the panel's slide has to be found by query rather than a
+  // ref passed down — <main> is the same element app-shell.tsx's own mobile nav drawer pushes.
+  const mainPushRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    mainPushRef.current = document.querySelector("main");
+  }, []);
+  const { shouldRender: shouldRenderMobileNotif, touchHandlers: mobileNotifTouchHandlers } = useSwipeToClose(
+    isNotifOpen && !isDesktopViewport,
+    () => setIsNotifOpen(false),
+    mobileNotifPanelRef,
+    { edge: "right", pushRef: mainPushRef },
+  );
   const [pendingActiveAppTabKey, setPendingActiveAppTabKey] = useState(pendingActiveAppTabKeyMemory);
   const [hiddenScopeKeys, setHiddenScopeKeys] = useState<string[]>([]);
   const [draggedGroupKey, setDraggedGroupKey] = useState("");
@@ -666,6 +694,49 @@ export function GlobalAppTabsBar() {
     return null;
   }
 
+  // Shared between the desktop anchored dropdown and the mobile full-screen panel — same rows,
+  // same click behavior, just presented inside a differently shaped container.
+  function renderNotifRows() {
+    if (notifRows.length === 0) {
+      return (
+        <p className="px-3 py-6 text-center text-[12px]" style={{ color: shellPalette.textMuted }}>
+          No notifications yet.
+        </p>
+      );
+    }
+    return notifRows.slice(0, 10).map((row) => (
+      <button
+        key={row.id}
+        type="button"
+        onMouseDown={handleAuxButtonMouseDown}
+        onClick={() => {
+          if (!user?.uid) return;
+          setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
+          void markUserNotificationRead(user.uid, row.id);
+          setIsNotifOpen(false);
+          if (row.projectId) {
+            router.push(`/projects/${row.projectId}`);
+          }
+        }}
+        className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
+        style={{
+          borderBottomColor: shellPalette.border,
+          backgroundColor: row.read ? "transparent" : "var(--brand-soft)",
+        }}
+      >
+        <p className="text-[12px] font-bold" style={{ color: shellPalette.text }}>
+          {row.title || "Notification"}
+        </p>
+        <p className="mt-[2px] truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
+          {row.message || ""}
+        </p>
+        <p className="mt-[2px] text-[10px]" style={{ color: shellPalette.textMuted }}>
+          {formatNotificationTime(row.createdAtIso)}
+        </p>
+      </button>
+    ));
+  }
+
   return (
     <>
       <div
@@ -674,7 +745,10 @@ export function GlobalAppTabsBar() {
           backgroundColor: shellPalette.stripBg,
           backdropFilter: "blur(12px) saturate(220%)",
           WebkitBackdropFilter: "blur(12px) saturate(220%)",
-          boxShadow: `inset 0 1px 0 ${shellPalette.stripHighlight}, var(--shadow-glass)`,
+          // No var(--shadow-glass) here — it's a downward drop-shadow (0 8px 32px) that bleeds
+          // into whatever sits directly below this fixed bar on every page, reading as a visible
+          // gap even when the content below is genuinely flush against it.
+          boxShadow: `inset 0 1px 0 ${shellPalette.stripHighlight}`,
           color: shellPalette.text,
         }}
       >
@@ -854,7 +928,7 @@ export function GlobalAppTabsBar() {
           ) : null}
         </div>
       </div>
-      {isNotifOpen && notifPos && typeof document !== "undefined"
+      {isNotifOpen && notifPos && isDesktopViewport && typeof document !== "undefined"
         ? createPortal(
             <div
               ref={notifDropdownRef}
@@ -891,45 +965,7 @@ export function GlobalAppTabsBar() {
                   Mark all read
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto">
-                {notifRows.length === 0 ? (
-                  <p className="px-3 py-6 text-center text-[12px]" style={{ color: shellPalette.textMuted }}>
-                    No notifications yet.
-                  </p>
-                ) : (
-                  notifRows.slice(0, 10).map((row) => (
-                    <button
-                      key={row.id}
-                      type="button"
-                      onMouseDown={handleAuxButtonMouseDown}
-                      onClick={() => {
-                        if (!user?.uid) return;
-                        setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
-                        void markUserNotificationRead(user.uid, row.id);
-                        setIsNotifOpen(false);
-                        if (row.projectId) {
-                          router.push(`/projects/${row.projectId}`);
-                        }
-                      }}
-                      className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
-                      style={{
-                        borderBottomColor: shellPalette.border,
-                        backgroundColor: row.read ? "transparent" : "var(--brand-soft)",
-                      }}
-                    >
-                      <p className="text-[12px] font-bold" style={{ color: shellPalette.text }}>
-                        {row.title || "Notification"}
-                      </p>
-                      <p className="mt-[2px] truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
-                        {row.message || ""}
-                      </p>
-                      <p className="mt-[2px] text-[10px]" style={{ color: shellPalette.textMuted }}>
-                        {formatNotificationTime(row.createdAtIso)}
-                      </p>
-                    </button>
-                  ))
-                )}
-              </div>
+              <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
               <button
                 type="button"
                 onMouseDown={handleAuxButtonMouseDown}
@@ -942,6 +978,76 @@ export function GlobalAppTabsBar() {
               >
                 View all
               </button>
+            </div>,
+            document.body,
+          )
+        : null}
+      {shouldRenderMobileNotif && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 z-[210] lg:hidden">
+              <button
+                type="button"
+                data-swipe-backdrop="true"
+                className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                onClick={() => setIsNotifOpen(false)}
+                aria-label="Close notifications backdrop"
+              />
+              <div
+                ref={mobileNotifPanelRef}
+                {...mobileNotifTouchHandlers}
+                className="relative ml-auto flex h-full w-full flex-col overflow-hidden"
+                style={{
+                  backgroundColor: "var(--panel-bg)",
+                  touchAction: "pan-y",
+                }}
+              >
+                <div
+                  className="flex shrink-0 items-center gap-3 border-b px-4 py-3"
+                  style={{ borderBottomColor: shellPalette.border }}
+                >
+                  {/* Alongside the swipe-to-close gesture — an explicit tap target in the corner
+                      the panel will retreat toward (left, since it slides back out to the right;
+                      mirrors the mobile nav drawer's own right-pointing close arrow). */}
+                  <button
+                    type="button"
+                    onClick={() => setIsNotifOpen(false)}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border"
+                    style={{ borderColor: shellPalette.border, backgroundColor: shellPalette.panelBg, color: shellPalette.textMuted }}
+                    aria-label="Close notifications"
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                  <p className="text-[14px] font-bold" style={{ color: shellPalette.text }}>
+                    Notifications
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center justify-end border-b px-4 py-2" style={{ borderBottomColor: shellPalette.border }}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!user?.uid) return;
+                      setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
+                      await setAllUserNotificationsRead(user.uid, true);
+                    }}
+                    className="text-[12px] font-bold transition-colors hover:opacity-80"
+                    style={{ color: "var(--brand)" }}
+                  >
+                    Mark all read
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNotifOpen(false);
+                    router.push("/company-settings?section=notifications");
+                  }}
+                  className="shrink-0 border-t px-4 py-3 text-center text-[12px] font-bold transition-colors hover:opacity-80"
+                  style={{ borderTopColor: shellPalette.border, color: "var(--brand)" }}
+                >
+                  View all
+                </button>
+              </div>
             </div>,
             document.body,
           )

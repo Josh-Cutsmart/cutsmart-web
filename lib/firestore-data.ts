@@ -331,12 +331,10 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     completedAtIso: toIsoString(data.completedAtIso ?? data.completedAt, "") || undefined,
     dueDate: String(data.dueDate ?? data.due ?? ""),
     estimatedSheets: Number(data.estimatedSheets ?? rows.length ?? 0),
-    assignedTo: String(
-      data.assignedTo ??
-        data.assignedToName ??
-        data.assignedName ??
-        "Unassigned",
-    ),
+    // No assignee stored → fall back to whoever created it, rather than the literal word
+    // "Unassigned" — a project always has a real point of contact even before someone
+    // deliberately assigns it to a specific staff member.
+    assignedTo: pickFirstString(data, ["assignedTo", "assignedToName", "assignedName"]) || createdByName || "Unknown",
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     notes,
     productionNotes,
@@ -2931,7 +2929,11 @@ export async function upsertCompanyClientProfileOnProjectCreate(input: {
     createdByName: String(input.createdByName || "").trim() || "Unknown",
     assignedToUid: String(input.assignedToUid || "").trim() || undefined,
     assignedToName: String(input.assignedToName || "").trim() || undefined,
-    assignedTo: String(input.assignedTo || "").trim() || "Unassigned",
+    assignedTo:
+      String(input.assignedTo || "").trim() ||
+      String(input.assignedToName || "").trim() ||
+      String(input.createdByName || "").trim() ||
+      "Unknown",
     status: "draft",
     statusLabel: String(input.statusLabel || "").trim() || "New",
     priority: "medium",

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronRight, RotateCcw, Search, Trash2, X } from "lucide-react";
+import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess } from "@/lib/membership";
 import {
@@ -335,6 +336,17 @@ function measureStatusPillWidth(options: string[]) {
 export default function RecentlyDeletedPage() {
   const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
   const { user } = useAuth();
+  const { restoreScope, setReduceMainTopPadding } = useAppTabs();
+  // This page's own sticky header used a negative top margin on its ancestor to cancel <main>'s
+  // default top padding, which reproducibly froze the header at its unshifted (i.e. under the
+  // fixed global top bar) position on load instead of the intended flush-below-it start — the
+  // exact bug already diagnosed and fixed for project details (see that page's own comments).
+  // Opting out of <main>'s own top padding here directly, the same way, fixes it without a
+  // negative margin.
+  useEffect(() => {
+    setReduceMainTopPadding(true);
+    return () => setReduceMainTopPadding(false);
+  }, [setReduceMainTopPadding]);
   const [search, setSearch] = useState("");
   const [deletedProjects, setDeletedProjects] = useState<Project[]>([]);
   const [deletedLeads, setDeletedLeads] = useState<CompanyLeadRow[]>([]);
@@ -612,6 +624,9 @@ export default function RecentlyDeletedPage() {
     setRestoringId(project.id);
     const ok = await restoreDeletedProject(project);
     if (ok) {
+      // Undoes the tab-bar suppression applied when this project was deleted (see onDeleteProject
+      // in projects/[projectId]/page.tsx) so reopening it can register a tab again.
+      restoreScope(`project:${project.id}`);
       setDeletedProjects((prev) => prev.filter((row) => row.id !== project.id));
       setConfirmRestoreId((prev) => (prev === project.id ? "" : prev));
       setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
@@ -731,7 +746,7 @@ export default function RecentlyDeletedPage() {
 
   return (
     <div
-      className="-mt-3 flex flex-col bg-transparent md:-mt-4 lg:-mt-4"
+      className="flex flex-col bg-transparent"
       style={{
         marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
         marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
@@ -740,7 +755,7 @@ export default function RecentlyDeletedPage() {
       <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 flex-wrap items-center justify-between gap-3 px-4 md:px-5 lg:top-[48px]">
         <div className="inline-flex min-w-0 items-center gap-2">
           <Trash2 size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-          <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+          <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             Recently Deleted
           </p>
           <span

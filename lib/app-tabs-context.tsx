@@ -37,6 +37,8 @@ type AppTabsContextValue = {
   setChromeHidden: (hidden: boolean) => void;
   fillMainViewport: boolean;
   setFillMainViewport: (fill: boolean) => void;
+  reduceMainTopPadding: boolean;
+  setReduceMainTopPadding: (reduce: boolean) => void;
   // Shared so GlobalAppTabsBar's mobile hamburger button (rendered as a sibling of AppShell, not
   // a child of it — see app/(staff)/layout.tsx) can open the same drawer AppShell owns and renders.
   mobileNavOpen: boolean;
@@ -79,6 +81,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
   const [fillMainViewport, setFillMainViewport] = useState(false);
+  const [reduceMainTopPadding, setReduceMainTopPadding] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const suppressedScopeKeysRef = useRef<Set<string>>(new Set());
   const suppressedTabKeysRef = useRef<Set<string>>(new Set());
@@ -415,6 +418,8 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setChromeHidden,
       fillMainViewport,
       setFillMainViewport,
+      reduceMainTopPadding,
+      setReduceMainTopPadding,
       mobileNavOpen,
       setMobileNavOpen,
     }),
@@ -423,6 +428,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       chromeHidden,
       closeTab,
       fillMainViewport,
+      reduceMainTopPadding,
       mobileNavOpen,
       registerScopeTabs,
       reorderGroupToIndex,

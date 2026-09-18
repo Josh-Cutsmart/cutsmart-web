@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, Check, ChevronDown, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -156,7 +156,7 @@ function dashboardStyleDate(value: string) {
   }
   const date = new Intl.DateTimeFormat("en-NZ", {
     day: "2-digit",
-    month: "long",
+    month: "short",
     year: "numeric",
   }).format(d);
   const time = new Intl.DateTimeFormat("en-NZ", {
@@ -2033,11 +2033,12 @@ function normalizeDoorSideValue(raw: unknown): "front" | "panel" {
   return String(raw ?? "").trim().toLowerCase() === "front" ? "front" : "panel";
 }
 
-function normalizeHingeSideValue(raw: unknown): "" | "LH" | "RH" | "Mirror" {
+function normalizeHingeSideValue(raw: unknown): "" | "LH" | "RH" | "Mirror" | "Top" {
   const value = String(raw ?? "").trim();
   const upper = value.toUpperCase();
   if (upper === "LH" || upper === "RH") return upper;
   if (upper === "MIRROR") return "Mirror";
+  if (upper === "TOP") return "Top";
   return "";
 }
 
@@ -5409,7 +5410,21 @@ export default function ProjectDetailsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
-  const { registerScopeTabs, tabs: globalWorkspaceTabs, setChromeHidden } = useAppTabs();
+  const {
+    registerScopeTabs,
+    suppressScope,
+    tabs: globalWorkspaceTabs,
+    setChromeHidden,
+    setReduceMainTopPadding,
+  } = useAppTabs();
+  // Lets this page's sticky header bars sit flush at <main>'s top edge with zero
+  // on-load gap, instead of relying on a negative margin on an ancestor of a
+  // position:sticky element (which reproducibly froze the sticky element in place
+  // while everything else in the flow visually shifted — see the header markup below).
+  useEffect(() => {
+    setReduceMainTopPadding(true);
+    return () => setReduceMainTopPadding(false);
+  }, [setReduceMainTopPadding]);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [project, setProject] = useState<Project | null>(null);
   const [changes, setChanges] = useState<ProjectChange[]>([]);
@@ -6003,6 +6018,15 @@ export default function ProjectDetailsPage() {
   const [isDeletingProjectFile, setIsDeletingProjectFile] = useState(false);
   const [isEditingClientDetails, setIsEditingClientDetails] = useState(false);
   const [isEditingNotes, setIsEditingNotes] = useState(false);
+  // General tab's Notes/Images/Files cards always show their full content box on desktop, even
+  // when empty (an earlier round here deliberately kept the header always visible rather than
+  // hiding empty containers entirely). On mobile specifically, an empty card instead collapses to
+  // just its header to save space, and tapping that header expands it back open — these three
+  // track that per-card expanded intent, only consulted once already-empty (a card with real
+  // content, or one currently being edited, always shows its content regardless of this).
+  const [isNotesExpandedMobile, setIsNotesExpandedMobile] = useState(false);
+  const [isImagesExpandedMobile, setIsImagesExpandedMobile] = useState(false);
+  const [isFilesExpandedMobile, setIsFilesExpandedMobile] = useState(false);
   const [isEditingProductionNotes, setIsEditingProductionNotes] = useState(false);
   const [isProductionNotesPanelOpen, setIsProductionNotesPanelOpen] = useState(false);
   const [isContractorsPanelOpen, setIsContractorsPanelOpen] = useState(false);
@@ -6196,33 +6220,78 @@ export default function ProjectDetailsPage() {
   const displayItemsRemovePendingItem = itemsRemovePendingItem ?? lastItemsRemovePendingItemRef.current;
   const salesItemsDragGhost = useDragGhost();
   const [notifyBellWobbleKey, setNotifyBellWobbleKey] = useState(0);
-  // The tab row's own sticky wrapper swaps in a compact "name only" strip (merged into the tab
-  // row itself, to its left) the moment that wrapper actually reaches its pinned position at the
-  // top of the viewport — so the shrink happens in the exact same instant it becomes stuck,
-  // reading as one seamless motion, rather than shrinking while it's still floating in its normal
-  // document position (which used to happen: this was previously measured against the real <h1>'s
-  // own position instead, which crosses the trigger point well before the sticky bar — sitting
-  // much further down the header, below Creator/Assigned and Created/Modified — ever reaches top:
-  // 48px itself, leaving a visible gap where the bar looked "shrunk but not yet stuck").
   const projectNameHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  // Row 1 (project name/tags + notifications/delete/status) is itself sticky and sticks
+  // immediately — the tab bar below it needs to know its actual rendered height (it varies: tags
+  // wrap, the add-tag input toggles) to sit its own `top` flush underneath, so this measures it
+  // live instead of guessing a fixed pixel value.
+  const [projectHeaderRowHeight, setProjectHeaderRowHeight] = useState(0);
+  const projectHeaderRowObserverRef = useRef<ResizeObserver | null>(null);
+  // A callback ref (not useRef + a mount-only useEffect) because this row only renders once
+  // `project` itself has loaded, i.e. on a LATER render pass than the component's initial mount —
+  // a `useEffect(..., [])` would find the ref still null at that point and never attach the
+  // observer at all, leaving projectHeaderRowHeight stuck at 0 forever (which is exactly what
+  // made the tab bar below stick flush against the title bar instead of underneath it — its own
+  // `top` was computed from this stuck-at-0 height). A callback ref instead fires every time the
+  // underlying DOM node actually changes, including this late first attach.
+  const projectHeaderRowRef = useCallback((el: HTMLDivElement | null) => {
+    if (projectHeaderRowObserverRef.current) {
+      projectHeaderRowObserverRef.current.disconnect();
+      projectHeaderRowObserverRef.current = null;
+    }
+    if (!el || typeof ResizeObserver === "undefined") return;
+    // Read via getBoundingClientRect() rather than trusting the ResizeObserver entry's own size
+    // fields (borderBoxSize support/shape is inconsistent across browsers, and contentRect
+    // excludes padding — either one under-measuring by even a few px reopens a visible gap
+    // between this row and the tab bar sitting flush underneath it). rect.height is unambiguous:
+    // full border-box height, padding included, margin excluded.
+    setProjectHeaderRowHeight(el.getBoundingClientRect().height);
+    const observer = new ResizeObserver(() => {
+      setProjectHeaderRowHeight(el.getBoundingClientRect().height);
+    });
+    observer.observe(el);
+    projectHeaderRowObserverRef.current = observer;
+  }, []);
   const projectStickyBarRef = useRef<HTMLDivElement | null>(null);
-  const [isProjectHeaderCompact, setIsProjectHeaderCompact] = useState(false);
+  // Matches app-shell.tsx's own breakpoint (min-width: 1024px) for whether <main> scrolls
+  // internally (below lg) or the window does (lg+) — see the sticky header's own comments.
+  const [isLgUpViewport, setIsLgUpViewport] = useState(false);
   useEffect(() => {
-    let ticking = false;
-    const STICKY_TOP_OFFSET = 48; // matches the fixed GlobalAppTabsBar height (h-12) the sticky tab row sits below
-    const checkScroll = () => {
-      ticking = false;
-      const barEl = projectStickyBarRef.current;
-      setIsProjectHeaderCompact(barEl ? barEl.getBoundingClientRect().top <= STICKY_TOP_OFFSET : false);
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setIsLgUpViewport(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  // Whether Row 1 is actually pinned in its stuck position right now — used only to show the
+  // divider line between it and the tab strip below while they're visually touching, not at rest
+  // (where Row 2 still sits between them).
+  //
+  // NOT based on Row 1's own getBoundingClientRect().top: its rest position and its stuck
+  // position are the SAME screen-absolute y (48) by design — this page deliberately removed
+  // <main>'s own top padding so Row 1 starts flush with zero on-load gap (see reduceMainTopPadding
+  // elsewhere in this file) — so a stuck-vs-rest comparison based on its own position can never
+  // tell the two apart; it read as permanently "stuck" and never cleared on scrolling back up.
+  // The real signal is simply whether the user has scrolled at all: Row 1 sticks on the very
+  // first pixel of scroll, so "stuck" and "scrolled off zero" are the same thing here. Checked
+  // against both possible scroll containers — window (desktop, where the window itself scrolls)
+  // and <main> (mobile, where it scrolls internally) — since only one applies at a time and the
+  // other stays at 0 regardless, so no breakpoint detection is needed to pick the right one.
+  const [isProjectHeaderStuck, setIsProjectHeaderStuck] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => {
+      const mainEl = document.querySelector("main");
+      setIsProjectHeaderStuck(window.scrollY > 0 || (mainEl ? mainEl.scrollTop > 0 : false));
     };
-    const onScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      window.requestAnimationFrame(checkScroll);
+    sync();
+    window.addEventListener("scroll", sync, true);
+    window.addEventListener("resize", sync);
+    return () => {
+      window.removeEventListener("scroll", sync, true);
+      window.removeEventListener("resize", sync);
     };
-    checkScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
   }, []);
   const [isDeleteProjectModalOpen, setIsDeleteProjectModalOpen] = useState(false);
   const [deleteProjectNameInput, setDeleteProjectNameInput] = useState("");
@@ -6329,6 +6398,11 @@ export default function ProjectDetailsPage() {
   const [productionNav, setProductionNav] = useState<ProductionNav>("overview");
   const [projectManagementChecklistTemplates, setProjectManagementChecklistTemplates] = useState<ChecklistTemplate[]>([]);
   const [isAddChecklistMenuOpen, setIsAddChecklistMenuOpen] = useState(false);
+  const [isQuickAssignOpen, setIsQuickAssignOpen] = useState(false);
+  const [quickAssignRect, setQuickAssignRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [quickAssignSearch, setQuickAssignSearch] = useState("");
+  const quickAssignButtonRef = useRef<HTMLButtonElement | null>(null);
+  const quickAssignMenuRef = useRef<HTMLDivElement | null>(null);
   const [projectLiveTabs, setProjectLiveTabs] = useState<ProjectLiveTabRecord[]>([]);
   const [activeProjectLiveTabId, setActiveProjectLiveTabId] = useState("");
   const lastSyncedLiveTabIdRef = useRef<string>("");
@@ -6690,6 +6764,11 @@ export default function ProjectDetailsPage() {
       event.preventDefault();
       void handlers.commit().then(() => {
         handlers.start(nextRow, nextKey);
+        // The newly-active cell's input mounts (and focuses itself) on the next render, so the
+        // scroll has to wait a beat rather than running synchronously here.
+        window.setTimeout(() => {
+          (document.activeElement as HTMLElement | null)?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        }, 60);
       });
     };
     document.addEventListener("keydown", onKeyDown);
@@ -8188,10 +8267,7 @@ export default function ProjectDetailsPage() {
       left: buttonRect.left - containerRect.left,
       width: buttonRect.width,
     });
-    // isProjectHeaderCompact is included so the underline re-measures (and smoothly re-slides,
-    // via its own existing left/width transition below) when the tab strip shrinks/grows into or
-    // out of its sticky compact size, instead of staying sized for whichever state it last saw.
-  }, [resolvedTab, tabItemsWithAccess, isProjectHeaderCompact]);
+  }, [resolvedTab, tabItemsWithAccess]);
 
   // The slide itself (projectTabSlideAnimation, on the outer wrapper below) is untouched — this
   // is a second, separate animation on top of it. Every glass "container" (<section>) plus that
@@ -12405,6 +12481,34 @@ export default function ProjectDetailsPage() {
   };
 
   useEffect(() => {
+    if (!isQuickAssignOpen) {
+      setQuickAssignSearch("");
+      return;
+    }
+    const refreshRect = () => {
+      if (!quickAssignButtonRef.current) return;
+      const r = quickAssignButtonRef.current.getBoundingClientRect();
+      setQuickAssignRect({ left: r.left, top: r.bottom + 6, width: r.width });
+    };
+    refreshRect();
+    const onDocDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const inButton = Boolean(quickAssignButtonRef.current?.contains(target));
+      const inMenu = Boolean(quickAssignMenuRef.current?.contains(target));
+      if (!inButton && !inMenu) setIsQuickAssignOpen(false);
+    };
+    document.addEventListener("mousedown", onDocDown);
+    window.addEventListener("resize", refreshRect);
+    window.addEventListener("scroll", refreshRect, true);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      window.removeEventListener("resize", refreshRect);
+      window.removeEventListener("scroll", refreshRect, true);
+    };
+  }, [isQuickAssignOpen]);
+
+  useEffect(() => {
     if (!(resolvedTab === "sales" && salesAccess.view && salesNav === "quote")) return;
     const activeProject = projectRef.current;
     if (!activeProject) return;
@@ -16061,6 +16165,10 @@ export default function ProjectDetailsPage() {
     setIsDeleting(true);
     const ok = await softDeleteProject(project);
     if (ok) {
+      // Clears this project's entry (and any of its open sub-tabs) from the global top tab bar
+      // immediately, rather than leaving a stale tab pointing at a project that's now in Recently
+      // Deleted — it would otherwise 404 if clicked before the tab bar's own state catches up.
+      suppressScope(`project:${project.id}`);
       router.push("/dashboard");
       return;
     }
@@ -17545,14 +17653,21 @@ export default function ProjectDetailsPage() {
           width: subIsDrawer ? mainRow.width : "",
         });
       }
+      // Land after any sub-parts this main row already has, not always right after the main row
+      // itself — otherwise a newly added sub part would bump the existing ones down instead of
+      // taking its place below them.
+      let insertIndex = mainIndex + 1;
+      while (insertIndex < prev.length && subPartDraftRowIds.has(prev[insertIndex].id)) {
+        insertIndex += 1;
+      }
       setSubPartDraftRowIds((prevIds) => {
         const nextIds = new Set(prevIds);
         nextIds.add(subPart.id);
         return nextIds;
       });
-      setCutlistCompactDraftDeckIndex(mainIndex + 1);
+      setCutlistCompactDraftDeckIndex(insertIndex);
       const next = [...prev];
-      next.splice(mainIndex + 1, 0, subPart);
+      next.splice(insertIndex, 0, subPart);
       return next;
     });
   };
@@ -17674,14 +17789,21 @@ export default function ProjectDetailsPage() {
         doorFrontQuantities: Array.from({ length: n }, () => "1"),
         doorFrontQuantityManual: Array.from({ length: n }, () => true),
       };
+      // Land after any sub-parts this main row already has, not always right after the main row
+      // itself — otherwise a newly added sub part would bump the existing ones down instead of
+      // taking its place below them.
+      let insertIndex = mainIndex + 1;
+      while (insertIndex < prev.length && subPartDraftRowIds.has(prev[insertIndex].id)) {
+        insertIndex += 1;
+      }
       setSubPartDraftRowIds((prevIds) => {
         const nextIds = new Set(prevIds);
         nextIds.add(subPart.id);
         return nextIds;
       });
-      setCutlistCompactDraftDeckIndex(mainIndex + 1);
+      setCutlistCompactDraftDeckIndex(insertIndex);
       const next = [...prev];
-      next.splice(mainIndex + 1, 0, subPart);
+      next.splice(insertIndex, 0, subPart);
       return next;
     });
   };
@@ -20329,7 +20451,7 @@ export default function ProjectDetailsPage() {
   // Same direct-persist pattern as commitDoorHingeValue, for the door's hinge-side (LH/RH) picker
   // that sits alongside the hinge position textboxes — independent of the shared editingCell
   // machinery since it's a single standalone field, not a whole cell's worth.
-  const commitDoorHingeSideValue = async (rowId: string, value: "" | "LH" | "RH" | "Mirror") => {
+  const commitDoorHingeSideValue = async (rowId: string, value: "" | "LH" | "RH" | "Mirror" | "Top") => {
     const nextRows = cutlistRows.map((r) => (r.id === rowId ? { ...r, hingeSide: value } : r));
     setCutlistRows(nextRows);
     await persistCutlistRows(nextRows);
@@ -21104,8 +21226,8 @@ export default function ProjectDetailsPage() {
     onCommit?: () => void;
     tall?: boolean;
     hideGroupLabel?: boolean;
-    hingeSide?: "" | "LH" | "RH" | "Mirror";
-    onHingeSideChange?: (value: "" | "LH" | "RH" | "Mirror") => void;
+    hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top";
+    onHingeSideChange?: (value: "" | "LH" | "RH" | "Mirror" | "Top") => void;
   }) => (
     <div className={`grid w-full min-w-0 content-center gap-[2px] text-left ${tall ? "min-h-[72px] text-[10px]" : "min-h-[40px] text-[9px]"}`}>
       {!hideGroupLabel || onHingeSideChange ? (
@@ -21118,9 +21240,9 @@ export default function ProjectDetailsPage() {
           {onHingeSideChange ? (
             <GlassSelectDropdown
               value={hingeSide ?? ""}
-              options={["", "LH", "RH", "Mirror"]}
+              options={["", "LH", "RH", "Mirror", "Top"]}
               disabled={disabled}
-              onChange={(v) => onHingeSideChange(v as "" | "LH" | "RH" | "Mirror")}
+              onChange={(v) => onHingeSideChange(v as "" | "LH" | "RH" | "Mirror" | "Top")}
               className={`${tall ? "h-6 text-[11px]" : "h-[18px] text-[9px]"} shrink-0 rounded-[5px] border px-1 font-bold`}
               style={{ backgroundColor: bg, borderColor: border, color: text }}
             />
@@ -21132,7 +21254,7 @@ export default function ProjectDetailsPage() {
         return (
           <div key={`hinge_${direction}`} className="flex items-center gap-[3px] whitespace-nowrap">
             <span className={`inline-flex shrink-0 items-center justify-end font-bold leading-none ${tall ? "w-[54px] text-[11px]" : "w-[42px]"}`} style={{ color: "#111111" }}>
-              {direction === "up" ? "Up" : "Down"}
+              {hingeSide === "Top" ? (direction === "up" ? "LH" : "RH") : (direction === "up" ? "Up" : "Down")}
             </span>
             <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
               {values.map((value, index) => {
@@ -21176,13 +21298,13 @@ export default function ProjectDetailsPage() {
     </div>
   );
 
-  const renderDoorHingeDisplay = (upValues: string[], downValues: string[]) => (
+  const renderDoorHingeDisplay = (upValues: string[], downValues: string[], hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top") => (
     <div className="grid min-h-[40px] w-full min-w-0 content-center gap-[2px] text-left text-[9px]">
       <div className="flex items-center gap-[3px] whitespace-nowrap">
         <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none text-[#000000]">
           Hinges
         </span>
-        <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none">Up</span>
+        <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "LH" : "Up"}</span>
         <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
           {normalizeDoorHingeValues(upValues).length > 0
             ? normalizeDoorHingeValues(upValues).map((value, index) => (
@@ -21195,7 +21317,7 @@ export default function ProjectDetailsPage() {
       </div>
       <div className="flex items-center gap-[3px] whitespace-nowrap">
         <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none"></span>
-        <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none">Down</span>
+        <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none">{hingeSide === "Top" ? "RH" : "Down"}</span>
         <div className="flex min-w-0 flex-1 flex-nowrap gap-[4px] overflow-visible">
           {normalizeDoorHingeValues(downValues).length > 0
             ? normalizeDoorHingeValues(downValues).map((value, index) => (
@@ -21291,17 +21413,17 @@ export default function ProjectDetailsPage() {
           <span className="inline-flex w-[42px] shrink-0 items-center justify-end text-[11px] font-bold leading-none text-[#000000]">Hinges</span>
           <GlassSelectDropdown
             value={row.hingeSide ?? ""}
-            options={["", "LH", "RH", "Mirror"]}
-            onChange={(v) => void commitDoorHingeSideValue(row.id, v as "" | "LH" | "RH" | "Mirror")}
+            options={["", "LH", "RH", "Mirror", "Top"]}
+            onChange={(v) => void commitDoorHingeSideValue(row.id, v as "" | "LH" | "RH" | "Mirror" | "Top")}
             className="h-[16px] rounded-[4px] border border-[#94A3B8] bg-white px-1 text-[9px] font-bold text-[#000000]"
           />
         </div>
         <div className="flex items-center gap-[3px] whitespace-nowrap">
-          <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">Up</span>
+          <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "LH" : "Up"}</span>
           {renderGroup("up", row.hingesUp ?? [])}
         </div>
         <div className="flex items-center gap-[3px] whitespace-nowrap">
-          <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">Down</span>
+          <span className="inline-flex w-[42px] shrink-0 items-center justify-end font-bold leading-none text-[#000000]">{row.hingeSide === "Top" ? "RH" : "Down"}</span>
           {renderGroup("down", row.hingesDown ?? [])}
         </div>
       </div>
@@ -23782,6 +23904,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       const focusFirstFocusable = (root: HTMLElement) => {
         const target = root.matches(FOCUSABLE_SELECTOR) ? root : root.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
         target?.focus();
+        target?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
       };
 
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -23888,6 +24011,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       event.preventDefault();
       void commitCellEdit().then(() => {
         startCellEdit(nextRow, nextKey);
+        // The newly-active cell's input mounts (and focuses itself) on the next render, so the
+        // scroll has to wait a beat rather than running synchronously here.
+        window.setTimeout(() => {
+          (document.activeElement as HTMLElement | null)?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        }, 60);
       });
     };
     document.addEventListener("keydown", onKeyDown);
@@ -28655,11 +28783,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     })
     .filter((row) => row.hasAnyValue);
   const orderTotalSheetsRequired = orderBoardSummary.reduce((sum, row) => sum + row.sheetsRequired, 0);
-  const orderDrawerRows = cutlistRows.filter((row) => isDrawerPartType(row.partType));
-  const orderDrawerQtyTotal = orderDrawerRows.reduce(
-    (sum, row) => sum + Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0),
-    0,
-  );
+  // Sub-part rows (subPartDraftRowIds) are nested UNDER a parent row in the cutlist — a Drawer
+  // part-type row can itself carry its own drawer sub-rows, which would otherwise get summed a
+  // second time on top of their parent's own height-column tokens.
+  const orderDrawerRows = cutlistRows.filter((row) => isDrawerPartType(row.partType) && !subPartDraftRowIds.has(row.id));
   const orderDrawerGroupedRows = (() => {
     type Group = {
       key: string;
@@ -28674,9 +28801,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const groups: Record<string, Group> = {};
 
     for (const row of orderDrawerRows) {
-      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
-      if (qty <= 0) continue;
-
       const depthVal = toNum(row.depth);
       let hardwareDepthLabel = "-";
       if (depthVal > 0) {
@@ -28720,7 +28844,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             total: 0,
           };
         }
-        groups[groupKey].total += perDrawerQty * qty;
+        // Not multiplied by row.quantity: for a Drawer row, quantity is auto-derived to equal
+        // the height field's own token count (see the cutlistEntry sync effect elsewhere in
+        // this file — the quantity input is disabled/read-only for drawer rows for exactly this
+        // reason) — "D, D, M" already lists 3 individual drawers directly, one entry each.
+        // Multiplying by quantity on top of that double counts every drawer in the row.
+        groups[groupKey].total += perDrawerQty;
       }
     }
 
@@ -28735,6 +28864,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         return a.backHeight.localeCompare(b.backHeight);
       });
   })();
+  const orderDrawerQtyTotal = orderDrawerGroupedRows.reduce((sum, group) => sum + group.total, 0);
   const orderSelectedHardwareCategoryKey = String(
     productionForm.hardware.hardwareCategory || defaultHardwareCategory(),
   )
@@ -32075,11 +32205,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
-            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ShoppingCart size={14} />
               <span>Order</span>
-              <span style={{ color: projectPalette.textMuted }}>|</span>
-              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
+              <span style={{ color: "var(--text-muted)" }}>|</span>
+              <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <button
               type="button"
@@ -32674,38 +32804,40 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Cutlist Entry</p>
                   </div>
                   <div className="space-y-3 px-0 pb-0">
-                    <div className="flex flex-wrap items-center gap-2 rounded-[8px] px-1">
-                      {initialMeasurePartTypeOptions.map((v) => {
-                        const color = partTypeColors[v] ?? "#CBD5E1";
-                        return (
-                          <button
-                            key={`im_pt_full_${v}`}
-                            type="button"
-                            disabled={salesReadOnly}
-                            onClick={() => addInitialDraftRowForPartType(v)}
-                            style={{
-                              backgroundColor: color,
-                              borderColor: color,
-                              color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                            }}
-                            className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                    <div className="glass-page-header sticky top-0 z-[500] space-y-2 px-1 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {initialMeasurePartTypeOptions.map((v) => {
+                          const color = partTypeColors[v] ?? "#CBD5E1";
+                          return (
+                            <button
+                              key={`im_pt_full_${v}`}
+                              type="button"
+                              disabled={salesReadOnly}
+                              onClick={() => addInitialDraftRowForPartType(v)}
+                              style={{
+                                backgroundColor: color,
+                                borderColor: color,
+                                color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                              }}
+                              className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                            >
+                              {v}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: "var(--text-muted)" }}>
+                        <p></p>
+                        {initialCutlistEntryColumnDefs.map((col) => (
+                          <p
+                            key={`im_entry_full_header_${col.key}`}
+                            className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                            style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
                           >
-                            {v}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: "var(--text-muted)" }}>
-                      <p></p>
-                      {initialCutlistEntryColumnDefs.map((col) => (
-                        <p
-                          key={`im_entry_full_header_${col.key}`}
-                          className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                          style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
-                        >
-                          {col.key === "clashing" ? (initialDraftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
-                        </p>
-                      ))}
+                            {col.key === "clashing" ? (initialDraftEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                          </p>
+                        ))}
+                      </div>
                     </div>
                     <div className="space-y-1">
                       {initialCutlistDraftRows.map((draft) => {
@@ -33593,7 +33725,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     <div className="space-y-3 pt-3">
                       {(
-                        <div className="flex flex-wrap items-center gap-2 pb-3">
+                        <div className="glass-page-header sticky top-0 z-[500] flex flex-wrap items-center gap-2 px-1 py-2">
                           {partTypeOptions.map((v) => {
                             const color = partTypeColors[v] ?? "#CBD5E1";
                             return (
@@ -35584,52 +35716,53 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
                 <div className="space-y-3 px-0 pb-0">
                   {(
-                    <div className="flex flex-wrap items-center gap-2 px-1">
-                      {partTypeOptions.map((v) => {
-                        const color = partTypeColors[v] ?? "#CBD5E1";
-                        return (
-                          <button
-                            key={v}
-                            type="button"
-                            disabled={productionReadOnly}
-                            onClick={(e) => {
-                              if (isDoorPartType(v)) {
-                                setDrawerBankCountDraft("3");
-                                setDoorDrawerPickerStep("choose");
-                                setDoorDrawerPickerSuggestedMode("");
-                                setDoorDrawerPickerMainRowId("");
-                                setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
-                                setDoorDrawerPickerPartType(v);
-                                return;
-                              }
-                              addDraftRowForPartType(v);
-                            }}
-                            style={{
-                              backgroundColor: color,
-                              borderColor: color,
-                              color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                            }}
-                            className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                    <div className="glass-page-header sticky top-[56px] z-[500] space-y-2 px-1 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {partTypeOptions.map((v) => {
+                          const color = partTypeColors[v] ?? "#CBD5E1";
+                          return (
+                            <button
+                              key={v}
+                              type="button"
+                              disabled={productionReadOnly}
+                              onClick={(e) => {
+                                if (isDoorPartType(v)) {
+                                  setDrawerBankCountDraft("3");
+                                  setDoorDrawerPickerStep("choose");
+                                  setDoorDrawerPickerSuggestedMode("");
+                                  setDoorDrawerPickerMainRowId("");
+                                  setDoorDrawerPickerOrigin(captureGlassModalOrigin(e));
+                                  setDoorDrawerPickerPartType(v);
+                                  return;
+                                }
+                                addDraftRowForPartType(v);
+                              }}
+                              style={{
+                                backgroundColor: color,
+                                borderColor: color,
+                                color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                              }}
+                              className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                            >
+                              {v}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: "var(--text-muted)" }}>
+                        <p></p>
+                        {cutlistEntryColumnDefs.map((col) => (
+                          <p
+                            key={`draft_header_${col.key}`}
+                            className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                            style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
                           >
-                            {v}
-                          </button>
-                        );
-                      })}
+                              {col.label}
+                          </p>
+                        ))}
+                      </div>
                     </div>
                   )}
-
-                  <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: "var(--text-muted)" }}>
-                    <p></p>
-                    {cutlistEntryColumnDefs.map((col) => (
-                      <p
-                        key={`draft_header_${col.key}`}
-                        className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                        style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
-                      >
-                          {col.label}
-                      </p>
-                    ))}
-                  </div>
                   {(
                   <div className="space-y-1">
                       {visibleCutlistDraftRowGroups.map((rowGroup) => {
@@ -37481,6 +37614,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                         ? renderDoorHingeDisplay(
                                             normalizeDoorHingeValues(row.hingesUp),
                                             normalizeDoorHingeValues(row.hingesDown),
+                                            row.hingeSide,
                                           )
                                         : renderDoorHingeInteractive(row)}
                                     </td>
@@ -39196,7 +39330,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
-            <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ClipboardList size={14} />
               <span>Items</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
@@ -39280,7 +39414,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-3">
-              <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Quote size={14} />
                 <span>Quote</span>
                 <span style={{ color: "var(--text-muted)" }}>|</span>
@@ -40228,7 +40362,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-3">
-              <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <ClipboardList size={14} />
                 <span>Specifications</span>
                 <span style={{ color: "var(--text-muted)" }}>|</span>
@@ -41023,7 +41157,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           />
           <div className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5" style={{ color: "var(--text-main)" }}>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ArrowLeftRight size={14} />
               <span>Product Compare</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
@@ -41725,11 +41859,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between gap-3 px-3 md:px-5"
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: projectPalette.border }} />
-            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+            <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <GitBranch size={14} />
               <span>Nesting</span>
-              <span style={{ color: projectPalette.textMuted }}>|</span>
-              <span className="truncate" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</span>
+              <span style={{ color: "var(--text-muted)" }}>|</span>
+              <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <button
@@ -42961,21 +43095,72 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
+  /* No space-y-4 here — every tab-content variant further down already self-manages its own top
+     spacing via its own -mt-4 (see e.g. line ~43577's projectTabContentRef div), so this
+     container never actually needed it; the header pieces (sticky name bar / notify row / tab
+     bar) are direct children here, flat.
+
+     Deliberately NO negative top margin anywhere in the ancestor chain above the sticky bars.
+     Tried repeatedly: a negative margin ANYWHERE above a position:sticky descendant — on this
+     div directly, or on a separate wrapper around just the sticky bar — reproducibly froze the
+     sticky bar at its unshifted layout position while everything else in the flow visually
+     shifted up as if the margin had applied normally to them, breaking sticky entirely. Instead,
+     this page opts out of <main>'s own top padding directly at the source (AppTabsContext's
+     reduceMainTopPadding flag, set true on mount just above — see app-shell.tsx's <main> style),
+     so the sticky bars start flush with zero gap on load without touching any ancestor margin. */
   return (
-        <div className="space-y-4">
+        <div>
+          {/* Row 1 (project name/tags left, notifications/delete/status right) is its own sticky
+              bar — sticks immediately (top-0/lg:top-12, same split as the tab bar further below,
+              for the same reason: <main> scrolls internally on mobile and its wrapper already
+              reserves the fixed GlobalAppTabsBar's 48px via padding, so top-12 there would
+              double-reserve it; at lg+ the window scrolls and does need the full 48px). Its
+              rendered height is measured (projectHeaderRowRef) since it varies — tags wrap, the
+              add-tag input toggles — so the tab bar below can sit flush underneath it exactly,
+              whatever that height actually is. */}
           <div
-            className="-mx-4 -mt-4 md:-mx-5"
+            ref={projectHeaderRowRef}
+            className="glass-page-header sticky top-0 z-[31] -mx-4 px-4 py-[10px] md:-mx-5 md:px-5 lg:top-12"
             style={{
-              marginBottom: 0,
-              backgroundColor: isDarkMode ? "#1c1c1e" : "#F0F2F6",
-              boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}, var(--shadow-glass)`,
+              // A deliberate divider (not an attempt to hide a seam) between this bar and the tab
+              // strip below, shown only once the two are actually touching — i.e. once Row 1 is
+              // pinned in its stuck position (isProjectHeaderStuck). At rest, Row 2 still sits
+              // between them, so this stays off there rather than drawing a line above Row 2.
+              borderBottom: isProjectHeaderStuck
+                ? `1px solid ${isDarkMode ? "rgba(255,255,255,0.08)" : "var(--glass-border)"}`
+                : "none",
+              // No var(--shadow-glass) here — it's a downward drop-shadow (0 8px 32px) that
+              // visually bled into the space below this bar, reading as a gap even once the
+              // actual layout gap was fully closed.
+              boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.55)"}`,
             }}
           >
-          <div className="border-b" style={{ borderBottomColor: "var(--glass-border)" }}>
-            <div className="px-4 pb-[10px] pt-4 md:px-5">
-            {/* Row 1: project name/tags (left) — notifications/delete/status (right) */}
-            <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-start md:gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0 flex flex-wrap items-center gap-2">
+                {project && user?.uid ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!project || !user?.uid) return;
+                      const uid = user.uid;
+                      const next = !isProjectNotifySubscribed(project, uid);
+                      setProject((prev) =>
+                        prev
+                          ? { ...prev, notifySubscriptionOverrides: { ...(prev.notifySubscriptionOverrides ?? {}), [uid]: next } }
+                          : prev,
+                      );
+                      void updateProjectPatch(project, { [`notifySubscriptionOverrides.${uid}`]: next });
+                      setNotifyBellWobbleKey((prev) => prev + 1);
+                    }}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] transition hover:opacity-75"
+                    style={{ color: "var(--text-main)" }}
+                    title={isProjectNotifySubscribed(project, user.uid) ? "Notifications on for this project" : "Notifications off for this project"}
+                  >
+                    <span key={notifyBellWobbleKey} className="inline-flex bell-wobble">
+                      <Bell size={15} fill={isProjectNotifySubscribed(project, user.uid) ? "currentColor" : "none"} />
+                    </span>
+                  </button>
+                ) : null}
                 <h1 ref={projectNameHeadingRef} className="text-[32px] font-medium leading-none md:text-[42px]" style={{ color: projectPalette.text }}>{project.name}</h1>
                   {projectTags.map((tag) => {
                     const isArmed = pendingDeleteTag === tag;
@@ -43102,32 +43287,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </>
                   )}
                 </div>
-
-              <div className="flex items-center gap-2 md:justify-end">
-                  {project && user?.uid ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!project || !user?.uid) return;
-                        const uid = user.uid;
-                        const next = !isProjectNotifySubscribed(project, uid);
-                        setProject((prev) =>
-                          prev
-                            ? { ...prev, notifySubscriptionOverrides: { ...(prev.notifySubscriptionOverrides ?? {}), [uid]: next } }
-                            : prev,
-                        );
-                        void updateProjectPatch(project, { [`notifySubscriptionOverrides.${uid}`]: next });
-                        setNotifyBellWobbleKey((prev) => prev + 1);
-                      }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] transition hover:opacity-75"
-                      style={{ color: "var(--text-main)" }}
-                      title={isProjectNotifySubscribed(project, user.uid) ? "Notifications on for this project" : "Notifications off for this project"}
-                    >
-                      <span key={notifyBellWobbleKey} className="inline-flex bell-wobble">
-                        <Bell size={15} fill={isProjectNotifySubscribed(project, user.uid) ? "currentColor" : "none"} />
-                      </span>
-                    </button>
-                  ) : null}
+                <div className="hidden shrink-0 items-center gap-2 md:flex">
                   <button
                     type="button"
                     onClick={(e) => {
@@ -43136,12 +43296,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       setIsDeleteProjectModalOpen(true);
                     }}
                     disabled={isDeleting || !canDeleteProject}
-                    className="h-8 rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--danger-border)",
-                      backgroundColor: "var(--danger-soft)",
-                      color: "var(--danger-strong)",
-                    }}
+                    className="h-8 rounded-[10px] border px-4 text-[12px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                   >
                     Delete
                   </button>
@@ -43235,7 +43391,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         width: menuWidth,
                       });
                     }}
-                    className="inline-flex h-8 min-w-[90px] items-center justify-center rounded-[10px] px-3 text-[12px] font-bold"
+                    className="hidden h-8 min-w-[90px] items-center justify-center rounded-[10px] px-3 text-[12px] font-bold md:inline-flex"
                     style={projectStatusPillStyle(project.statusLabel || "New")}
                     aria-disabled={isSavingStatus || !canEditStatus}
                     aria-label="Project status"
@@ -43243,15 +43399,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     {isSavingStatus ? "Saving..." : project.statusLabel || "New"}
                   </button>
+                </div>
               </div>
-            </div>
+          </div>
 
-            {/* Row 2: Creator/Assigned (left) — Created/Modified (right). Stays in this same
-                non-sticky header block (unlike the tab strip below), so it always scrolls away
-                normally and never sticks. */}
-            <div className="flex flex-col items-start justify-between gap-3 pt-3 md:flex-row md:items-start md:gap-4">
-              <div className="flex flex-col items-start gap-1">
-                <div className="flex items-center gap-1.5">
+          {/* Notifications/delete/status stays non-sticky (only the name+tags bar above sticks),
+              combined into the SAME wrapper as Row 2 below it — one shared background/shadow, no
+              gap or seam between them, only Row 2's own bottom border closes it off. */}
+          <div
+            className="-mx-4 md:-mx-5"
+            style={{
+              backgroundColor: "var(--glass-modal-bg)",
+              backdropFilter: "blur(12px) saturate(220%)",
+              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+            }}
+          >
+          <div>
+            <div className="px-4 pb-2 pt-2 md:px-5">
+            {/* Row 2: Creator/Assigned (left mount) — Created/Modified (right mount). Icon + badge
+                + name, with the "Creator:"/"Assigned:" text label shown on desktop and hidden on
+                mobile (icon-only there). Stays in this same non-sticky header block (unlike the
+                tab strip below), so it always scrolls away normally and never sticks. */}
+            <div className="flex flex-row items-start justify-between gap-4 pt-0 md:pt-2">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <User size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                  <span className="hidden shrink-0 text-[13px] md:inline" style={{ color: projectPalette.textMuted }}>Creator:</span>
                   <div
                     className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
                     style={{
@@ -43265,45 +43438,141 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     {initials(creatorDisplayName)}
                   </div>
-                  <span className="text-[13px]" style={{ color: projectPalette.textMuted }}>Creator: {creatorDisplayName}</span>
+                  <span className="min-w-0 truncate text-[13px]" style={{ color: projectPalette.textMuted }}>{creatorDisplayName}</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <div
-                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-                    style={{
-                      backgroundColor:
-                        toStr(staffIconColorByUid[String(projectAssignedMember?.uid || "")]) ||
-                        toStr(projectAssignedMember?.badgeColor) ||
-                        toStr(projectAssignedMember?.userColor) ||
-                        toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
-                        "#7D99B3",
-                    }}
-                  >
-                    {initials(assignedDisplayName)}
-                  </div>
-                  <span className="text-[13px]" style={{ color: projectPalette.textMuted }}>Assigned: {assignedDisplayName}</span>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {effectiveAssignedSelectionUid ? (
+                    <>
+                      <Users size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                      <span className="hidden shrink-0 text-[13px] md:inline" style={{ color: projectPalette.textMuted }}>Assigned:</span>
+                      <div
+                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                        style={{
+                          backgroundColor:
+                            toStr(staffIconColorByUid[String(projectAssignedMember?.uid || "")]) ||
+                            toStr(projectAssignedMember?.badgeColor) ||
+                            toStr(projectAssignedMember?.userColor) ||
+                            toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+                            "#7D99B3",
+                        }}
+                      >
+                        {initials(assignedDisplayName)}
+                      </div>
+                      <span className="min-w-0 truncate text-[13px]" style={{ color: projectPalette.textMuted }}>{assignedDisplayName}</span>
+                    </>
+                  ) : settingsAccess.edit ? (
+                    <>
+                      <Users size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                      <button
+                        ref={quickAssignButtonRef}
+                        type="button"
+                        onClick={() => setIsQuickAssignOpen((prev) => !prev)}
+                        className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-bold transition hover:brightness-95"
+                        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                      >
+                        Assign
+                      </button>
+                      {isQuickAssignOpen && quickAssignRect && typeof document !== "undefined" && createPortal(
+                        <div
+                          ref={quickAssignMenuRef}
+                          className="fixed z-[2147483647] flex max-h-[300px] w-[220px] flex-col overflow-hidden rounded-[8px] border"
+                          style={{ left: quickAssignRect.left, top: quickAssignRect.top, ...GLASS_DROPDOWN_MENU_STYLE }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                        >
+                          <div className="relative shrink-0 border-b p-1" style={{ borderColor: "var(--glass-border)" }}>
+                            <Search size={12} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                            <input
+                              autoFocus
+                              value={quickAssignSearch}
+                              onChange={(e) => setQuickAssignSearch(e.target.value)}
+                              placeholder="Search staff..."
+                              className="h-7 w-full rounded-[6px] border pl-6 pr-2 text-[12px] outline-none"
+                              style={{
+                                borderColor: "var(--glass-border)",
+                                backgroundColor: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.45)",
+                                backdropFilter: "blur(6px)",
+                                WebkitBackdropFilter: "blur(6px)",
+                                color: "var(--text-main)",
+                              }}
+                            />
+                          </div>
+                          <div className="glass-scroll min-h-0 flex-1 overflow-auto p-1">
+                          {(() => {
+                            const q = quickAssignSearch.trim().toLowerCase();
+                            const filteredMembers = q
+                              ? companyMembers.filter((member) => member.displayName.toLowerCase().includes(q))
+                              : companyMembers;
+                            if (!filteredMembers.length) {
+                              return (
+                                <div className="px-2 py-3 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                  {companyMembers.length ? "No staff found." : "No staff members found."}
+                                </div>
+                              );
+                            }
+                            return filteredMembers.map((member) => (
+                              <button
+                                key={member.uid}
+                                type="button"
+                                onClick={() => {
+                                  void onChangeAssignedProjectUser(member.uid);
+                                  setIsQuickAssignOpen(false);
+                                }}
+                                className="flex w-full min-w-0 items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold transition hover:bg-[var(--panel-muted)]"
+                                style={{ color: "var(--text-main)" }}
+                              >
+                                <span
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                                  style={{
+                                    backgroundColor:
+                                      toStr(staffIconColorByUid[String(member.uid || "")]) ||
+                                      toStr(member.badgeColor) ||
+                                      toStr(member.userColor) ||
+                                      toStr((companyDoc as Record<string, unknown> | null)?.themeColor) ||
+                                      "#7D99B3",
+                                  }}
+                                >
+                                  {initials(member.displayName)}
+                                </span>
+                                <span className="min-w-0 truncate">{member.displayName}</span>
+                              </button>
+                            ));
+                          })()}
+                          </div>
+                        </div>,
+                        document.body,
+                      )}
+                    </>
+                  ) : null}
                 </div>
               </div>
-              <div className="w-full text-left md:w-auto md:text-right">
-                <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>Created: {dashboardStyleDate(project.createdAt)}</p>
-                <p className="text-[13px]" style={{ color: projectPalette.textMuted }}>Modified: {dashboardStyleDate(project.updatedAt)}</p>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <CalendarDays size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                  <span className="whitespace-nowrap text-[13px]" style={{ color: projectPalette.textMuted }}>{dashboardStyleDate(project.createdAt)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <RefreshCw size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                  <span className="whitespace-nowrap text-[13px]" style={{ color: projectPalette.textMuted }}>{dashboardStyleDate(project.updatedAt)}</span>
+                </div>
               </div>
             </div>
             </div>
           </div>
           </div>
 
-          {/* Rendered as its own top-level sibling (not nested inside the header's bleed div above)
-              so its position: sticky containing block is the full-height tab-content column below,
-              not the ~200px-tall header block — sticky can only hold within its containing block's
-              own box, so nesting it there let it scroll away as soon as that short box ended. */}
+          {/* Sticks right underneath Row 1 above (real content, not a duplicate bar) — its `top`
+              is Row 1's own measured height (projectHeaderRowHeight) plus 0/48 for the same
+              <main>-scrolls-internally-on-mobile split used throughout this header. */}
           <div
             ref={projectStickyBarRef}
-            className="glass-page-header sticky top-12 z-[30] -mx-4 md:-mx-5"
-            style={{ marginTop: 0, backgroundColor: isDarkMode ? "#1c1c1e" : "#F0F2F6" }}
+            className="glass-page-header sticky z-[30] -mx-4 md:-mx-5"
+            style={{
+              top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0),
+              marginTop: 0,
+            }}
           >
             <div className="px-4 md:px-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-6">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between md:gap-6">
                 <div ref={projectTabStripRef} className="relative grid grid-cols-4 items-end gap-1 sm:-mx-1 sm:flex sm:gap-4 sm:overflow-x-auto sm:px-1 md:mx-0 md:flex-1 md:gap-10 md:px-2">
                 {tabItemsWithAccess.map((item) => {
                   const active = resolvedTab === item.value;
@@ -43352,26 +43621,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     }}
                   />
                 ) : null}
-                </div>
-                {/* Carried directly in this same tab-strip row (not a separate strip stacked above
-                    it) so the sticky bar never grows an extra row's worth of height once the real
-                    <h1> above scrolls out of view. Same text size/weight as the tab labels next to
-                    it (not a smaller "compact" size) — sits to the right of the tabs and slides in
-                    from further right (plus a quick fade) as the bar becomes sticky. */}
-                <div
-                  className="min-w-0 shrink-0 overflow-hidden transition-[max-width] duration-300 ease"
-                  style={{ maxWidth: isProjectHeaderCompact ? 320 : 0 }}
-                >
-                  <p
-                    className="truncate whitespace-nowrap text-[16px] font-semibold transition-[transform,opacity] duration-300 ease sm:text-[18px] md:text-[20px]"
-                    style={{
-                      color: projectPalette.text,
-                      transform: isProjectHeaderCompact ? "translateX(0)" : "translateX(24px)",
-                      opacity: isProjectHeaderCompact ? 1 : 0,
-                    }}
-                  >
-                    {project.name}
-                  </p>
                 </div>
               </div>
             </div>
@@ -43424,8 +43673,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "general" && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <div className="space-y-4 px-[22px] pb-4 pt-4 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+              <div className="space-y-4 px-[22px] pb-4 pt-1 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="space-y-4">
                     <div ref={clientDetailsContainerRef}>
@@ -43561,8 +43810,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         }}
                       >
                         <CardHeader
+                          onClick={() => {
+                            if (isLgUpViewport || isEditingNotes || Boolean(String(project.notes || "").trim())) return;
+                            setIsNotesExpandedMobile((prev) => !prev);
+                          }}
                           className="flex h-[50px] flex-row items-center justify-between overflow-hidden border-b px-4 py-2"
                           style={{
+                            cursor: !isLgUpViewport && !isEditingNotes && !String(project.notes || "").trim() ? "pointer" : undefined,
                             borderBottomColor: "var(--glass-border)",
                             backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)",
                           }}
@@ -43613,6 +43867,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </button>
                           </div>
                         </CardHeader>
+                        {(isEditingNotes || Boolean(String(project.notes || "").trim()) || isLgUpViewport || isNotesExpandedMobile) && (
                         <CardContent className="min-h-[155px] pt-3 text-[13px]" style={{ color: projectPalette.textSoft }}>
                           {isEditingNotes && generalAccess.edit ? (
                             <QuoteDocumentEditor
@@ -43637,6 +43892,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             />
                           )}
                         </CardContent>
+                        )}
                       </section>
                     </div>
                   </div>
@@ -43653,8 +43909,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                     >
                   <div
+                    onClick={() => {
+                      if (isLgUpViewport || projectImageUrls.length > 0) return;
+                      setIsImagesExpandedMobile((prev) => !prev);
+                    }}
                     className="relative flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2"
                     style={{
+                      cursor: !isLgUpViewport && projectImageUrls.length === 0 ? "pointer" : undefined,
                       borderBottomColor: "var(--glass-border)",
                       backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)",
                     }}
@@ -43784,8 +44045,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </button>
                     </div>
                   </div>
+                  {(projectImageUrls.length > 0 || isLgUpViewport || isImagesExpandedMobile) && (
                   <CardContent className="pt-4 pb-3" style={{ minHeight: Math.max(400, projectImageAreaHeight + 28) }}>
-                    {projectImageUrls.length > 0 ? (
+                    {projectImageUrls.length === 0 ? (
+                      // The viewer below assumes at least one image (thumbnail strip, prev/next,
+                      // pan/zoom); shown on desktop now that this container stays visible even
+                      // when empty (mobile only reaches this branch while manually expanded).
+                      <div className="flex h-full min-h-[130px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
+                        No images yet.
+                      </div>
+                    ) : (
                       <div className="flex items-start gap-3">
                         <div className="w-[88px] flex-none">
                           <div ref={projectImageThumbsRef} className="flex flex-col gap-[6px] pr-1">
@@ -43887,15 +44156,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 text-[13px]" style={{ color: projectPalette.textMuted }}>
-                        <ImageIcon size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
-                        No images uploaded.
-                      </div>
                     )}
                   </CardContent>
+                  )}
                 </section>
-<section
+                    <section
                     className="overflow-hidden rounded-[18px] border"
                     style={{
                       borderColor: "var(--glass-border)",
@@ -43906,8 +44171,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     }}
                   >
                   <div
+                    onClick={() => {
+                      if (isLgUpViewport || projectFiles.length > 0) return;
+                      setIsFilesExpandedMobile((prev) => !prev);
+                    }}
                     className="flex min-h-[50px] flex-wrap items-center justify-between gap-2 border-b px-4 py-2"
                     style={{
+                      cursor: !isLgUpViewport && projectFiles.length === 0 ? "pointer" : undefined,
                       borderBottomColor: "var(--glass-border)",
                       backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)",
                     }}
@@ -43983,8 +44253,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </button>
                     </div>
                   </div>
+                  {(projectFiles.length > 0 || isLgUpViewport || isFilesExpandedMobile) && (
                   <CardContent className="min-h-[280px] px-0 pb-0 pt-0">
-                    {projectFiles.length > 0 ? (
+                    {projectFiles.length === 0 ? (
+                      <div className="flex min-h-[130px] items-center justify-center text-[13px]" style={{ color: projectPalette.textMuted }}>
+                        No files yet.
+                      </div>
+                    ) : (
                       <div className="border-b" style={{ borderBottomColor: projectPalette.border }}>
                         {projectFiles.map((file, idx) => {
                           const selected = idx === selectedProjectFileIndex;
@@ -44062,13 +44337,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           );
                         })}
                       </div>
-                    ) : (
-                      <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 text-[13px] text-[#98A2B3]">
-                        <FileIcon size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
-                        No files uploaded.
-                      </div>
                     )}
                   </CardContent>
+                  )}
                 </section>
                 </div>
               </div>
@@ -44077,13 +44348,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               {/* xl:pr-2 (not pr-0) — the nav buttons below scale up 4% on hover (hover:scale-[1.04]),
                   and this sidebar clips overflow; xl:pl-5 already gives the left edge plenty of
                   room to grow into, but zero right padding meant the button's right edge grew
                   straight into this container's clip boundary with nothing to absorb it. */}
-              <aside className="h-full overflow-hidden px-1 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-4">
-                <div className="flex flex-col items-stretch gap-1.5 sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
+              <aside className="h-full overflow-hidden px-3 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-4">
+                <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
                 {[
                   { label: "Overview", icon: LayoutGrid, key: "overview" as const },
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const },
@@ -44111,10 +44382,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                       className="project-subtab-button relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:shadow-lg hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                       style={{
-                        borderColor: active ? "transparent" : projectPalette.border,
+                        borderColor: projectPalette.border,
                         backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : projectPalette.panelBg,
                         color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
-                        boxShadow: active ? "none" : "var(--shadow-sm)",
+                        boxShadow: "var(--shadow-sm)",
                       }}
                     >
                       <Icon size={13} />
@@ -44236,43 +44507,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     <div className="flex min-h-full flex-col gap-4 pl-4">
                       {initialCutlistRoomFilter !== "Project Cutlist" && (
-                        <section className="relative z-10 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
+                        <section className="relative z-10 w-full flex-1 overflow-visible xl:-mx-4 xl:w-[calc(100%+2rem)]">
                           <div className="flex h-[50px] items-center px-1">
                             <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
                           </div>
                           <div className="space-y-3 px-0 pb-0">
-                            <div className="flex flex-wrap items-center gap-2 rounded-[8px] px-1">
-                              {initialMeasurePartTypeOptions.map((v) => {
-                                const color = partTypeColors[v] ?? "#CBD5E1";
-                                return (
-                                  <button
-                                    key={`im_pt_${v}`}
-                                    type="button"
-                                    disabled={salesReadOnly}
-                                    onClick={() => setInitialCutlistEntry((prev) => ({ ...prev, partType: v }))}
-                                    style={{
-                                      backgroundColor: color,
-                                      borderColor: color,
-                                      color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                                    }}
-                                    className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                            <div
+                              className="glass-page-header sticky z-[500] space-y-2 px-1 py-2"
+                              style={{ top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0) }}
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                {initialMeasurePartTypeOptions.map((v) => {
+                                  const color = partTypeColors[v] ?? "#CBD5E1";
+                                  return (
+                                    <button
+                                      key={`im_pt_${v}`}
+                                      type="button"
+                                      disabled={salesReadOnly}
+                                      onClick={() => setInitialCutlistEntry((prev) => ({ ...prev, partType: v }))}
+                                      style={{
+                                        backgroundColor: color,
+                                        borderColor: color,
+                                        color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                      }}
+                                      className="relative rounded-[8px] border px-2 py-1 text-[11px] font-medium transition-[transform,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:z-10 hover:scale-110 hover:shadow-lg disabled:opacity-55 disabled:hover:scale-100 disabled:hover:shadow-none"
+                                    >
+                                      {v}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: projectPalette.textMuted }}>
+                                <p></p>
+                                {initialCutlistEntryColumnDefs.map((col) => (
+                                  <p
+                                    key={`im_entry_header_${col.key}`}
+                                    className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                                    style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
                                   >
-                                    {v}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, color: projectPalette.textMuted }}>
-                              <p></p>
-                              {initialCutlistEntryColumnDefs.map((col) => (
-                                <p
-                                  key={`im_entry_header_${col.key}`}
-                                  className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                                  style={col.key === "clashing" ? initialCutlistEntryCellStyle("clashing", 2) : initialCutlistEntryCellStyle(col.key)}
-                                >
-                                  {col.label}
-                                </p>
-                              ))}
+                                    {col.label}
+                                  </p>
+                                ))}
+                              </div>
                             </div>
                             <div data-cutlist-entry-grid="initial-single" data-cutlist-entry-row="single" className="grid gap-2 border-y px-1 py-1" style={{ gridTemplateColumns: initialCutlistEntryGridTemplate, backgroundColor: activeInitialCutlistEntryColor, color: activeInitialCutlistEntryTextColor, borderColor: activeInitialCutlistEntryFieldBorder }}>
                               <p></p>
@@ -44464,13 +44740,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 -mt-4 min-h-[100dvh] items-stretch gap-4 md:-mx-5 xl:grid xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               {/* xl:pr-2 (not pr-0) — the nav buttons below scale up 4% on hover (hover:scale-[1.04]),
                   and this sidebar clips overflow; xl:pl-5 already gives the left edge plenty of
                   room to grow into, but zero right padding meant the button's right edge grew
                   straight into this container's clip boundary with nothing to absorb it. */}
-              <aside className="h-full overflow-hidden px-1 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-4">
-                <div className="flex flex-col items-stretch gap-1.5 sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
+              <aside className="h-full overflow-hidden px-3 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-4">
+                <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
                 {[
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
                   { label: "Nesting", icon: GitBranch, key: "nesting" as const },
@@ -44524,10 +44800,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         }}
                         className="project-subtab-button relative inline-flex w-full min-w-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 py-2.5 text-left text-[13px] font-semibold transition hover:z-10 hover:scale-[1.04] hover:shadow-lg hover:brightness-95 sm:w-auto sm:min-w-[120px] xl:w-full xl:min-w-0 xl:whitespace-normal"
                         style={{
-                          borderColor: active ? "transparent" : projectPalette.border,
+                          borderColor: projectPalette.border,
                           backgroundColor: active ? (isDarkMode ? "#2b2b2b" : "#EEF2F7") : projectPalette.panelBg,
                           color: active ? (isDarkMode ? "#f1f1f1" : "#12345B") : (isDarkMode ? "#cbd5e1" : "#243B58"),
-                          boxShadow: active ? "none" : "var(--shadow-sm)",
+                          boxShadow: "var(--shadow-sm)",
                         }}
                       >
                         <Icon size={13} />
@@ -44561,8 +44837,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div className="inline-flex min-w-0 items-center gap-2">
                             <ClipboardList size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
                             <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist</p>
-                            <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
-                            <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
+                            <span className="text-[12px]" style={{ color: projectPalette.textMuted }}>|</span>
+                            <p className="truncate text-[13px]" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
                           </div>
                           <button
                             type="button"
@@ -44984,49 +45260,54 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
                     <div className="flex min-h-full flex-col gap-4 pl-4">
                       {cutlistRoomFilter !== "Project Cutlist" && (
-                      <section className="relative z-10 -mt-4 w-full flex-1 overflow-hidden xl:-mx-4 xl:w-[calc(100%+2rem)]">
+                      <section className="relative z-10 -mt-4 w-full flex-1 overflow-visible xl:-mx-4 xl:w-[calc(100%+2rem)]">
                         <div className="flex min-h-[50px] flex-wrap items-center gap-3 px-1">
                           <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Cutlist Entry</p>
                         </div>
                         <div className="space-y-3 px-0 pb-0">
                           {(
-                            <div className={`flex flex-wrap items-center gap-2 rounded-[8px] px-1 ${warningClassForCell("single", "partType")}`} title={warningForCell("single", "partType") || undefined}>
-                              {partTypeOptions.map((v) => {
-                                const color = partTypeColors[v] ?? "#CBD5E1";
-                                return (
-                                  <button
-                                    key={v}
-                                    type="button"
-                                    disabled={productionReadOnly}
-                                    onClick={() => onSelectCutlistEntryPartType(v)}
-                                    style={{
-                                      backgroundColor: color,
-                                      borderColor: color,
-                                      color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
-                                    }}
-                                    className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
-                                  >
-                                    {v}
-                                  </button>
-                                );
-                              })}
+                            <div
+                              className={`glass-page-header sticky z-[500] space-y-2 px-1 py-2 ${warningClassForCell("single", "partType")}`}
+                              title={warningForCell("single", "partType") || undefined}
+                              style={{ top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0) }}
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                {partTypeOptions.map((v) => {
+                                  const color = partTypeColors[v] ?? "#CBD5E1";
+                                  return (
+                                    <button
+                                      key={v}
+                                      type="button"
+                                      disabled={productionReadOnly}
+                                      onClick={() => onSelectCutlistEntryPartType(v)}
+                                      style={{
+                                        backgroundColor: color,
+                                        borderColor: color,
+                                        color: isLightHex(color) ? "#1F2937" : "#F8FAFC",
+                                      }}
+                                      className="rounded-[8px] border px-2 py-1 text-[11px] font-medium disabled:opacity-55"
+                                    >
+                                      {v}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {!hideConfiguredDoorSingleEntryHeaderRow ? (
+                                <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
+                                  <p></p>
+                                  {cutlistEntryColumnDefs.map((col) => (
+                                    <p
+                                      key={`single_header_${col.key}`}
+                                      className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
+                                      style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
+                                    >
+                                      {col.key === "clashing" ? (singleEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                           )}
-
-                          {!hideConfiguredDoorSingleEntryHeaderRow ? (
-                            <div className="grid gap-2 text-[11px] font-bold" style={{ gridTemplateColumns: cutlistEntryGridTemplate, color: projectPalette.textMuted }}>
-                              <p></p>
-                              {cutlistEntryColumnDefs.map((col) => (
-                                <p
-                                  key={`single_header_${col.key}`}
-                                  className={isCenteredCutlistColumn(col.key) ? "text-center" : ""}
-                                  style={col.key === "clashing" ? cutlistEntryCellStyle("clashing", 2) : cutlistEntryCellStyle(col.key)}
-                                >
-                                  {col.key === "clashing" ? (singleEntryShowsShelvesHeader ? "Shelves" : "Clashing") : col.label}
-                                </p>
-                              ))}
-                            </div>
-                          ) : null}
                           {!manualCutlistUsesPlainDoorRows && isDoorPartType(cutlistEntry.partType) && cutlistEntrySelectedDoorMode === "" ? (
                             <div className="border-y px-3 py-3" style={{ backgroundColor: activeCutlistEntryColor, color: activeCutlistEntryTextColor, borderColor: activeCutlistEntryFieldBorder }}>
                               <div className="max-w-[360px]">
@@ -46084,6 +46365,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                           ? renderDoorHingeDisplay(
                                               normalizeDoorHingeValues(row.hingesUp),
                                               normalizeDoorHingeValues(row.hingesDown),
+                                              row.hingeSide,
                                             )
                                           : renderDoorHingeInteractive(row)}
                                       </td>
@@ -46159,8 +46441,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <div className="inline-flex min-w-0 items-center gap-2">
                           <GitBranch size={16} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
                           <p className="text-[13px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Nesting</p>
-                          <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
-                          <p className="truncate text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
+                          <span className="text-[12px]" style={{ color: projectPalette.textMuted }}>|</span>
+                          <p className="truncate text-[13px]" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
                         </div>
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
                           <span>Sheets: {nestingSummary.sheets}</span>
@@ -46411,10 +46693,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       }}
                     >
                       <div className="inline-flex items-center gap-2">
-                        <ShoppingCart size={15} style={{ color: "var(--text-main)" }} />
-                        <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Order</p>
-                        <span className="text-[12px] font-bold" style={{ color: projectPalette.textMuted }}>|</span>
-                        <p className="text-[13px] font-bold" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
+                        <ShoppingCart size={15} style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }} />
+                        <p className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>Order</p>
+                        <span className="text-[12px]" style={{ color: projectPalette.textMuted }}>|</span>
+                        <p className="text-[13px]" style={{ color: projectPalette.textSoft }}>{project?.name || "Project"}</p>
                       </div>
                       <div className="inline-flex items-center gap-4 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
                         <span>{formatPartCount(cutlistRows.length)}</span>
@@ -47310,8 +47592,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             ))}
 
           {resolvedTab === "settings" && settingsAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 -mt-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <div className="space-y-4 px-[22px] pb-4 pt-4 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+              <div className="space-y-4 px-[22px] pb-4 pt-1 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
+                    setDeleteProjectNameInput("");
+                    setIsDeleteProjectModalOpen(true);
+                  }}
+                  disabled={isDeleting || !canDeleteProject}
+                  className="h-9 w-full rounded-[10px] border px-4 text-[15px] font-normal text-white transition hover:brightness-95 disabled:opacity-60 md:hidden"
+                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                >
+                  Delete Project
+                </button>
             <div className="grid gap-4 xl:grid-cols-2">
                 <section
                   className="overflow-hidden rounded-[18px] border"

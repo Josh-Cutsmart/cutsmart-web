@@ -398,7 +398,7 @@ export default function ClientSpecsSharePage() {
             wide the project name or status chip happen to be, rather than drifting toward
             whichever side has less content. */}
         <div className="mx-auto grid h-full w-full max-w-[1000px] grid-cols-[1fr_auto_1fr] items-stretch gap-3">
-          <div className="flex min-w-0 items-center gap-2 text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+          <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
             <span className="truncate">{projectName || "Project"}</span>
           </div>
 

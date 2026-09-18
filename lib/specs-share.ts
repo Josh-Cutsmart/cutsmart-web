@@ -166,8 +166,12 @@ export async function resolveAssignedContactAdmin(
   companyId: string,
   projectData: Record<string, unknown>,
 ): Promise<AssignedContact | null> {
-  const assignedUid = String(projectData.assignedToUid ?? "").trim();
-  const fallbackName = String(projectData.assignedToName ?? projectData.assignedTo ?? "").trim();
+  const explicitAssignedUid = String(projectData.assignedToUid ?? "").trim();
+  const explicitFallbackName = String(projectData.assignedToName ?? projectData.assignedTo ?? "").trim();
+  // No one explicitly assigned yet — the project's creator is its de facto point of contact
+  // until someone is, so fall back to them rather than hiding the widget entirely.
+  const assignedUid = explicitAssignedUid || String(projectData.createdByUid ?? "").trim();
+  const fallbackName = explicitFallbackName || String(projectData.createdByName ?? "").trim();
   if (!assignedUid) {
     return fallbackName ? { name: fallbackName, email: "", mobile: "" } : null;
   }

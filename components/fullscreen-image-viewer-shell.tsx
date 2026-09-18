@@ -151,7 +151,7 @@ export function FullscreenImageViewerShell({
             </div>
           </div>
           <div className="px-4 text-center">
-            <p className="text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
+            <p className="text-[14px] font-medium" style={{ color: "var(--text-main)" }}>
               {imageName}
             </p>
             <p className="mt-[2px] text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
@@ -32,7 +32,7 @@ const statCards = [
   { label: "Projects", key: "total", icon: FolderKanban, iconFrom: "#6EB4FF", iconTo: "#3577E0" },
   { label: "Active", key: "active", icon: Activity, iconFrom: "#F3CD6C", iconTo: "#DC9A1F" },
   { label: "Completed", key: "completed", icon: CheckCircle2, iconFrom: "#6BC79A", iconTo: "#2E8C5C" },
-  { label: "Staff Members", key: "staff", icon: Users2, iconFrom: "#A796F0", iconTo: "#6E56D9" },
+  { label: "Staff", key: "staff", icon: Users2, iconFrom: "#A796F0", iconTo: "#6E56D9" },
 ] as const;
 type QuickFilter = "all" | "active" | "completed";
 type DashboardLegendRow = { id: string; name: string; color: string };
@@ -250,7 +250,7 @@ function dashboardDate(value: string) {
   }
   const date = new Intl.DateTimeFormat("en-NZ", {
     day: "2-digit",
-    month: "long",
+    month: "short",
     year: "numeric",
   }).format(d);
   const time = new Intl.DateTimeFormat("en-NZ", {
@@ -304,7 +304,12 @@ function initials(text: string) {
 }
 
 function assignedDisplayName(project: Project) {
-  const value = String(project.assignedToName || project.assignedTo || "").trim();
+  // Deliberately assignedToName only, never the plain assignedTo string — that field falls
+  // back to the project creator's name (see normalizeProject in lib/firestore-data.ts) so other
+  // read sites always have a sensible display value, but that means it's true even when nobody
+  // has actually been assigned, and this helper is used to decide whether to show an assignee
+  // badge at all.
+  const value = String(project.assignedToName || "").trim();
   return value.toLowerCase() === "unassigned" ? "" : value;
 }
 
@@ -2122,7 +2127,7 @@ export default function DashboardPage() {
               padding: 16,
             }}
           >
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
               {statCards.map((card) => {
                 const Icon = card.icon;
                 const value = stats[card.key];
@@ -2160,7 +2165,7 @@ export default function DashboardPage() {
                       el.style.transition = "transform 350ms cubic-bezier(0.22, 1, 0.36, 1)";
                       el.style.transform = "perspective(800px) rotateX(0deg) rotateY(0deg) translateY(0px) scale(1)";
                     }}
-                    className={`rounded-[18px] border px-5 py-4 ${
+                    className={`rounded-[18px] border px-3 py-2.5 sm:px-5 sm:py-4 ${
                       isInteractiveCard ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-soft)]" : ""
                     }`}
                     style={{
@@ -2172,18 +2177,19 @@ export default function DashboardPage() {
                       willChange: "transform",
                     }}
                   >
-                    <div className="mb-3 flex items-center gap-2.5">
+                    <div className="flex items-center gap-2 sm:mb-3 sm:gap-2.5">
                       <div
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-full text-white shadow-[0_4px_10px_rgba(0,0,0,0.14)]"
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-[0_4px_10px_rgba(0,0,0,0.14)] sm:h-9 sm:w-9"
                         style={{ backgroundImage: `linear-gradient(135deg, ${card.iconFrom} 0%, ${card.iconTo} 100%)` }}
                       >
-                        <Icon size={17} strokeWidth={2.4} />
+                        <Icon size={15} strokeWidth={2.4} />
                       </div>
-                      <p className="text-[13px] font-semibold sm:text-[14px]" style={{ color: dashboardPalette.textSoft }}>{card.label}</p>
+                      <p className="min-w-0 truncate text-[12px] font-semibold sm:text-[13px] sm:text-[14px]" style={{ color: dashboardPalette.textSoft }}>{card.label}</p>
+                      <p className="ml-auto shrink-0 text-[18px] font-bold sm:hidden" style={{ color: dashboardPalette.text }}>{value}</p>
                     </div>
-                    <p className="text-[32px] font-semibold leading-none sm:text-[38px] lg:text-[42px]" style={{ color: dashboardPalette.text }}>{value}</p>
+                    <p className="hidden text-[32px] font-semibold leading-none sm:block sm:text-[38px] lg:text-[42px]" style={{ color: dashboardPalette.text }}>{value}</p>
                     {stats.weekly[card.key] > 0 && (
-                      <p className="pt-1 text-[13px] font-bold" style={{ color: "#2A7A3B" }}>
+                      <p className="hidden pt-1 text-[13px] font-bold sm:block" style={{ color: "#2A7A3B" }}>
                         + {stats.weekly[card.key]} this week
                       </p>
                     )}
@@ -2206,29 +2212,8 @@ export default function DashboardPage() {
               marginRight: -12,
             }}
           >
-              <div className="flex flex-wrap items-center gap-2 pl-0 sm:pl-[10px]">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={dashboardViewMode === "board"}
-                  onClick={() => setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"))}
-                  className="relative inline-flex h-[38px] w-[82px] shrink-0 items-center overflow-hidden rounded-full border p-1"
-                  style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}
-                  title="Toggle project view"
-                  aria-label="Toggle project view"
-                >
-                  <div
-                    className="absolute top-1 h-7 w-9 rounded-full transition-all duration-200"
-                    style={{ left: dashboardViewMode === "list" ? 4 : 40, backgroundImage: "var(--brand-gradient)" }}
-                  />
-                  <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
-                    <Rows3 size={15} style={{ color: dashboardViewMode === "list" ? "#fff" : dashboardPalette.textMuted }} />
-                  </span>
-                  <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
-                    <Kanban size={15} style={{ color: dashboardViewMode === "board" ? "#fff" : dashboardPalette.textMuted }} />
-                  </span>
-                </button>
-                <div className="relative w-full min-w-0 sm:w-auto sm:min-w-[260px] sm:max-w-[360px]">
+              <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[92px] sm:pl-[10px] sm:pr-0">
+                <div className="peer relative order-1 w-[110px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:static sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
                   <Search
                     size={14}
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
@@ -2246,7 +2231,7 @@ export default function DashboardPage() {
                     }}
                   />
                 </div>
-                <div className="flex gap-1.5">
+                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center gap-1.5 overflow-hidden transition-[opacity,flex-grow,transform] duration-200 peer-focus-within:pointer-events-none peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:gap-0 peer-focus-within:opacity-0 sm:order-none sm:flex-initial sm:translate-x-0 sm:justify-start sm:opacity-100 sm:pointer-events-auto sm:peer-focus-within:flex-initial sm:peer-focus-within:w-auto sm:peer-focus-within:translate-x-0 sm:peer-focus-within:gap-1.5 sm:peer-focus-within:opacity-100">
                   {[
                     { key: "all", label: "All" },
                     { key: "active", label: "Active" },
@@ -2268,8 +2253,33 @@ export default function DashboardPage() {
                     </button>
                   ))}
                 </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={dashboardViewMode === "board"}
+                  onClick={() => setDashboardViewMode((prev) => (prev === "list" ? "board" : "list"))}
+                  className="absolute right-0 top-1/2 z-20 order-3 inline-flex h-[38px] w-[82px] -translate-y-1/2 shrink-0 items-center overflow-hidden rounded-full border p-1 sm:static sm:order-none sm:translate-y-0 sm:z-auto"
+                  style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg }}
+                  title="Toggle project view"
+                  aria-label="Toggle project view"
+                >
+                  <div
+                    className="absolute top-1 h-7 w-9 rounded-full transition-all duration-200"
+                    style={{ left: dashboardViewMode === "list" ? 4 : 40, backgroundImage: "var(--brand-gradient)" }}
+                  />
+                  <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
+                    <Rows3 size={15} style={{ color: dashboardViewMode === "list" ? "#fff" : dashboardPalette.textMuted }} />
+                  </span>
+                  <span className="relative z-[1] flex h-7 w-9 items-center justify-center rounded-full">
+                    <Kanban size={15} style={{ color: dashboardViewMode === "board" ? "#fff" : dashboardPalette.textMuted }} />
+                  </span>
+                </button>
                 {dashboardViewMode === "list" && (
-                  <div className="ml-auto flex items-center gap-1.5">
+                  // Hidden on mobile — infinite scroll (see the load-more-near-bottom effect
+                  // further down) already reveals more projects automatically as the user
+                  // scrolls, using this same pageSize as its batch size, so there's nothing left
+                  // for the picker itself to do there besides take up space.
+                  <div className="order-4 hidden w-full items-center gap-1.5 sm:order-none sm:ml-auto sm:flex sm:w-auto">
                     <span className="text-[11px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Show</span>
                     <select
                       value={pageSize}
@@ -2293,6 +2303,10 @@ export default function DashboardPage() {
               </div>
 
           </div>
+
+          {/* Height matches <main>'s own side padding (px-3 = 12px) — the same inset already
+              visible on the card's left/right sides — so this spacer reads as that same margin. */}
+          <div aria-hidden="true" style={{ height: 9, marginLeft: -12, marginRight: -12, backgroundColor: dashboardPalette.panelBg }} />
 
           <div
             ref={boardStickyRef}
@@ -2355,7 +2369,7 @@ export default function DashboardPage() {
                         }}
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <p className="line-clamp-2 text-[13px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</p>
+                          <p className="line-clamp-2 text-[16px] font-bold" style={{ color: dashboardPalette.text }}>{project.name}</p>
                           <button
                             data-status-trigger="true"
                             type="button"
@@ -2397,7 +2411,8 @@ export default function DashboardPage() {
                           </button>
                         </div>
 
-                        <div className="mt-2 flex flex-wrap gap-1">
+                        {/* Desktop — tags and assigned user as their own separate rows. */}
+                        <div className="mt-2 hidden flex-wrap gap-1 sm:flex">
                           {project.tags.slice(0, 2).map((tag) => (
                             <span
                               key={tag}
@@ -2410,7 +2425,7 @@ export default function DashboardPage() {
                           {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
                         </div>
 
-                        <div className="mt-2 flex items-center gap-2 text-[12px]">
+                        <div className="mt-2 hidden items-center gap-2 text-[12px] sm:flex">
                           {assignedDisplayName(project) ? (
                             <>
                               <span
@@ -2427,12 +2442,56 @@ export default function DashboardPage() {
                           ) : null}
                         </div>
 
-                        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2" style={{ color: dashboardPalette.textSoft }}>
-                          <p>
-                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Created:</span> {dashboardDate(project.createdAt)}
+                        {/* Mobile only — tags + assigned user left-aligned, Created/Modified right-aligned, all in one row. */}
+                        <div className="mt-2 flex items-start justify-between gap-2 sm:hidden">
+                          <div className="flex flex-col items-start gap-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              {project.tags.slice(0, 2).map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
+                                  style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted, color: dashboardPalette.textSoft }}
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                              {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
+                            </div>
+                            {assignedDisplayName(project) ? (
+                              <span className="flex items-center gap-1.5 text-[12px]">
+                                <span
+                                  className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                                  style={{
+                                    backgroundColor:
+                                      creatorColorByUid[String(project.assignedToUid || "").trim()] || companyThemeColor,
+                                  }}
+                                >
+                                  {initials(assignedDisplayName(project))}
+                                </span>
+                                <span style={{ color: dashboardPalette.text }}>{assignedDisplayName(project)}</span>
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-0.5 text-[11px]" style={{ color: dashboardPalette.textSoft }}>
+                            <p className="flex items-center gap-1">
+                              <CalendarDays size={11} className="shrink-0" style={{ color: dashboardPalette.textMuted }} />
+                              <span>{dashboardDate(project.createdAt)}</span>
+                            </p>
+                            <p className="flex items-center gap-1">
+                              <RefreshCw size={11} className="shrink-0" style={{ color: dashboardPalette.textMuted }} />
+                              <span>{dashboardDate(project.updatedAt)}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 hidden gap-1 text-[11px] sm:grid sm:grid-cols-2" style={{ color: dashboardPalette.textSoft }}>
+                          <p className="flex items-center gap-1.5">
+                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Created:</span>
+                            <span>{dashboardDate(project.createdAt)}</span>
                           </p>
-                          <p>
-                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Modified:</span> {dashboardDate(project.updatedAt)}
+                          <p className="flex items-center gap-1.5">
+                            <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>Modified:</span>
+                            <span>{dashboardDate(project.updatedAt)}</span>
                           </p>
                         </div>
                       </div>

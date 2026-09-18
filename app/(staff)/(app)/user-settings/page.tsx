@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Check, ClipboardList, Mail, MailCheck, Pencil, Plus, ShieldCheck, Smartphone, Trash2, UserCog, X } from "lucide-react";
+import { Building2, Check, ClipboardList, Mail, MailCheck, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { auth } from "@/lib/firebase";
 import {
@@ -473,11 +473,11 @@ export default function UserSettingsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="glass-page-header -mx-4 -mt-4 flex h-[56px] shrink-0 items-center justify-between px-4 md:-mx-5 md:px-5">
+      <div className="glass-page-header -mx-4 -mt-3 flex h-[56px] shrink-0 items-center justify-between px-4 md:-mx-5 md:-mt-4 md:px-5">
         <div className="flex min-w-0 items-center gap-5">
           <div className="flex min-w-0 items-center gap-2">
             <UserCog size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-            <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               User Settings
             </p>
             <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>
@@ -628,15 +628,6 @@ export default function UserSettingsPage() {
                 {verifyError ? <p className="text-[11px] font-semibold" style={{ color: "var(--danger-strong)" }}>{verifyError}</p> : null}
               </div>
             )}
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <span
-                className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-[0.8px]"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-              >
-                <ShieldCheck size={12} />
-                {user?.role || "User"}
-              </span>
-            </div>
           </div>
 
           <div className="mt-5 flex items-center justify-center">

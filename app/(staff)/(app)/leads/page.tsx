@@ -3356,12 +3356,12 @@ export default function LeadsPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="glass-page-header relative -mx-4 -mt-4 px-4 pb-3 pt-5 md:-mx-5 md:px-5">
+            <div className="glass-page-header relative -mx-4 -mt-3 px-4 pb-3 pt-5 md:-mx-5 md:-mt-4 md:px-5">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex min-w-0 flex-wrap items-center gap-5">
                   <div className="flex min-w-0 items-center gap-2">
                     <Inbox size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-                    <p className="truncate text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                       Leads
                     </p>
                     <span className="text-[14px] font-medium" style={{ color: "var(--text-muted)" }}>|</span>

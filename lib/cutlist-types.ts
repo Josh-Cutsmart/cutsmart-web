@@ -45,7 +45,7 @@ export type CutlistRow = {
   cabinetryFullTop?: boolean;
   hingesUp?: string[];
   hingesDown?: string[];
-  hingeSide?: "" | "LH" | "RH" | "Mirror";
+  hingeSide?: "" | "LH" | "RH" | "Mirror" | "Top";
   information: string;
   grain: boolean;
   grainValue: string;

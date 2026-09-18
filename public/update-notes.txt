@@ -1,15 +1,40 @@
-Version: v0.3.2
+Version: v0.3.3
 
 whatsNew: [
-<u><b>Application:</u></b>
-- Added Specifications in "Sales" Tab.
-- Added Specifications template builder to "Company Settings".
+<u><b>Production Cutlist / Initial Measure Cutlist</b></u>
+- Fixed drawer count miscalculation in the Order tab (was multiplying quantity by height letter count)
+- Sticky project title/tab bar seam — line only shows once actually stuck, resets when scrolling back up
+- Empty Notes/Images/Files containers now stay full on desktop, collapse to a tappable header on mobile when empty
+- "Overview" button now matches the other Design/Production sub-nav buttons when active
+- Arrow-key navigation now auto-scrolls so the active textbox stays in view (only on arrow key presses)
+- Sub-parts now get added below existing sub-parts instead of on top of them
+- Part type pill buttons are now sticky at the top of Cutlist Entry
+- Column header row (Board/Height/Width/etc) is now sticky too, grouped with the pills
+- Both sticky bars now have the glass effect matching the main title bar, with square corners
+- Added "Top" hinge position option — when selected, Up/Down hinge labels switch to LH/RH everywhere (entry form, cutlist list, CNC cutlist)
 
-- Reconfigured Production cutlist.
-- - Removed Wall Builder.
-- - Users can now add "Sub Parts" to rows which inherits sizing / name off the main part row.
-- - "Fronts" part type now links as a bank, unlinkable on click.
+<u><b>App-Wide</b></u>
+- Fixed bold text on glass title bars app-wide
+- Fixed pages loading under the sticky top bar on load (Company Settings, Recently Deleted)
 
-- More UI updates coming soon.
+<u><b>Mobile Sidebar</b></u>
+- Removed the X button — sidebar now slides full width with swipe-to-close and pushes the page content over
+- Added a close arrow (top right)
+- Bigger text/buttons
+- Added the user settings sliding card to mobile (matches desktop)
+- Fixed the sliding user settings panel closing when clicking buttons/fields inside it
+- Company logo preload improvements (root cause traced to dev-server load time — deferred re-test to production)
+- Fixed grey background showing at the bottom of the screen on mobile
+
+<u><b>Notifications Panel</b></u>
+- Added a close arrow (top left, matching the sidebar)
+- Updated timestamps to match the dashboard's date format
+
+<u><b>Dashboard</b></u>
+- Right-aligned Created/Modified dates on mobile
+- Hid the "Show X per page" picker on mobile (list already auto-loads on scroll)
+- Created/Modified moved up under the status pill, stacked and right-aligned
+- Tags + assigned user grouped into one row, left-aligned, with assigned user below tags
+- Search bar: the view-toggle button no longer shifts position when the filter buttons slide out of view
 
 ]
