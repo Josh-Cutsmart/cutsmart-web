@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
@@ -35,6 +35,11 @@ const statCards = [
   { label: "Staff", key: "staff", icon: Users2, iconFrom: "#A796F0", iconTo: "#6E56D9" },
 ] as const;
 type QuickFilter = "all" | "active" | "completed";
+const QUICK_FILTER_OPTIONS: { key: QuickFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "active", label: "Active" },
+  { key: "completed", label: "Completed" },
+];
 type DashboardLegendRow = { id: string; name: string; color: string };
 
 function normalizeRoleKey(value: unknown): string {
@@ -326,6 +331,11 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [statusMenuProjectId, setStatusMenuProjectId] = useState("");
   const [statusMenuPos, setStatusMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  // Mobile-only — the All/Active/Completed pills collapse into a single filter icon that opens
+  // this glass dropdown instead, since there isn't room for three separate buttons next to the
+  // search bar and view toggle at that width (see the toolbar row below).
+  const [isMobileQuickFilterOpen, setIsMobileQuickFilterOpen] = useState(false);
+  const [mobileQuickFilterPos, setMobileQuickFilterPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [statusUpdatingProjectId, setStatusUpdatingProjectId] = useState("");
   // Board view — a drag-to-change-status kanban alternative to the default list, mirroring the
   // one on the Leads page (same shared drag-ghost helper, same interaction language). View mode
@@ -1053,6 +1063,32 @@ export default function DashboardPage() {
       window.removeEventListener("scroll", closeMenu, true);
     };
   }, [statusMenuProjectId]);
+
+  useEffect(() => {
+    if (!isMobileQuickFilterOpen) return;
+
+    const closeMenu = () => {
+      setIsMobileQuickFilterOpen(false);
+      setMobileQuickFilterPos(null);
+    };
+
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("[data-quick-filter-menu='true']")) return;
+      if (target.closest("[data-quick-filter-trigger='true']")) return;
+      closeMenu();
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [isMobileQuickFilterOpen]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -2204,7 +2240,7 @@ export default function DashboardPage() {
               viewport, since the toolbar's own height would always sit above them inside the
               stuck panel. */}
           <div
-            className="relative z-10 border-t border-b px-[10px] pb-3 pt-[19px]"
+            className={`relative z-10 border-t px-[10px] pb-3 pt-[19px] ${dashboardViewMode === "board" ? "border-b" : ""}`}
             style={{
               borderColor: "var(--glass-border)",
               backgroundColor: dashboardPalette.panelMuted,
@@ -2231,12 +2267,9 @@ export default function DashboardPage() {
                     }}
                   />
                 </div>
-                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center gap-1.5 overflow-hidden transition-[opacity,flex-grow,transform] duration-200 peer-focus-within:pointer-events-none peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:gap-0 peer-focus-within:opacity-0 sm:order-none sm:flex-initial sm:translate-x-0 sm:justify-start sm:opacity-100 sm:pointer-events-auto sm:peer-focus-within:flex-initial sm:peer-focus-within:w-auto sm:peer-focus-within:translate-x-0 sm:peer-focus-within:gap-1.5 sm:peer-focus-within:opacity-100">
-                  {[
-                    { key: "all", label: "All" },
-                    { key: "active", label: "Active" },
-                    { key: "completed", label: "Completed" },
-                  ].map((option) => (
+                {/* Desktop — the three filter pills, always visible next to the search bar. */}
+                <div className="order-2 hidden flex-initial gap-1.5 sm:flex">
+                  {QUICK_FILTER_OPTIONS.map((option) => (
                     <button
                       key={option.key}
                       onClick={() => setQuickFilter(option.key as QuickFilter)}
@@ -2252,6 +2285,36 @@ export default function DashboardPage() {
                       {option.label}
                     </button>
                   ))}
+                </div>
+                {/* Mobile — the pills collapse into a single icon that opens a glass dropdown
+                    with the same three options, since there isn't room otherwise. Fades/slides
+                    out of the way (same as it did as a button row) while the search bar is
+                    focused and expanded. */}
+                <div className="relative z-0 order-2 flex flex-1 translate-x-0 justify-center overflow-hidden transition-[opacity,flex-grow,transform] duration-200 peer-focus-within:pointer-events-none peer-focus-within:flex-none peer-focus-within:w-0 peer-focus-within:translate-x-6 peer-focus-within:opacity-0 sm:hidden">
+                  <button
+                    type="button"
+                    data-quick-filter-trigger="true"
+                    onClick={(e) => {
+                      if (isMobileQuickFilterOpen) {
+                        setIsMobileQuickFilterOpen(false);
+                        setMobileQuickFilterPos(null);
+                        return;
+                      }
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setMobileQuickFilterPos({ left: rect.left, top: rect.bottom + 4, width: Math.max(140, rect.width) });
+                      setIsMobileQuickFilterOpen(true);
+                    }}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border"
+                    style={{
+                      backgroundColor: quickFilter === "all" ? dashboardPalette.panelBg : undefined,
+                      backgroundImage: quickFilter === "all" ? "none" : "var(--brand-gradient)",
+                      borderColor: quickFilter === "all" ? dashboardPalette.border : "var(--brand)",
+                    }}
+                    title="Filter projects"
+                    aria-label="Filter projects"
+                  >
+                    <ListFilter size={16} style={{ color: quickFilter === "all" ? dashboardPalette.textMuted : "#FFFFFF" }} />
+                  </button>
                 </div>
                 <button
                   type="button"
@@ -2304,10 +2367,6 @@ export default function DashboardPage() {
 
           </div>
 
-          {/* Height matches <main>'s own side padding (px-3 = 12px) — the same inset already
-              visible on the card's left/right sides — so this spacer reads as that same margin. */}
-          <div aria-hidden="true" style={{ height: 9, marginLeft: -12, marginRight: -12, backgroundColor: dashboardPalette.panelBg }} />
-
           <div
             ref={boardStickyRef}
             className={`relative z-10 border-b ${
@@ -2317,10 +2376,12 @@ export default function DashboardPage() {
             }`}
             style={{
               borderColor: "var(--glass-border)",
-              backgroundColor: "var(--glass-bg-strong)",
-              backdropFilter: "blur(20px) saturate(180%)",
-              WebkitBackdropFilter: "blur(20px) saturate(180%)",
-              boxShadow: "var(--shadow-glass)",
+              // No backgroundColor/blur here (unlike most glass panels) — this container's own
+              // padding (pt-[10px] above, px-[10px] pb-[10px] on the board columns wrapper below)
+              // sits around the board columns/list rows, and a translucent glass fill used to show
+              // through that padding as its own tinted color, different from the plain page
+              // background everywhere else. Left transparent so the padding blends into <main>'s
+              // own background instead.
               marginLeft: -12,
               marginRight: -12,
             }}
@@ -2924,6 +2985,46 @@ export default function DashboardPage() {
                         </button>
                       );
                     })}
+                  </div>,
+                  document.body,
+                )}
+
+              {isMobileQuickFilterOpen &&
+                mobileQuickFilterPos &&
+                createPortal(
+                  <div
+                    data-quick-filter-menu="true"
+                    className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
+                    style={{
+                      left: mobileQuickFilterPos.left,
+                      top: mobileQuickFilterPos.top,
+                      width: mobileQuickFilterPos.width,
+                      zIndex: 2147483647,
+                      borderColor: "var(--glass-border)",
+                      backgroundColor: "var(--glass-modal-bg)",
+                      backdropFilter: "blur(12px) saturate(220%)",
+                      WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {QUICK_FILTER_OPTIONS.map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => {
+                          setQuickFilter(option.key);
+                          setIsMobileQuickFilterOpen(false);
+                          setMobileQuickFilterPos(null);
+                        }}
+                        className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold"
+                        style={{
+                          backgroundImage: quickFilter === option.key ? "var(--brand-gradient)" : "none",
+                          color: quickFilter === option.key ? "#FFFFFF" : dashboardPalette.text,
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
                   </div>,
                   document.body,
                 )}

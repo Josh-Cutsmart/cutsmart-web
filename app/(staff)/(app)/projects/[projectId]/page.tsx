@@ -25,6 +25,7 @@ import SpecsGridEditor from "@/components/specs-grid-editor";
 import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, clearAllConfirmableMarks, createEmptyGrid, computeSpecsPageBoxWidthPx, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow, resolveProjectImageUrl, resolveProjectImageDataUrl, blobToDataUrl } from "@/lib/specs-grid-pdf";
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
+import { retryAsync } from "@/lib/load-retry";
 import {
   fetchChecklistTemplates,
   fetchCompanyDoc,
@@ -12898,31 +12899,40 @@ export default function ProjectDetailsPage() {
             : "";
         const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
 
-        // Changelog is deliberately NOT fetched here — it's read on demand (the Settings tab's
-        // own Refresh button) rather than on every project load, so opening a project that nobody
-        // ever checks the changelog for costs zero extra reads for it.
-        const [projectItem, quoteItems] = await Promise.all([
-          fetchProjectById(projectId, user?.uid, preferredCompanyIds),
-          fetchQuotes(),
-        ]);
+        try {
+          // Changelog is deliberately NOT fetched here — it's read on demand (the Settings tab's
+          // own Refresh button) rather than on every project load, so opening a project that nobody
+          // ever checks the changelog for costs zero extra reads for it.
+          const [projectItem, quoteItems] = await Promise.all([
+            retryAsync(() => fetchProjectById(projectId, user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 350 }),
+            retryAsync(() => fetchQuotes(), { attempts: 2, delayMs: 350 }),
+          ]);
 
-      setProject(projectItem);
-      setGeneralDetailsDraft({
-        customer: String(projectItem?.customer ?? ""),
-        clientPhone: String(projectItem?.clientPhone ?? ""),
-        clientEmail: String(projectItem?.clientEmail ?? ""),
-        clientAddress: String(projectItem?.clientAddress ?? ""),
-        notes: String(projectItem?.notes ?? ""),
-      });
-      setProductionNotesDraft(String(projectItem?.productionNotes ?? ""));
-      setProjectGapAllowancesDraft(
-        normalizeGapAllowancesSettings(
-          ((projectItem?.projectSettings ?? {}) as Record<string, unknown>).gapAllowancesSettings,
-        ),
-      );
-      setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
-      setQuotes(quoteItems.filter((item) => item.projectId === projectId));
-      setIsLoading(false);
+          setProject(projectItem);
+          setGeneralDetailsDraft({
+            customer: String(projectItem?.customer ?? ""),
+            clientPhone: String(projectItem?.clientPhone ?? ""),
+            clientEmail: String(projectItem?.clientEmail ?? ""),
+            clientAddress: String(projectItem?.clientAddress ?? ""),
+            notes: String(projectItem?.notes ?? ""),
+          });
+          setProductionNotesDraft(String(projectItem?.productionNotes ?? ""));
+          setProjectGapAllowancesDraft(
+            normalizeGapAllowancesSettings(
+              ((projectItem?.projectSettings ?? {}) as Record<string, unknown>).gapAllowancesSettings,
+            ),
+          );
+          setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
+          setQuotes(quoteItems.filter((item) => item.projectId === projectId));
+        } catch {
+          // A network/Firestore hiccup here used to leave the page stuck on "Loading project..."
+          // forever, since setIsLoading(false) below was never reached — falling through to the
+          // "Project not found" state instead at least gives the user something actionable
+          // (a normal browser reload) rather than an infinite spinner.
+          setProject(null);
+        } finally {
+          setIsLoading(false);
+        }
     };
 
     void load();
@@ -43569,6 +43579,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{
               top: projectHeaderRowHeight + (isLgUpViewport ? 48 : 0),
               marginTop: 0,
+              boxShadow: "var(--shadow-sm)",
             }}
           >
             <div className="px-4 md:px-5">
@@ -43673,8 +43684,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "general" && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <div className="space-y-4 px-[22px] pb-4 pt-1 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+              <div className="space-y-4 px-[22px] pb-4 pt-[22px] md:px-[22px] xl:px-[22px] xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
                 <div className="grid gap-4 xl:grid-cols-2">
                   <div className="space-y-4">
                     <div ref={clientDetailsContainerRef}>
@@ -44348,12 +44359,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               {/* xl:pr-2 (not pr-0) — the nav buttons below scale up 4% on hover (hover:scale-[1.04]),
                   and this sidebar clips overflow; xl:pl-5 already gives the left edge plenty of
                   room to grow into, but zero right padding meant the button's right edge grew
-                  straight into this container's clip boundary with nothing to absorb it. */}
-              <aside className="h-full overflow-hidden px-3 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-4">
+                  straight into this container's clip boundary with nothing to absorb it. Top
+                  padding (pt-3/xl:pt-5) matches the left padding (px-3/xl:pl-5) exactly, so these
+                  buttons line up with the top of the containers in the main content column beside
+                  them, which mirror this same top-matches-side spacing (see below). */}
+              <aside className="h-full overflow-hidden px-3 pb-3 pt-3 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-5">
                 <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
                 {[
                   { label: "Overview", icon: LayoutGrid, key: "overview" as const },
@@ -44401,7 +44415,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 className={
                   salesNav === "initial" || salesNav === "items"
                     ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
-                    : "isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
+                    : "isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:px-0"
                 }
               >
                 {salesReadOnly && (
@@ -44740,12 +44754,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               {/* xl:pr-2 (not pr-0) — the nav buttons below scale up 4% on hover (hover:scale-[1.04]),
                   and this sidebar clips overflow; xl:pl-5 already gives the left edge plenty of
                   room to grow into, but zero right padding meant the button's right edge grew
-                  straight into this container's clip boundary with nothing to absorb it. */}
-              <aside className="h-full overflow-hidden px-3 pb-3 pt-1 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-4">
+                  straight into this container's clip boundary with nothing to absorb it. Top
+                  padding (pt-3/xl:pt-5) matches the left padding (px-3/xl:pl-5) exactly, so these
+                  buttons line up with the top of the containers in the main content column beside
+                  them, which mirror this same top-matches-side spacing (see below). */}
+              <aside className="h-full overflow-hidden px-3 pb-3 pt-3 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-5">
                 <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
                 {[
                   { label: "Cutlist", icon: Scissors, key: "cutlist" as const },
@@ -44823,7 +44840,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           ? "xl:pr-[356px]"
                           : ""
                       }`
-                    : "relative isolate mt-2 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-4 xl:px-0"
+                    : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:px-0"
                 }
               >
                 {productionNav === "cutlist" ? (
@@ -47592,8 +47609,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             ))}
 
           {resolvedTab === "settings" && settingsAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 mt-2 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
-              <div className="space-y-4 px-[22px] pb-4 pt-1 md:px-[22px] xl:px-[22px] xl:pb-4 xl:pt-4" style={{ backgroundColor: projectTabAreaBg }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 md:-mx-5" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+              <div className="space-y-4 px-[22px] pb-4 pt-[22px] md:px-[22px] xl:px-[22px] xl:pb-4" style={{ backgroundColor: projectTabAreaBg }}>
                 <button
                   type="button"
                   onClick={(e) => {

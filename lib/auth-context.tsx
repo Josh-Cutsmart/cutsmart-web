@@ -35,6 +35,14 @@ interface AuthContextValue {
 
 const DEMO_STORAGE_KEY = "cutsmart_web_demo_role";
 const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
+// Same key app-shell/dashboard/etc use to resolve "which company is active" — a manual override
+// that, once set, is never overwritten automatically (see app-shell.tsx's branding-load effect).
+// Left in place across a logout, it makes the NEXT account signed in on this browser inherit the
+// PREVIOUS account's company: its cached project tabs, branding, and active-company resolution
+// all key off this value rather than the freshly signed-in user's own companyId. Clearing it on
+// logout is what stops one account's state from bleeding into a different account/company signed
+// in afterward on the same browser.
+const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 // A cold, first-time connection (fresh browser, no cached Firestore/Auth state) is measurably
 // slower and more failure-prone than a warm reload — bound how long the membership/profile fetch
 // is allowed to hang so a stalled network call can never leave the loading screen stuck forever.
@@ -245,6 +253,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         if (typeof window !== "undefined") {
           window.localStorage.setItem(REMEMBER_DEVICE_STORAGE_KEY, rememberOnDevice ? "1" : "0");
+          // Defensive twin of the logout-time clear above, for a session that ended without an
+          // explicit logout (browser closed, session expired) — a fresh sign-in should never
+          // inherit whichever company was last active on this browser.
+          window.localStorage.removeItem(ACTIVE_COMPANY_STORAGE_KEY);
         }
         await setPersistence(auth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
         await signInWithEmailAndPassword(auth, email, password);
@@ -257,6 +269,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(createDemoUser(role));
       },
       logout: async () => {
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem(ACTIVE_COMPANY_STORAGE_KEY);
+        }
         if (auth && hasFirebaseConfig) {
           await signOut(auth);
           return;

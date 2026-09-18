@@ -19,6 +19,7 @@ import {
   Tag,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -2375,33 +2376,31 @@ export function AppShell({
       </div>
       {showUpdateNotice && (
         <div
-          className="fixed inset-0 z-[8900] flex items-center justify-center px-4"
-          style={{
-            backgroundColor: "rgba(8,12,20,0.52)",
-            backdropFilter: "blur(6px)",
-            WebkitBackdropFilter: "blur(6px)",
-          }}
+          className="glass-modal-backdrop fixed inset-0 z-[8900] flex items-center justify-center px-4"
+          onClick={dismissUpdateNotice}
         >
           <div
-            className="relative flex w-[min(860px,calc(100vw-20px))] max-h-[min(80vh,720px)] flex-col overflow-hidden rounded-[16px] border text-[var(--text-main)]"
-            style={{
-              backgroundColor: "var(--glass-bg-strong)",
-              backdropFilter: "blur(28px) saturate(180%)",
-              WebkitBackdropFilter: "blur(28px) saturate(180%)",
-              borderColor: "var(--glass-border)",
-              boxShadow: "var(--shadow-modal)",
-            }}
+            className="glass-modal-panel relative flex w-[min(860px,calc(100vw-20px))] max-h-[min(80vh,720px)] flex-col overflow-hidden text-[var(--text-main)]"
+            onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex h-[56px] shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[var(--panel-muted)] px-4">
-              <p className="text-[17px] font-semibold text-[var(--text-main)]">
+            <div className="glass-modal-header relative flex h-[56px] shrink-0 items-center justify-between px-4">
+              <p className="text-[17px] font-medium text-[var(--text-main)]">
                 Updated to {updateNoticeVersion || "Unknown Version"}
               </p>
               <button
                 type="button"
                 onClick={dismissUpdateNotice}
-                className="h-8 rounded-[9px] bg-[image:var(--brand-gradient)] px-3 text-[12px] font-semibold text-white transition hover:brightness-105"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
+                style={{
+                  borderColor: "var(--danger-glass-border)",
+                  backgroundColor: "var(--danger-glass-bg)",
+                  backdropFilter: "blur(10px) saturate(180%)",
+                  WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                  color: "#FFFFFF",
+                }}
+                title="Close"
               >
-                OK
+                <X size={16} strokeWidth={2.4} />
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
