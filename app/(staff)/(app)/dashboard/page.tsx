@@ -2587,6 +2587,7 @@ export default function DashboardPage() {
 
           {dashboardViewMode === "board" && (
           <div
+            data-horizontal-swipe-scroll="true"
             className="glass-scroll flex snap-x snap-mandatory items-stretch gap-[10px] overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none"
             style={{ flex: "1 1 auto", minHeight: 0 }}
           >

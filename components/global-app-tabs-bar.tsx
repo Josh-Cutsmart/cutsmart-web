@@ -93,7 +93,13 @@ export function GlobalAppTabsBar() {
   useEffect(() => {
     if (typeof document === "undefined") return;
     mainPushRef.current = document.querySelector<HTMLElement>('[data-app-main-push="true"]');
-  }, []);
+    // Re-resolved (not just once on mount) because this component can render its real content
+    // before AppShell's <main> exists yet — it returns null until there's a registered tab to
+    // show (see the early `if (!user || !groupedGlobalTabs.length...) return null` above), which
+    // doesn't depend on AppShell having mounted. A one-time empty-deps query could run and find
+    // nothing, permanently leaving the panel with no page content to push. Re-querying right
+    // before the panel actually opens is guaranteed to run well after <main> exists.
+  }, [isNotifOpen]);
   const { shouldRender: shouldRenderMobileNotif, touchHandlers: mobileNotifTouchHandlers } = useSwipeToClose(
     isNotifOpen && !isDesktopViewport,
     () => setIsNotifOpen(false),

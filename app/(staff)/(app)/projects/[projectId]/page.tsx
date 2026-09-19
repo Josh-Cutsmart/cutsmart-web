@@ -25,7 +25,7 @@ import SpecsGridEditor from "@/components/specs-grid-editor";
 import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, clearAllConfirmableMarks, createEmptyGrid, computeSpecsPageBoxWidthPx, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow, resolveProjectImageUrl, resolveProjectImageDataUrl, blobToDataUrl } from "@/lib/specs-grid-pdf";
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
-import { retryAsync } from "@/lib/load-retry";
+import { retryAsync, withTimeout } from "@/lib/load-retry";
 import {
   fetchChecklistTemplates,
   fetchCompanyDoc,
@@ -12884,8 +12884,17 @@ export default function ProjectDetailsPage() {
 
   useEffect(() => {
     const projectId = params.projectId;
+    // Navigating directly from one project's page to another (e.g. clicking a different open
+    // tab) reuses this same component instance rather than unmounting it — without resetting
+    // isLoading back to true here, that navigation would keep showing the PREVIOUS project's
+    // already-loaded content while the new one fetches in the background, with no loading state
+    // at all. `cancelled` guards against the reverse problem: a slow/superseded load from the
+    // OLD projectId finishing after a newer one has already started, and clobbering its state.
+    let cancelled = false;
+    setIsLoading(true);
     const load = async () => {
         if (!projectId) {
+          if (cancelled) return;
           setProject(null);
           setChanges([]);
           setQuotes([]);
@@ -12903,10 +12912,21 @@ export default function ProjectDetailsPage() {
           // Changelog is deliberately NOT fetched here — it's read on demand (the Settings tab's
           // own Refresh button) rather than on every project load, so opening a project that nobody
           // ever checks the changelog for costs zero extra reads for it.
-          const [projectItem, quoteItems] = await Promise.all([
-            retryAsync(() => fetchProjectById(projectId, user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 350 }),
-            retryAsync(() => fetchQuotes(), { attempts: 2, delayMs: 350 }),
-          ]);
+          // withTimeout matters here specifically for mobile: a request left in-flight when the
+          // browser tab gets backgrounded (switching apps mid-navigation) can stall indefinitely
+          // rather than reject, so retryAsync alone never gets a failure to retry — the page was
+          // stuck on "Loading project..." until a full remount (navigating away and back) started
+          // a fresh request. The timeout forces that stall to fail instead, so catch/finally below
+          // still run.
+          const [projectItem, quoteItems] = await withTimeout(
+            Promise.all([
+              retryAsync(() => fetchProjectById(projectId, user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 350 }),
+              retryAsync(() => fetchQuotes(), { attempts: 2, delayMs: 350 }),
+            ]),
+            15000,
+            "Project load timed out",
+          );
+          if (cancelled) return;
 
           setProject(projectItem);
           setGeneralDetailsDraft({
@@ -12925,17 +12945,21 @@ export default function ProjectDetailsPage() {
           setProjectTags(Array.isArray(projectItem?.tags) ? projectItem.tags.slice(0, 5) : []);
           setQuotes(quoteItems.filter((item) => item.projectId === projectId));
         } catch {
+          if (cancelled) return;
           // A network/Firestore hiccup here used to leave the page stuck on "Loading project..."
           // forever, since setIsLoading(false) below was never reached — falling through to the
           // "Project not found" state instead at least gives the user something actionable
           // (a normal browser reload) rather than an infinite spinner.
           setProject(null);
         } finally {
-          setIsLoading(false);
+          if (!cancelled) setIsLoading(false);
         }
     };
 
     void load();
+    return () => {
+      cancelled = true;
+    };
   }, [params.projectId, user?.uid]);
 
   useEffect(() => {
@@ -33700,6 +33724,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </div>
                     <div className="shrink-0 overflow-hidden border-b" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
               <div
+                data-horizontal-swipe-scroll="true"
                 className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
                 onScroll={(e) => {
                   const container = e.currentTarget;

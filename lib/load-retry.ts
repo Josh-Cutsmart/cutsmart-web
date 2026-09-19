@@ -40,3 +40,19 @@ export async function retryAsync<T>(
 
   return await task();
 }
+
+// retryAsync only re-tries on a REJECTION — it can't do anything about a promise that never
+// settles at all (neither resolves nor rejects), which does happen in the wild: e.g. a Firestore
+// read left in-flight when a mobile browser tab gets backgrounded can stall indefinitely and only
+// resume once the tab is foregrounded again, if ever. Racing the real work against a timer turns
+// that "hangs forever" case into an ordinary rejection too, so a caller's normal catch/finally
+// (loading-state cleanup, fallback UI, etc.) still runs instead of leaving a loading screen stuck
+// with no way to recover short of a full remount (e.g. navigating away and back).
+export function withTimeout<T>(promise: Promise<T>, ms: number, message = "Operation timed out"): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      window.setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]);
+}

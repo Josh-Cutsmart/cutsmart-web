@@ -494,14 +494,42 @@ export function AppShell({
   // before committing to horizontal vs vertical) so a vertical scroll never gets hijacked.
   const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
   const MAIN_SWIPE_OPEN_THRESHOLD_PX = 70;
+  // Pull-to-navigate: dragging down past the top of an already-at-top page (the same gesture
+  // that would otherwise just rubber-band bounce) reveals a "Dashboard" banner above the
+  // content; releasing past the threshold navigates there, same as the two other panels this
+  // gesture set already opens. Tracked with direct DOM writes (not React state) during the drag
+  // itself, matching useSwipeToClose's approach, so dragging doesn't re-render on every touchmove.
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+  const pullBannerRef = useRef<HTMLDivElement | null>(null);
+  const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean } | null>(null);
+  const PULL_DASHBOARD_THRESHOLD_PX = 70;
+  const PULL_DASHBOARD_MAX_PX = 110;
+  const resetPullBanner = (animate: boolean) => {
+    const banner = pullBannerRef.current;
+    if (!banner) return;
+    banner.style.transition = animate ? "height 200ms ease, opacity 200ms ease" : "none";
+    banner.style.height = "0px";
+    banner.style.opacity = "0";
+  };
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
-    if (isDesktopViewport || mobileNavOpen || notifOpen) {
+    // A page's own horizontal swiper (e.g. the dashboard's board-view columns, or a fullscreen
+    // room-tab strip) needs the same left/right drag gesture for its own purposes — bail out
+    // entirely rather than fight it for the same touch.
+    const startedOnHorizontalScroller = (event.target as HTMLElement | null)?.closest(
+      '[data-horizontal-swipe-scroll="true"]',
+    );
+    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnHorizontalScroller) {
       mainSwipeStartRef.current = null;
+      pullDashboardRef.current = null;
       return;
     }
     const touch = event.touches[0];
     if (!touch) return;
     mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
+    pullDashboardRef.current = pathname !== "/dashboard" && alreadyAtTop
+      ? { startY: touch.clientY, active: false, armed: false }
+      : null;
   };
   const onMainTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
@@ -514,10 +542,42 @@ export function AppShell({
       if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
       start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
     }
+    const pull = pullDashboardRef.current;
+    if (!pull || start.axis !== "vertical") return;
+    const dy = touch.clientY - pull.startY;
+    if (dy <= 0) {
+      if (pull.active) {
+        pull.active = false;
+        pull.armed = false;
+        resetPullBanner(false);
+      }
+      return;
+    }
+    pull.active = true;
+    event.preventDefault();
+    // Damped (not 1:1 with the finger) so it reads as resistance, same rubber-band feel as the
+    // native overscroll bounce this replaces — and capped so it can't grow unbounded.
+    const pulled = Math.min(dy * 0.5, PULL_DASHBOARD_MAX_PX);
+    pull.armed = pulled >= PULL_DASHBOARD_THRESHOLD_PX;
+    const banner = pullBannerRef.current;
+    if (banner) {
+      banner.style.transition = "none";
+      banner.style.height = `${pulled}px`;
+      banner.style.opacity = String(Math.min(1, pulled / PULL_DASHBOARD_THRESHOLD_PX));
+      banner.style.backgroundImage = pull.armed ? "var(--brand-gradient)" : "none";
+      banner.style.color = pull.armed ? "#FFFFFF" : "var(--brand-strong)";
+    }
   };
   const onMainTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
+    const pull = pullDashboardRef.current;
     mainSwipeStartRef.current = null;
+    pullDashboardRef.current = null;
+    if (pull?.active) {
+      resetPullBanner(true);
+      if (pull.armed) router.push("/dashboard");
+      return;
+    }
     if (!start || start.axis !== "horizontal") return;
     const touch = event.changedTouches[0];
     if (!touch) return;
@@ -2371,7 +2431,19 @@ export function AppShell({
           overflowY: "visible",
         }}
       >
+        {!isDesktopViewport && !chromeHidden && (
+          <div
+            ref={pullBannerRef}
+            aria-hidden="true"
+            className="flex items-center justify-center gap-2 overflow-hidden text-[13px] font-bold"
+            style={{ height: 0, opacity: 0, backgroundColor: "var(--panel-muted)", color: "var(--brand-strong)" }}
+          >
+            <LayoutDashboard size={16} />
+            Dashboard
+          </div>
+        )}
         <main
+          ref={mainScrollRef}
           className={
             chromeHidden
               ? "min-h-0 min-w-0 overscroll-y-contain"
