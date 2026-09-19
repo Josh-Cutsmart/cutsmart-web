@@ -165,4 +165,6 @@ export interface AppUser {
   companyId?: string;
   permissions?: string[];
   verified?: boolean;
+  // "Notifications as Creator" (User Settings) — see lib/membership.ts's UserProfileSummary.
+  notifyAsCreator?: boolean;
 }

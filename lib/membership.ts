@@ -25,6 +25,10 @@ export interface UserProfileSummary {
   userColor?: string;
   companyId?: string;
   verified?: boolean;
+  // "Notifications as Creator" (User Settings) — when true, a project this user creates
+  // auto-subscribes them to its notifications, same as the assigned user already does by
+  // default. Off by default: see isProjectNotifySubscribed in lib/project-notify.ts.
+  notifyAsCreator?: boolean;
 }
 
 export interface CompanyAccessInfo {
@@ -368,6 +372,7 @@ export async function fetchUserProfileSummary(uid: string): Promise<UserProfileS
       // Absent field = unverified — never default this to true, a missing doc/field must never
       // read as "trusted."
       verified: Boolean(data.verified),
+      notifyAsCreator: Boolean(data.notifyAsCreator),
     };
   } catch {
     return null;

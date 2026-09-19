@@ -8,6 +8,7 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled } from "@/lib/ui-preferences";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchUserNotifications,
@@ -294,6 +295,23 @@ export function GlobalAppTabsBar() {
     window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeModeUpdated as EventListener);
     return () => {
       window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeModeUpdated as EventListener);
+    };
+  }, []);
+
+  // User Settings > "Mobile top navigation bar" — off hides this entire bar below the lg
+  // breakpoint (hamburger, open-tab pills, bell), leaving the desktop tab strip untouched. Still
+  // reachable while off via the swipe-open gestures on <main> (see app-shell.tsx).
+  const [mobileTopBarEnabled, setMobileTopBarEnabled] = useState(true);
+  useEffect(() => {
+    setMobileTopBarEnabled(readMobileTopBarEnabled());
+    if (typeof window === "undefined") return;
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ enabled: boolean }>).detail;
+      setMobileTopBarEnabled(detail?.enabled ?? true);
+    };
+    window.addEventListener(MOBILE_TOP_BAR_UPDATED_EVENT, onUpdated as EventListener);
+    return () => {
+      window.removeEventListener(MOBILE_TOP_BAR_UPDATED_EVENT, onUpdated as EventListener);
     };
   }, []);
 
@@ -746,6 +764,7 @@ export function GlobalAppTabsBar() {
 
   return (
     <>
+      {(isDesktopViewport || mobileTopBarEnabled) && (
       <div
         className="fixed left-0 right-0 top-0 z-[95] h-12 px-2 lg:left-[240px]"
         style={{
@@ -935,6 +954,7 @@ export function GlobalAppTabsBar() {
           ) : null}
         </div>
       </div>
+      )}
       {isNotifOpen && notifPos && isDesktopViewport && typeof document !== "undefined"
         ? createPortal(
             <div

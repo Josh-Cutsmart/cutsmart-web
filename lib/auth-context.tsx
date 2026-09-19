@@ -29,7 +29,7 @@ interface AuthContextValue {
   signInDemo: (role: UserRole) => void;
   logout: () => Promise<void>;
   setUserColorLocal: (color: string) => void;
-  setUserProfileLocal: (patch: Partial<Pick<AppUser, "displayName" | "mobile" | "userColor">>) => void;
+  setUserProfileLocal: (patch: Partial<Pick<AppUser, "displayName" | "mobile" | "userColor" | "notifyAsCreator">>) => void;
   setUserVerifiedLocal: (verified: boolean) => void;
 }
 
@@ -76,6 +76,7 @@ function fromFirebaseUser(
   userColor?: string,
   mobile?: string,
   verified?: boolean,
+  notifyAsCreator?: boolean,
 ): AppUser {
   return {
     uid: user.uid,
@@ -87,6 +88,7 @@ function fromFirebaseUser(
     companyId,
     permissions: [],
     verified,
+    notifyAsCreator,
   };
 }
 
@@ -195,6 +197,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 profile?.userColor,
                 profile?.mobile,
                 Boolean(profile?.verified),
+                Boolean(profile?.notifyAsCreator),
               ),
               permissions: membership?.permissionKeys ?? [],
             },
@@ -299,6 +302,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           if (Object.prototype.hasOwnProperty.call(patch, "userColor")) {
             next.userColor = String(patch.userColor ?? "").trim() || undefined;
+          }
+          if (Object.prototype.hasOwnProperty.call(patch, "notifyAsCreator")) {
+            next.notifyAsCreator = Boolean(patch.notifyAsCreator);
           }
           return next;
         });

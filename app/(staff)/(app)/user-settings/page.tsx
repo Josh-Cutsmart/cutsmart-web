@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Check, ClipboardList, Mail, MailCheck, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
+import { Bell, Building2, Check, ClipboardList, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { auth } from "@/lib/firebase";
 import {
@@ -15,6 +15,12 @@ import {
 } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
+import {
+  readDashboardStatCardsEnabled,
+  readMobileTopBarEnabled,
+  saveDashboardStatCardsEnabled,
+  saveMobileTopBarEnabled,
+} from "@/lib/ui-preferences";
 import type { ChecklistTemplate } from "@/lib/types";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
@@ -22,6 +28,37 @@ import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/compone
 
 function newChecklistLocalId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Same pill-switch look as the cutlist editor's own toggles (e.g. Top Scribers, Grain).
+function SettingsToggleSwitch({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50"
+      style={{
+        borderColor: checked ? "var(--brand-strong)" : "var(--glass-border)",
+        backgroundColor: checked ? "var(--brand-strong)" : "var(--panel-muted)",
+      }}
+    >
+      <span
+        className="inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform"
+        style={{ transform: checked ? "translateX(18px)" : "translateX(2px)" }}
+      />
+    </button>
+  );
 }
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
@@ -34,6 +71,15 @@ export default function UserSettingsPage() {
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [userColor, setUserColor] = useState(user?.userColor || "");
   const [mobile, setMobile] = useState(user?.mobile || "");
+  const [notifyAsCreator, setNotifyAsCreator] = useState(Boolean(user?.notifyAsCreator));
+  // Per-device UI toggles — localStorage-only (see lib/ui-preferences.ts), not part of the
+  // account profile save/dirty tracking above.
+  const [mobileTopBarEnabled, setMobileTopBarEnabled] = useState(true);
+  const [dashboardStatCardsEnabled, setDashboardStatCardsEnabled] = useState(true);
+  useEffect(() => {
+    setMobileTopBarEnabled(readMobileTopBarEnabled());
+    setDashboardStatCardsEnabled(readDashboardStatCardsEnabled());
+  }, []);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
@@ -73,11 +119,13 @@ export default function UserSettingsPage() {
   const displayNameRef = useRef(displayName);
   const userColorRef = useRef(userColor);
   const mobileRef = useRef(mobile);
+  const notifyAsCreatorRef = useRef(notifyAsCreator);
   useLayoutEffect(() => {
     displayNameRef.current = displayName;
     userColorRef.current = userColor;
     mobileRef.current = mobile;
-  }, [displayName, userColor, mobile]);
+    notifyAsCreatorRef.current = notifyAsCreator;
+  }, [displayName, userColor, mobile, notifyAsCreator]);
 
   const profileSnapshot = useMemo(
     () =>
@@ -85,8 +133,9 @@ export default function UserSettingsPage() {
         displayName: String(displayName || "").trim(),
         userColor: String(userColor || "").trim(),
         mobile: String(mobile || "").trim(),
+        notifyAsCreator: Boolean(notifyAsCreator),
       }),
-    [displayName, mobile, userColor],
+    [displayName, mobile, userColor, notifyAsCreator],
   );
 
   useEffect(() => {
@@ -102,6 +151,10 @@ export default function UserSettingsPage() {
   }, [user?.mobile]);
 
   useEffect(() => {
+    setNotifyAsCreator(Boolean(user?.notifyAsCreator));
+  }, [user?.notifyAsCreator]);
+
+  useEffect(() => {
     isSavingRef.current = isSaving;
   }, [isSaving]);
 
@@ -110,8 +163,9 @@ export default function UserSettingsPage() {
       displayName: String(user?.displayName || "").trim(),
       userColor: String(user?.userColor || "").trim(),
       mobile: String(user?.mobile || "").trim(),
+      notifyAsCreator: Boolean(user?.notifyAsCreator),
     });
-  }, [user?.displayName, user?.mobile, user?.userColor]);
+  }, [user?.displayName, user?.mobile, user?.userColor, user?.notifyAsCreator]);
 
   useEffect(() => {
     setThemeMode(readThemeMode());
@@ -217,6 +271,7 @@ export default function UserSettingsPage() {
       displayName: String(displayNameRef.current || "").trim(),
       userColor: String(userColorRef.current || "").trim(),
       mobile: String(mobileRef.current || "").trim(),
+      notifyAsCreator: Boolean(notifyAsCreatorRef.current),
     };
     const nextSnapshot = JSON.stringify(normalized);
     if (nextSnapshot === lastSavedSnapshotRef.current) {
@@ -747,6 +802,70 @@ export default function UserSettingsPage() {
         </aside>
 
         <div className="space-y-5">
+          <div className="rounded-[18px] border p-5" style={glassCardStyle}>
+            <h3 className="mb-4 text-[15px] font-extrabold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+              Preferences
+            </h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Bell size={16} style={{ color: "var(--text-muted)" }} />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Notifications as Creator</p>
+                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      Auto-subscribe to notifications for projects you create.
+                    </p>
+                  </div>
+                </div>
+                <SettingsToggleSwitch
+                  checked={notifyAsCreator}
+                  onChange={(next) => {
+                    setNotifyAsCreator(next);
+                    queueAutoSave();
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <PanelTop size={16} style={{ color: "var(--text-muted)" }} />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Mobile Top Navigation Bar</p>
+                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      The bar above the page with the menu and Dashboard button — not the page&apos;s own tab bar. Still reachable by swiping while off.
+                    </p>
+                  </div>
+                </div>
+                <SettingsToggleSwitch
+                  checked={mobileTopBarEnabled}
+                  onChange={(next) => {
+                    setMobileTopBarEnabled(next);
+                    saveMobileTopBarEnabled(next);
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <LayoutDashboard size={16} style={{ color: "var(--text-muted)" }} />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Dashboard Stat Cards</p>
+                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      Show the Projects/Active/Completed/Staff cards at the top of the dashboard.
+                    </p>
+                  </div>
+                </div>
+                <SettingsToggleSwitch
+                  checked={dashboardStatCardsEnabled}
+                  onChange={(next) => {
+                    setDashboardStatCardsEnabled(next);
+                    saveDashboardStatCardsEnabled(next);
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-[18px] border p-5" style={glassCardStyle}>
             <div className="mb-5 flex items-start justify-between gap-3">
               <div>

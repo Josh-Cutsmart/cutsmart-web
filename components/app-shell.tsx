@@ -14,6 +14,7 @@ import {
   PartyPopper,
   Plus,
   PlusCircle,
+  RefreshCw,
   Search,
   Settings,
   Tag,
@@ -495,21 +496,41 @@ export function AppShell({
   const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
   const MAIN_SWIPE_OPEN_THRESHOLD_PX = 70;
   // Pull-to-navigate: dragging down past the top of an already-at-top page (the same gesture
-  // that would otherwise just rubber-band bounce) reveals a "Dashboard" banner above the
-  // content; releasing past the threshold navigates there, same as the two other panels this
-  // gesture set already opens. Tracked with direct DOM writes (not React state) during the drag
-  // itself, matching useSwipeToClose's approach, so dragging doesn't re-render on every touchmove.
+  // that would otherwise just rubber-band bounce) reveals a full-width action bar pinned to the
+  // true top of the viewport (position: fixed, not a normal-flow element pushing content down —
+  // that's what left a strip of bare page background above it before, since it started below
+  // whatever top padding/bar the page already had). It has two zones: "Dashboard" on the right
+  // (the default/rest side) and "Reload" on the left — whichever side the finger is currently
+  // over when released past the pull threshold is the one that fires. Tracked with direct DOM
+  // writes (not React state) during the drag itself, matching useSwipeToClose's approach, so
+  // dragging doesn't re-render on every touchmove.
   const mainScrollRef = useRef<HTMLElement | null>(null);
   const pullBannerRef = useRef<HTMLDivElement | null>(null);
-  const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean } | null>(null);
-  const PULL_DASHBOARD_THRESHOLD_PX = 70;
-  const PULL_DASHBOARD_MAX_PX = 110;
+  const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
+  const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
+  const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: "reload" | "dashboard" } | null>(null);
+  const PULL_ACTION_THRESHOLD_PX = 70;
+  const PULL_ACTION_MAX_PX = 100;
+  // The left this fraction of the screen width selects Reload; the rest (including straight up,
+  // the natural resting spot for a thumb) stays on Dashboard, so a little drift left doesn't
+  // switch the selection away from the default.
+  const PULL_RELOAD_ZONE_FRACTION = 0.35;
+  const applyPullZoneStyles = (selected: "reload" | "dashboard", armed: boolean) => {
+    const reload = pullReloadZoneRef.current;
+    const dashboard = pullDashboardZoneRef.current;
+    const activeStyle = armed
+      ? { backgroundImage: "var(--brand-gradient)", backgroundColor: "", color: "#FFFFFF" }
+      : { backgroundImage: "none", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" };
+    const inactiveStyle = { backgroundImage: "none", backgroundColor: "transparent", color: "var(--text-muted)" };
+    if (reload) Object.assign(reload.style, selected === "reload" ? activeStyle : inactiveStyle);
+    if (dashboard) Object.assign(dashboard.style, selected === "dashboard" ? activeStyle : inactiveStyle);
+  };
   const resetPullBanner = (animate: boolean) => {
     const banner = pullBannerRef.current;
     if (!banner) return;
-    banner.style.transition = animate ? "height 200ms ease, opacity 200ms ease" : "none";
+    banner.style.transition = animate ? "height 200ms ease" : "none";
     banner.style.height = "0px";
-    banner.style.opacity = "0";
+    applyPullZoneStyles("dashboard", false);
   };
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
     // A page's own horizontal swiper (e.g. the dashboard's board-view columns, or a fullscreen
@@ -527,8 +548,8 @@ export function AppShell({
     if (!touch) return;
     mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
-    pullDashboardRef.current = pathname !== "/dashboard" && alreadyAtTop
-      ? { startY: touch.clientY, active: false, armed: false }
+    pullDashboardRef.current = alreadyAtTop
+      ? { startY: touch.clientY, active: false, armed: false, selected: "dashboard" }
       : null;
   };
   const onMainTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
@@ -557,16 +578,15 @@ export function AppShell({
     event.preventDefault();
     // Damped (not 1:1 with the finger) so it reads as resistance, same rubber-band feel as the
     // native overscroll bounce this replaces — and capped so it can't grow unbounded.
-    const pulled = Math.min(dy * 0.5, PULL_DASHBOARD_MAX_PX);
-    pull.armed = pulled >= PULL_DASHBOARD_THRESHOLD_PX;
+    const pulled = Math.min(dy * 0.5, PULL_ACTION_MAX_PX);
+    pull.armed = pulled >= PULL_ACTION_THRESHOLD_PX;
+    pull.selected = touch.clientX < window.innerWidth * PULL_RELOAD_ZONE_FRACTION ? "reload" : "dashboard";
     const banner = pullBannerRef.current;
     if (banner) {
       banner.style.transition = "none";
       banner.style.height = `${pulled}px`;
-      banner.style.opacity = String(Math.min(1, pulled / PULL_DASHBOARD_THRESHOLD_PX));
-      banner.style.backgroundImage = pull.armed ? "var(--brand-gradient)" : "none";
-      banner.style.color = pull.armed ? "#FFFFFF" : "var(--brand-strong)";
     }
+    applyPullZoneStyles(pull.selected, pull.armed);
   };
   const onMainTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
@@ -575,7 +595,13 @@ export function AppShell({
     pullDashboardRef.current = null;
     if (pull?.active) {
       resetPullBanner(true);
-      if (pull.armed) router.push("/dashboard");
+      if (pull.armed) {
+        if (pull.selected === "reload") {
+          window.location.reload();
+        } else {
+          router.push("/dashboard");
+        }
+      }
       return;
     }
     if (!start || start.axis !== "horizontal") return;
@@ -1931,6 +1957,11 @@ export function AppShell({
         projectSettingsJson: JSON.stringify(projectSettings),
         sales,
         salesJson: JSON.stringify(sales),
+        // "Notifications as Creator" (User Settings) — off by default (see
+        // lib/project-notify.ts's isProjectNotifySubscribed), only written here at all when the
+        // creator has opted in, so a project's stored overrides stay empty/absent for everyone
+        // who hasn't touched this setting.
+        ...(user?.notifyAsCreator && user?.uid ? { notifySubscriptionOverrides: { [user.uid]: true } } : {}),
       });
         try {
           const clientCreateResult = await fetch("/api/clients", {
@@ -2353,7 +2384,7 @@ export function AppShell({
               compresses or scrolls differently — this section just slides its top
               edge (the divider) further up, over the nav list, to reveal more. */}
           <div
-            className="absolute inset-x-0 bottom-0 overflow-hidden"
+            className="absolute inset-x-0 bottom-0 z-[5] overflow-hidden"
             style={{
               height: (isUserSettingsPanelOpen ? panelContentHeight : restContentHeight) ?? undefined,
               backgroundColor: "var(--glass-bg-strong)",
@@ -2435,11 +2466,25 @@ export function AppShell({
           <div
             ref={pullBannerRef}
             aria-hidden="true"
-            className="flex items-center justify-center gap-2 overflow-hidden text-[13px] font-bold"
-            style={{ height: 0, opacity: 0, backgroundColor: "var(--panel-muted)", color: "var(--brand-strong)" }}
+            className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
+            style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)" }}
           >
-            <LayoutDashboard size={16} />
-            Dashboard
+            <div
+              ref={pullReloadZoneRef}
+              className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
+              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
+            >
+              <RefreshCw size={16} />
+              Reload
+            </div>
+            <div
+              ref={pullDashboardZoneRef}
+              className="flex flex-[1.86] items-center justify-center gap-2 text-[13px] font-bold"
+              style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
+            >
+              <LayoutDashboard size={16} />
+              Dashboard
+            </div>
           </div>
         )}
         <main

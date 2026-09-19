@@ -20,6 +20,7 @@ import {
 import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { projectTabAccess } from "@/lib/permissions";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
+import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { retryAsync } from "@/lib/load-retry";
@@ -752,6 +753,21 @@ export default function DashboardPage() {
     window.addEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
     return () => {
       window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
+    };
+  }, []);
+
+  // User Settings > "Dashboard stat cards" toggle.
+  const [dashboardStatCardsEnabled, setDashboardStatCardsEnabled] = useState(true);
+  useEffect(() => {
+    setDashboardStatCardsEnabled(readDashboardStatCardsEnabled());
+    if (typeof window === "undefined") return;
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ enabled: boolean }>).detail;
+      setDashboardStatCardsEnabled(detail?.enabled ?? true);
+    };
+    window.addEventListener(DASHBOARD_STAT_CARDS_UPDATED_EVENT, onUpdated as EventListener);
+    return () => {
+      window.removeEventListener(DASHBOARD_STAT_CARDS_UPDATED_EVENT, onUpdated as EventListener);
     };
   }, []);
 
@@ -2152,12 +2168,12 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          <div className="space-y-0">
+          <div className="space-y-0" style={{ marginTop: -16 }}>
 
+          {dashboardStatCardsEnabled && (
           <div
             className="relative z-0"
             style={{
-              marginTop: -16,
               marginLeft: -12,
               marginRight: -12,
               padding: 16,
@@ -2234,6 +2250,7 @@ export default function DashboardPage() {
               })}
             </div>
           </div>
+          )}
 
           {/* Toolbar lives OUTSIDE the sticky panel below so it scrolls away with the stat
               cards on mobile — otherwise the board columns can never reach the top of the
