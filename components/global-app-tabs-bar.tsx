@@ -56,7 +56,7 @@ function formatSingleTabLabel(tab: AppWorkspaceTab, groupLabel: string) {
 export function GlobalAppTabsBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden, setMobileNavOpen } = useAppTabs();
+  const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden, setMobileNavOpen, notifOpen: isNotifOpen, setNotifOpen: setIsNotifOpen } = useAppTabs();
   const { user } = useAuth();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isAppTabsMenuOpen, setIsAppTabsMenuOpen] = useState("");
@@ -66,7 +66,6 @@ export function GlobalAppTabsBar() {
   const closeTabModalPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderCloseTabModal = useGlassModalPopOrigin(Boolean(closingAppTabKey), closeTabModalOrigin, closeTabModalPanelRef);
   const [notifRows, setNotifRows] = useState<UserNotificationRow[]>([]);
-  const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [notifPos, setNotifPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const notifBtnRef = useRef<HTMLButtonElement | null>(null);
   const notifDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -86,12 +85,14 @@ export function GlobalAppTabsBar() {
   }, []);
   const mobileNotifPanelRef = useRef<HTMLDivElement | null>(null);
   // This component lives outside AppShell's own tree (see app/(staff)/layout.tsx), so the page
-  // content it pushes in sync with the panel's slide has to be found by query rather than a
-  // ref passed down — <main> is the same element app-shell.tsx's own mobile nav drawer pushes.
+  // content it pushes in sync with the panel's slide has to be found by query rather than a ref
+  // passed down. Targets the SAME wrapping div app-shell.tsx's own mobile nav drawer pushes
+  // (tagged data-app-main-push) — not the inner <main> element itself, which is a different node
+  // with its own overflow/height handling that made the push look different/inconsistent here.
   const mainPushRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (typeof document === "undefined") return;
-    mainPushRef.current = document.querySelector("main");
+    mainPushRef.current = document.querySelector<HTMLElement>('[data-app-main-push="true"]');
   }, []);
   const { shouldRender: shouldRenderMobileNotif, touchHandlers: mobileNotifTouchHandlers } = useSwipeToClose(
     isNotifOpen && !isDesktopViewport,

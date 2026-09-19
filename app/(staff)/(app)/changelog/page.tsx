@@ -878,7 +878,7 @@ export default function ChangelogPage() {
                 left: sidebarLeft,
                 width: 240,
                 top: DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT,
-                height: `calc(100dvh - ${DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT}px)`,
+                height: `calc(100svh - ${DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT}px)`,
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(20px) saturate(180%)",

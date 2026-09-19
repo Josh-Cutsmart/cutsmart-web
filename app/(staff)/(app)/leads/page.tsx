@@ -3546,7 +3546,7 @@ export default function LeadsPage() {
             ) : (
               <div
                 ref={boardStickyRef}
-                className="glass-scroll sticky top-0 flex h-[calc(100dvh-48px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-2 px-2 pb-2 pt-2 sm:snap-none lg:top-[48px] lg:h-[calc(100dvh-48px)] lg:min-h-[320px]"
+                className="glass-scroll sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] snap-x snap-mandatory items-stretch gap-2 -mx-2 -mt-2 px-2 pb-2 pt-2 sm:snap-none lg:top-[48px] lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
                 style={{ overflowX: "auto", overflowY: "hidden" }}
               >
                 {leadStatusBoardColumns.columns.map((column) => {

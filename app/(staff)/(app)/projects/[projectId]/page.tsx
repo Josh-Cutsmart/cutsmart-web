@@ -26707,7 +26707,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     : salesQuotePreviewContent;
   const salesQuoteExtrasSidebar = (
     <aside
-      className="quote-extras-live-panel w-full shrink-0 self-start rounded-[14px] border lg:fixed lg:left-0 lg:top-[56px] lg:bottom-0 lg:z-[90] lg:h-[calc(100dvh-56px)] lg:w-[360px] lg:overflow-y-auto lg:overflow-x-hidden lg:overscroll-contain lg:rounded-none lg:border-y-0 lg:border-l-0"
+      className="quote-extras-live-panel w-full shrink-0 self-start rounded-[14px] border lg:fixed lg:left-0 lg:top-[56px] lg:bottom-0 lg:z-[90] lg:h-[calc(100svh-56px)] lg:w-[360px] lg:overflow-y-auto lg:overflow-x-hidden lg:overscroll-contain lg:rounded-none lg:border-y-0 lg:border-l-0"
       style={{
         borderColor: "var(--glass-border)",
         backgroundColor: "var(--glass-bg-strong)",
@@ -27735,7 +27735,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
       <div className="hidden gap-4 xl:grid xl:grid-cols-[320px_minmax(0,1fr)_320px]">
         <section
-          className="flex min-h-[calc(100dvh-96px)] flex-col overflow-hidden rounded-[18px] border"
+          className="flex min-h-[calc(100svh-96px)] flex-col overflow-hidden rounded-[18px] border"
           style={{
             borderColor: "var(--glass-border)",
             backgroundColor: "var(--glass-bg-strong)",
@@ -27881,7 +27881,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </section>
 
         <section
-          className="flex min-h-[calc(100dvh-96px)] flex-col overflow-hidden rounded-[18px] border"
+          className="flex min-h-[calc(100svh-96px)] flex-col overflow-hidden rounded-[18px] border"
           style={{
             borderColor: "var(--glass-border)",
             backgroundColor: "var(--glass-bg-strong)",
@@ -27938,7 +27938,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </section>
 
         <section
-          className="flex min-h-[calc(100dvh-96px)] flex-col overflow-hidden rounded-[18px] border"
+          className="flex min-h-[calc(100svh-96px)] flex-col overflow-hidden rounded-[18px] border"
           style={{
             borderColor: "var(--glass-border)",
             backgroundColor: "var(--glass-bg-strong)",
@@ -28751,13 +28751,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     : 1;
   const selectedNestingSheetViewportWidth = selectedNestingSheet
     ? isCompactProjectViewport
-      ? `min(calc(100vw - 32px), calc((100dvh - 260px) * ${selectedNestingSheetRatio}))`
-      : `min(calc(54vw - 80px), calc((100dvh - 440px) * ${selectedNestingSheetRatio}))`
+      ? `min(calc(100vw - 32px), calc((100svh - 260px) * ${selectedNestingSheetRatio}))`
+      : `min(calc(54vw - 80px), calc((100svh - 440px) * ${selectedNestingSheetRatio}))`
     : "min(54vw, 760px)";
   const selectedNestingSheetViewportHeight = selectedNestingSheet
     ? isCompactProjectViewport
-      ? `min(calc((100vw - 32px) / ${selectedNestingSheetRatio}), calc(100dvh - 260px))`
-      : `min(calc((54vw - 80px) / ${selectedNestingSheetRatio}), calc(100dvh - 440px))`
+      ? `min(calc((100vw - 32px) / ${selectedNestingSheetRatio}), calc(100svh - 260px))`
+      : `min(calc((54vw - 80px) / ${selectedNestingSheetRatio}), calc(100svh - 440px))`
     : "min(48vh, 420px)";
   const selectedNestingSheetStats = (() => {
     if (!selectedNestingSheet) return null;
@@ -32222,7 +32222,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isOrderFullscreen) {
     return (
       <ProtectedRoute>
-        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+        <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ShoppingCart size={14} />
@@ -32240,7 +32240,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4">
-            <div className="flex h-full min-h-[calc(100dvh-120px)] flex-col gap-3">
+            <div className="flex h-full min-h-[calc(100svh-120px)] flex-col gap-3">
               <div className="grid min-h-0 flex-1 gap-3">
                 <div className="grid min-h-0 gap-3 xl:grid-cols-3">
                   <section className="flex h-[420px] min-h-0 flex-col overflow-hidden rounded-[14px] border border-[#D7DEE8] bg-white shadow-[0_10px_24px_rgba(15,23,42,0.09),0_2px_6px_rgba(15,23,42,0.05)]">
@@ -32465,7 +32465,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </span>
                     </div>
                   </div>
-                  <div className="max-h-[calc(100dvh-180px)] overflow-auto">
+                  <div className="max-h-[calc(100svh-180px)] overflow-auto">
                     <table className="w-full text-left text-[12px]">
                       <thead className="text-[#0F172A]" style={{ backgroundColor: "var(--panel-muted)" }}>
                         <tr>
@@ -32517,7 +32517,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isSalesInitialFullscreen) {
     return (
       <ProtectedRoute>
-        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+        <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
               <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -33535,7 +33535,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       );
       return (
         <ProtectedRoute>
-          <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+          <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
             <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-3">
               <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Scissors size={14} />
@@ -35430,7 +35430,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
     return (
       <ProtectedRoute>
-        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+        <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div ref={productionCutlistFullscreenScrollRef} className="min-h-0 flex-1 overflow-y-auto hide-native-scrollbar">
           <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5">
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
@@ -35626,8 +35626,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           </div>
-          <div className="grid min-h-[calc(100dvh-56px)] gap-0 xl:grid-cols-[190px_1fr]">
-            <aside className="sticky top-[56px] self-start border-r border-[var(--glass-border)] bg-[var(--panel-bg)]" style={{ minHeight: "calc(100dvh - 56px)", maxHeight: "calc(100dvh - 56px)", overflowY: "auto" }}>
+          <div className="grid min-h-[calc(100svh-56px)] gap-0 xl:grid-cols-[190px_1fr]">
+            <aside className="sticky top-[56px] self-start border-r border-[var(--glass-border)] bg-[var(--panel-bg)]" style={{ minHeight: "calc(100svh - 56px)", maxHeight: "calc(100svh - 56px)", overflowY: "auto" }}>
               <div className="flex h-full flex-col p-2">
                 <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: "var(--text-main)" }}>Rooms</p>
                 <div className="flex flex-1 flex-col">
@@ -38207,7 +38207,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isCncFullscreen) {
     return (
       <ProtectedRoute>
-        <div className="h-[100dvh] overflow-hidden bg-[var(--bg-app)]">
+        <div className="h-[100svh] overflow-hidden bg-[var(--bg-app)]">
           {/* Same shared-backdrop-behind-a-fixed-bar treatment as the Quote/Specifications
               fullscreen views — one static-height blurred div, content-only bars on top. Desktop
               gets a second 49px band below the 56px header for the "Edit Visibility" toggle (see
@@ -38346,7 +38346,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </>
           ) : null}
           <div
-            className={isCompactProjectViewport ? "flex h-[100dvh] min-h-0 flex-col overflow-hidden" : "grid h-[100dvh] items-start gap-0 p-0"}
+            className={isCompactProjectViewport ? "flex h-[100svh] min-h-0 flex-col overflow-hidden" : "grid h-[100svh] items-start gap-0 p-0"}
             style={
               isCompactProjectViewport
                 ? undefined
@@ -39168,7 +39168,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={cncVisibilityScrollRef}
               className={isCompactProjectViewport ? "min-h-0 flex-1 overflow-y-auto hide-native-scrollbar" : "self-start min-h-0 overflow-y-auto hide-native-scrollbar"}
               style={
-                isCompactProjectViewport ? undefined : { position: "fixed", left: 0, top: 0, width: 360, height: "100dvh" }
+                isCompactProjectViewport ? undefined : { position: "fixed", left: 0, top: 0, width: 360, height: "100svh" }
               }
             >
               {!isCompactProjectViewport && <div style={{ height: 105 }} />}
@@ -39347,7 +39347,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isSalesItemsFullscreen) {
     return (
       <ProtectedRoute>
-        <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
+        <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ClipboardList size={14} />
@@ -39411,7 +39411,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const quotePendingBannerVisible = isQuoteLockedForSending && !specsShareStatus?.quoteAcceptedAt && isViewingSentQuoteVersion;
     return (
       <ProtectedRoute>
-        <div ref={salesQuoteScrollRef} className="flex h-[100dvh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
+        <div ref={salesQuoteScrollRef} className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
           {/* Same shared-backdrop-behind-two-fixed-bars treatment as the Specifications fullscreen
               view above — see that block's own comment for why this exact shape (one static-height
               blurred div, content-only bars on top) is what avoids Chromium's sticky/fixed-blur
@@ -39735,7 +39735,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               // rounded+bordered "bubble" (see the map below), so they float independently rather
               // than reading as one big panel sitting on top of the sheet.
               <div
-                className="hide-scrollbar fixed z-[90] flex w-[280px] max-h-[calc(100dvh-129px)] flex-col gap-3 overflow-y-auto px-3"
+                className="hide-scrollbar fixed z-[90] flex w-[280px] max-h-[calc(100svh-129px)] flex-col gap-3 overflow-y-auto px-3"
                 style={{ right: 16, top: 56 + 49 + 8 }}
               >
                 {displayedQuoteGridExtras.length === 0 ? (
@@ -39810,7 +39810,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               // No outer box here either — see Quote Extras' own comment above. Each version entry
               // is already its own rounded+bordered "bubble" (below), floating independently.
               <div
-                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100dvh-129px)] flex-col gap-3 overflow-y-auto px-3"
+                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100svh-129px)] flex-col gap-3 overflow-y-auto px-3"
                 style={{ left: 16, top: 56 + 49 + 8 }}
               >
                 <div className="flex flex-col gap-2">
@@ -40344,7 +40344,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const specsPendingBannerVisible = Boolean(specsShareStatus?.versionId) && !specsShareStatus?.submittedAt && isViewingSentSpecsVersion;
     return (
       <ProtectedRoute>
-        <div ref={salesSpecsScrollRef} className="flex h-[100dvh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
+        <div ref={salesSpecsScrollRef} className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
           {/* One shared blurred backdrop behind BOTH fixed bars (this header + the editor's own
               toolbar, which starts 56px below) — not `position: sticky` with the blur directly on
               it, and not two separately-blurred elements: content needs to actually
@@ -40657,7 +40657,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 the "Version History" toggle button in the header, not repeated here. */}
             {isSpecsVersionsSidebarOpen ? (
               <div
-                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100dvh-129px)] flex-col gap-2 overflow-y-auto px-3"
+                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100svh-129px)] flex-col gap-2 overflow-y-auto px-3"
                 style={{ left: 16, top: 56 + 49 + 8 }}
               >
                 {/* Always first, regardless of saved history — mirrors the Quote sheet's own "Live
@@ -40801,7 +40801,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 during the panel's own just-opened window). */}
             {isSpecsSectionsPanelOpen ? (
               <div
-                className="hide-scrollbar fixed z-[95] flex w-[260px] max-h-[calc(100dvh-129px)] flex-col gap-2 overflow-y-auto px-3"
+                className="hide-scrollbar fixed z-[95] flex w-[260px] max-h-[calc(100svh-129px)] flex-col gap-2 overflow-y-auto px-3"
                 style={{ right: 16, top: 56 + 49 + 8 }}
               >
                 {specsSheetGroups.length === 0 ? (
@@ -41164,7 +41164,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isSalesCompareFullscreen) {
     return (
       <ProtectedRoute>
-        <div ref={salesCompareScrollRef} className="flex h-[100dvh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
+        <div ref={salesCompareScrollRef} className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
           <div
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
@@ -41197,7 +41197,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 per row, same click-to-open-a-card model as the Specs/Quote version history lists.
                 The name field always reflects whichever draft is currently open (a fresh unsaved
                 one, or an already-saved one being edited/renamed). */}
-            <div className="hide-scrollbar w-[260px] shrink-0 overflow-y-auto border-r p-3" style={{ borderColor: "var(--glass-border)", maxHeight: "calc(100dvh - 56px)" }}>
+            <div className="hide-scrollbar w-[260px] shrink-0 overflow-y-auto border-r p-3" style={{ borderColor: "var(--glass-border)", maxHeight: "calc(100svh - 56px)" }}>
               <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                 Comparison name
               </label>
@@ -41860,7 +41860,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isNestingFullscreen) {
     return (
       <ProtectedRoute>
-        <div className="h-[100dvh] overflow-hidden bg-[var(--bg-app)]">
+        <div className="h-[100svh] overflow-hidden bg-[var(--bg-app)]">
           {/* Same shared-backdrop-behind-a-fixed-bar treatment as CNC's own — one static-height
               blurred div, content-only bars on top. Desktop gets a second 49px band below the 56px
               header for the "Edit Visibility" toggle (see below); mobile has no equivalent (it uses
@@ -41946,7 +41946,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             </>
           )}
-          <div className={`relative min-h-0 overflow-hidden ${isCompactProjectViewport ? "mt-[56px] h-[calc(100dvh-56px)]" : "mt-[105px] h-[calc(100dvh-105px)]"}`}>
+          <div className={`relative min-h-0 overflow-hidden ${isCompactProjectViewport ? "mt-[56px] h-[calc(100svh-56px)]" : "mt-[105px] h-[calc(100svh-105px)]"}`}>
             {isCompactProjectViewport ? (
               <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto">
                 <div
@@ -42491,7 +42491,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <section
               ref={nestingVisibilityScrollRef}
               className="self-start min-h-0 overflow-y-auto hide-native-scrollbar"
-              style={{ position: "fixed", left: 0, top: 0, width: 360, height: "100dvh" }}
+              style={{ position: "fixed", left: 0, top: 0, width: 360, height: "100svh" }}
             >
               <div style={{ height: 105 }} />
               <div
@@ -42657,7 +42657,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               <div
                 ref={nestingSheetPreviewPanelRef}
-                className={`glass-modal-panel mx-auto flex flex-col overflow-hidden ${isCompactProjectViewport ? "h-full max-h-[calc(100dvh-16px)]" : "mt-[6vh]"}`}
+                className={`glass-modal-panel mx-auto flex flex-col overflow-hidden ${isCompactProjectViewport ? "h-full max-h-[calc(100svh-16px)]" : "mt-[6vh]"}`}
                 style={{
                   width: isCompactProjectViewport ? "100%" : "fit-content",
                   maxWidth: isCompactProjectViewport ? "100%" : "88vw",
@@ -44368,7 +44368,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "sales" && salesAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100svh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               {/* xl:pr-2 (not pr-0) — the nav buttons below scale up 4% on hover (hover:scale-[1.04]),
                   and this sidebar clips overflow; xl:pl-5 already gives the left edge plenty of
                   room to grow into, but zero right padding meant the button's right edge grew
@@ -44423,7 +44423,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 className={
                   salesNav === "initial" || salesNav === "items"
-                    ? "isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
+                    ? "isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
                     : "isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:px-0"
                 }
               >
@@ -44433,7 +44433,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                 )}
                 {salesNav === "initial" ? (
-                  <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
+                  <div className="grid h-full min-h-[calc(100svh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
                     <aside className="border-r" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                       <div className="flex h-full flex-col p-2">
                         <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: projectPalette.text }}>Rooms</p>
@@ -44763,7 +44763,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
 
           {resolvedTab === "production" && productionAccess.view && (
-            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100dvh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
+            <div ref={projectTabContentRef} key={resolvedTab} className="-mx-4 -mb-4 items-stretch gap-4 md:-mx-5 xl:grid xl:min-h-[100svh] xl:grid-cols-[205px_1fr]" style={{ backgroundColor: projectTabAreaBg, animation: projectTabSlideAnimation }}>
               {/* xl:pr-2 (not pr-0) — the nav buttons below scale up 4% on hover (hover:scale-[1.04]),
                   and this sidebar clips overflow; xl:pl-5 already gives the left edge plenty of
                   room to grow into, but zero right padding meant the button's right edge grew
@@ -44844,7 +44844,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 className={
                   productionNav === "cutlist" || productionNav === "order"
-                    ? `relative isolate mt-0 w-full min-h-[calc(100dvh-235px)] px-3 sm:px-4 md:px-5 xl:px-0 ${
+                    ? `relative isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:px-0 ${
                         productionNav === "cutlist" && isProductionNotesPanelOpen && !isCompactProjectViewport
                           ? "xl:pr-[356px]"
                           : ""
@@ -45170,7 +45170,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </section>
                     </div>
                   ) : (
-                  <div className="grid h-full min-h-[calc(100dvh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
+                  <div className="grid h-full min-h-[calc(100svh-235px)] gap-0 xl:grid-cols-[190px_1fr]">
                     <aside className="border-r" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
                       <div className="flex h-full flex-col p-2">
                         <p className="mb-2 px-2 text-[16px] font-medium" style={{ color: projectPalette.text }}>Rooms</p>
@@ -46415,7 +46415,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </div>
                   )
                 ) : productionNav === "nesting" && !isNestingFullscreen ? (
-                  <div className="grid min-h-0 gap-3 lg:min-h-[calc(100dvh-235px)] lg:grid-cols-[minmax(0,1fr)_340px]">
+                  <div className="grid min-h-0 gap-3 lg:min-h-[calc(100svh-235px)] lg:grid-cols-[minmax(0,1fr)_340px]">
                     <div className="lg:hidden">
                       <div
                         className="grid grid-cols-2 overflow-hidden rounded-[12px] border"
@@ -46708,7 +46708,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </section>
                   </div>
                 ) : productionNav === "order" ? (
-                  <div className="flex h-full min-h-[calc(100dvh-235px)] flex-col gap-3">
+                  <div className="flex h-full min-h-[calc(100svh-235px)] flex-col gap-3">
                     <div
                       className="sticky top-0 z-[20] flex h-[56px] items-center justify-between rounded-[14px] border px-4"
                       style={{
@@ -46747,7 +46747,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             {orderBoardSummary.length} Rows
                           </span>
                         </div>
-                        <div className="max-h-[calc(100dvh-390px)] overflow-auto">
+                        <div className="max-h-[calc(100svh-390px)] overflow-auto">
                           <table className="w-full text-left text-[12px]">
                             <thead className="text-[#0F172A]" style={{ backgroundColor: "var(--panel-muted)" }}>
                               <tr>

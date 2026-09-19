@@ -40,7 +40,7 @@ export function VerifyEmailGate() {
 
   return (
     <div
-      className="flex min-h-[100dvh] items-center justify-center px-4 py-8"
+      className="flex min-h-[100svh] items-center justify-center px-4 py-8"
       style={{
         backgroundImage: "url('/bg.png')",
         backgroundSize: "cover",

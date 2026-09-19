@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
@@ -315,7 +315,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
-  const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen } = useAppTabs();
+  const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -487,6 +487,47 @@ export function AppShell({
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
   }, []);
+
+  // Lets a swipe anywhere on <main> (not just a drag starting on an already-open panel — that's
+  // useSwipeToClose's job, inside each panel) open the left nav or notifications, mirroring how
+  // swiping an open panel closes it. Same axis-lock approach as useSwipeToClose (6px of movement
+  // before committing to horizontal vs vertical) so a vertical scroll never gets hijacked.
+  const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  const MAIN_SWIPE_OPEN_THRESHOLD_PX = 70;
+  const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
+    if (isDesktopViewport || mobileNavOpen || notifOpen) {
+      mainSwipeStartRef.current = null;
+      return;
+    }
+    const touch = event.touches[0];
+    if (!touch) return;
+    mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+  };
+  const onMainTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
+    const start = mainSwipeStartRef.current;
+    if (!start) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    if (!start.axis) {
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+    }
+  };
+  const onMainTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
+    const start = mainSwipeStartRef.current;
+    mainSwipeStartRef.current = null;
+    if (!start || start.axis !== "horizontal") return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    if (dx > MAIN_SWIPE_OPEN_THRESHOLD_PX) {
+      setMobileNavOpen(true);
+    } else if (dx < -MAIN_SWIPE_OPEN_THRESHOLD_PX) {
+      setNotifOpen(true);
+    }
+  };
   const normalizedEffectivePermissions = useMemo(
     () => effectiveCompanyPermissions.map((item) => String(item || "").trim().toLowerCase()),
     [effectiveCompanyPermissions],
@@ -2321,6 +2362,7 @@ export function AppShell({
 
       <div
         ref={mainPushRef}
+        data-app-main-push="true"
         className={chromeHidden ? "min-w-0" : "min-w-0 pt-12"}
         style={{
           width: "100%",
@@ -2335,14 +2377,24 @@ export function AppShell({
               ? "min-h-0 min-w-0 overscroll-y-contain"
               : "min-h-0 min-w-0 overscroll-y-contain px-3 py-3 md:px-4 md:py-4 lg:px-5 lg:py-4"
           }
+          onTouchStart={onMainTouchStart}
+          onTouchMove={onMainTouchMove}
+          onTouchEnd={onMainTouchEnd}
           style={{
+            // Mobile uses svh (not dvh) for its own height here — dvh recalculates live as
+            // Safari's address bar shows/hides mid-scroll, and since THIS element is the one
+            // actually scrolling on mobile (overflowY: auto below), that live resize happened
+            // while the user's finger was still moving: the container's height changed out from
+            // under an in-progress scroll, leaving a grey gap at the bottom (content hadn't
+            // caught up to the new, larger height) and misaligning the sticky header above it.
+            // svh is fixed at the smallest the viewport ever gets, so it never shifts mid-scroll.
             height: chromeHidden
-              ? "100dvh"
+              ? (isDesktopViewport ? "100dvh" : "100svh")
               : isDesktopViewport
                 ? fillMainViewport
                   ? "calc(100dvh - 48px)" // matches this wrapper's own lg:pt-12
                   : "auto"
-                : "calc(100dvh - 48px)", // mobile now reserves only the one GlobalAppTabsBar (h-12)
+                : "calc(100svh - 48px)", // mobile now reserves only the one GlobalAppTabsBar (h-12)
             overflowX: isDesktopViewport ? "visible" : "clip",
             overflowY: isDesktopViewport ? "visible" : "auto",
             paddingLeft: chromeHidden ? 0 : "max(12px, env(safe-area-inset-left))",

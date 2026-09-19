@@ -43,6 +43,11 @@ type AppTabsContextValue = {
   // a child of it — see app/(staff)/layout.tsx) can open the same drawer AppShell owns and renders.
   mobileNavOpen: boolean;
   setMobileNavOpen: (open: boolean) => void;
+  // Same cross-component reason as mobileNavOpen above, just the other direction — the
+  // notifications panel is owned/rendered by GlobalAppTabsBar, but AppShell's own <main> needs to
+  // be able to open it too (a right-to-left swipe gesture anywhere on the page).
+  notifOpen: boolean;
+  setNotifOpen: (open: boolean) => void;
 };
 
 const APP_TABS_STORAGE_KEY = "cutsmart_global_app_tabs_v1";
@@ -83,6 +88,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [fillMainViewport, setFillMainViewport] = useState(false);
   const [reduceMainTopPadding, setReduceMainTopPadding] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
   const suppressedScopeKeysRef = useRef<Set<string>>(new Set());
   const suppressedTabKeysRef = useRef<Set<string>>(new Set());
   const orderRegistryRef = useRef<AppTabOrderRegistry>({
@@ -422,6 +428,8 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setReduceMainTopPadding,
       mobileNavOpen,
       setMobileNavOpen,
+      notifOpen,
+      setNotifOpen,
     }),
     [
       actionsByKey,
@@ -430,6 +438,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       fillMainViewport,
       reduceMainTopPadding,
       mobileNavOpen,
+      notifOpen,
       registerScopeTabs,
       reorderGroupToIndex,
       restoreScope,

@@ -2249,7 +2249,7 @@ export default function DashboardPage() {
             }}
           >
               <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[92px] sm:pl-[10px] sm:pr-0">
-                <div className="peer relative order-1 w-[110px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:static sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
+                <div className="peer relative order-1 w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:static sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
                   <Search
                     size={14}
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
@@ -2258,7 +2258,7 @@ export default function DashboardPage() {
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search projects..."
+                    placeholder="Search"
                     className="h-9 w-full rounded-[10px] border pl-8 pr-3 text-[12px] font-semibold outline-none transition focus:border-[var(--brand)]"
                     style={{
                       borderColor: dashboardPalette.border,
@@ -2301,7 +2301,13 @@ export default function DashboardPage() {
                         return;
                       }
                       const rect = e.currentTarget.getBoundingClientRect();
-                      setMobileQuickFilterPos({ left: rect.left, top: rect.bottom + 4, width: Math.max(140, rect.width) });
+                      const menuWidth = Math.max(140, rect.width);
+                      const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+                      setMobileQuickFilterPos({
+                        left: Math.min(Math.max(8, centeredLeft), window.innerWidth - menuWidth - 8),
+                        top: rect.bottom + 4,
+                        width: menuWidth,
+                      });
                       setIsMobileQuickFilterOpen(true);
                     }}
                     className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border"
@@ -2371,7 +2377,7 @@ export default function DashboardPage() {
             ref={boardStickyRef}
             className={`relative z-10 border-b ${
               dashboardViewMode === "board"
-                ? "sticky top-0 flex h-[calc(100dvh-48px)] min-h-[280px] flex-col overflow-hidden pt-[10px] lg:top-[48px] lg:h-[calc(100dvh-48px)] lg:min-h-[320px]"
+                ? "sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] flex-col overflow-hidden pt-[10px] lg:top-[48px] lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
                 : ""
             }`}
             style={{
@@ -2390,7 +2396,14 @@ export default function DashboardPage() {
           {dashboardViewMode === "list" && (
           <div className="lg:hidden">
                 {showProjectsLoadingState && (
-                  <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
+                  <div className="flex items-center justify-center gap-2 px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+                    Loading projects...
+                    <div
+                      className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+                      role="status"
+                      aria-label="Loading"
+                    />
+                  </div>
                 )}
                 {!showProjectsLoadingState && filtered.length === 0 && (
                   <div className="px-3 py-10">
@@ -2560,8 +2573,13 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {!isLoading && visibleProjects.length < filtered.length && (
-                  <div className="px-3 py-4 text-center text-[12px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+                  <div className="flex items-center justify-center gap-2 px-3 py-4 text-center text-[12px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
                     Loading more projects...
+                    <div
+                      className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+                      role="status"
+                      aria-label="Loading"
+                    />
                   </div>
                 )}
               </div>
@@ -2573,7 +2591,14 @@ export default function DashboardPage() {
             style={{ flex: "1 1 auto", minHeight: 0 }}
           >
             {(showProjectsLoadingState || !statusRowsLoaded) && (
-              <div className="px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>Loading projects...</div>
+              <div className="flex items-center justify-center gap-2 px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+                Loading projects...
+                <div
+                  className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+                  role="status"
+                  aria-label="Loading"
+                />
+              </div>
             )}
             {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
               <div className="flex flex-col items-center gap-3 px-4 py-10">
@@ -2815,7 +2840,16 @@ export default function DashboardPage() {
 
                   {showProjectsLoadingState && (
                     <tr>
-                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={6}>Loading projects...</td>
+                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={6}>
+                        <div className="flex items-center justify-center gap-2">
+                          Loading projects...
+                          <div
+                            className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+                            role="status"
+                            aria-label="Loading"
+                          />
+                        </div>
+                      </td>
                     </tr>
                   )}
                   {!showProjectsLoadingState && filtered.length === 0 && (
@@ -2938,7 +2972,14 @@ export default function DashboardPage() {
                   {!isLoading && visibleProjects.length < filtered.length && (
                     <tr>
                       <td className="py-4 text-center" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={6}>
-                        Loading more projects...
+                        <div className="flex items-center justify-center gap-2">
+                          Loading more projects...
+                          <div
+                            className="h-3.5 w-3.5 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+                            role="status"
+                            aria-label="Loading"
+                          />
+                        </div>
                       </td>
                     </tr>
                   )}

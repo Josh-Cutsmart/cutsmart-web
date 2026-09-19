@@ -4704,7 +4704,7 @@ export default function CompanySettingsPage() {
                         onClick={() => setShowZapierHelp(false)}
                         className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
                       />
-                      <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+                      <div className="relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
                         <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
                           <div className="flex min-w-0 items-center gap-3">
                             <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
@@ -5165,7 +5165,7 @@ export default function CompanySettingsPage() {
                         onClick={() => setIsItemCategoriesModalOpen(false)}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
+                      <div className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Item Categories</p>
                           <button
@@ -6800,7 +6800,7 @@ export default function CompanySettingsPage() {
               onClick={() => setShowZapierHelp(false)}
               className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
             />
-            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+            <div className="relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[980px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
               <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
                 <div className="flex min-w-0 items-center gap-3">
                   <div className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[#FF5A1F] shadow-[0_8px_20px_rgba(255,90,31,0.24)]">
@@ -6905,7 +6905,7 @@ export default function CompanySettingsPage() {
               onClick={() => setShowLeadFieldsCustomize(false)}
               className="absolute inset-0 bg-[rgba(15,23,42,0.42)] backdrop-blur-[3px]"
             />
-            <div className="relative z-[1751] flex h-[min(760px,calc(100dvh-32px))] w-full max-w-[940px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
+            <div className="relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[940px] flex-col overflow-hidden rounded-[16px] border border-[var(--glass-border)] bg-[var(--panel-bg)] shadow-[0_28px_70px_rgba(2,6,23,0.28)]">
               <div className="flex items-center justify-between border-b border-[var(--glass-border)] px-4 py-3">
                 <div>
                   <p className="text-[13px] font-extrabold uppercase tracking-[0.8px] text-[var(--text-main)]">
