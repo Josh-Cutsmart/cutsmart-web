@@ -760,6 +760,7 @@ export function GlobalAppTabsBar() {
   return (
     <>
       <div
+        data-app-top-bar="true"
         className="fixed left-0 right-0 top-0 z-[95] h-12 px-2 lg:left-[240px]"
         style={{
           backgroundColor: shellPalette.stripBg,

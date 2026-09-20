@@ -528,6 +528,12 @@ export function AppShell({
   const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
   const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
   const pullSaveBackZoneRef = useRef<HTMLDivElement | null>(null);
+  // The global top tab bar (hamburger/tab pills/bell) lives in a sibling component
+  // (global-app-tabs-bar.tsx, tagged data-app-top-bar) — queried fresh each gesture (cheap, and
+  // avoids a stale ref if that bar mounts/unmounts around this one) so it can be pushed down in
+  // sync with mainPushRef, both moving together as pulledPx grows, instead of the banner just
+  // growing underneath a tab bar that stays pinned in place.
+  const pullTopBarElRef = useRef<HTMLElement | null>(null);
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
@@ -546,11 +552,27 @@ export function AppShell({
       if (el) Object.assign(el.style, zone === selected ? activeStyle : inactiveStyle);
     }
   };
+  const applyPullPush = (pulledPx: number, animate: boolean) => {
+    const transition = animate ? "transform 200ms ease" : "none";
+    const transform = pulledPx > 0 ? `translateY(${pulledPx}px)` : "";
+    const topBar = pullTopBarElRef.current;
+    if (topBar) {
+      topBar.style.transition = transition;
+      topBar.style.transform = transform;
+    }
+    const main = mainPushRef.current;
+    if (main) {
+      main.style.transition = transition;
+      main.style.transform = transform;
+    }
+  };
   const resetPullBanner = (animate: boolean) => {
     const banner = pullBannerRef.current;
-    if (!banner) return;
-    banner.style.transition = animate ? "height 200ms ease" : "none";
-    banner.style.height = "0px";
+    if (banner) {
+      banner.style.transition = animate ? "height 200ms ease" : "none";
+      banner.style.height = "0px";
+    }
+    applyPullPush(0, animate);
     applyPullZoneStyles("dashboard", false);
   };
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
@@ -569,10 +591,12 @@ export function AppShell({
     if (!touch) return;
     mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
-    pullDashboardRef.current =
-      alreadyAtTop && mobileTopBarEnabled
-        ? { startY: touch.clientY, active: false, armed: false, selected: "dashboard" }
-        : null;
+    if (alreadyAtTop && mobileTopBarEnabled) {
+      pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
+      pullTopBarElRef.current = document.querySelector<HTMLElement>('[data-app-top-bar="true"]');
+    } else {
+      pullDashboardRef.current = null;
+    }
   };
   const onMainTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
@@ -610,6 +634,10 @@ export function AppShell({
       banner.style.transition = "none";
       banner.style.height = `${pulled}px`;
     }
+    // Pushes the tab bar + page content down by the exact same amount the banner has grown, so it
+    // reads as the whole page sliding down to reveal this bar — not the bar growing underneath a
+    // tab bar that never moves.
+    applyPullPush(pulled, false);
     applyPullZoneStyles(pull.selected, pull.armed);
   };
   const onMainTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
