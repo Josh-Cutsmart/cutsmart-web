@@ -2182,20 +2182,17 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          <div className="space-y-0 pt-3 md:pt-4 lg:pt-5">
+          {/* Negative margin exactly cancels <main>'s own padding on every side (top included,
+              matching its py; left/right matching its px) at every breakpoint, so whatever renders
+              first here — the stat cards or, when they're hidden, the toolbar below — starts
+              flush with <main>'s true content edge on all four sides alike, then the flat 16px
+              padding below re-insets it evenly. Two mismatched schemes (one for top, one for
+              sides) previously left the top gap bigger than the side gaps once <main>'s own py/px
+              diverged (e.g. lg:py-4 vs lg:px-5). */}
+          <div className="-mx-3 -mt-3 space-y-0 md:-mx-4 md:-mt-4 lg:-mx-5 lg:-mt-4">
 
           {dashboardStatCardsEnabled && (
-          <div
-            className="relative z-0"
-            style={{
-              marginLeft: -12,
-              marginRight: -12,
-              paddingTop: 0,
-              paddingRight: 16,
-              paddingBottom: 16,
-              paddingLeft: 16,
-            }}
-          >
+          <div className="relative z-0" style={{ padding: 16 }}>
             <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
               {statCards.map((card) => {
                 const Icon = card.icon;
@@ -2278,8 +2275,6 @@ export default function DashboardPage() {
             style={{
               borderColor: "var(--glass-border)",
               backgroundColor: dashboardPalette.panelMuted,
-              marginLeft: -12,
-              marginRight: -12,
             }}
           >
               <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[92px] sm:pl-[10px] sm:pr-0">
@@ -2454,7 +2449,7 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {!isLoading && visibleProjects.length > 0 && (
-                  <div className="grid grid-cols-1 gap-2 px-2 pb-2 md:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-2 px-2 pb-2 pt-2 md:grid-cols-2">
                     {visibleProjects.map((project) => (
                       <div
                         key={project.id}

@@ -1416,7 +1416,11 @@ export default function SpecsGridEditor({
         <div style={{ height: PROJECT_TOOLBAR_HEIGHT_PX }} />
       ) : null}
       <div
-        className="flex flex-wrap items-center justify-center gap-1.5 p-2"
+        className={
+          isProjectSheetView
+            ? "hide-native-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto p-2"
+            : "flex flex-wrap items-center justify-center gap-1.5 p-2"
+        }
         style={
           isProjectSheetView
             ? {
