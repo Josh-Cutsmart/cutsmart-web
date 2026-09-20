@@ -2182,17 +2182,19 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          {/* Negative margin exactly cancels <main>'s own padding on every side (top included,
-              matching its py; left/right matching its px) at every breakpoint, so whatever renders
-              first here — the stat cards or, when they're hidden, the toolbar below — starts
-              flush with <main>'s true content edge on all four sides alike, then the flat 16px
-              padding below re-insets it evenly. Two mismatched schemes (one for top, one for
-              sides) previously left the top gap bigger than the side gaps once <main>'s own py/px
-              diverged (e.g. lg:py-4 vs lg:px-5). */}
-          <div className="-mx-3 -mt-3 space-y-0 md:-mx-4 md:-mt-4 lg:-mx-5 lg:-mt-4">
+          {/* Negative margin on the TOP only cancels <main>'s own py at each breakpoint, so
+              whatever renders first here — the stat cards or, when they're hidden, the toolbar
+              below — starts flush with <main>'s true top edge instead of doubling up with
+              whatever top padding it carries on its own. No horizontal (-mx) counterpart —
+              <main>'s own px is already "matching the sides" by definition, so this and
+              everything below it deliberately just sits inside that padding rather than bleeding
+              past it and re-insetting by a separately-chosen number, which had twice produced a
+              mismatch (padding not actually matching the sides, in one case landing flush against
+              the desktop sidebar with a lg:-mx-5 that exactly canceled <main>'s lg:px-5). */}
+          <div className="-mt-3 space-y-0 md:-mt-4 lg:-mt-4">
 
           {dashboardStatCardsEnabled && (
-          <div className="relative z-0" style={{ padding: 16 }}>
+          <div className="relative z-0" style={{ paddingTop: 16, paddingBottom: 16 }}>
             <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
               {statCards.map((card) => {
                 const Icon = card.icon;
@@ -2271,10 +2273,14 @@ export default function DashboardPage() {
               viewport, since the toolbar's own height would always sit above them inside the
               stuck panel. */}
           <div
-            className={`relative z-10 border-t px-[10px] pb-3 ${dashboardStatCardsEnabled ? "pt-[19px]" : "pt-0"} ${dashboardViewMode === "board" ? "border-b" : ""}`}
+            className={`relative z-10 -mx-3 border-t px-[10px] pb-3 md:-mx-4 lg:-mx-5 ${dashboardStatCardsEnabled ? "pt-[19px]" : "pt-0"} ${dashboardViewMode === "board" ? "border-b" : ""}`}
             style={{
               borderColor: "var(--glass-border)",
               backgroundColor: dashboardPalette.panelMuted,
+              // -mx-3/md:-mx-4/lg:-mx-5 exactly cancels <main>'s own px at each breakpoint, so this
+              // bar touches the true left/right edge everywhere — the true viewport edge on mobile,
+              // and <main>'s edge (flush against the 240px sidebar) on desktop. The inner px-[10px]
+              // above keeps its own buttons/search box from touching that edge directly.
             }}
           >
               <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[92px] sm:pl-[10px] sm:pr-0">
@@ -2406,24 +2412,25 @@ export default function DashboardPage() {
             ref={boardStickyRef}
             className={`relative z-10 border-b ${
               dashboardViewMode === "board"
-                ? "sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] flex-col overflow-hidden pt-[10px] lg:top-[48px] lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
+                ? // Bleeds past <main>'s own px (same -mx values as the filter bar above) so the
+                  // board columns wrapper's own side padding re-insets from the TRUE edge —
+                  // without this, <main>'s padding and the columns' own side padding stacked,
+                  // doubling the gap instead of matching it. Top stays its own pt-[10px] (the gap
+                  // from the filter bar) — deliberately NOT matched to the (bigger) side padding.
+                  "sticky top-0 flex h-[calc(100svh-48px)] min-h-[280px] flex-col overflow-hidden pt-[10px] -mx-3 md:-mx-4 lg:top-[48px] lg:-mx-5 lg:h-[calc(100svh-48px)] lg:min-h-[320px]"
                 : ""
             }`}
             style={{
               borderColor: "var(--glass-border)",
-              // No backgroundColor/blur here (unlike most glass panels) — this container's own
-              // padding (pt-[10px] above, px-[10px] pb-[10px] on the board columns wrapper below)
-              // sits around the board columns/list rows, and a translucent glass fill used to show
-              // through that padding as its own tinted color, different from the plain page
-              // background everywhere else. Left transparent so the padding blends into <main>'s
-              // own background instead.
-              marginLeft: -12,
-              marginRight: -12,
             }}
           >
 
           {dashboardViewMode === "list" && (
-          <div className="lg:hidden">
+          // -mx-3/md:-mx-4 bleeds past <main>'s own px (this view is lg:hidden, so no lg: needed)
+          // so the card grid's own px-2 below re-insets from the TRUE edge instead of stacking on
+          // top of <main>'s padding — otherwise the side gap (main's px + px-2) came out much
+          // bigger than the gap-2 between cards instead of matching it.
+          <div className="-mx-3 md:-mx-4 lg:hidden">
                 {showProjectsLoadingState && (
                   <div className="flex min-h-[60vh] items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
                     Loading projects...
@@ -2617,7 +2624,7 @@ export default function DashboardPage() {
           {dashboardViewMode === "board" && (
           <div
             data-horizontal-swipe-scroll="true"
-            className="glass-scroll flex snap-x snap-mandatory items-stretch gap-[10px] overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none"
+            className="glass-scroll flex snap-x snap-mandatory items-stretch gap-[10px] overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none lg:px-4"
             style={{ flex: "1 1 auto", minHeight: 0 }}
           >
             {(showProjectsLoadingState || !statusRowsLoaded) && (
@@ -2801,7 +2808,11 @@ export default function DashboardPage() {
           )}
 
           {dashboardViewMode === "list" && (
-          <div className="hidden lg:block">
+          // lg:-mx-5 exactly cancels <main>'s own lg:px-5 so the table (and its rows' own
+          // backgrounds/borders/hover states, which span its full width) touches the sidebar on
+          // the left and the true viewport edge on the right — unlike the board columns above,
+          // which stay padded to match their own gap from the filter bar.
+          <div className="hidden lg:-mx-5 lg:block">
                 <table className="w-full min-w-[980px] table-fixed text-[12px]">
                   <colgroup>
                     <col style={{ width: "220px" }} />
