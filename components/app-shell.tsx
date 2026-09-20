@@ -15,6 +15,7 @@ import {
   Plus,
   PlusCircle,
   RefreshCw,
+  Save,
   Search,
   Settings,
   Tag,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
+import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled } from "@/lib/ui-preferences";
 import {
   addUserNotification,
   cleanupCompletedReportsForNewVersion,
@@ -316,7 +318,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode } = useAuth();
-  const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen } = useAppTabs();
+  const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen, saveAndBackHandler } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -489,6 +491,23 @@ export function AppShell({
     return () => query.removeEventListener("change", onChange);
   }, []);
 
+  // User Settings > "Mobile top navigation bar" now governs the pull-down gesture banner below
+  // (Reload/Dashboard/Save & Back) — the actual hamburger/tabs/bell strip in global-app-tabs-bar.tsx
+  // always renders regardless of this setting.
+  const [mobileTopBarEnabled, setMobileTopBarEnabled] = useState(true);
+  useEffect(() => {
+    setMobileTopBarEnabled(readMobileTopBarEnabled());
+    if (typeof window === "undefined") return;
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ enabled: boolean }>).detail;
+      setMobileTopBarEnabled(detail?.enabled ?? true);
+    };
+    window.addEventListener(MOBILE_TOP_BAR_UPDATED_EVENT, onUpdated as EventListener);
+    return () => {
+      window.removeEventListener(MOBILE_TOP_BAR_UPDATED_EVENT, onUpdated as EventListener);
+    };
+  }, []);
+
   // Lets a swipe anywhere on <main> (not just a drag starting on an already-open panel — that's
   // useSwipeToClose's job, inside each panel) open the left nav or notifications, mirroring how
   // swiping an open panel closes it. Same axis-lock approach as useSwipeToClose (6px of movement
@@ -508,22 +527,24 @@ export function AppShell({
   const pullBannerRef = useRef<HTMLDivElement | null>(null);
   const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
   const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
-  const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: "reload" | "dashboard" } | null>(null);
+  const pullSaveBackZoneRef = useRef<HTMLDivElement | null>(null);
+  type PullZone = "reload" | "dashboard" | "saveBack";
+  const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
   const PULL_ACTION_MAX_PX = 100;
-  // The left this fraction of the screen width selects Reload; the rest (including straight up,
-  // the natural resting spot for a thumb) stays on Dashboard, so a little drift left doesn't
-  // switch the selection away from the default.
-  const PULL_RELOAD_ZONE_FRACTION = 0.35;
-  const applyPullZoneStyles = (selected: "reload" | "dashboard", armed: boolean) => {
-    const reload = pullReloadZoneRef.current;
-    const dashboard = pullDashboardZoneRef.current;
+  const applyPullZoneStyles = (selected: PullZone, armed: boolean) => {
+    const zones: Array<[PullZone, HTMLDivElement | null]> = [
+      ["reload", pullReloadZoneRef.current],
+      ["dashboard", pullDashboardZoneRef.current],
+      ["saveBack", pullSaveBackZoneRef.current],
+    ];
     const activeStyle = armed
       ? { backgroundImage: "var(--brand-gradient)", backgroundColor: "", color: "#FFFFFF" }
       : { backgroundImage: "none", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" };
     const inactiveStyle = { backgroundImage: "none", backgroundColor: "transparent", color: "var(--text-muted)" };
-    if (reload) Object.assign(reload.style, selected === "reload" ? activeStyle : inactiveStyle);
-    if (dashboard) Object.assign(dashboard.style, selected === "dashboard" ? activeStyle : inactiveStyle);
+    for (const [zone, el] of zones) {
+      if (el) Object.assign(el.style, zone === selected ? activeStyle : inactiveStyle);
+    }
   };
   const resetPullBanner = (animate: boolean) => {
     const banner = pullBannerRef.current;
@@ -548,9 +569,10 @@ export function AppShell({
     if (!touch) return;
     mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
-    pullDashboardRef.current = alreadyAtTop
-      ? { startY: touch.clientY, active: false, armed: false, selected: "dashboard" }
-      : null;
+    pullDashboardRef.current =
+      alreadyAtTop && mobileTopBarEnabled
+        ? { startY: touch.clientY, active: false, armed: false, selected: "dashboard" }
+        : null;
   };
   const onMainTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
@@ -580,7 +602,9 @@ export function AppShell({
     // native overscroll bounce this replaces — and capped so it can't grow unbounded.
     const pulled = Math.min(dy * 0.5, PULL_ACTION_MAX_PX);
     pull.armed = pulled >= PULL_ACTION_THRESHOLD_PX;
-    pull.selected = touch.clientX < window.innerWidth * PULL_RELOAD_ZONE_FRACTION ? "reload" : "dashboard";
+    // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
+    const fraction = touch.clientX / window.innerWidth;
+    pull.selected = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
     const banner = pullBannerRef.current;
     if (banner) {
       banner.style.transition = "none";
@@ -598,8 +622,12 @@ export function AppShell({
       if (pull.armed) {
         if (pull.selected === "reload") {
           window.location.reload();
-        } else {
+        } else if (pull.selected === "dashboard") {
           router.push("/dashboard");
+        } else if (saveAndBackHandler) {
+          void saveAndBackHandler();
+        } else {
+          router.back();
         }
       }
       return;
@@ -1035,6 +1063,7 @@ export function AppShell({
                       title: `New version ${version}`,
                       message: canonicalWhatsNew || "CutSmart has been updated.",
                       type: "app_version",
+                      companyId,
                     }),
                   ),
               );
@@ -2451,6 +2480,48 @@ export function AppShell({
         />
       </aside>
 
+      {/* Rendered as a sibling of (not nested inside) the data-app-main-push div below — that div
+          gets a live CSS `transform` written directly to its style during the sidebar/notif push
+          gestures, which makes it a containing block for any `position: fixed` descendant (per
+          spec) and traps this banner inside its own, much lower, local stacking context. Nested,
+          the banner silently rendered BEHIND the global top tab bar (z-[95], a true sibling at the
+          document root) no matter how high its own z-index was set. As a real top-level sibling
+          here, it stacks normally against the tab bar. Shown on every mobile page regardless of
+          chromeHidden (fullscreen views included) — only the "Mobile Top Nav Bar" preference turns
+          the gesture off. */}
+      {!isDesktopViewport && mobileTopBarEnabled && (
+        <div
+          ref={pullBannerRef}
+          aria-hidden="true"
+          className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
+          style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)" }}
+        >
+          <div
+            ref={pullReloadZoneRef}
+            className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
+            style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
+          >
+            <RefreshCw size={16} />
+            Reload
+          </div>
+          <div
+            ref={pullDashboardZoneRef}
+            className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
+            style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
+          >
+            <LayoutDashboard size={16} />
+            Dashboard
+          </div>
+          <div
+            ref={pullSaveBackZoneRef}
+            className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
+            style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
+          >
+            <Save size={16} />
+            Save & Back
+          </div>
+        </div>
+      )}
       <div
         ref={mainPushRef}
         data-app-main-push="true"
@@ -2462,31 +2533,6 @@ export function AppShell({
           overflowY: "visible",
         }}
       >
-        {!isDesktopViewport && !chromeHidden && (
-          <div
-            ref={pullBannerRef}
-            aria-hidden="true"
-            className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
-            style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)" }}
-          >
-            <div
-              ref={pullReloadZoneRef}
-              className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
-              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-            >
-              <RefreshCw size={16} />
-              Reload
-            </div>
-            <div
-              ref={pullDashboardZoneRef}
-              className="flex flex-[1.86] items-center justify-center gap-2 text-[13px] font-bold"
-              style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
-            >
-              <LayoutDashboard size={16} />
-              Dashboard
-            </div>
-          </div>
-        )}
         <main
           ref={mainScrollRef}
           className={

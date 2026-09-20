@@ -93,6 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           message: `${name || "The client"} accepted the Quote for "${projectName}".`,
           type: "quote_accepted",
           projectId: shareDoc.projectId,
+          companyId: String(projectData.companyId ?? "") || null,
           read: false,
           createdAt: new Date(nowIso),
           createdAtIso: nowIso,

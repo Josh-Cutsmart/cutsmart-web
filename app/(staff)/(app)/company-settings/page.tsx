@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Bell, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
@@ -1125,7 +1125,8 @@ function writeDrawerField(item: Record<string, unknown>, field: string, value: s
 
 export default function CompanySettingsPage() {
   const { user } = useAuth();
-  const { setReduceMainTopPadding } = useAppTabs();
+  const router = useRouter();
+  const { setReduceMainTopPadding, setSaveAndBackHandler } = useAppTabs();
   // This page's own sticky header used a negative top margin on its ancestor to cancel <main>'s
   // default top padding, which reproducibly froze the header at its unshifted (i.e. under the
   // fixed global top bar) position on load instead of the intended flush-below-it start — the
@@ -1162,7 +1163,7 @@ export default function CompanySettingsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
-  const [saveLabel, setSaveLabel] = useState("Desktop parity data mode");
+  const [saveLabel, setSaveLabel] = useState("Saved");
   const [isHydrated, setIsHydrated] = useState(false);
   const blurAutoSaveTimerRef = useRef<number | null>(null);
   const logoFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1301,9 +1302,9 @@ export default function CompanySettingsPage() {
   const [preparingStaffRemovalUid, setPreparingStaffRemovalUid] = useState("");
   const [removingStaffUid, setRemovingStaffUid] = useState("");
   // Shown inline in the Remove Staff Member popup itself — a validation/API failure here used to
-  // only ever reach the tiny "Desktop parity data mode" status pill in the page's own sticky
-  // header (via setSaveLabel), which sits far from this modal and is easy to miss entirely. From
-  // the user's seat, clicking Confirm then looked like nothing happened at all.
+  // only ever reach the tiny save-status pill in the page's own sticky header (via setSaveLabel),
+  // which sits far from this modal and is easy to miss entirely. From the user's seat, clicking
+  // Confirm then looked like nothing happened at all.
   const [staffRemovalError, setStaffRemovalError] = useState("");
   const [showJoinKey, setShowJoinKey] = useState(false);
   const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
@@ -1900,6 +1901,7 @@ export default function CompanySettingsPage() {
       title: "Role updated",
       message: `Your role in ${toStr(company?.name, "your company")} changed from "${previousRole?.name || currentRoleId}" to "${selectedRole.name}".`,
       type: "role_change",
+      companyId: activeCompanyId,
     });
   };
 
@@ -2839,6 +2841,18 @@ export default function CompanySettingsPage() {
       }
     };
   }, []);
+
+  // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — kept in a ref since
+  // save is recreated every render and the effect below should only re-register once.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    setSaveAndBackHandler(async () => {
+      await saveRef.current("manual");
+      router.back();
+    });
+    return () => setSaveAndBackHandler(null);
+  }, [router, setSaveAndBackHandler]);
 
   const triggerBlurAutoSave = () => {
     if (!isHydrated || isLoading || !activeCompanyId || !canEditCompanySettings) {

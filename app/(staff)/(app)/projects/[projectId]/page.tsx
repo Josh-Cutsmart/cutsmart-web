@@ -5417,6 +5417,7 @@ export default function ProjectDetailsPage() {
     tabs: globalWorkspaceTabs,
     setChromeHidden,
     setReduceMainTopPadding,
+    setSaveAndBackHandler,
   } = useAppTabs();
   // Lets this page's sticky header bars sit flush at <main>'s top edge with zero
   // on-load gap, instead of relying on a negative margin on an ancestor of a
@@ -6594,6 +6595,45 @@ export default function ProjectDetailsPage() {
   const [isCompactProjectViewport, setIsCompactProjectViewport] = useState(false);
   const [projectViewportWidth, setProjectViewportWidth] = useState(0);
   const [nestingCompactBoardKey, setNestingCompactBoardKey] = useState("");
+  // Swiping left/right anywhere on the mobile Nesting/CNC board content moves to the
+  // next/previous board type, instead of having to tap the (now-removed) tab buttons above it.
+  const boardSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  const BOARD_SWIPE_THRESHOLD_PX = 50;
+  const makeBoardSwipeHandlers = (boardKeys: string[], activeKey: string, setActiveKey: (key: string) => void) => ({
+    onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      boardSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    },
+    onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = boardSwipeStartRef.current;
+      if (!start) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      if (!start.axis) {
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+      }
+    },
+    onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = boardSwipeStartRef.current;
+      boardSwipeStartRef.current = null;
+      if (!start || start.axis !== "horizontal" || boardKeys.length < 2) return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.clientX - start.x;
+      if (Math.abs(dx) < BOARD_SWIPE_THRESHOLD_PX) return;
+      const currentIndex = Math.max(0, boardKeys.indexOf(activeKey));
+      const nextIndex = dx < 0
+        ? Math.min(boardKeys.length - 1, currentIndex + 1)
+        : Math.max(0, currentIndex - 1);
+      if (boardKeys[nextIndex] && boardKeys[nextIndex] !== activeKey) {
+        setActiveKey(boardKeys[nextIndex]);
+      }
+    },
+  });
   const [nestingSheetPreview, setNestingSheetPreview] = useState<{ boardKey: string; sheetIndex: number } | null>(null);
   // Separate from nestingSheetPreview itself (the content selector, which is deliberately left
   // populated through the close animation so the panel has real content to shrink back into its
@@ -12967,18 +13007,35 @@ export default function ProjectDetailsPage() {
   }, [project]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadAccess = async () => {
       if (!project?.companyId || !user?.uid) {
-        setCompanyAccess(null);
-        setCompanyAccessLoaded(true);
+        if (!cancelled) {
+          setCompanyAccess(null);
+          setCompanyAccessLoaded(true);
+        }
         return;
       }
-      setCompanyAccessLoaded(false);
-      const access = await fetchCompanyAccess(project.companyId, user.uid);
-      setCompanyAccess(access);
-      setCompanyAccessLoaded(true);
+      if (!cancelled) setCompanyAccessLoaded(false);
+      try {
+        const access = await withTimeout(
+          retryAsync(() => fetchCompanyAccess(project.companyId, user.uid!), { attempts: 2, delayMs: 350 }),
+          15000,
+          "Company access load timed out",
+        );
+        if (cancelled) return;
+        setCompanyAccess(access);
+      } catch {
+        if (cancelled) return;
+        setCompanyAccess(null);
+      } finally {
+        if (!cancelled) setCompanyAccessLoaded(true);
+      }
     };
     void loadAccess();
+    return () => {
+      cancelled = true;
+    };
   }, [project?.companyId, user?.uid]);
 
   useEffect(() => {
@@ -13014,30 +13071,61 @@ export default function ProjectDetailsPage() {
   }, [productionNav]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadCompanyDoc = async () => {
       if (!project?.companyId) {
-        setCompanyDoc(null);
-        setCompanyDocLoaded(true);
+        if (!cancelled) {
+          setCompanyDoc(null);
+          setCompanyDocLoaded(true);
+        }
         return;
       }
-      setCompanyDocLoaded(false);
-      const hit = await fetchCompanyDoc(project.companyId);
-      setCompanyDoc(hit);
-      setCompanyDocLoaded(true);
+      if (!cancelled) setCompanyDocLoaded(false);
+      try {
+        const hit = await withTimeout(
+          retryAsync(() => fetchCompanyDoc(project.companyId), { attempts: 2, delayMs: 350 }),
+          15000,
+          "Company data load timed out",
+        );
+        if (cancelled) return;
+        setCompanyDoc(hit);
+      } catch {
+        if (cancelled) return;
+        setCompanyDoc(null);
+      } finally {
+        if (!cancelled) setCompanyDocLoaded(true);
+      }
     };
     void loadCompanyDoc();
+    return () => {
+      cancelled = true;
+    };
   }, [project?.companyId]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadCompanyMembers = async () => {
       if (!project?.companyId) {
-        setCompanyMembers([]);
+        if (!cancelled) setCompanyMembers([]);
         return;
       }
-      const members = await fetchCompanyMembers(project.companyId);
-      setCompanyMembers(members);
+      try {
+        const members = await withTimeout(
+          retryAsync(() => fetchCompanyMembers(project.companyId), { attempts: 2, delayMs: 350 }),
+          15000,
+          "Company members load timed out",
+        );
+        if (cancelled) return;
+        setCompanyMembers(members);
+      } catch {
+        if (cancelled) return;
+        setCompanyMembers([]);
+      }
     };
     void loadCompanyMembers();
+    return () => {
+      cancelled = true;
+    };
   }, [project?.companyId]);
   useEffect(() => {
     const loadStaffIconColors = async () => {
@@ -22288,6 +22376,46 @@ export default function ProjectDetailsPage() {
         .filter((group) => group.rows.length > 0),
     [cncRowsByBoard, isCabinetryPartType],
   );
+  // Mobile: swiping left/right (or tapping the bar's arrows) scrolls the Cutlist list to the
+  // next/previous board type's section — same swipe-to-move-between-boards behavior as Nesting,
+  // but CNC keeps every board's section stacked (collapsible, with its own grain/edgetape info)
+  // rather than filtering down to one at a time, so this drives scroll position instead of a
+  // filter. cncCompactActiveBoardKey tracks whichever section is currently most visible, via the
+  // IntersectionObserver effect below, so the bar stays correct on a manual scroll too.
+  const [cncCompactActiveBoardKey, setCncCompactActiveBoardKey] = useState("");
+  const cncBoardSectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  const scrollToCncBoard = (boardKey: string) => {
+    const container = cncTableScrollRef.current;
+    const target = cncBoardSectionRefs.current[boardKey];
+    if (!container || !target) return;
+    const containerTop = container.getBoundingClientRect().top;
+    const targetTop = target.getBoundingClientRect().top;
+    container.scrollTo({ top: container.scrollTop + (targetTop - containerTop) - 8, behavior: "smooth" });
+    setCncCompactActiveBoardKey(boardKey);
+  };
+  useLayoutEffect(() => {
+    if (!isCompactProjectViewport || cncMobilePanel !== "cutlist" || typeof IntersectionObserver === "undefined") return;
+    const container = cncTableScrollRef.current;
+    if (!container) return;
+    const boardKeys = cncRowsByBoardNonCab.map((group) => group.boardKey);
+    if (!boardKeys.length) return;
+    setCncCompactActiveBoardKey((prev) => (boardKeys.includes(prev) ? prev : boardKeys[0]));
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const mostVisible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        const key = mostVisible?.target.getAttribute("data-cnc-board-key");
+        if (key) setCncCompactActiveBoardKey(key);
+      },
+      { root: container, threshold: [0.35, 0.6] },
+    );
+    for (const key of boardKeys) {
+      const el = cncBoardSectionRefs.current[key];
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, [isCompactProjectViewport, cncMobilePanel, cncRowsByBoardNonCab]);
   const cncRowsByBoardForPrintIds = useMemo(() => {
     const rank = new Map(partTypeOptions.map((name, idx) => [name, idx]));
     const pieceKindRank = (name: string) => {
@@ -24257,6 +24385,51 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     isSalesSpecificationsFullscreen,
     isSalesCompareFullscreen,
     setChromeHidden,
+  ]);
+  // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — mirrors whichever of this
+  // page's own "Save & Back" buttons is currently on screen (Cutlist/Nesting/CNC/Order/Initial
+  // Measure/Items/Quote each have one). The actual save functions (onSaveAndBackFromCutlist etc.)
+  // are declared later, well after this component's early-return guards (e.g. `if (isLoading)`),
+  // so these refs start null here and are populated by plain assignment (not a hook, safe after a
+  // guard — see that assignment's own comment) at each function's own declaration site; by the
+  // time the effect below actually runs (after the full render commits), the refs already hold
+  // this render's real functions. Outside all of these (General/Design/Production
+  // overview/Settings), no handler is registered — the gesture falls back to plain router.back().
+  const onSaveAndBackFromCutlistRef = useRef<() => void | Promise<void>>(() => {});
+  const onSaveAndBackFromNestingRef = useRef<() => void | Promise<void>>(() => {});
+  const onSaveAndBackFromCncRef = useRef<() => void | Promise<void>>(() => {});
+  const onSaveAndBackFromOrderRef = useRef<() => void | Promise<void>>(() => {});
+  const saveAndBackFromInitialMeasureRef = useRef<() => void | Promise<void>>(() => {});
+  const saveAndBackFromSalesItemsRef = useRef<() => void | Promise<void>>(() => {});
+  const leaveQuoteWindowRef = useRef<(nextSalesNav: string) => void | Promise<void>>(() => {});
+  useEffect(() => {
+    if (isCutlistFullscreen) {
+      setSaveAndBackHandler(() => onSaveAndBackFromCutlistRef.current());
+    } else if (isNestingFullscreen) {
+      setSaveAndBackHandler(() => onSaveAndBackFromNestingRef.current());
+    } else if (isCncFullscreen) {
+      setSaveAndBackHandler(() => onSaveAndBackFromCncRef.current());
+    } else if (isOrderFullscreen) {
+      setSaveAndBackHandler(() => onSaveAndBackFromOrderRef.current());
+    } else if (isSalesInitialFullscreen) {
+      setSaveAndBackHandler(() => saveAndBackFromInitialMeasureRef.current());
+    } else if (isSalesItemsFullscreen) {
+      setSaveAndBackHandler(() => saveAndBackFromSalesItemsRef.current());
+    } else if (isSalesQuoteFullscreen) {
+      setSaveAndBackHandler(() => leaveQuoteWindowRef.current("overview"));
+    } else {
+      setSaveAndBackHandler(null);
+    }
+    return () => setSaveAndBackHandler(null);
+  }, [
+    isCutlistFullscreen,
+    isNestingFullscreen,
+    isCncFullscreen,
+    isOrderFullscreen,
+    isSalesInitialFullscreen,
+    isSalesItemsFullscreen,
+    isSalesQuoteFullscreen,
+    setSaveAndBackHandler,
   ]);
   // isAddRoomModalOpen is shared by several unrelated fullscreen views (Order, Sales Initial,
   // Cutlist each render addRoomModalPortal; Nesting renders its own separate fullscreen variant)
@@ -29426,6 +29599,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       setLockMessage("");
     });
   };
+
+  // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — mirrors whichever of this
+  // page's own "Save & Back" buttons is currently on screen. See the refs' own declaration (up
+  // near isCutlistFullscreen etc., before this component's early-return guards) for why these are
+  // plain assignments here rather than hooks.
+  onSaveAndBackFromCutlistRef.current = onSaveAndBackFromCutlist;
+  onSaveAndBackFromNestingRef.current = onSaveAndBackFromNesting;
+  onSaveAndBackFromCncRef.current = onSaveAndBackFromCnc;
+  onSaveAndBackFromOrderRef.current = onSaveAndBackFromOrder;
+  saveAndBackFromInitialMeasureRef.current = saveAndBackFromInitialMeasure;
+  saveAndBackFromSalesItemsRef.current = saveAndBackFromSalesItems;
+  leaveQuoteWindowRef.current = leaveQuoteWindow;
 
   const onPrintCnc = () => {
     void onExportCncPdf("print");
@@ -38418,6 +38603,40 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </button>
               </div>
             ) : null}
+            {isCompactProjectViewport && cncMobilePanel === "cutlist" && cncRowsByBoardNonCab.length > 0 && (() => {
+              const boardKeys = cncRowsByBoardNonCab.map((group) => group.boardKey);
+              const currentIndex = Math.max(0, boardKeys.indexOf(cncCompactActiveBoardKey));
+              const currentLabel = cncRowsByBoardNonCab[currentIndex]?.boardLabel || "";
+              return (
+                <div
+                  className="mx-3 mt-3 flex h-9 shrink-0 items-center justify-between gap-2 rounded-[10px] border px-2 text-[12px] font-bold"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                >
+                  <button
+                    type="button"
+                    disabled={boardKeys.length < 2}
+                    onClick={() => scrollToCncBoard(boardKeys[Math.max(0, currentIndex - 1)] || cncCompactActiveBoardKey)}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                    aria-label="Previous board type"
+                  >
+                    <ArrowLeft size={14} />
+                  </button>
+                  <span className="min-w-0 flex-1 truncate text-center" style={{ color: "var(--brand-strong)" }}>
+                    {currentLabel}
+                    {boardKeys.length > 1 ? ` (${currentIndex + 1}/${boardKeys.length})` : ""}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={boardKeys.length < 2}
+                    onClick={() => scrollToCncBoard(boardKeys[Math.min(boardKeys.length - 1, currentIndex + 1)] || cncCompactActiveBoardKey)}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                    aria-label="Next board type"
+                  >
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+              );
+            })()}
             {(!isCompactProjectViewport || cncMobilePanel === "cutlist") && (
             // pl-10 (not pl-3) on desktop — the board cards' own var(--shadow-glass) has a 32px
             // blur radius, so with only 12px of padding this section's own overflow-auto (which
@@ -38430,6 +38649,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               ref={cncTableScrollRef}
               className={isCompactProjectViewport ? "min-h-0 flex-1 overflow-auto px-3 pb-3 pt-3 hide-native-scrollbar" : "h-full min-h-0 overflow-auto pl-10 pr-3 pb-3 pt-3 hide-native-scrollbar"}
               style={isCompactProjectViewport ? undefined : { gridColumn: 2 }}
+              {...(isCompactProjectViewport
+                ? makeBoardSwipeHandlers(
+                    cncRowsByBoardNonCab.map((group) => group.boardKey),
+                    cncCompactActiveBoardKey,
+                    scrollToCncBoard,
+                  )
+                : {})}
             >
               {/* This section fills the full viewport height (its parent no longer reserves space
                   for the fixed header), so a spacer matching the header's own height replaces that
@@ -38463,6 +38689,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     return (
                     <section
                       key={group.boardKey}
+                      ref={(el) => {
+                        cncBoardSectionRefs.current[group.boardKey] = el;
+                      }}
+                      data-cnc-board-key={group.boardKey}
                       className="overflow-hidden rounded-[14px] border"
                       style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)` }}
                     >
@@ -39453,11 +39683,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
           />
           <div
-            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5"
+            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center gap-3 px-4 md:px-5"
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-3">
+            <div className="inline-flex shrink-0 items-center gap-3">
               <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Quote size={14} />
                 <span>Quote</span>
@@ -39478,7 +39708,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="pointer-events-auto">{quoteGridOutdatedBanner}</div>
               </div>
             ) : null}
-            <div className="flex items-center gap-2">
+            {/* Horizontally scrollable (not wrapped) — this row can carry up to 8 buttons
+                (Print/Download/Save Version/Reset/Send/View Accepted/Client Portal/Back), which
+                doesn't fit a fixed 56px-tall bar on mobile; swiping left/right reveals the rest
+                instead of them wrapping onto a clipped second line or squeezing unreadably. */}
+            <div className="hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto">
               <button
                 type="button"
                 disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
@@ -40401,11 +40635,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               for the sidebar) since the sidebar is hidden for the whole duration of this fullscreen
               takeover anyway. */}
           <div
-            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5"
+            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center gap-3 px-4 md:px-5"
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex items-center gap-3">
+            <div className="inline-flex shrink-0 items-center gap-3">
               <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <ClipboardList size={14} />
                 <span>Specifications</span>
@@ -40426,7 +40660,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="pointer-events-auto">{specsSheetVersionBanner}</div>
               </div>
             ) : null}
-            <div className="flex items-center gap-2">
+            {/* Horizontally scrollable (not wrapped) — this row can carry up to 8 buttons
+                (Print/Download/Save Version/Reset/Send/View Submitted/Client Portal/Back), which
+                doesn't fit a fixed 56px-tall bar on mobile; swiping left/right reveals the rest
+                instead of them wrapping onto a clipped second line or squeezing unreadably. */}
+            <div className="hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto">
               <button
                 type="button"
                 disabled={!hasTemplate || !displayedSpecsSheetGrid}
@@ -42022,34 +42260,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         No visible nesting pieces. Use Visibility to choose what shows here.
                       </div>
                     )}
-                    {nestingBoardLayouts.length > 0 && (
-                      <div className="mb-3 overflow-x-auto pb-1">
-                        <div className="inline-flex min-w-max flex-nowrap gap-2">
-                          {nestingBoardLayouts.map((group) => (
-                            <button
-                              key={`compact_nesting_tab_${group.boardKey}`}
-                              type="button"
-                              onClick={() => setNestingCompactBoardKey(group.boardKey)}
-                              className="inline-flex h-9 shrink-0 items-center rounded-[10px] border px-3 text-[12px] font-bold"
-                              style={{
-                                borderColor: projectPalette.border,
-                                backgroundColor:
-                                  nestingCompactBoardKey === group.boardKey
-                                    ? productionContainerHeaderBg
-                                    : projectPalette.panelBg,
-                                color:
-                                  nestingCompactBoardKey === group.boardKey
-                                    ? (isDarkMode ? "#f1f1f1" : "#12345B")
-                                    : projectPalette.textSoft,
-                              }}
-                            >
-                              {group.boardLabel}
-                            </button>
-                          ))}
+                    {nestingBoardLayouts.length > 0 && (() => {
+                      const boardKeys = nestingBoardLayouts.map((group) => group.boardKey);
+                      const currentIndex = Math.max(0, boardKeys.indexOf(nestingCompactBoardKey));
+                      const currentLabel = nestingBoardLayouts[currentIndex]?.boardLabel || "";
+                      return (
+                        <div
+                          className="mb-3 flex h-9 shrink-0 items-center justify-between gap-2 rounded-[10px] border px-2 text-[12px] font-bold"
+                          style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.textSoft }}
+                        >
+                          <button
+                            type="button"
+                            disabled={boardKeys.length < 2}
+                            onClick={() => setNestingCompactBoardKey(boardKeys[Math.max(0, currentIndex - 1)] || nestingCompactBoardKey)}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                            aria-label="Previous board type"
+                          >
+                            <ArrowLeft size={14} />
+                          </button>
+                          <span className="min-w-0 flex-1 truncate text-center" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
+                            {currentLabel}
+                            {boardKeys.length > 1 ? ` (${currentIndex + 1}/${boardKeys.length})` : ""}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={boardKeys.length < 2}
+                            onClick={() => setNestingCompactBoardKey(boardKeys[Math.min(boardKeys.length - 1, currentIndex + 1)] || nestingCompactBoardKey)}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                            aria-label="Next board type"
+                          >
+                            <ArrowRight size={14} />
+                          </button>
                         </div>
-                      </div>
-                    )}
-                    <div className="grid grid-cols-1 gap-3">
+                      );
+                    })()}
+                    <div
+                      className="grid grid-cols-1 gap-3"
+                      {...makeBoardSwipeHandlers(
+                        nestingBoardLayouts.map((group) => group.boardKey),
+                        nestingCompactBoardKey,
+                        setNestingCompactBoardKey,
+                      )}
+                    >
                       {nestingBoardLayouts
                         .filter((group) => group.boardKey === nestingCompactBoardKey)
                         .map((group) => {

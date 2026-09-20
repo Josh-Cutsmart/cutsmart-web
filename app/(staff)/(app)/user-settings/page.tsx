@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Bell, Building2, Check, ClipboardList, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useAppTabs } from "@/lib/app-tabs-context";
 import { auth } from "@/lib/firebase";
 import {
   deleteChecklistTemplate,
@@ -67,6 +68,7 @@ const ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY = "cutsmart_active_company_theme_co
 export default function UserSettingsPage() {
   const router = useRouter();
   const { user, setUserColorLocal, setUserProfileLocal, setUserVerifiedLocal } = useAuth();
+  const { setSaveAndBackHandler } = useAppTabs();
   const [companyColor, setCompanyColor] = useState("#2F6BFF");
   const [displayName, setDisplayName] = useState(user?.displayName || "");
   const [userColor, setUserColor] = useState(user?.userColor || "");
@@ -301,6 +303,18 @@ export default function UserSettingsPage() {
       void saveProfile("auto");
     }
   };
+
+  // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — kept in a ref since
+  // saveProfile is recreated every render and the effect below should only re-register once.
+  const saveProfileRef = useRef(saveProfile);
+  saveProfileRef.current = saveProfile;
+  useEffect(() => {
+    setSaveAndBackHandler(async () => {
+      await saveProfileRef.current("manual");
+      router.push("/dashboard");
+    });
+    return () => setSaveAndBackHandler(null);
+  }, [router, setSaveAndBackHandler]);
 
   const queueAutoSave = () => {
     if (autoSaveTimerRef.current) {

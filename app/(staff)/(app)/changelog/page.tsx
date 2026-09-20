@@ -94,7 +94,27 @@ export default function ChangelogPage() {
   const [composerError, setComposerError] = useState("");
   const entryRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pendingScrollVersionRef = useRef("");
+  // Title bar (just "Changelog" + version badge) and the buttons bar (entries-per-page, dev
+  // report toggle, Report Issue, Suggest Feature) below it are two separate sticky rows — a
+  // single combined row used to wrap its buttons onto extra lines inside a fixed h-[56px] box on
+  // narrow viewports, clipping them. pageHeaderRef always points at whichever is the LOWER of the
+  // two (the buttons bar), since that's the real boundary content should scroll under.
+  const titleBarRef = useRef<HTMLDivElement | null>(null);
   const pageHeaderRef = useRef<HTMLDivElement | null>(null);
+  const [buttonsBarHeight, setButtonsBarHeight] = useState(0);
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    const el = pageHeaderRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setButtonsBarHeight(Math.ceil(entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height));
+      }
+    });
+    observer.observe(el);
+    setButtonsBarHeight(el.getBoundingClientRect().height);
+    return () => observer.disconnect();
+  }, []);
   const sidebarPlaceholderRef = useRef<HTMLDivElement | null>(null);
   const [sidebarLeft, setSidebarLeft] = useState<number | null>(null);
   const suppressScrollSyncRef = useRef(false);
@@ -522,29 +542,32 @@ export default function ChangelogPage() {
           }}
         >
           <div
-            ref={pageHeaderRef}
-            className="glass-page-header sticky top-[104px] z-[95] flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5 lg:top-12"
+            ref={titleBarRef}
+            className="glass-page-header sticky top-12 z-[95] flex h-[56px] shrink-0 items-center gap-5 px-4 md:px-5"
           >
-            <div className="flex min-w-0 flex-wrap items-center gap-5">
-              <div className="inline-flex min-w-0 items-center gap-2">
-                <Search size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-                <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                  Changelog
-                </p>
-              </div>
-              <div className="hidden items-center gap-2 border-l pl-5 sm:flex" style={{ borderColor: "var(--glass-border)" }}>
-                <span className="text-[11px] font-bold uppercase tracking-[0.4px]" style={{ color: "var(--text-muted)" }}>
-                  Current version
-                </span>
-                <span
-                  className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
-                >
-                  {formatVersionLabel(appVersion || entries[0]?.version || "")}
-                </span>
-              </div>
+            <div className="inline-flex min-w-0 items-center gap-2">
+              <Search size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
+              <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                Changelog
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="hidden items-center gap-2 border-l pl-5 sm:flex" style={{ borderColor: "var(--glass-border)" }}>
+              <span className="text-[11px] font-bold uppercase tracking-[0.4px]" style={{ color: "var(--text-muted)" }}>
+                Current version
+              </span>
+              <span
+                className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+              >
+                {formatVersionLabel(appVersion || entries[0]?.version || "")}
+              </span>
+            </div>
+          </div>
+          <div
+            ref={pageHeaderRef}
+            className="glass-page-header sticky top-[104px] z-[94] flex flex-wrap items-center gap-3 border-t px-4 py-2.5 md:px-5"
+            style={{ borderColor: "var(--glass-border)" }}
+          >
               <select
                 value={entriesPerPage}
                 onChange={(e) => onChangeEntriesPerPage(Number(e.target.value || 10))}
@@ -589,7 +612,6 @@ export default function ChangelogPage() {
                   Suggest Feature
                 </button>
               </div>
-            </div>
           </div>
           <div className="grid gap-0 lg:grid-cols-[240px_minmax(0,1fr)]">
               {!!entries.length && <div ref={sidebarPlaceholderRef} aria-hidden="true" className="hidden lg:block" />}
@@ -877,8 +899,8 @@ export default function ChangelogPage() {
               style={{
                 left: sidebarLeft,
                 width: 240,
-                top: DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT,
-                height: `calc(100svh - ${DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT}px)`,
+                top: DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT + buttonsBarHeight,
+                height: `calc(100svh - ${DESKTOP_TAB_BAR_HEIGHT + HEADER_HEIGHT + buttonsBarHeight}px)`,
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(20px) saturate(180%)",

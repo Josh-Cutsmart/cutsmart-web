@@ -48,6 +48,14 @@ type AppTabsContextValue = {
   // be able to open it too (a right-to-left swipe gesture anywhere on the page).
   notifOpen: boolean;
   setNotifOpen: (open: boolean) => void;
+  // The mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) needs to call whatever the
+  // CURRENT page's own save action is, then navigate — but app-shell doesn't know what that is
+  // page-to-page. Pages with an explicit manual save control (User Settings, Company Settings)
+  // register their own handler here on mount and clear it on unmount; pages that never register
+  // one (most pages, which either autosave or have nothing to save) leave this null, and the
+  // gesture just falls back to router.back().
+  saveAndBackHandler: (() => void | Promise<void>) | null;
+  setSaveAndBackHandler: (handler: (() => void | Promise<void>) | null) => void;
 };
 
 const APP_TABS_STORAGE_KEY = "cutsmart_global_app_tabs_v1";
@@ -89,6 +97,12 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [reduceMainTopPadding, setReduceMainTopPadding] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [saveAndBackHandler, setSaveAndBackHandlerState] = useState<(() => void | Promise<void>) | null>(null);
+  // Wrapped so callers can pass the handler function directly (setSaveAndBackHandler(fn)) instead
+  // of the raw useState functional-updater form a function-typed state would otherwise require.
+  const setSaveAndBackHandler = useCallback((handler: (() => void | Promise<void>) | null) => {
+    setSaveAndBackHandlerState(() => handler);
+  }, []);
   const suppressedScopeKeysRef = useRef<Set<string>>(new Set());
   const suppressedTabKeysRef = useRef<Set<string>>(new Set());
   const orderRegistryRef = useRef<AppTabOrderRegistry>({
@@ -430,6 +444,8 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setMobileNavOpen,
       notifOpen,
       setNotifOpen,
+      saveAndBackHandler,
+      setSaveAndBackHandler,
     }),
     [
       actionsByKey,
@@ -442,6 +458,8 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       registerScopeTabs,
       reorderGroupToIndex,
       restoreScope,
+      saveAndBackHandler,
+      setSaveAndBackHandler,
       suppressScope,
       suppressTab,
       tabs,

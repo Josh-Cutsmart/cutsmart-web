@@ -1145,6 +1145,7 @@ export interface UserNotificationRow {
   read: boolean;
   createdAtIso: string;
   projectId?: string;
+  companyId?: string;
 }
 
 export type AppReportKind = "issue" | "feature";
@@ -3538,16 +3539,24 @@ export async function removeTagsFromCompanyProjects(companyId: string, tagsToRem
   }
 }
 
-export async function fetchUserNotifications(uid: string): Promise<UserNotificationRow[]> {
+// companyId is optional only for callers that genuinely want everything (there are none left in
+// this codebase — every real caller passes the currently active company). When provided, rows
+// from other companies (and legacy rows written before this field existed, which can't be safely
+// attributed to any company) are filtered out client-side rather than in the query itself — a
+// `where("companyId", "==", ...)` alongside the existing `orderBy("createdAt")` would need a new
+// Firestore composite index that doesn't exist yet in production, and a missing index fails the
+// whole query (silently, via this function's own catch) rather than just skipping the filter.
+export async function fetchUserNotifications(uid: string, companyId?: string): Promise<UserNotificationRow[]> {
   const userId = String(uid || "").trim();
   if (!db || !userId) {
     return [];
   }
+  const scopeCompanyId = String(companyId || "").trim();
   try {
     const snap = await getDocs(
       query(collection(db, "users", userId, "notifications"), orderBy("createdAt", "desc"), limit(200)),
     );
-    return snap.docs.map((docSnap) => {
+    const rows = snap.docs.map((docSnap) => {
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
       return {
         id: String(data.id ?? docSnap.id),
@@ -3557,22 +3566,27 @@ export async function fetchUserNotifications(uid: string): Promise<UserNotificat
         read: Boolean(data.read),
         createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
         projectId: String(data.projectId ?? "").trim() || undefined,
+        companyId: String(data.companyId ?? "").trim() || undefined,
       };
     });
+    if (!scopeCompanyId) return rows;
+    return rows.filter((row) => row.companyId === scopeCompanyId);
   } catch {
     return [];
   }
 }
 
-export async function setAllUserNotificationsRead(uid: string, read: boolean): Promise<boolean> {
+export async function setAllUserNotificationsRead(uid: string, read: boolean, companyId?: string): Promise<boolean> {
   const userId = String(uid || "").trim();
   if (!db || !userId) {
     return false;
   }
+  const scopeCompanyId = String(companyId || "").trim();
   try {
     const snap = await getDocs(collection(db, "users", userId, "notifications"));
     const batch = writeBatch(db);
     for (const docSnap of snap.docs) {
+      if (scopeCompanyId && String((docSnap.data() ?? {}).companyId ?? "").trim() !== scopeCompanyId) continue;
       batch.update(docSnap.ref, { read: Boolean(read), updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() });
     }
     await batch.commit();
@@ -3588,7 +3602,7 @@ export async function setAllUserNotificationsRead(uid: string, read: boolean): P
 // this silently no-ops rather than breaking the underlying save/send.
 export async function addUserNotification(
   uid: string,
-  input: { title: string; message: string; type: string; projectId?: string },
+  input: { title: string; message: string; type: string; projectId?: string; companyId?: string },
 ): Promise<boolean> {
   const userId = String(uid || "").trim();
   if (!db || !userId) return false;
@@ -3599,6 +3613,7 @@ export async function addUserNotification(
       message: input.message,
       type: input.type,
       projectId: input.projectId || null,
+      companyId: input.companyId || null,
       read: false,
       createdAt: serverTimestamp(),
       createdAtIso: new Date().toISOString(),

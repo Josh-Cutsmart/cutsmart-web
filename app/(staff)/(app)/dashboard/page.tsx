@@ -23,7 +23,7 @@ import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/t
 import { DASHBOARD_STAT_CARDS_UPDATED_EVENT, readDashboardStatCardsEnabled } from "@/lib/ui-preferences";
 import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
-import { retryAsync } from "@/lib/load-retry";
+import { retryAsync, withTimeout } from "@/lib/load-retry";
 import { captureGlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type StatusRow = { name: string; color: string };
@@ -784,7 +784,11 @@ export default function DashboardPage() {
             : "";
         const directCompanyId = String(user?.companyId || "").trim();
         const fallbackMembership = !directCompanyId && user?.uid
-          ? await retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 })
+          ? await withTimeout(
+              retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 }),
+              15000,
+              "Membership lookup timed out",
+            )
           : null;
         const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
         if (!user?.uid || !companyId) {
@@ -795,10 +799,11 @@ export default function DashboardPage() {
           }
           return;
         }
-        const companyAccess = await retryAsync(() => fetchCompanyAccess(companyId, user.uid!), {
-          attempts: 2,
-          delayMs: 250,
-        });
+        const companyAccess = await withTimeout(
+          retryAsync(() => fetchCompanyAccess(companyId, user.uid!), { attempts: 2, delayMs: 250 }),
+          15000,
+          "Company access lookup timed out",
+        );
         if (cancelled) return;
         setEffectiveCompanyRole(String(companyAccess?.role || user?.role || "").trim().toLowerCase());
         setEffectiveCompanyPermissions(companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []));
@@ -833,35 +838,44 @@ export default function DashboardPage() {
             ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
             : "";
         const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
-        const items = await retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds), {
-          attempts: 2,
-          delayMs: 350,
-          shouldRetryResult: (value, attempt) =>
-            attempt === 1 &&
-            preferredCompanyIds.length > 0 &&
-            Array.isArray(value) &&
-            value.length === 0,
-        });
+        const items = await withTimeout(
+          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds), {
+            attempts: 2,
+            delayMs: 350,
+            shouldRetryResult: (value, attempt) =>
+              attempt === 1 &&
+              preferredCompanyIds.length > 0 &&
+              Array.isArray(value) &&
+              value.length === 0,
+          }),
+          15000,
+          "Projects load timed out",
+        );
         if (cancelled) return;
         setAllProjects(items);
         const fallbackCompanyId = String(items[0]?.companyId || "").trim();
         const companyId = storedCompanyId || fallbackCompanyId;
         const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
         const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
-        const userColorMap = await retryAsync(
-          () => fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId),
-          { attempts: 2, delayMs: 250 },
+        const userColorMap = await withTimeout(
+          retryAsync(() => fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId), { attempts: 2, delayMs: 250 }),
+          15000,
+          "User color lookup timed out",
         );
         if (cancelled) return;
         setCreatorColorByUid(userColorMap);
         if (companyId) {
-          const [companyDoc, members] = await retryAsync(
-            () =>
-              Promise.all([
-                fetchCompanyDoc(companyId),
-                fetchCompanyMembers(companyId),
-              ]),
-            { attempts: 2, delayMs: 250 },
+          const [companyDoc, members] = await withTimeout(
+            retryAsync(
+              () =>
+                Promise.all([
+                  fetchCompanyDoc(companyId),
+                  fetchCompanyMembers(companyId),
+                ]),
+              { attempts: 2, delayMs: 250 },
+            ),
+            15000,
+            "Company data load timed out",
           );
           if (cancelled) return;
           setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
@@ -2168,7 +2182,7 @@ export default function DashboardPage() {
             </div>
           ) : (
           <>
-          <div className="space-y-0" style={{ marginTop: -16 }}>
+          <div className="space-y-0 pt-3 md:pt-4 lg:pt-5">
 
           {dashboardStatCardsEnabled && (
           <div
@@ -2176,7 +2190,10 @@ export default function DashboardPage() {
             style={{
               marginLeft: -12,
               marginRight: -12,
-              padding: 16,
+              paddingTop: 0,
+              paddingRight: 16,
+              paddingBottom: 16,
+              paddingLeft: 16,
             }}
           >
             <div className="grid grid-cols-2 gap-2 sm:gap-4 lg:grid-cols-4">
@@ -2257,7 +2274,7 @@ export default function DashboardPage() {
               viewport, since the toolbar's own height would always sit above them inside the
               stuck panel. */}
           <div
-            className={`relative z-10 border-t px-[10px] pb-3 pt-[19px] ${dashboardViewMode === "board" ? "border-b" : ""}`}
+            className={`relative z-10 border-t px-[10px] pb-3 ${dashboardStatCardsEnabled ? "pt-[19px]" : "pt-0"} ${dashboardViewMode === "board" ? "border-b" : ""}`}
             style={{
               borderColor: "var(--glass-border)",
               backgroundColor: dashboardPalette.panelMuted,
@@ -2413,7 +2430,7 @@ export default function DashboardPage() {
           {dashboardViewMode === "list" && (
           <div className="lg:hidden">
                 {showProjectsLoadingState && (
-                  <div className="flex items-center justify-center gap-2 px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+                  <div className="flex min-h-[60vh] items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
                     Loading projects...
                     <div
                       className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
@@ -2609,7 +2626,7 @@ export default function DashboardPage() {
             style={{ flex: "1 1 auto", minHeight: 0 }}
           >
             {(showProjectsLoadingState || !statusRowsLoaded) && (
-              <div className="flex items-center justify-center gap-2 px-3 py-6 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+              <div className="flex h-full w-full items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
                 Loading projects...
                 <div
                   className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
@@ -2859,7 +2876,7 @@ export default function DashboardPage() {
                   {showProjectsLoadingState && (
                     <tr>
                       <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={6}>
-                        <div className="flex items-center justify-center gap-2">
+                        <div className="flex min-h-[60vh] items-center justify-center gap-2">
                           Loading projects...
                           <div
                             className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"

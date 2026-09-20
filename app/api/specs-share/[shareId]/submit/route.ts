@@ -111,6 +111,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           message: `${name || "The client"} submitted Specifications for "${projectName}".`,
           type: "specs_submitted",
           projectId: shareDoc.projectId,
+          companyId: String(projectData.companyId ?? "") || null,
           read: false,
           createdAt: new Date(nowIso),
           createdAtIso: nowIso,

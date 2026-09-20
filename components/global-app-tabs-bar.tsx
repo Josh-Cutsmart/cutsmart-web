@@ -8,7 +8,6 @@ import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin 
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
-import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled } from "@/lib/ui-preferences";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchUserNotifications,
@@ -54,11 +53,23 @@ function formatSingleTabLabel(tab: AppWorkspaceTab, groupLabel: string) {
   return normalizedGroupLabel && tab.groupKey ? `${normalizedGroupLabel}: ${tab.label}` : tab.label;
 }
 
+// Same key/precedence company-settings, dashboard, etc. already use to resolve "which company is
+// active" — a manual override in localStorage first, falling back to the signed-in account's own
+// membership. Notifications need this too: without it, a user who's a member of multiple
+// companies would see every company's notifications mixed together regardless of which one
+// they're currently working in.
+const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
+
 export function GlobalAppTabsBar() {
   const pathname = usePathname();
   const router = useRouter();
   const { tabs: globalAppTabs, actionsByKey, closeTab, reorderGroupToIndex, suppressScope, restoreScope, suppressTab, chromeHidden, setMobileNavOpen, notifOpen: isNotifOpen, setNotifOpen: setIsNotifOpen } = useAppTabs();
   const { user } = useAuth();
+  const activeCompanyId = useMemo(() => {
+    if (typeof window === "undefined") return String(user?.companyId || "").trim();
+    const stored = String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim();
+    return stored || String(user?.companyId || "").trim();
+  }, [user?.companyId]);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isAppTabsMenuOpen, setIsAppTabsMenuOpen] = useState("");
   const [appTabsMenuPos, setAppTabsMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
@@ -298,22 +309,6 @@ export function GlobalAppTabsBar() {
     };
   }, []);
 
-  // User Settings > "Mobile top navigation bar" — off hides this entire bar below the lg
-  // breakpoint (hamburger, open-tab pills, bell), leaving the desktop tab strip untouched. Still
-  // reachable while off via the swipe-open gestures on <main> (see app-shell.tsx).
-  const [mobileTopBarEnabled, setMobileTopBarEnabled] = useState(true);
-  useEffect(() => {
-    setMobileTopBarEnabled(readMobileTopBarEnabled());
-    if (typeof window === "undefined") return;
-    const onUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ enabled: boolean }>).detail;
-      setMobileTopBarEnabled(detail?.enabled ?? true);
-    };
-    window.addEventListener(MOBILE_TOP_BAR_UPDATED_EVENT, onUpdated as EventListener);
-    return () => {
-      window.removeEventListener(MOBILE_TOP_BAR_UPDATED_EVENT, onUpdated as EventListener);
-    };
-  }, []);
 
   useEffect(() => {
     restoreScope(currentScopeKey);
@@ -370,7 +365,7 @@ export function GlobalAppTabsBar() {
     }
     let cancelled = false;
     const load = async () => {
-      const rows = await fetchUserNotifications(uid);
+      const rows = await fetchUserNotifications(uid, activeCompanyId);
       if (!cancelled) setNotifRows(rows);
     };
     void load();
@@ -379,7 +374,7 @@ export function GlobalAppTabsBar() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [user?.uid]);
+  }, [activeCompanyId, user?.uid]);
 
   const blurTopTabTarget = (target?: EventTarget | null) => {
     const element = target instanceof HTMLElement ? target : null;
@@ -764,7 +759,6 @@ export function GlobalAppTabsBar() {
 
   return (
     <>
-      {(isDesktopViewport || mobileTopBarEnabled) && (
       <div
         className="fixed left-0 right-0 top-0 z-[95] h-12 px-2 lg:left-[240px]"
         style={{
@@ -954,7 +948,6 @@ export function GlobalAppTabsBar() {
           ) : null}
         </div>
       </div>
-      )}
       {isNotifOpen && notifPos && isDesktopViewport && typeof document !== "undefined"
         ? createPortal(
             <div
@@ -984,7 +977,7 @@ export function GlobalAppTabsBar() {
                   onClick={async () => {
                     if (!user?.uid) return;
                     setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
-                    await setAllUserNotificationsRead(user.uid, true);
+                    await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
                   }}
                   className="text-[11px] font-bold transition-colors hover:opacity-80"
                   style={{ color: "var(--brand)" }}
@@ -1054,7 +1047,7 @@ export function GlobalAppTabsBar() {
                     onClick={async () => {
                       if (!user?.uid) return;
                       setNotifRows((prev) => prev.map((row) => ({ ...row, read: true })));
-                      await setAllUserNotificationsRead(user.uid, true);
+                      await setAllUserNotificationsRead(user.uid, true, activeCompanyId);
                     }}
                     className="text-[12px] font-bold transition-colors hover:opacity-80"
                     style={{ color: "var(--brand)" }}
