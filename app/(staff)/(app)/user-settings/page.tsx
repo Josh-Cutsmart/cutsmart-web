@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Bell, Building2, Check, ClipboardList, Download, HelpCircle, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Share, Smartphone, Trash2, UserCog, X } from "lucide-react";
+import { Bell, Building2, Check, ChevronLeft, ClipboardList, Download, HelpCircle, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Share, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { isIosDevice, promptPwaInstall, usePwaInstall } from "@/lib/pwa-install";
@@ -104,10 +104,7 @@ export default function UserSettingsPage() {
   const [pwaInstallStatusMsg, setPwaInstallStatusMsg] = useState("");
   const onClickDownloadApp = async () => {
     const outcome = await promptPwaInstall();
-    if (outcome === "dismissed") {
-      setPwaInstallStatusMsg("Install dismissed.");
-      window.setTimeout(() => setPwaInstallStatusMsg(""), 3000);
-    } else if (outcome === "unavailable") {
+    if (outcome === "unavailable") {
       setPwaInstallStatusMsg("Install isn't available right now — try again after using the site a bit more.");
       window.setTimeout(() => setPwaInstallStatusMsg(""), 5000);
     }
@@ -588,26 +585,47 @@ export default function UserSettingsPage() {
               {activeDisplayName}
             </p>
           </div>
-          <div
-            className="inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-bold"
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: saveStatusTone }}
-          >
-            <span className="inline-flex h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: saveStatusTone }} />
-            {saveStatusLabel}
-          </div>
+          {/* Only shown for an active/meaningful state (saving, unsaved changes, or a transient
+              save-result message) — hidden at rest instead of sitting there permanently reading
+              "Saved", which carried no real information once nothing was happening. */}
+          {isSaving || profileDirty || saveMsg ? (
+            <div
+              className="inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-bold"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: saveStatusTone }}
+            >
+              <span className="inline-flex h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: saveStatusTone }} />
+              {saveStatusLabel}
+            </div>
+          ) : null}
         </div>
-        <button
-          type="button"
-          disabled={isSaving}
-          onClick={async () => {
-            await saveProfile("manual");
-            router.push("/dashboard");
-          }}
-          className="inline-flex h-9 shrink-0 items-center rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-55"
-          style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-        >
-          {isSaving ? "Saving..." : "Save & Back"}
-        </button>
+        {isCompactUserSettingsViewport ? (
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={async () => {
+              await saveProfile("manual");
+              router.push("/dashboard");
+            }}
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-55"
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            aria-label={isSaving ? "Saving..." : "Save & Back"}
+          >
+            <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={async () => {
+              await saveProfile("manual");
+              router.push("/dashboard");
+            }}
+            className="inline-flex h-9 shrink-0 items-center rounded-[10px] border px-4 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-55"
+            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+          >
+            {isSaving ? "Saving..." : "Save & Back"}
+          </button>
+        )}
       </div>
 
       {/* Mobile only — lets someone install the app straight from a button press instead of
@@ -670,14 +688,11 @@ export default function UserSettingsPage() {
             <div className="space-y-4 p-4 sm:p-6">
               {isIosInstallHint ? (
                 <div>
-                  <p className="mb-3 text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                    On iPhone/iPad, this only works from Safari (not Chrome or another app).
-                  </p>
                   <ol className="space-y-3">
                     <li className="flex items-start gap-2.5">
                       <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>1</span>
                       <span className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--text-main)" }}>
-                        Tap the <Share size={14} className="inline" style={{ color: "var(--text-main)" }} /> Share icon in Safari&apos;s toolbar.
+                        Tap the <Share size={14} className="inline" style={{ color: "var(--text-main)" }} /> Share icon in the browser&apos;s toolbar.
                       </span>
                     </li>
                     <li className="flex items-start gap-2.5">

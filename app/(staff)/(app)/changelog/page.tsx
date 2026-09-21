@@ -1112,7 +1112,15 @@ export default function ChangelogPage() {
               two simultaneously-mounted elements would have them fight over the same ref) and no
               sliding highlight bar, just a plain active-row tint. Closes itself after a version is
               picked, same as tapping a version used to just scroll to it on desktop. */}
-          {isCompactChangelogViewport && !!entries.length && mobileVersionsSwipe.shouldRender && (
+          {/* Portalled to <body> — this page's own outer wrapper (changelogPageRef) is what gets
+              the live push transform, and a transform on any ancestor becomes the containing block
+              for a `position: fixed` descendant (per spec). Left in place, this drawer's `fixed
+              inset-0` would resolve against that transformed, ALSO-being-pushed-off-screen ancestor
+              instead of the real viewport, dragging the whole drawer (backdrop included) off-screen
+              right along with the main content — the "swipe opens it but the screen just goes
+              blank/grey" bug. A portal sidesteps this: its DOM parent is <body>, untouched by the
+              push. */}
+          {isCompactChangelogViewport && !!entries.length && mobileVersionsSwipe.shouldRender && typeof document !== "undefined" && createPortal(
             <div className="fixed inset-0 z-[120]">
               <button
                 type="button"
@@ -1154,7 +1162,8 @@ export default function ChangelogPage() {
                   );
                 })}
               </div>
-            </div>
+            </div>,
+            document.body,
           )}
 
           {shouldRenderComposer && typeof document !== "undefined" && createPortal(

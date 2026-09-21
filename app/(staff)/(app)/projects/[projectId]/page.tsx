@@ -40292,8 +40292,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               );
               if (!isQuoteExtrasPanelOpen) return null;
               if (isCompactProjectViewport) {
-                if (!quoteMobileExtrasSwipe.shouldRender) return null;
-                return (
+                if (!quoteMobileExtrasSwipe.shouldRender || typeof document === "undefined") return null;
+                // Portalled straight to <body> rather than rendered in place — this fullscreen
+                // view's own scroll container (salesQuoteScrollRef) is what gets the live CSS
+                // `transform` during the push animation, and a `transform` on ANY ancestor makes it
+                // the containing block for a `position: fixed` descendant (per spec). Left in
+                // place, this drawer's `fixed inset-0` would resolve against that transformed,
+                // ALSO-being-pushed-off-screen ancestor instead of the real viewport, dragging the
+                // whole drawer (backdrop included) off-screen right along with the main content —
+                // exactly the "swipe opens it but the screen just goes blank/grey" bug. A portal
+                // sidesteps this entirely: its DOM parent is <body>, untouched by the push.
+                return createPortal(
                   <div className="fixed inset-0 z-[120]">
                     <button
                       type="button"
@@ -40311,7 +40320,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Quote Extras</p>
                       {quoteExtrasListContent}
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 );
               }
               return (
@@ -40509,8 +40519,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               );
               if (!isQuoteHistoryPanelOpen) return null;
               if (isCompactProjectViewport) {
-                if (!quoteMobileVersionsSwipe.shouldRender) return null;
-                return (
+                if (!quoteMobileVersionsSwipe.shouldRender || typeof document === "undefined") return null;
+                // Portalled to <body> — see Quote Extras' own identical comment on why (the pushed
+                // scroll container's own transform would otherwise become this drawer's containing
+                // block and drag it off-screen along with the main content it's supposed to reveal
+                // itself over).
+                return createPortal(
                   <div className="fixed inset-0 z-[120]">
                     <button
                       type="button"
@@ -40528,7 +40542,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
                       {quoteVersionsListContent}
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 );
               }
               return (
@@ -41398,8 +41413,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               );
               if (!isSpecsVersionsSidebarOpen) return null;
               if (isCompactProjectViewport) {
-                if (!specsMobileVersionsSwipe.shouldRender) return null;
-                return (
+                if (!specsMobileVersionsSwipe.shouldRender || typeof document === "undefined") return null;
+                // Portalled to <body> — see Quote Extras' own identical comment on why (the pushed
+                // scroll container's own transform would otherwise become this drawer's containing
+                // block and drag it off-screen along with the main content it's supposed to reveal
+                // itself over).
+                return createPortal(
                   <div className="fixed inset-0 z-[120]" data-swipe-backdrop-scope>
                     <button
                       type="button"
@@ -41417,7 +41436,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
                       {specsVersionsListContent}
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 );
               }
               return (
@@ -41483,8 +41503,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               );
               if (!isSpecsSectionsPanelOpen) return null;
               if (isCompactProjectViewport) {
-                if (!specsMobileSectionsSwipe.shouldRender) return null;
-                return (
+                if (!specsMobileSectionsSwipe.shouldRender || typeof document === "undefined") return null;
+                // Portalled to <body> — see Quote Extras' own identical comment on why (the pushed
+                // scroll container's own transform would otherwise become this drawer's containing
+                // block and drag it off-screen along with the main content it's supposed to reveal
+                // itself over).
+                return createPortal(
                   <div className="fixed inset-0 z-[120]">
                     <button
                       type="button"
@@ -41502,7 +41526,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Sections</p>
                       {specsSectionsListContent}
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 );
               }
               return (
@@ -41849,7 +41874,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ArrowLeftRight size={14} />
-              <span>Product Compare</span>
+              <span>Upgrades</span>
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
@@ -41994,8 +42019,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </>
               );
               if (isCompactProjectViewport) {
-                if (!compareMobileListSwipe.shouldRender) return null;
-                return (
+                if (!compareMobileListSwipe.shouldRender || typeof document === "undefined") return null;
+                // Portalled to <body> — see Quote Extras' own identical comment (on the fullscreen
+                // Specs/Quote views) on why: this view's own scroll container (salesCompareScrollRef)
+                // is what gets the live push transform, and a transform on any ancestor becomes the
+                // containing block for a `position: fixed` descendant, which would otherwise drag
+                // this whole drawer off-screen right along with the content it pushes.
+                return createPortal(
                   <div className="fixed inset-0 z-[120]">
                     <button
                       type="button"
@@ -42024,7 +42054,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       </div>
                       {compareListContent}
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 );
               }
               return (
@@ -43939,7 +43970,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     style={{ color: "var(--text-main)" }}
                     title={isProjectNotifySubscribed(project, user.uid) ? "Notifications on for this project" : "Notifications off for this project"}
                   >
-                    <span key={notifyBellWobbleKey} className="inline-flex bell-wobble">
+                    {/* notifyBellWobbleKey starts at 0 (never clicked) — only apply the wobble
+                        class once it's actually incremented by a click, so mounting this button on
+                        page open doesn't itself play the animation. */}
+                    <span key={notifyBellWobbleKey} className={notifyBellWobbleKey > 0 ? "inline-flex bell-wobble" : "inline-flex"}>
                       <Bell size={15} fill={isProjectNotifySubscribed(project, user.uid) ? "currentColor" : "none"} />
                     </span>
                   </button>

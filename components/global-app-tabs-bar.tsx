@@ -936,7 +936,10 @@ export function GlobalAppTabsBar() {
               aria-label="Notifications"
               title="Notifications"
             >
-              <span key={notifBellWobbleKey} className="inline-flex bell-wobble">
+              {/* notifBellWobbleKey starts at 0 (never clicked) — only apply the wobble class once
+                  it's actually incremented by a click, so mounting this button on page load
+                  doesn't itself play the animation. */}
+              <span key={notifBellWobbleKey} className={notifBellWobbleKey > 0 ? "inline-flex bell-wobble" : "inline-flex"}>
                 <Bell size={16} />
               </span>
               {notifUnreadCount > 0 ? (
