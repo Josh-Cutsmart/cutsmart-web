@@ -26,6 +26,10 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled } from "@/lib/ui-preferences";
+// Side-effect only — registers the `beforeinstallprompt` listener as early as possible (this
+// component mounts on every staff page), since the browser only ever delivers that event once and
+// User Settings' own "Download App" button needs it captured long before someone visits that page.
+import "@/lib/pwa-install";
 import {
   addUserNotification,
   cleanupCompletedReportsForNewVersion,

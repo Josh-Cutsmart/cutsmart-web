@@ -2,9 +2,10 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, Building2, Check, ClipboardList, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
+import { Bell, Building2, Check, ClipboardList, Download, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
+import { isIosDevice, promptPwaInstall, usePwaInstall } from "@/lib/pwa-install";
 import { auth } from "@/lib/firebase";
 import {
   deleteChecklistTemplate,
@@ -82,6 +83,34 @@ export default function UserSettingsPage() {
     setMobileTopBarEnabled(readMobileTopBarEnabled());
     setDashboardStatCardsEnabled(readDashboardStatCardsEnabled());
   }, []);
+  // "Download App" row — mobile only (per the user's own request; the underlying install prompt
+  // works on desktop Chrome too, but this is specifically about replacing "visit the site and
+  // bookmark it" on a phone).
+  const [isCompactUserSettingsViewport, setIsCompactUserSettingsViewport] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 1023px)");
+    setIsCompactUserSettingsViewport(mq.matches);
+    const onChange = (event: MediaQueryListEvent) => setIsCompactUserSettingsViewport(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const { canInstall: pwaCanInstall, isInstalled: pwaIsInstalled } = usePwaInstall();
+  const [isIosInstallHint, setIsIosInstallHint] = useState(false);
+  useEffect(() => {
+    setIsIosInstallHint(isIosDevice());
+  }, []);
+  const [pwaInstallStatusMsg, setPwaInstallStatusMsg] = useState("");
+  const onClickDownloadApp = async () => {
+    const outcome = await promptPwaInstall();
+    if (outcome === "dismissed") {
+      setPwaInstallStatusMsg("Install dismissed.");
+      window.setTimeout(() => setPwaInstallStatusMsg(""), 3000);
+    } else if (outcome === "unavailable") {
+      setPwaInstallStatusMsg("Install isn't available right now — try again after using the site a bit more.");
+      window.setTimeout(() => setPwaInstallStatusMsg(""), 5000);
+    }
+  };
   const [isSaving, setIsSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
@@ -575,6 +604,39 @@ export default function UserSettingsPage() {
           {isSaving ? "Saving..." : "Save & Back"}
         </button>
       </div>
+
+      {/* Mobile only — lets someone install the app straight from a button press instead of
+          visiting the site and manually bookmarking it. Just the button, full width to match the
+          containers below rather than living inside its own card. Hidden entirely once already
+          installed, or when there's nothing actionable to offer yet (Android/Chrome only fires its
+          install-eligibility event after some engagement, and iOS never exposes a programmatic
+          install at all — shown as static instructions there instead). */}
+      {isCompactUserSettingsViewport && !pwaIsInstalled && (pwaCanInstall || isIosInstallHint) && (
+        <div>
+          {pwaCanInstall ? (
+            <button
+              type="button"
+              onClick={() => void onClickDownloadApp()}
+              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-bold text-white transition hover:brightness-95"
+              style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            >
+              <Download size={15} />
+              Download App
+            </button>
+          ) : (
+            <div
+              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-semibold"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+            >
+              <Download size={15} />
+              Tap Share, then &quot;Add to Home Screen&quot;
+            </div>
+          )}
+          {pwaInstallStatusMsg ? (
+            <p className="mt-1.5 text-center text-[11px] font-semibold" style={{ color: "var(--brand-strong)" }}>{pwaInstallStatusMsg}</p>
+          ) : null}
+        </div>
+      )}
 
       <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
         <aside className="rounded-[18px] border p-5" style={glassCardStyle}>
