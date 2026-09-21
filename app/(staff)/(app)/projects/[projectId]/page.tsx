@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor from "@/components/specs-grid-editor";
@@ -4828,6 +4829,23 @@ function GlassSelectDropdown({ value, options, onChange, className, style, disab
     };
   }, [open]);
 
+  // Runs synchronously after the menu commits to the DOM but before the browser paints. Writes
+  // directly to the menu element's own style (not React state — see useSwipeToClose for the same
+  // pattern) so flipping its position here never shows a one-frame flash at the wrong (off-screen)
+  // spot, and never trips this codebase's stricter-than-default react-hooks/set-state-in-effect
+  // rule, which flags any in-effect setState call regardless of whether it's actually unsafe.
+  useLayoutEffect(() => {
+    if (!open || !rect || !menuRef.current) return;
+    const menuEl = menuRef.current;
+    const menuWidth = menuEl.getBoundingClientRect().width;
+    const EDGE_PADDING_PX = 8;
+    const overflowsRight = rect.left + menuWidth > window.innerWidth - EDGE_PADDING_PX;
+    const nextLeft = overflowsRight
+      ? Math.max(EDGE_PADDING_PX, rect.left + rect.width - menuWidth)
+      : rect.left;
+    menuEl.style.left = `${nextLeft}px`;
+  }, [open, rect]);
+
   return (
     <div ref={hostRef} className={`relative ${fullWidth ? "block w-full" : "inline-block"}`}>
       <button
@@ -5649,6 +5667,10 @@ export default function ProjectDetailsPage() {
   // it's pure interaction bookkeeping, never rendered, so it doesn't need to trigger a re-render.
   const comparisonLastClickedRowIdRef = useRef<string | null>(null);
   const [isSavingComparison, setIsSavingComparison] = useState(false);
+  // Mobile-only: the "Comparison" list (saved comparisons + name/new-comparison controls) is a
+  // full-width swipe-in drawer on mobile instead of always sitting inline as its own 260px
+  // column — desktop keeps the always-visible column, unaffected by this.
+  const [isCompareListPanelOpen, setIsCompareListPanelOpen] = useState(false);
   const [isDeletingComparison, setIsDeletingComparison] = useState(false);
   // Which saved comparison's card has its delete confirmation open — "" means none. Lives
   // independently of activeComparisonId since a card can be deleted without opening it first. The
@@ -6836,6 +6858,136 @@ export default function ProjectDetailsPage() {
   const salesQuoteScrollRef = useRef<HTMLDivElement | null>(null);
   const salesSpecsScrollRef = useRef<HTMLDivElement | null>(null);
   const salesCompareScrollRef = useRef<HTMLDivElement | null>(null);
+  // Mobile-only Specifications/Quote drawers: swiping the sheet left/right opens Version History
+  // (left edge) or Sections/Quote Extras (right edge) as a real edge-anchored drawer that pushes
+  // the WHOLE fullscreen view (title bar + toolbar + canvas, all fixed/scrolled inside
+  // salesSpecsScrollRef/salesQuoteScrollRef) over, instead of desktop's floating bubble list laid
+  // on top of the sheet — same mechanism as the mobile nav/notifications drawers elsewhere in the
+  // app. Applying the push transform to the scroll container itself also moves its `position:
+  // fixed` children (the title/toolbar bars) in lockstep, since a transformed ancestor becomes
+  // their containing block — no separate ref needed for those.
+  //
+  // Reuses the SAME open/closing state as the desktop bubble toggle (isSpecsVersionsSidebarOpen
+  // etc.) — "is Version History open" is one concept; only its on-screen rendering differs by
+  // breakpoint. These hooks must be called unconditionally, before this component's early-return
+  // fullscreen-view guards further down, even though they're only ever rendered/used on mobile —
+  // see the Save & Back refs' own identical comment above for why.
+  const specsMobileVersionsPanelRef = useRef<HTMLDivElement | null>(null);
+  const specsMobileSectionsPanelRef = useRef<HTMLDivElement | null>(null);
+  const specsMobileVersionsSwipe = useSwipeToClose(
+    isCompactProjectViewport && isSpecsVersionsSidebarOpen,
+    toggleSpecsVersionsSidebar,
+    specsMobileVersionsPanelRef,
+    { edge: "left", pushRef: salesSpecsScrollRef },
+  );
+  const specsMobileSectionsSwipe = useSwipeToClose(
+    isCompactProjectViewport && isSpecsSectionsPanelOpen,
+    toggleSpecsSectionsPanel,
+    specsMobileSectionsPanelRef,
+    { edge: "right", pushRef: salesSpecsScrollRef },
+  );
+  const quoteMobileVersionsPanelRef = useRef<HTMLDivElement | null>(null);
+  const quoteMobileExtrasPanelRef = useRef<HTMLDivElement | null>(null);
+  const quoteMobileVersionsSwipe = useSwipeToClose(
+    isCompactProjectViewport && isQuoteHistoryPanelOpen,
+    toggleQuoteHistoryPanel,
+    quoteMobileVersionsPanelRef,
+    { edge: "left", pushRef: salesQuoteScrollRef },
+  );
+  const quoteMobileExtrasSwipe = useSwipeToClose(
+    isCompactProjectViewport && isQuoteExtrasPanelOpen,
+    toggleQuoteExtrasPanel,
+    quoteMobileExtrasPanelRef,
+    { edge: "right", pushRef: salesQuoteScrollRef },
+  );
+  // Mobile-only Product Compare drawer: the Comparison list column, hidden off-screen to the left
+  // and swiped open full-width — same push-the-whole-page mechanism as the Specs/Quote drawers
+  // above, just a single edge-anchored panel (there's no second, opposite-edge panel here).
+  const compareMobileListPanelRef = useRef<HTMLDivElement | null>(null);
+  const compareMobileListSwipe = useSwipeToClose(
+    isCompactProjectViewport && isCompareListPanelOpen,
+    () => setIsCompareListPanelOpen(false),
+    compareMobileListPanelRef,
+    { edge: "left", pushRef: salesCompareScrollRef },
+  );
+  const compareMobileSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  const makeCompareMobileSwipeHandlers = () => ({
+    onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
+      if (!isCompactProjectViewport || isCompareListPanelOpen) {
+        compareMobileSwipeStartRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      if (!touch) return;
+      compareMobileSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    },
+    onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = compareMobileSwipeStartRef.current;
+      if (!start) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      if (!start.axis) {
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+      }
+    },
+    onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = compareMobileSwipeStartRef.current;
+      compareMobileSwipeStartRef.current = null;
+      if (!start || start.axis !== "horizontal") return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.clientX - start.x;
+      if (dx < -SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
+        setIsCompareListPanelOpen(true);
+      }
+    },
+  });
+  // Swiping anywhere on the sheet (not already inside one of the drawers above, which handle
+  // their own drag-to-close) opens the corresponding drawer — mirrors app-shell.tsx's own
+  // onMainTouchStart/Move/End for the sidebar/notifications swipe, scoped to just these two
+  // scroll containers. Per the exact mapping asked for: dragging LEFT opens Version History
+  // (the left-edge panel), dragging RIGHT opens Sections/Quote Extras (the right-edge panel).
+  const specsQuoteMobileSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  const SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX = 60;
+  const makeSpecsQuoteMobileSwipeHandlers = (openVersions: () => void, openExtras: () => void, versionsOpen: boolean, extrasOpen: boolean) => ({
+    onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
+      if (!isCompactProjectViewport || versionsOpen || extrasOpen) {
+        specsQuoteMobileSwipeStartRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      if (!touch) return;
+      specsQuoteMobileSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    },
+    onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = specsQuoteMobileSwipeStartRef.current;
+      if (!start) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      if (!start.axis) {
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+      }
+    },
+    onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = specsQuoteMobileSwipeStartRef.current;
+      specsQuoteMobileSwipeStartRef.current = null;
+      if (!start || start.axis !== "horizontal") return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.clientX - start.x;
+      if (dx < -SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
+        openVersions();
+      } else if (dx > SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
+        openExtras();
+      }
+    },
+  });
   const productionCutlistFullscreenScrollRef = useRef<HTMLDivElement | null>(null);
   const [initialEditingCellValue, setInitialEditingCellValue] = useState("");
   const [editingCellValue, setEditingCellValue] = useState("");
@@ -16977,7 +17129,6 @@ export default function ProjectDetailsPage() {
     const errors: CutlistValidationIssue[] = [];
     const doorMode = normalizeDoorModeValue(row.doorMode);
     const isConfiguredDoorMode = isConfiguredDoorRowLike({ partType, doorMode });
-    const isConfiguredDrawerMode = isConfiguredDoorMode && doorMode === "drawer";
     const isClassicDrawer = isClassicDrawerRowLike({ partType, doorMode });
     if (!String(partType || "").trim()) errors.push({ field: "partType", message: `${rowLabel}: Part Type is required.` });
 
@@ -16998,23 +17149,15 @@ export default function ProjectDetailsPage() {
       if (!height) errors.push({ field: "height", message: `${rowLabel}: Height is required.` });
       if (!width) errors.push({ field: "width", message: `${rowLabel}: Width is required.` });
 
-      if (isConfiguredDrawerMode) {
-        const count = Number.parseInt(normalizeDoorFrontCountValue(row.doorFrontCount), 10) || 0;
-        const frontHeights = normalizeDoorFrontHeights(row.doorFrontHeights, count);
-        const totalLeft = computeDoorDrawerTotalLeft(
-          frontHeights,
-          String(row.height ?? ""),
-          String(row.doorTopGap ?? ""),
-          String(row.doorBetweenGap ?? ""),
-        );
-        const roundingTolerance = Math.max(0.01, count * 0.1);
-        if (Math.abs(totalLeft) > roundingTolerance) {
-          errors.push({
-            field: "partType",
-            message: `${rowLabel}: Drawer fronts and gaps must equal the total height. Total left ${formatDoorFrontHeightValue(Math.abs(totalLeft))}.`,
-          });
-        }
-      }
+      // Deliberately NOT validating that drawer fronts + gaps sum to exactly `row.height` here —
+      // that field is only ever a default auto-filled from the company's generic Base Cab Height
+      // (see the cutlistDraftRows-backfill effect near resolvedProductionBaseCabHeight's own
+      // definition), not something the user is required to reconcile against. A row whose fronts
+      // were typed to a different real total than that generic default is legitimate, not an
+      // error — and the actual per-front split (expandAcceptedRowForCutlist /
+      // resolveDrawerBankFrontHeights) already uses the manually-entered front values as-is when
+      // every front is manual, so this check was blocking valid entries without ever being needed
+      // downstream.
 
       if (board) {
         const sheetText = String(opts?.boardSheetText || boardSheetFor(board) || "").trim();
@@ -32439,14 +32582,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => void onSaveAndBackFromOrder()}
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
-            >
-              <ArrowLeft size={14} />
-              Save & Back
-            </button>
+            {isCompactProjectViewport ? (
+              <button
+                type="button"
+                onClick={() => void onSaveAndBackFromOrder()}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                aria-label="Save & Back"
+              >
+                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void onSaveAndBackFromOrder()}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-[#C8DAFF] bg-[#EAF1FF] px-3 text-[12px] font-bold text-[#24589A] hover:bg-[#DFE9FF]"
+              >
+                <ArrowLeft size={14} />
+                Save & Back
+              </button>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4">
             <div className="flex h-full min-h-[calc(100svh-120px)] flex-col gap-3">
@@ -32739,15 +32894,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => void saveAndBackFromInitialMeasure()}
-              className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-            >
-              <ArrowLeft size={14} />
-              Save & Back
-            </button>
+            {isCompactProjectViewport ? (
+              <button
+                type="button"
+                onClick={() => void saveAndBackFromInitialMeasure()}
+                className="relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                aria-label="Save & Back"
+              >
+                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void saveAndBackFromInitialMeasure()}
+                className="relative z-[1] inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <ArrowLeft size={14} />
+                Save & Back
+              </button>
+            )}
           </div>
           <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
             <div
@@ -33755,12 +33922,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 onClick={() => void onSaveAndBackFromCutlist()}
-                className="relative z-[1] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border hover:brightness-95"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                className="relative z-[1] inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                 aria-label="Save and back"
                 title="Save and back"
               >
-                <img src="/angle-left.png" alt="Back" className="h-4 w-4 object-contain" />
+                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
               </button>
             </div>
             <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
@@ -38504,18 +38671,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 type="button"
                 onClick={() => void onSaveAndBackFromCnc()}
                 className={isCompactProjectViewport
-                  ? "inline-flex h-9 w-9 items-center justify-center rounded-[8px] border hover:brightness-95"
+                  ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
                   : "inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"}
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                style={isCompactProjectViewport
+                  ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }
+                  : { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
                 aria-label="Save and back"
                 title="Save and back"
               >
                 {isCompactProjectViewport ? (
-                  <img
-                    src="/angle-left.png"
-                    alt="Back"
-                    className="h-4 w-4 object-contain"
-                  />
+                  <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
                 ) : (
                   <>
                     <ArrowLeft size={14} />
@@ -39611,16 +39776,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={salesReadOnly || isSavingSalesRooms}
-                onClick={() => void saveAndBackFromSalesItems()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-              >
-                <ArrowLeft size={14} />
-                Save & Back
-              </button>
+              {/* Mobile: plain gradient icon button, same style as the General tab's client-details
+                  edit button — see quoteBackButton's own comment for the full reasoning. Desktop
+                  keeps its existing bordered "Save & Back" button, unchanged. */}
+              {isCompactProjectViewport ? (
+                <button
+                  type="button"
+                  disabled={salesReadOnly || isSavingSalesRooms}
+                  onClick={() => void saveAndBackFromSalesItems()}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-60"
+                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  aria-label="Save & Back"
+                >
+                  <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={salesReadOnly || isSavingSalesRooms}
+                  onClick={() => void saveAndBackFromSalesItems()}
+                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95 disabled:opacity-60"
+                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                >
+                  <ArrowLeft size={14} />
+                  Save & Back
+                </button>
+              )}
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4 md:p-5">
@@ -39664,9 +39845,163 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // above the sheet" decision as quoteAcceptedBannerVisible above; exactly one of the two is ever
     // true at once.
     const quotePendingBannerVisible = isQuoteLockedForSending && !specsShareStatus?.quoteAcceptedAt && isViewingSentQuoteVersion;
+    // Mobile: title bar is title + Back only, everything else moves to a bar fixed at the BOTTOM
+    // of the screen — see specsHeaderHeight's identical comment above (Specifications fullscreen
+    // view) for the full reasoning. Desktop keeps the original single combined title+buttons row.
+    const quoteHeaderHeight = 56;
+    const quoteOtherActionButtons = (
+      <>
+        <button
+          type="button"
+          disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
+          onClick={() => void onPrintQuoteGrid()}
+          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+        >
+          <Printer size={14} />
+          Print
+        </button>
+        <button
+          type="button"
+          disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
+          onClick={() => void onDownloadQuoteGridPdf()}
+          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+        >
+          <Download size={14} />
+          Download PDF
+        </button>
+        {!isViewingQuoteGridVersion ? (
+          <button
+            type="button"
+            disabled={!quoteGrid || isSavingQuoteGridVersion || isQuoteLockedForSending}
+            title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
+            onClick={(e) => {
+              setQuoteGridSaveVersionModalOrigin(captureGlassModalOrigin(e));
+              setQuoteGridSaveVersionNameDraft(`Version ${quoteGridVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
+              setIsQuoteGridSaveVersionModalOpen(true);
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          >
+            <Save size={14} />
+            Save Version
+          </button>
+        ) : null}
+        {!isViewingQuoteGridVersion ? (
+          <button
+            type="button"
+            disabled={!hasQuoteGridTemplate || isQuoteLockedForSending}
+            title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
+            onClick={() => setIsQuoteGridResetConfirmOpen(true)}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+          >
+            <RotateCcw size={14} />
+            Reset to Template
+          </button>
+        ) : null}
+        {/* Available while viewing EITHER the live grid or a historical version — sending
+            marks whichever's on screen as sent (see sendQuoteToClient's own comment on how it
+            branches on activeQuoteGridVersionId). Only one version may be sent at a time —
+            disabled whenever ANY version is currently sent, not just while viewing that exact
+            one, so a second version can never be sent alongside it; Reopen for Editing first.
+            Not even rendered at all when what's actually on screen IS that already-sent/
+            accepted version (isQuoteContentLockedForSending) — sending it again makes no
+            sense once it's the very thing already sent. */}
+        {!isQuoteContentLockedForSending ? (
+          <button
+            type="button"
+            disabled={!displayedQuoteGrid || isQuoteLockedForSending}
+            title={isQuoteLockedForSending ? "Already sent — Reopen for Editing first to send a different version" : undefined}
+            onClick={(e) => {
+              setSendQuoteToClientOrigin(captureGlassModalOrigin(e));
+              setSendQuoteToClientError("");
+              setSendQuoteToClientPreview(null);
+              setIsSendQuoteToClientModalOpen(true);
+              void sendQuoteToClient();
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+          >
+            <Mail size={14} />
+            Send Quote to Client
+          </button>
+        ) : null}
+        {/* Only when there's actually an accepted version to jump to, and it isn't already
+            what's on screen — a quick way back to it from live (or any other version) without
+            digging through the Version History sidebar. */}
+        {specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId ? (
+          <button
+            type="button"
+            onClick={() => openQuoteGridVersion(specsShareStatus.quoteVersionId as string)}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+            style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+          >
+            <Eye size={14} />
+            View Accepted Version
+          </button>
+        ) : null}
+        {/* Only meaningful once something's actually been sent at least once — before that,
+            the hub link exists as a route but there's nothing behind it for the client to see. */}
+        {specsShareStatus && project?.id ? (
+          <button
+            type="button"
+            onClick={() => {
+              window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          >
+            <ExternalLink size={14} />
+            View Client Portal
+          </button>
+        ) : null}
+      </>
+    );
+    // Mobile: a plain icon, no box/border/label — same brand-strong blue as the desktop "Edit"
+    // buttons elsewhere in this page (e.g. the General tab's client-details edit button), just a
+    // simple "<" rather than a full button, to keep the cramped mobile title row light. Desktop
+    // keeps its own existing bordered "← Back" button, unchanged.
+    const quoteBackButton = isCompactProjectViewport ? (
+      <button
+        type="button"
+        onClick={() => {
+          void leaveQuoteGridWindow();
+          setSalesNav("overview");
+        }}
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+        aria-label="Back"
+      >
+        <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={() => {
+          void leaveQuoteGridWindow();
+          setSalesNav("overview");
+        }}
+        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+      >
+        <ArrowLeft size={14} />
+        Back
+      </button>
+    );
     return (
       <ProtectedRoute>
-        <div ref={salesQuoteScrollRef} className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
+        <div
+          ref={salesQuoteScrollRef}
+          className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
+          {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
+            () => { if (isQuoteExtrasPanelOpen) toggleQuoteExtrasPanel(); if (!isQuoteHistoryPanelOpen) toggleQuoteHistoryPanel(); },
+            () => { if (isQuoteHistoryPanelOpen) toggleQuoteHistoryPanel(); if (!isQuoteExtrasPanelOpen) toggleQuoteExtrasPanel(); },
+            isQuoteHistoryPanelOpen,
+            isQuoteExtrasPanelOpen,
+          ) : {})}
+        >
           {/* Same shared-backdrop-behind-two-fixed-bars treatment as the Specifications fullscreen
               view above — see that block's own comment for why this exact shape (one static-height
               blurred div, content-only bars on top) is what avoids Chromium's sticky/fixed-blur
@@ -39676,7 +40011,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: 56 + 49,
+              height: quoteHeaderHeight + 49,
               backgroundColor: "var(--glass-modal-bg)",
               backdropFilter: "blur(12px) saturate(220%)",
               WebkitBackdropFilter: "blur(12px) saturate(220%)",
@@ -39687,7 +40022,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex shrink-0 items-center gap-3">
+            <div className="inline-flex items-center gap-3">
               <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Quote size={14} />
                 <span>Quote</span>
@@ -39708,179 +40043,76 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="pointer-events-auto">{quoteGridOutdatedBanner}</div>
               </div>
             ) : null}
-            {/* Horizontally scrollable (not wrapped) — this row can carry up to 8 buttons
-                (Print/Download/Save Version/Reset/Send/View Accepted/Client Portal/Back), which
-                doesn't fit a fixed 56px-tall bar on mobile; swiping left/right reveals the rest
-                instead of them wrapping onto a clipped second line or squeezing unreadably. */}
-            <div className="hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto">
-              <button
-                type="button"
-                disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
-                onClick={() => void onPrintQuoteGrid()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-              >
-                <Printer size={14} />
-                Print
-              </button>
-              <button
-                type="button"
-                disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
-                onClick={() => void onDownloadQuoteGridPdf()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-              >
-                <Download size={14} />
-                Download PDF
-              </button>
-              {!isViewingQuoteGridVersion ? (
-                <button
-                  type="button"
-                  disabled={!quoteGrid || isSavingQuoteGridVersion || isQuoteLockedForSending}
-                  title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
-                  onClick={(e) => {
-                    setQuoteGridSaveVersionModalOrigin(captureGlassModalOrigin(e));
-                    setQuoteGridSaveVersionNameDraft(`Version ${quoteGridVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
-                    setIsQuoteGridSaveVersionModalOpen(true);
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  <Save size={14} />
-                  Save Version
-                </button>
-              ) : null}
-              {!isViewingQuoteGridVersion ? (
-                <button
-                  type="button"
-                  disabled={!hasQuoteGridTemplate || isQuoteLockedForSending}
-                  title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
-                  onClick={() => setIsQuoteGridResetConfirmOpen(true)}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                >
-                  <RotateCcw size={14} />
-                  Reset to Template
-                </button>
-              ) : null}
-              {/* Available while viewing EITHER the live grid or a historical version — sending
-                  marks whichever's on screen as sent (see sendQuoteToClient's own comment on how it
-                  branches on activeQuoteGridVersionId). Only one version may be sent at a time —
-                  disabled whenever ANY version is currently sent, not just while viewing that exact
-                  one, so a second version can never be sent alongside it; Reopen for Editing first.
-                  Not even rendered at all when what's actually on screen IS that already-sent/
-                  accepted version (isQuoteContentLockedForSending) — sending it again makes no
-                  sense once it's the very thing already sent. */}
-              {!isQuoteContentLockedForSending ? (
-                <button
-                  type="button"
-                  disabled={!displayedQuoteGrid || isQuoteLockedForSending}
-                  title={isQuoteLockedForSending ? "Already sent — Reopen for Editing first to send a different version" : undefined}
-                  onClick={(e) => {
-                    setSendQuoteToClientOrigin(captureGlassModalOrigin(e));
-                    setSendQuoteToClientError("");
-                    setSendQuoteToClientPreview(null);
-                    setIsSendQuoteToClientModalOpen(true);
-                    void sendQuoteToClient();
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                >
-                  <Mail size={14} />
-                  Send Quote to Client
-                </button>
-              ) : null}
-              {/* Only when there's actually an accepted version to jump to, and it isn't already
-                  what's on screen — a quick way back to it from live (or any other version) without
-                  digging through the Version History sidebar. */}
-              {specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId ? (
-                <button
-                  type="button"
-                  onClick={() => openQuoteGridVersion(specsShareStatus.quoteVersionId as string)}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-                  style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
-                >
-                  <Eye size={14} />
-                  View Accepted Version
-                </button>
-              ) : null}
-              {/* Only meaningful once something's actually been sent at least once — before that,
-                  the hub link exists as a route but there's nothing behind it for the client to see. */}
-              {specsShareStatus && project?.id ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  <ExternalLink size={14} />
-                  View Client Portal
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => {
-                  void leaveQuoteGridWindow();
-                  setSalesNav("overview");
-                }}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-              >
-                <ArrowLeft size={14} />
-                Back
-              </button>
+            <div className={isCompactProjectViewport ? "ml-auto flex shrink-0 items-center gap-2" : "hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto"}>
+              {!isCompactProjectViewport && quoteOtherActionButtons}
+              {quoteBackButton}
             </div>
           </div>
+          {/* Mobile only: every OTHER action lives in its own bar fixed to the BOTTOM of the
+              screen instead of squeezing onto the title row — desktop keeps them all inline above. */}
+          {isCompactProjectViewport && (
+            <div
+              className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+            >
+              {quoteOtherActionButtons}
+            </div>
+          )}
           {/* Title-only toggles for the two floating bubbles below — sit in the SAME row as
               SpecsGridEditor's own formatting toolbar (same top/height/z-index), each sized to match
               its own bubble's width, so the toolbar reads as one continuous bar with these as its
               bookends rather than a separate control. No background of their own, same as the
               toolbar itself — the host page's shared blur backdrop (further up) shows through both
               equally, so there's no seam between "the toolbar" and "these labels." */}
-          <button
-            type="button"
-            onClick={toggleQuoteHistoryPanel}
-            className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
-            style={{
-              left: 0,
-              top: 56,
-              // 260 (the bubble's own original width) + 42 reserved purely for the hover-delete
-              // icon — see quoteGridVersionsSorted.map's own comment on why that reserved 42px has
-              // to be genuinely NEW panel width, not carved out of the bubble's original size.
-              width: 302,
-              height: 49,
-              borderBottomColor: "var(--glass-border)",
-              color: isQuoteHistoryPanelOpen && !isQuoteHistoryPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
-            }}
-          >
-            Version History
-            {/* Points LEFT (toward the screen edge it slides out from) while closed — "it'll come out
-                over there" — and flips to point back toward center once open, toward where it
-                retracts to. ChevronDown rotated ±90deg rather than a separate Left/Right icon import,
-                since the animation between the two states is then just this one transform. */}
-            <ChevronDown size={13} style={{ transform: isQuoteHistoryPanelOpen && !isQuoteHistoryPanelClosing ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }} />
-          </button>
-          <button
-            type="button"
-            onClick={toggleQuoteExtrasPanel}
-            className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
-            style={{
-              right: 0,
-              top: 56,
-              width: 280,
-              height: 49,
-              borderBottomColor: "var(--glass-border)",
-              color: isQuoteExtrasPanelOpen && !isQuoteExtrasPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
-            }}
-          >
-            Quote Extras
-            {/* Same idea mirrored — points RIGHT (its own edge) while closed, back toward center
-                once open. */}
-            <ChevronDown size={13} style={{ transform: isQuoteExtrasPanelOpen && !isQuoteExtrasPanelClosing ? "rotate(90deg)" : "rotate(-90deg)", transition: "transform 140ms ease" }} />
-          </button>
-          <div className="flex flex-1" style={{ paddingTop: 56 }}>
+          {/* Desktop only — mobile has no bubbles to book-end (Version History/Quote Extras are
+              swipe-opened drawers instead), so the toolbar there is left-aligned and spans the
+              full width. */}
+          {!isCompactProjectViewport && (
+            <>
+              <button
+                type="button"
+                onClick={toggleQuoteHistoryPanel}
+                className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
+                style={{
+                  left: 0,
+                  top: quoteHeaderHeight,
+                  // 260 (the bubble's own original width) + 42 reserved purely for the hover-delete
+                  // icon — see quoteGridVersionsSorted.map's own comment on why that reserved 42px has
+                  // to be genuinely NEW panel width, not carved out of the bubble's original size.
+                  width: 302,
+                  height: 49,
+                  borderBottomColor: "var(--glass-border)",
+                  color: isQuoteHistoryPanelOpen && !isQuoteHistoryPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
+                }}
+              >
+                Version History
+                {/* Points LEFT (toward the screen edge it slides out from) while closed — "it'll come out
+                    over there" — and flips to point back toward center once open, toward where it
+                    retracts to. ChevronDown rotated ±90deg rather than a separate Left/Right icon import,
+                    since the animation between the two states is then just this one transform. */}
+                <ChevronDown size={13} style={{ transform: isQuoteHistoryPanelOpen && !isQuoteHistoryPanelClosing ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }} />
+              </button>
+              <button
+                type="button"
+                onClick={toggleQuoteExtrasPanel}
+                className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
+                style={{
+                  right: 0,
+                  top: quoteHeaderHeight,
+                  width: 280,
+                  height: 49,
+                  borderBottomColor: "var(--glass-border)",
+                  color: isQuoteExtrasPanelOpen && !isQuoteExtrasPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
+                }}
+              >
+                Quote Extras
+                {/* Same idea mirrored — points RIGHT (its own edge) while closed, back toward center
+                    once open. */}
+                <ChevronDown size={13} style={{ transform: isQuoteExtrasPanelOpen && !isQuoteExtrasPanelClosing ? "rotate(90deg)" : "rotate(-90deg)", transition: "transform 140ms ease" }} />
+              </button>
+            </>
+          )}
+          <div className="flex flex-1" style={{ paddingTop: quoteHeaderHeight, paddingBottom: isCompactProjectViewport ? 56 : 0 }}>
             {/* No top padding here (only horizontal/bottom) — SpecsGridEditor owns its own vertical
                 spacing (its fixed toolbar's reserved flow space, then the canvas's own p-6), and any
                 top padding on this wrapper pushes its canvas further down than the fixed toolbar/
@@ -39919,9 +40151,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // Same reasoning as the Specs editor's own identical prop — see
                   // isViewingSavedVersion's comment in specs-grid-editor.tsx.
                   isViewingSavedVersion={isViewingQuoteGridVersion}
-                  toolbarFixedTopPx={56}
-                  toolbarFixedLeftPx={302}
-                  toolbarFixedRightPx={280}
+                  toolbarFixedTopPx={quoteHeaderHeight}
+                  toolbarFixedLeftPx={isCompactProjectViewport ? 0 : 302}
+                  toolbarFixedRightPx={isCompactProjectViewport ? 0 : 280}
+                  fitToViewportOnMobile={isCompactProjectViewport}
                   // Rendered INSIDE the editor's own canvas area, below its fixed formatting
                   // toolbar and right above the white sheet — see belowToolbarBanner's own comment
                   // in specs-grid-editor.tsx. Exactly one of the two banners ever shows at once
@@ -39988,15 +40221,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 sheet instead of pushing it narrower, so on a small window it simply overlaps rather
                 than fighting the sheet for width; isQuoteExtrasPanelOpen defaults closed there (see
                 its own comment) so it doesn't cover anything unless explicitly opened. */}
-            {isQuoteExtrasPanelOpen ? (
-              // No outer box of its own (no border/background/shadow/rounded corners here) — a plain
-              // positioning container only. Each item inside is already its own individually
-              // rounded+bordered "bubble" (see the map below), so they float independently rather
-              // than reading as one big panel sitting on top of the sheet.
-              <div
-                className="hide-scrollbar fixed z-[90] flex w-[280px] max-h-[calc(100svh-129px)] flex-col gap-3 overflow-y-auto px-3"
-                style={{ right: 16, top: 56 + 49 + 8 }}
-              >
+            {(() => {
+              const quoteExtrasListContent = (
+                <>
                 {displayedQuoteGridExtras.length === 0 ? (
                   <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                     No groups yet — highlight rows and &quot;Link Rows as Group&quot; to add one.
@@ -40061,17 +40288,46 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     ))}
                   </div>
                 )}
-              </div>
-            ) : null}
+                </>
+              );
+              if (!isQuoteExtrasPanelOpen) return null;
+              if (isCompactProjectViewport) {
+                if (!quoteMobileExtrasSwipe.shouldRender) return null;
+                return (
+                  <div className="fixed inset-0 z-[120]">
+                    <button
+                      type="button"
+                      data-swipe-backdrop="true"
+                      className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                      onClick={toggleQuoteExtrasPanel}
+                      aria-label="Close Quote Extras backdrop"
+                    />
+                    <div
+                      ref={quoteMobileExtrasPanelRef}
+                      {...quoteMobileExtrasSwipe.touchHandlers}
+                      className="hide-scrollbar absolute inset-y-0 right-0 z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-3 overflow-y-auto p-3"
+                      style={{ backgroundColor: "var(--bg-app)", paddingTop: quoteHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                    >
+                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Quote Extras</p>
+                      {quoteExtrasListContent}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  className="hide-scrollbar fixed z-[90] flex w-[280px] flex-col gap-3 overflow-y-auto px-3"
+                  style={{ right: 16, top: quoteHeaderHeight + 49 + 8, maxHeight: `calc(100svh - ${quoteHeaderHeight + 49 + 8 + 16}px)` }}
+                >
+                  {quoteExtrasListContent}
+                </div>
+              );
+            })()}
             {/* Same floating-bubble treatment as Quote Extras above, mirrored to the left — its own
                 title lives on the "Version History" toggle button in the header, not repeated here. */}
-            {isQuoteHistoryPanelOpen ? (
-              // No outer box here either — see Quote Extras' own comment above. Each version entry
-              // is already its own rounded+bordered "bubble" (below), floating independently.
-              <div
-                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100svh-129px)] flex-col gap-3 overflow-y-auto px-3"
-                style={{ left: 16, top: 56 + 49 + 8 }}
-              >
+            {(() => {
+              const quoteVersionsListContent = (
+                <>
                 <div className="flex flex-col gap-2">
                   {/* Always first, regardless of saved history — the live grid always exists even
                       with zero saved versions, and is the one place edits actually persist to
@@ -40249,8 +40505,41 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     ))
                   )}
                 </div>
-              </div>
-            ) : null}
+                </>
+              );
+              if (!isQuoteHistoryPanelOpen) return null;
+              if (isCompactProjectViewport) {
+                if (!quoteMobileVersionsSwipe.shouldRender) return null;
+                return (
+                  <div className="fixed inset-0 z-[120]">
+                    <button
+                      type="button"
+                      data-swipe-backdrop="true"
+                      className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                      onClick={toggleQuoteHistoryPanel}
+                      aria-label="Close Version History backdrop"
+                    />
+                    <div
+                      ref={quoteMobileVersionsPanelRef}
+                      {...quoteMobileVersionsSwipe.touchHandlers}
+                      className="hide-scrollbar relative z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-3 overflow-y-auto p-3"
+                      style={{ backgroundColor: "var(--bg-app)", paddingTop: quoteHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                    >
+                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
+                      {quoteVersionsListContent}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  className="hide-scrollbar fixed z-[95] flex w-[302px] flex-col gap-3 overflow-y-auto px-3"
+                  style={{ left: 16, top: quoteHeaderHeight + 49 + 8, maxHeight: `calc(100svh - ${quoteHeaderHeight + 49 + 8 + 16}px)` }}
+                >
+                  {quoteVersionsListContent}
+                </div>
+              );
+            })()}
           </div>
           {shouldRenderQuoteGridSaveVersionModal && typeof document !== "undefined"
             ? createPortal(
@@ -40601,12 +40890,160 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : false;
     const specsSubmittedBannerVisible = Boolean(specsShareStatus?.submittedAt) && isViewingSentSpecsVersion;
     const specsPendingBannerVisible = Boolean(specsShareStatus?.versionId) && !specsShareStatus?.submittedAt && isViewingSentSpecsVersion;
+    // Mobile: the top bar is title + Back only (per design, matching a plain "page title, back
+    // button" convention) — every other action moves to its own bar fixed at the BOTTOM of the
+    // screen instead. Desktop is untouched: all buttons stay inline in the single combined title
+    // row exactly as before. specsHeaderHeight is now just the title row's own 56px for both —
+    // there's no longer a second TOP row on either breakpoint (mobile's second row used to hold
+    // buttons; now the formatting toolbar sits there directly, same as desktop).
+    const specsHeaderHeight = 56;
+    const specsOtherActionButtons = (
+      <>
+        <button
+          type="button"
+          disabled={!hasTemplate || !displayedSpecsSheetGrid}
+          onClick={() => void onPrintSpecificationsSheet()}
+          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+        >
+          <Printer size={14} />
+          Print
+        </button>
+        <button
+          type="button"
+          disabled={!hasTemplate || !displayedSpecsSheetGrid}
+          onClick={() => void onDownloadSpecificationsSheetPdf()}
+          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+        >
+          <Download size={14} />
+          Download PDF
+        </button>
+        {!isViewingSpecsSheetVersion ? (
+          <button
+            type="button"
+            disabled={!specsSheetGrid || isSavingSpecsVersion || isSpecsContentLockedForSending}
+            title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
+            onClick={(e) => {
+              setSpecsSaveVersionModalOrigin(captureGlassModalOrigin(e));
+              setSpecsSaveVersionNameDraft(`Version ${specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
+              setIsSpecsSaveVersionModalOpen(true);
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          >
+            <Save size={14} />
+            Save Version
+          </button>
+        ) : null}
+        {!isViewingSpecsSheetVersion ? (
+          <button
+            type="button"
+            disabled={!hasTemplate || isSpecsContentLockedForSending}
+            title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
+            onClick={() => setIsSpecsSheetResetConfirmOpen(true)}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+          >
+            <RotateCcw size={14} />
+            Reset to Template
+          </button>
+        ) : null}
+        {/* Available while viewing EITHER the live sheet or a historical version — sending
+            marks whichever's on screen as sent (see sendSpecsToClient's own branch on
+            activeSpecsSheetVersionId), mirroring the Quote tab's own identical button. Only
+            one version may be sent at a time — disabled whenever ANY version is currently
+            sent, so a second version can never be sent alongside it; Reopen for Editing
+            first. Not even rendered at all when what's actually on screen IS that already-
+            sent/submitted version (isSpecsContentLockedForSending) — sending it again makes
+            no sense once it's the very thing already sent. */}
+        {!isSpecsContentLockedForSending ? (
+          <button
+            type="button"
+            disabled={!displayedSpecsSheetGrid || Boolean(specsShareStatus?.versionId)}
+            title={specsShareStatus?.versionId ? "Already sent — Reopen for Editing first to send a different version" : undefined}
+            onClick={(e) => {
+              setSendSpecsToClientOrigin(captureGlassModalOrigin(e));
+              setSendSpecsToClientError("");
+              setSendSpecsToClientPreview(null);
+              setIsSendSpecsToClientModalOpen(true);
+              void sendSpecsToClient();
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+          >
+            <Mail size={14} />
+            Send to Client
+          </button>
+        ) : null}
+        {/* Only when there's actually a submitted version to jump to, and it isn't already
+            what's on screen — a quick way back to it from live (or any other version) without
+            digging through the Version History sidebar. */}
+        {specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId ? (
+          <button
+            type="button"
+            onClick={() => openSpecsSheetVersion(specsShareStatus.versionId as string)}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+            style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+          >
+            <Eye size={14} />
+            View Submitted Version
+          </button>
+        ) : null}
+        {/* Only meaningful once something's actually been sent at least once — before that,
+            the hub link exists as a route but there's nothing behind it for the client to see. */}
+        {specsShareStatus && project?.id ? (
+          <button
+            type="button"
+            onClick={() => {
+              window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          >
+            <ExternalLink size={14} />
+            View Client Portal
+          </button>
+        ) : null}
+      </>
+    );
+    // Mobile: a plain icon, no box/border/label — see quoteBackButton's identical comment above.
+    const specsBackButton = isCompactProjectViewport ? (
+      <button
+        type="button"
+        onClick={() => setSalesNav("overview")}
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+        aria-label="Back"
+      >
+        <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={() => setSalesNav("overview")}
+        className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+      >
+        <ArrowLeft size={14} />
+        Back
+      </button>
+    );
     return (
       <ProtectedRoute>
-        <div ref={salesSpecsScrollRef} className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
+        <div
+          ref={salesSpecsScrollRef}
+          className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
+          {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
+            () => { if (isSpecsSectionsPanelOpen) toggleSpecsSectionsPanel(); if (!isSpecsVersionsSidebarOpen) toggleSpecsVersionsSidebar(); },
+            () => { if (isSpecsVersionsSidebarOpen) toggleSpecsVersionsSidebar(); if (!isSpecsSectionsPanelOpen) toggleSpecsSectionsPanel(); },
+            isSpecsVersionsSidebarOpen,
+            isSpecsSectionsPanelOpen,
+          ) : {})}
+        >
           {/* One shared blurred backdrop behind BOTH fixed bars (this header + the editor's own
-              toolbar, which starts 56px below) — not `position: sticky` with the blur directly on
-              it, and not two separately-blurred elements: content needs to actually
+              toolbar, which starts specsHeaderHeight below) — not `position: sticky` with the blur
+              directly on it, and not two separately-blurred elements: content needs to actually
               pass behind these for them to read as real glass (this wrapper is one shared scroll, not
               a separate non-scrolling shell), and every variation of a blurred `sticky` element, or
               two adjacent independently-blurred `fixed` elements, produced a visible flashing/seam
@@ -40614,17 +41051,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               proven reliable in this app (the global top tab bar, components/global-app-tabs-bar.tsx)
               — merging both bars' blur into that single element removes the seam between them
               entirely, since there's only one blur sample, not two disagreeing with each other at a
-              boundary. Height is a plain static number (56 header + 49 toolbar = 105), not measured —
-              every attempt that fed a JS-measured value into this element's own size or position was
-              also one that flickered, so this deliberately avoids that class of value entirely. Only
-              a rare 2-line-wrapped toolbar (very narrow window) would poke a sliver past this height
-              unblurred — an accepted, minor edge case. The editor's own toolbar (SpecsGridEditor) uses
-              the matching literal 56/49 for its own fixed top/spacer (49, not 48 — see
-              PROJECT_TOOLBAR_HEIGHT_PX's own comment there) — keep both in sync if changed. */}
+              boundary. Height is a plain static number (specsHeaderHeight + 49 formatting toolbar),
+              not measured — every attempt that fed a JS-measured value into this element's own size
+              or position was also one that flickered, so this deliberately avoids that class of
+              value entirely. Only a rare 2-line-wrapped row (very narrow window) would poke a
+              sliver past this height unblurred — an accepted, minor edge case. The editor's own
+              toolbar (SpecsGridEditor) uses the matching toolbarFixedTopPx/49 for its own fixed
+              top/spacer (49, not 48 — see PROJECT_TOOLBAR_HEIGHT_PX's own comment there) — keep
+              both in sync if changed. */}
           <div
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: 56 + 49,
+              height: specsHeaderHeight + 49,
               backgroundColor: "var(--glass-modal-bg)",
               backdropFilter: "blur(12px) saturate(220%)",
               WebkitBackdropFilter: "blur(12px) saturate(220%)",
@@ -40639,7 +41077,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            <div className="inline-flex shrink-0 items-center gap-3">
+            <div className="inline-flex items-center gap-3">
               <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <ClipboardList size={14} />
                 <span>Specifications</span>
@@ -40660,179 +41098,78 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div className="pointer-events-auto">{specsSheetVersionBanner}</div>
               </div>
             ) : null}
-            {/* Horizontally scrollable (not wrapped) — this row can carry up to 8 buttons
-                (Print/Download/Save Version/Reset/Send/View Submitted/Client Portal/Back), which
-                doesn't fit a fixed 56px-tall bar on mobile; swiping left/right reveals the rest
-                instead of them wrapping onto a clipped second line or squeezing unreadably. */}
-            <div className="hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto">
-              <button
-                type="button"
-                disabled={!hasTemplate || !displayedSpecsSheetGrid}
-                onClick={() => void onPrintSpecificationsSheet()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-              >
-                <Printer size={14} />
-                Print
-              </button>
-              <button
-                type="button"
-                disabled={!hasTemplate || !displayedSpecsSheetGrid}
-                onClick={() => void onDownloadSpecificationsSheetPdf()}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-              >
-                <Download size={14} />
-                Download PDF
-              </button>
-              {!isViewingSpecsSheetVersion ? (
-                <button
-                  type="button"
-                  disabled={!specsSheetGrid || isSavingSpecsVersion || isSpecsContentLockedForSending}
-                  title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
-                  onClick={(e) => {
-                    setSpecsSaveVersionModalOrigin(captureGlassModalOrigin(e));
-                    setSpecsSaveVersionNameDraft(`Version ${specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
-                    setIsSpecsSaveVersionModalOpen(true);
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  <Save size={14} />
-                  Save Version
-                </button>
-              ) : null}
-              {!isViewingSpecsSheetVersion ? (
-                <button
-                  type="button"
-                  disabled={!hasTemplate || isSpecsContentLockedForSending}
-                  title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
-                  onClick={() => setIsSpecsSheetResetConfirmOpen(true)}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
-                >
-                  <RotateCcw size={14} />
-                  Reset to Template
-                </button>
-              ) : null}
-              {/* Available while viewing EITHER the live sheet or a historical version — sending
-                  marks whichever's on screen as sent (see sendSpecsToClient's own branch on
-                  activeSpecsSheetVersionId), mirroring the Quote tab's own identical button. Only
-                  one version may be sent at a time — disabled whenever ANY version is currently
-                  sent, so a second version can never be sent alongside it; Reopen for Editing
-                  first. Not even rendered at all when what's actually on screen IS that already-
-                  sent/submitted version (isSpecsContentLockedForSending) — sending it again makes
-                  no sense once it's the very thing already sent. */}
-              {!isSpecsContentLockedForSending ? (
-                <button
-                  type="button"
-                  disabled={!displayedSpecsSheetGrid || Boolean(specsShareStatus?.versionId)}
-                  title={specsShareStatus?.versionId ? "Already sent — Reopen for Editing first to send a different version" : undefined}
-                  onClick={(e) => {
-                    setSendSpecsToClientOrigin(captureGlassModalOrigin(e));
-                    setSendSpecsToClientError("");
-                    setSendSpecsToClientPreview(null);
-                    setIsSendSpecsToClientModalOpen(true);
-                    void sendSpecsToClient();
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-                  style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-                >
-                  <Mail size={14} />
-                  Send to Client
-                </button>
-              ) : null}
-              {/* Only when there's actually a submitted version to jump to, and it isn't already
-                  what's on screen — a quick way back to it from live (or any other version) without
-                  digging through the Version History sidebar. */}
-              {specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId ? (
-                <button
-                  type="button"
-                  onClick={() => openSpecsSheetVersion(specsShareStatus.versionId as string)}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-                  style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
-                >
-                  <Eye size={14} />
-                  View Submitted Version
-                </button>
-              ) : null}
-              {/* Only meaningful once something's actually been sent at least once — before that,
-                  the hub link exists as a route but there's nothing behind it for the client to see. */}
-              {specsShareStatus && project?.id ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
-                  }}
-                  className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
-                >
-                  <ExternalLink size={14} />
-                  View Client Portal
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => setSalesNav("overview")}
-                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-              >
-                <ArrowLeft size={14} />
-                Back
-              </button>
+            <div className={isCompactProjectViewport ? "ml-auto flex shrink-0 items-center gap-2" : "hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto"}>
+              {!isCompactProjectViewport && specsOtherActionButtons}
+              {specsBackButton}
             </div>
           </div>
-          {/* Title-only toggles for the two floating bubbles below — same treatment as the Quote
-              sheet's own Version History/Quote Extras labels (see that block's own comment): sit in
-              the SAME row as SpecsGridEditor's own toolbar, each sized to match its own bubble's
-              width, bookending the toolbar rather than reading as a separate control. Version
-              History on the left, Sections on the right. */}
-          <button
-            type="button"
-            onClick={toggleSpecsVersionsSidebar}
-            className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
-            style={{
-              left: 0,
-              top: 56,
-              // 260 (the bubble's own original width) + 42 reserved for the hover-delete icon —
-              // see the sidebar's own comment on why that reserved 42px has to be genuinely NEW
-              // panel width, not carved out of the bubble's original size. Matches Quote's own
-              // Version History toggle width exactly.
-              width: 302,
-              height: 49,
-              borderBottomColor: "var(--glass-border)",
-              color: isSpecsVersionsSidebarOpen && !isSpecsVersionsSidebarClosing ? "var(--brand-strong)" : "var(--text-main)",
-            }}
-          >
-            Version History
-            {/* Points LEFT (toward the screen edge it slides out from) while closed, back toward
-                center once open — same convention as Quote's own Version History toggle. */}
-            <ChevronDown size={13} style={{ transform: isSpecsVersionsSidebarOpen && !isSpecsVersionsSidebarClosing ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }} />
-          </button>
-          <button
-            type="button"
-            onClick={toggleSpecsSectionsPanel}
-            className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
-            style={{
-              right: 0,
-              top: 56,
-              width: 260,
-              height: 49,
-              borderBottomColor: "var(--glass-border)",
-              color: isSpecsSectionsPanelOpen && !isSpecsSectionsPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
-            }}
-          >
-            Sections
-            {/* Mirrored — points RIGHT (its own edge) while closed, back toward center once open. */}
-            <ChevronDown size={13} style={{ transform: isSpecsSectionsPanelOpen && !isSpecsSectionsPanelClosing ? "rotate(90deg)" : "rotate(-90deg)", transition: "transform 140ms ease" }} />
-          </button>
-          {/* The header above is `position: fixed`, so it reserves no space of its own in normal flow
-              — this padding stands in for that space instead. The editor's own toolbar reserves ITS
-              own space separately, inside SpecsGridEditor — no top padding here (only horizontal/
-              bottom), or the wrapper's own padding pushes the canvas further down than the toolbar/
-              backdrop actually accounts for, opening a visible gap between them (same fix as the
-              Quote fullscreen view above; both fallback states below already have their own py-16). */}
-          <div className="flex flex-1" style={{ paddingTop: 56 }}>
+          {/* Mobile only: every OTHER action lives in its own bar fixed to the BOTTOM of the
+              screen instead of squeezing onto the title row — desktop keeps them all inline above. */}
+          {isCompactProjectViewport && (
+            <div
+              className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+            >
+              {specsOtherActionButtons}
+            </div>
+          )}
+          {/* Desktop only — title-only toggles for the two floating bubbles below, same treatment
+              as the Quote sheet's own Version History/Quote Extras labels: sit in the SAME row as
+              SpecsGridEditor's own toolbar, each sized to match its own bubble's width, bookending
+              the toolbar. Mobile has no bubbles to book-end (Version History/Sections are swipe-
+              opened drawers instead), so the toolbar there is left-aligned and spans the full width. */}
+          {!isCompactProjectViewport && (
+            <>
+              <button
+                type="button"
+                onClick={toggleSpecsVersionsSidebar}
+                className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
+                style={{
+                  left: 0,
+                  top: specsHeaderHeight,
+                  // 260 (the bubble's own original width) + 42 reserved for the hover-delete icon —
+                  // see the sidebar's own comment on why that reserved 42px has to be genuinely NEW
+                  // panel width, not carved out of the bubble's original size. Matches Quote's own
+                  // Version History toggle width exactly.
+                  width: 302,
+                  height: 49,
+                  borderBottomColor: "var(--glass-border)",
+                  color: isSpecsVersionsSidebarOpen && !isSpecsVersionsSidebarClosing ? "var(--brand-strong)" : "var(--text-main)",
+                }}
+              >
+                Version History
+                {/* Points LEFT (toward the screen edge it slides out from) while closed, back toward
+                    center once open — same convention as Quote's own Version History toggle. */}
+                <ChevronDown size={13} style={{ transform: isSpecsVersionsSidebarOpen && !isSpecsVersionsSidebarClosing ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 140ms ease" }} />
+              </button>
+              <button
+                type="button"
+                onClick={toggleSpecsSectionsPanel}
+                className="fixed z-[95] flex items-center justify-center gap-1.5 border-b text-[15px] font-bold transition hover:brightness-95"
+                style={{
+                  right: 0,
+                  top: specsHeaderHeight,
+                  width: 260,
+                  height: 49,
+                  borderBottomColor: "var(--glass-border)",
+                  color: isSpecsSectionsPanelOpen && !isSpecsSectionsPanelClosing ? "var(--brand-strong)" : "var(--text-main)",
+                }}
+              >
+                Sections
+                {/* Mirrored — points RIGHT (its own edge) while closed, back toward center once open. */}
+                <ChevronDown size={13} style={{ transform: isSpecsSectionsPanelOpen && !isSpecsSectionsPanelClosing ? "rotate(90deg)" : "rotate(-90deg)", transition: "transform 140ms ease" }} />
+              </button>
+            </>
+          )}
+          {/* The title row and (mobile only) bottom action bar are `position: fixed`, so together
+              they reserve no space of their own in normal flow — this padding stands in for the
+              title row's space (bottom padding stands in for the bottom bar's, mobile only). The
+              editor's own formatting toolbar reserves ITS own space separately, inside
+              SpecsGridEditor — no top padding here (only horizontal/bottom), or the wrapper's own
+              padding pushes the canvas further down than the toolbar/backdrop actually accounts
+              for, opening a visible gap between them (same fix as the Quote fullscreen view above;
+              both fallback states below already have their own py-16). */}
+          <div className="flex flex-1" style={{ paddingTop: specsHeaderHeight, paddingBottom: isCompactProjectViewport ? 56 : 0 }}>
             <div className="flex-1 px-3 pb-3 sm:px-4 sm:pb-4 md:px-5 md:pb-5">
               {!hasTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
@@ -40863,9 +41200,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // never updated once a version's been sent (see isViewingSavedVersion's own
                   // comment in specs-grid-editor.tsx).
                   isViewingSavedVersion={isViewingSpecsSheetVersion}
-                  toolbarFixedTopPx={56}
-                  toolbarFixedLeftPx={302}
-                  toolbarFixedRightPx={260}
+                  toolbarFixedTopPx={specsHeaderHeight}
+                  toolbarFixedLeftPx={isCompactProjectViewport ? 0 : 302}
+                  toolbarFixedRightPx={isCompactProjectViewport ? 0 : 260}
+                  fitToViewportOnMobile={isCompactProjectViewport}
                   // Same "banner below the toolbar, right above the sheet" treatment as the Quote
                   // tab's own — see its belowToolbarBanner comment, including the same colors/
                   // layout (right-mounted button, brand-blue pending). Purely a status indicator
@@ -40916,13 +41254,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {/* Version History — same floating-bubble treatment as the Quote sheet's own Version
                 History (no outer box; each version is already its own rounded+bordered "bubble";
                 hidden scrollbar; slide-in-from-the-left entrance only during the panel's own
-                just-opened window, never on an unrelated content re-render). Its own title lives on
-                the "Version History" toggle button in the header, not repeated here. */}
-            {isSpecsVersionsSidebarOpen ? (
-              <div
-                className="hide-scrollbar fixed z-[95] flex w-[302px] max-h-[calc(100svh-129px)] flex-col gap-2 overflow-y-auto px-3"
-                style={{ left: 16, top: 56 + 49 + 8 }}
-              >
+                just-opened window, never on an unrelated content re-render) on desktop. Mobile
+                renders this SAME content inside a real edge-anchored swipe drawer instead — see
+                specsMobileVersionsSwipe's own render below. Its own title lives on the "Version
+                History" toggle button in the header (desktop) or the drawer's own header (mobile),
+                not repeated here. */}
+            {(() => {
+              const specsVersionsListContent = (
+                <>
                 {/* Always first, regardless of saved history — mirrors the Quote sheet's own "Live
                     Quote" bubble exactly (green, pulsing dot, same mr-[42px] width match). */}
                 <button
@@ -41055,18 +41394,50 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   ))
                 )}
-              </div>
-            ) : null}
+                </>
+              );
+              if (!isSpecsVersionsSidebarOpen) return null;
+              if (isCompactProjectViewport) {
+                if (!specsMobileVersionsSwipe.shouldRender) return null;
+                return (
+                  <div className="fixed inset-0 z-[120]" data-swipe-backdrop-scope>
+                    <button
+                      type="button"
+                      data-swipe-backdrop="true"
+                      className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                      onClick={toggleSpecsVersionsSidebar}
+                      aria-label="Close Version History backdrop"
+                    />
+                    <div
+                      ref={specsMobileVersionsPanelRef}
+                      {...specsMobileVersionsSwipe.touchHandlers}
+                      className="hide-scrollbar relative z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-2 overflow-y-auto p-3"
+                      style={{ backgroundColor: "var(--bg-app)", paddingTop: specsHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                    >
+                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
+                      {specsVersionsListContent}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  className="hide-scrollbar fixed z-[95] flex w-[302px] flex-col gap-2 overflow-y-auto px-3"
+                  style={{ left: 16, top: specsHeaderHeight + 49 + 8, maxHeight: `calc(100svh - ${specsHeaderHeight + 49 + 8 + 16}px)` }}
+                >
+                  {specsVersionsListContent}
+                </div>
+              );
+            })()}
             {/* Sections — every named row-group in this project's own sheet, each a plain on/off
                 toggle for whether it prints/shows — same floating-bubble treatment as Version
-                History above, mirrored to the right (no outer box; each row is already its own
-                rounded+bordered "bubble"; hidden scrollbar; slide-in-from-the-right entrance only
-                during the panel's own just-opened window). */}
-            {isSpecsSectionsPanelOpen ? (
-              <div
-                className="hide-scrollbar fixed z-[95] flex w-[260px] max-h-[calc(100svh-129px)] flex-col gap-2 overflow-y-auto px-3"
-                style={{ right: 16, top: 56 + 49 + 8 }}
-              >
+                History above (desktop) / same swipe drawer treatment (mobile), mirrored to the
+                right (no outer box; each row is already its own rounded+bordered "bubble"; hidden
+                scrollbar; slide-in-from-the-right entrance only during the panel's own just-opened
+                window, desktop only). */}
+            {(() => {
+              const specsSectionsListContent = (
+                <>
                 {specsSheetGroups.length === 0 ? (
                   <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                     No sections yet — highlight rows and &quot;Link Rows as Group&quot; to add one.
@@ -41108,8 +41479,41 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   ))
                 )}
-              </div>
-            ) : null}
+                </>
+              );
+              if (!isSpecsSectionsPanelOpen) return null;
+              if (isCompactProjectViewport) {
+                if (!specsMobileSectionsSwipe.shouldRender) return null;
+                return (
+                  <div className="fixed inset-0 z-[120]">
+                    <button
+                      type="button"
+                      data-swipe-backdrop="true"
+                      className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                      onClick={toggleSpecsSectionsPanel}
+                      aria-label="Close Sections backdrop"
+                    />
+                    <div
+                      ref={specsMobileSectionsPanelRef}
+                      {...specsMobileSectionsSwipe.touchHandlers}
+                      className="hide-scrollbar absolute inset-y-0 right-0 z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-2 overflow-y-auto p-3"
+                      style={{ backgroundColor: "var(--bg-app)", paddingTop: specsHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                    >
+                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Sections</p>
+                      {specsSectionsListContent}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  className="hide-scrollbar fixed z-[95] flex w-[260px] flex-col gap-2 overflow-y-auto px-3"
+                  style={{ right: 16, top: specsHeaderHeight + 49 + 8, maxHeight: `calc(100svh - ${specsHeaderHeight + 49 + 8 + 16}px)` }}
+                >
+                  {specsSectionsListContent}
+                </div>
+              );
+            })()}
           </div>
           {shouldRenderSpecsSaveVersionModal && typeof document !== "undefined"
             ? createPortal(
@@ -41427,7 +41831,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   if (isSalesCompareFullscreen) {
     return (
       <ProtectedRoute>
-        <div ref={salesCompareScrollRef} className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]">
+        <div
+          ref={salesCompareScrollRef}
+          className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
+          {...(isCompactProjectViewport ? makeCompareMobileSwipeHandlers() : {})}
+        >
           <div
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
@@ -41445,22 +41853,41 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span style={{ color: "var(--text-muted)" }}>|</span>
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setSalesNav("overview")}
-              className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
-              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-            >
-              <ArrowLeft size={14} />
-              Back
-            </button>
+            {isCompactProjectViewport ? (
+              <button
+                type="button"
+                onClick={() => setSalesNav("overview")}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                aria-label="Back"
+              >
+                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setSalesNav("overview")}
+                className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <ArrowLeft size={14} />
+                Back
+              </button>
+            )}
           </div>
           <div className="flex flex-1" style={{ paddingTop: 56 }}>
             {/* Saved comparisons — a named "what if these pieces used a different product" scenario
                 per row, same click-to-open-a-card model as the Specs/Quote version history lists.
                 The name field always reflects whichever draft is currently open (a fresh unsaved
-                one, or an already-saved one being edited/renamed). */}
-            <div className="hide-scrollbar w-[260px] shrink-0 overflow-y-auto border-r p-3" style={{ borderColor: "var(--glass-border)", maxHeight: "calc(100svh - 56px)" }}>
+                one, or an already-saved one being edited/renamed). Mobile: hidden off-screen to the
+                left by default, revealed full-width by swiping (see compareMobileListSwipe/
+                makeCompareMobileSwipeHandlers) — same push-the-page mechanism as the Specs/Quote
+                drawers, just full-width instead of a partial panel since there's no second,
+                opposite-edge drawer to share the screen with here. Desktop keeps the original
+                always-visible 260px column, unchanged. */}
+            {(() => {
+              const compareListContent = (
+                <>
               <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                 Comparison name
               </label>
@@ -41564,7 +41991,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   ))}
                 </div>
               )}
-            </div>
+                </>
+              );
+              if (isCompactProjectViewport) {
+                if (!compareMobileListSwipe.shouldRender) return null;
+                return (
+                  <div className="fixed inset-0 z-[120]">
+                    <button
+                      type="button"
+                      data-swipe-backdrop="true"
+                      className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                      onClick={() => setIsCompareListPanelOpen(false)}
+                      aria-label="Close Comparisons backdrop"
+                    />
+                    <div
+                      ref={compareMobileListPanelRef}
+                      {...compareMobileListSwipe.touchHandlers}
+                      className="hide-scrollbar absolute inset-y-0 left-0 z-[1] flex h-full w-full flex-col gap-2 overflow-y-auto p-3"
+                      style={{ backgroundColor: "var(--bg-app)", paddingTop: 16 }}
+                    >
+                      <div className="mb-1 flex items-center justify-between">
+                        <p className="text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Comparisons</p>
+                        <button
+                          type="button"
+                          onClick={() => setIsCompareListPanelOpen(false)}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          aria-label="Close Comparisons"
+                        >
+                          <ChevronLeft size={16} />
+                        </button>
+                      </div>
+                      {compareListContent}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div className="hide-scrollbar w-[260px] shrink-0 overflow-y-auto border-r p-3" style={{ borderColor: "var(--glass-border)", maxHeight: "calc(100svh - 56px)" }}>
+                  {compareListContent}
+                </div>
+              );
+            })()}
 
             {/* Builder — the room-grouped row checklist, live results, and the copy-paste wording
                 panel. No comparison-wide product picker here — each row is only ever compared to
@@ -41650,19 +42118,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                       />
                     </div>
-                    <div className="flex flex-col gap-3">
+                    {/* Mobile: bleeds out of the builder's own px-4/md:px-5 padding (exact matching
+                        negative margins, not a flat value, so it cancels correctly whether that
+                        padding is currently 16px or 20px) so each group box below reaches the true
+                        screen edges — desktop keeps the original inset, unchanged. */}
+                    <div className={isCompactProjectViewport ? "flex flex-col gap-3 -mx-4 md:-mx-5" : "flex flex-col gap-3"}>
                     {comparisonPieceGroups.map((group) => {
                       const rowIds = group.rows.map((r) => r.id);
                       const selectedCount = rowIds.filter((id) => comparisonSelectedRowIds.has(id)).length;
                       const allSelected = selectedCount === rowIds.length;
                       const someSelected = selectedCount > 0 && !allSelected;
-                      // Whether ANY row in this specific group actually uses a depth dimension —
-                      // most groups are all flat panels (H × W only), and reserving a 3rd slot no
-                      // row here ever fills would push that lone × left of the block's own center
-                      // instead of sitting right under "Size". Collapses to a 2-slot H × W layout
-                      // when nothing in the group needs the 3rd slot; still per-GROUP rather than
-                      // per-row, so every row within it keeps the same fixed slot alignment.
-                      const groupHasDepth = group.rows.some((r) => String(r.depth || "").trim().length > 0);
                       // Same three-tier part-type colour language as the cutlist list itself (see
                       // groupColorPalette's own callers there): a solid-ish title bar, a darker
                       // header row underneath it for the column labels, and each data row in that
@@ -41673,7 +42138,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       // OWN part type (a room or product isn't itself a part type), with a neutral
                       // header above the mix.
                       const groupPalette = comparisonGroupBy === "partType" ? groupColorPalette(partTypeColors[group.label] ?? "#CBD5E1") : null;
-                      const columnsTemplate = "28px 130px minmax(0,1fr) 280px 140px 70px";
+                      // Mobile: just Part Type/Part Name/Product — Size and Quantity dropped per
+                      // the user's own request. Desktop keeps the original 6-column layout with
+                      // both, unchanged.
+                      const columnsTemplate = isCompactProjectViewport
+                        ? "28px 130px minmax(0,1fr) 280px"
+                        : "28px 130px minmax(0,1fr) 280px 140px 70px";
+                      // Whether ANY row in this specific group actually uses a depth dimension —
+                      // most groups are all flat panels (H × W only), and reserving a 3rd slot no
+                      // row here ever fills would push that lone × left of the block's own center
+                      // instead of sitting right under "Size". Collapses to a 2-slot H × W layout
+                      // when nothing in the group needs the 3rd slot; still per-GROUP rather than
+                      // per-row, so every row within it keeps the same fixed slot alignment.
+                      // Desktop-only (Size column isn't shown on mobile), but cheap to compute
+                      // either way.
+                      const groupHasDepth = group.rows.some((r) => String(r.depth || "").trim().length > 0);
                       // Text defaults to black everywhere in this checklist — it only flips to
                       // white where the SPECIFIC background actually shown (title bar/header/row
                       // tint, not the raw part-type colour) is dark enough to need it. Checked
@@ -41683,7 +42162,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       const titleBarTextColor = groupPalette && !isLightHex(groupPalette.titleBarBg) ? "#FFFFFF" : "#000000";
                       const headerTextColor = groupPalette && !isLightHex(groupPalette.headerBg) ? "#FFFFFF" : "#000000";
                       return (
-                        <div key={group.label} className="overflow-hidden rounded-[12px] border" style={{ borderColor: "var(--glass-border)" }}>
+                        <div
+                          key={group.label}
+                          className={isCompactProjectViewport ? "overflow-hidden border-y" : "overflow-hidden rounded-[12px] border"}
+                          style={{ borderColor: "var(--glass-border)" }}
+                        >
                           <div
                             className="flex items-center justify-between gap-2 px-3 py-2"
                             style={{
@@ -41747,8 +42230,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <span>Part Type</span>
                             <span>Part Name</span>
                             <span className="text-center">Product</span>
-                            <span className="text-center">Size</span>
-                            <span className="text-center">Quantity</span>
+                            {!isCompactProjectViewport ? (
+                              <>
+                                <span className="text-center">Size</span>
+                                <span className="text-center">Quantity</span>
+                              </>
+                            ) : null}
                           </div>
                           <div className="divide-y" style={{ borderColor: "var(--glass-border)" }}>
                             {group.rows.map((row) => {
@@ -41765,7 +42252,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               // piece that never uses depth (e.g. a flat panel) just leaves that
                               // slot blank instead of compacting, so every row's × separators and
                               // values line up in the same spot regardless of digit count or which
-                              // dimensions this particular row actually has.
+                              // dimensions this particular row actually has. Desktop-only.
                               const sizeParts = [row.height, row.width, row.depth].map((v) => String(v || "").trim());
                               const hasAnySize = sizeParts.some(Boolean);
                               const isRowSelected = comparisonSelectedRowIds.has(row.id);
@@ -41862,27 +42349,31 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       />
                                     </div>
                                   </div>
-                                  <div className="flex w-full min-w-0 items-center justify-center">
-                                    {hasAnySize ? (
-                                      <div
-                                        className="mx-auto inline-grid items-center"
-                                        style={{ gridTemplateColumns: groupHasDepth ? "4ch 12px 4ch 12px 4ch" : "4ch 12px 4ch" }}
-                                      >
-                                        <span className="truncate text-center text-[11px]">{sizeParts[0]}</span>
-                                        <span className="text-center text-[11px]" style={{ opacity: sizeParts[0] && (sizeParts[1] || sizeParts[2]) ? 0.6 : 0 }}>×</span>
-                                        <span className="truncate text-center text-[11px]">{sizeParts[1]}</span>
-                                        {groupHasDepth ? (
-                                          <>
-                                            <span className="text-center text-[11px]" style={{ opacity: sizeParts[2] && (sizeParts[0] || sizeParts[1]) ? 0.6 : 0 }}>×</span>
-                                            <span className="truncate text-center text-[11px]">{sizeParts[2]}</span>
-                                          </>
-                                        ) : null}
+                                  {!isCompactProjectViewport ? (
+                                    <>
+                                      <div className="flex w-full min-w-0 items-center justify-center">
+                                        {hasAnySize ? (
+                                          <div
+                                            className="mx-auto inline-grid items-center"
+                                            style={{ gridTemplateColumns: groupHasDepth ? "4ch 12px 4ch 12px 4ch" : "4ch 12px 4ch" }}
+                                          >
+                                            <span className="truncate text-center text-[11px]">{sizeParts[0]}</span>
+                                            <span className="text-center text-[11px]" style={{ opacity: sizeParts[0] && (sizeParts[1] || sizeParts[2]) ? 0.6 : 0 }}>×</span>
+                                            <span className="truncate text-center text-[11px]">{sizeParts[1]}</span>
+                                            {groupHasDepth ? (
+                                              <>
+                                                <span className="text-center text-[11px]" style={{ opacity: sizeParts[2] && (sizeParts[0] || sizeParts[1]) ? 0.6 : 0 }}>×</span>
+                                                <span className="truncate text-center text-[11px]">{sizeParts[2]}</span>
+                                              </>
+                                            ) : null}
+                                          </div>
+                                        ) : (
+                                          <span className="text-[11px]">—</span>
+                                        )}
                                       </div>
-                                    ) : (
-                                      <span className="text-[11px]">—</span>
-                                    )}
-                                  </div>
-                                  <span className="min-w-0 truncate text-center text-[11px]">{row.quantity || "1"}</span>
+                                      <span className="min-w-0 truncate text-center text-[11px]">{row.quantity || "1"}</span>
+                                    </>
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -42162,16 +42653,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 onClick={() => void onSaveAndBackFromNesting()}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border bg-white text-[#334155] lg:hidden"
-                style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.text }}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 lg:hidden"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                 aria-label="Save and back"
                 title="Save and back"
               >
-                <img
-                  src="/angle-left.png"
-                  alt="Back"
-                  className="h-4 w-4 object-contain"
-                />
+                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
               </button>
               <button
                 type="button"

@@ -603,69 +603,68 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
   if (!db || !uid) {
     return [];
   }
+  const database = db;
 
-  const ids = new Set<string>();
+  // These four lookups are independent of each other (different queries/collections, none reads
+  // another's result) — running them concurrently instead of as a sequential await chain cuts what
+  // was up to 4 round trips down to the slowest single one.
+  const [byDocIdIds, byUidFieldIds, byMembersIds, profileFallbackIds] = await Promise.all([
+    // Primary desktop-compatible path: memberships doc id == uid.
+    (async () => {
+      try {
+        const byDocId = await getDocs(
+          query(collectionGroup(database, "memberships"), where(documentId(), "==", uid), limit(100)),
+        );
+        return byDocId.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
+      } catch {
+        return [];
+      }
+    })(),
+    // Alternate shape: uid stored as field on membership doc.
+    (async () => {
+      try {
+        const snap = await getDocs(query(collectionGroup(database, "memberships"), where("uid", "==", uid), limit(100)));
+        return snap.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
+      } catch {
+        return [];
+      }
+    })(),
+    // Alternate collection path: companies/{companyId}/members/{uid}
+    (async () => {
+      try {
+        const membersByDocId = await getDocs(
+          query(collectionGroup(database, "members"), where(documentId(), "==", uid), limit(100)),
+        );
+        return membersByDocId.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
+      } catch {
+        return [];
+      }
+    })(),
+    // Profile fallback: users/{uid}.companyId / activeCompanyId
+    (async () => {
+      try {
+        const userSnap = await getDoc(doc(database, "users", uid));
+        if (!userSnap.exists()) return [];
+        const data = (userSnap.data() ?? {}) as Record<string, unknown>;
+        const nestedCompany =
+          typeof data.company === "object" && data.company !== null
+            ? (data.company as Record<string, unknown>)
+            : null;
+        const companyId = String(
+          data.companyId ??
+            data.activeCompanyId ??
+            nestedCompany?.id ??
+            nestedCompany?.companyId ??
+            "",
+        ).trim();
+        return companyId ? [companyId] : [];
+      } catch {
+        return [];
+      }
+    })(),
+  ]);
 
-  // Primary desktop-compatible path: memberships doc id == uid.
-  try {
-    const byDocId = await getDocs(
-      query(collectionGroup(db, "memberships"), where(documentId(), "==", uid), limit(100)),
-    );
-    for (const docSnap of byDocId.docs) {
-      const parent = docSnap.ref.parent.parent;
-      if (parent) ids.add(parent.id);
-    }
-  } catch {
-    // continue
-  }
-
-  // Alternate shape: uid stored as field on membership doc.
-  try {
-    const snap = await getDocs(query(collectionGroup(db, "memberships"), where("uid", "==", uid), limit(100)));
-    for (const docSnap of snap.docs) {
-      const parent = docSnap.ref.parent.parent;
-      if (parent) ids.add(parent.id);
-    }
-  } catch {
-    // continue
-  }
-
-  // Alternate collection path: companies/{companyId}/members/{uid}
-  try {
-    const membersByDocId = await getDocs(
-      query(collectionGroup(db, "members"), where(documentId(), "==", uid), limit(100)),
-    );
-    for (const docSnap of membersByDocId.docs) {
-      const parent = docSnap.ref.parent.parent;
-      if (parent) ids.add(parent.id);
-    }
-  } catch {
-    // continue
-  }
-
-  // Profile fallback: users/{uid}.companyId / activeCompanyId
-  try {
-    const userSnap = await getDoc(doc(db, "users", uid));
-    if (userSnap.exists()) {
-      const data = (userSnap.data() ?? {}) as Record<string, unknown>;
-      const nestedCompany =
-        typeof data.company === "object" && data.company !== null
-          ? (data.company as Record<string, unknown>)
-          : null;
-      const companyId = String(
-        data.companyId ??
-          data.activeCompanyId ??
-          nestedCompany?.id ??
-          nestedCompany?.companyId ??
-          "",
-      ).trim();
-      if (companyId) ids.add(companyId);
-    }
-  } catch {
-    // ignore
-  }
-
-  return Array.from(ids);
+  return Array.from(new Set([...byDocIdIds, ...byUidFieldIds, ...byMembersIds, ...profileFallbackIds]));
 }
 
 async function fetchProjectsFromCompanyJobs(
@@ -676,6 +675,7 @@ async function fetchProjectsFromCompanyJobs(
   if (!db || !uid) {
     return [];
   }
+  const database = db;
 
   const companyIds = Array.from(
     new Set([
@@ -687,30 +687,39 @@ async function fetchProjectsFromCompanyJobs(
     return [];
   }
 
-  const all: Project[] = [];
-  for (const companyId of companyIds) {
-    try {
-      const companySnap = await getDoc(doc(db, "companies", companyId));
-      const companyData = companySnap.exists() ? ((companySnap.data() ?? {}) as Record<string, unknown>) : {};
-      const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(companyData.staffDisplayNamesByUid);
-      const companyAccess = await fetchCompanyAccess(companyId, uid);
-      const jobsSnap = await getDocs(collection(db, "companies", companyId, "jobs"));
-      for (const item of jobsSnap.docs) {
-        const data = (item.data() ?? {}) as Record<string, unknown>;
-        if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
-          continue;
+  // Each company's own 3 lookups (company doc, access, jobs) are independent of each other, and
+  // different companies are independent of one another too — this used to be a fully sequential
+  // for-loop (3 awaits × N companies, one company after another), now all of it runs concurrently.
+  const perCompanyResults = await Promise.all(
+    companyIds.map(async (companyId) => {
+      try {
+        const [companySnap, companyAccess, jobsSnap] = await Promise.all([
+          getDoc(doc(database, "companies", companyId)),
+          fetchCompanyAccess(companyId, uid),
+          getDocs(collection(database, "companies", companyId, "jobs")),
+        ]);
+        const companyData = companySnap.exists() ? ((companySnap.data() ?? {}) as Record<string, unknown>) : {};
+        const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(companyData.staffDisplayNamesByUid);
+        const rows: Project[] = [];
+        for (const item of jobsSnap.docs) {
+          const data = (item.data() ?? {}) as Record<string, unknown>;
+          if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
+            continue;
+          }
+          const normalized = applyCompanyStaffDisplayNameOverridesToProject(normalizeJobProject(companyId, item), displayNameOverridesByUid);
+          if (!canUserViewProject(normalized, uid, companyAccess)) {
+            continue;
+          }
+          rows.push(normalized);
         }
-        const normalized = applyCompanyStaffDisplayNameOverridesToProject(normalizeJobProject(companyId, item), displayNameOverridesByUid);
-        if (!canUserViewProject(normalized, uid, companyAccess)) {
-          continue;
-        }
-        all.push(normalized);
+        return rows;
+      } catch {
+        return [];
       }
-    } catch {
-      continue;
-    }
-  }
+    }),
+  );
 
+  const all = perCompanyResults.flat();
   all.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   return all;
 }
@@ -788,35 +797,61 @@ export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]
   if (!db) {
     return mockProjects;
   }
+  const database = db;
 
   const userId = String(uid ?? "").trim();
 
   try {
-    const topLevel = await getDocs(collection(db, "projects"));
-    if (!topLevel.empty) {
-      const rows = topLevel.docs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
-      const companyDocCache = new Map<string, Record<string, unknown> | null>();
-      const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
-      return await Promise.all(
-        rows.map(async (row) => {
-          const companyId = String(row.companyId || "").trim();
-          if (!companyId) return row;
-          if (!companyDocCache.has(companyId)) {
-            companyDocCache.set(companyId, await fetchCompanyDoc(companyId));
-          }
-          if (!companyAccessCache.has(companyId)) {
-            companyAccessCache.set(companyId, userId ? await fetchCompanyAccess(companyId, userId) : null);
-          }
-          const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
-            (companyDocCache.get(companyId) as Record<string, unknown> | null)?.staffDisplayNamesByUid,
-          );
-          const normalized = applyCompanyStaffDisplayNameOverridesToProject(row, displayNameOverridesByUid);
-          if (!canUserViewProject(normalized, userId, companyAccessCache.get(companyId) ?? null)) {
-            return null;
-          }
-          return normalized;
-        }),
-      ).then((items) => items.filter(Boolean) as Project[]);
+    // Scoped to the user's own companies instead of reading the whole top-level `projects`
+    // collection — that used to be an unfiltered, unlimited `getDocs(collection(db,"projects"))`,
+    // meaning every dashboard load downloaded every project across every company in the database,
+    // not just the current one. Firestore's `in` operator caps at 30 values per query, so a user
+    // in more companies than that gets chunked, queried in parallel, and merged.
+    const companyIds = Array.from(
+      new Set([
+        ...(await fetchCompanyIdsForUser(userId)),
+        ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
+      ]),
+    );
+    if (companyIds.length) {
+      const CHUNK_SIZE = 30;
+      const chunks: string[][] = [];
+      for (let i = 0; i < companyIds.length; i += CHUNK_SIZE) {
+        chunks.push(companyIds.slice(i, i + CHUNK_SIZE));
+      }
+      const snaps = await Promise.all(
+        chunks.map((chunk) => getDocs(query(collection(database, "projects"), where("companyId", "in", chunk)))),
+      );
+      const topLevelDocs = snaps.flatMap((snap) => snap.docs);
+      if (topLevelDocs.length > 0) {
+        const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
+        const companyDocCache = new Map<string, Record<string, unknown> | null>();
+        const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
+        const filtered = await Promise.all(
+          rows.map(async (row) => {
+            const companyId = String(row.companyId || "").trim();
+            if (!companyId) return row;
+            if (!companyDocCache.has(companyId)) {
+              companyDocCache.set(companyId, await fetchCompanyDoc(companyId));
+            }
+            if (!companyAccessCache.has(companyId)) {
+              companyAccessCache.set(companyId, userId ? await fetchCompanyAccess(companyId, userId) : null);
+            }
+            const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
+              (companyDocCache.get(companyId) as Record<string, unknown> | null)?.staffDisplayNamesByUid,
+            );
+            const normalized = applyCompanyStaffDisplayNameOverridesToProject(row, displayNameOverridesByUid);
+            if (!canUserViewProject(normalized, userId, companyAccessCache.get(companyId) ?? null)) {
+              return null;
+            }
+            return normalized;
+          }),
+        );
+        const result = filtered.filter(Boolean) as Project[];
+        if (result.length > 0) {
+          return result;
+        }
+      }
     }
   } catch {
     // continue into company/jobs fallback

@@ -857,27 +857,33 @@ export default function DashboardPage() {
         const companyId = storedCompanyId || fallbackCompanyId;
         const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
         const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
-        const userColorMap = await withTimeout(
+        // The user-color lookup and the company doc/members lookup are both derived from `items`
+        // alone (not from each other's results), so they were an avoidable extra sequential round
+        // trip — run them concurrently instead.
+        const userColorMapPromise = withTimeout(
           retryAsync(() => fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId), { attempts: 2, delayMs: 250 }),
           15000,
           "User color lookup timed out",
         );
+        const companyDataPromise = companyId
+          ? withTimeout(
+              retryAsync(
+                () =>
+                  Promise.all([
+                    fetchCompanyDoc(companyId),
+                    fetchCompanyMembers(companyId),
+                  ]),
+                { attempts: 2, delayMs: 250 },
+              ),
+              15000,
+              "Company data load timed out",
+            )
+          : null;
+        const [userColorMap, companyBundle] = await Promise.all([userColorMapPromise, companyDataPromise]);
         if (cancelled) return;
         setCreatorColorByUid(userColorMap);
-        if (companyId) {
-          const [companyDoc, members] = await withTimeout(
-            retryAsync(
-              () =>
-                Promise.all([
-                  fetchCompanyDoc(companyId),
-                  fetchCompanyMembers(companyId),
-                ]),
-              { attempts: 2, delayMs: 250 },
-            ),
-            15000,
-            "Company data load timed out",
-          );
-          if (cancelled) return;
+        if (companyId && companyBundle) {
+          const [companyDoc, members] = companyBundle;
           setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
           setStatusRowsLoaded(true);
           setDashboardLegendRows(normalizeDashboardLegend((companyDoc as Record<string, unknown> | null)?.dashboardCompleteLegend));

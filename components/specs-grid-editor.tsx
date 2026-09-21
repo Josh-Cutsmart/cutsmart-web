@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import {
@@ -185,6 +185,13 @@ export type SpecsGridEditorProps = {
   // been. Only Quote's own live project sheet sets this (an "Accepted by X on Y" banner once the
   // client has accepted) — omit for every other caller, which renders nothing extra here.
   belowToolbarBanner?: ReactNode;
+  // Scales the whole white page down to fit the canvas's own available width by default (the page
+  // is sized to real physical mm dimensions, which routinely overflows a phone screen), with a
+  // self-contained pinch-to-zoom/pan on top to go in closer — independent of the browser's own
+  // page zoom, which the host app disables globally elsewhere (see app/layout.tsx's viewport
+  // config) to stop mobile Safari auto-zooming into small inputs. Only the two project-sheet
+  // callers set this, and only while their own host page is in its mobile/compact layout.
+  fitToViewportOnMobile?: boolean;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -501,6 +508,7 @@ export default function SpecsGridEditor({
   isSentToClient,
   isViewingSavedVersion,
   belowToolbarBanner,
+  fitToViewportOnMobile,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -1283,6 +1291,143 @@ export default function SpecsGridEditor({
   const mockPageBoxWidthPx = Math.max(mockPageTargetWidthPx, tableRenderedWidthPx);
   const mockPageBoxHeightPx = Math.max(mockPageHeightPx, tableRenderedHeightPx);
 
+  // fitToViewportOnMobile: the page above is sized to real physical mm dimensions (mockPageBoxWidthPx
+  // routinely exceeds a phone's own width), so it's wrapped in a scale-to-fit viewport instead of
+  // left to overflow — sheetFitScale is the "whole page visible" baseline, sheetZoom (pinch) and
+  // sheetPan (single-finger drag once zoomed in) layer on top of it, mirroring the project page's
+  // own nesting sheet-preview pinch/pan (clampNestingPreviewOffset etc.) but scoped to this canvas
+  // and self-contained here rather than driven by the host page.
+  const sheetFitViewportRef = useRef<HTMLDivElement | null>(null);
+  // Driven directly by window.innerWidth (always synchronously correct) rather than a
+  // ResizeObserver reading sheetFitViewportRef's own clientWidth — the ref version measured
+  // unreliably early (before the table had finished its own width measurement/layout pass one
+  // render up, in mockPageBoxWidthPx), leaving the scale stuck at whatever it read on that first,
+  // sometimes-wrong pass with nothing to ever correct it.
+  const [viewportInnerWidthPx, setViewportInnerWidthPx] = useState(typeof window === "undefined" ? 0 : window.innerWidth);
+  useEffect(() => {
+    if (!fitToViewportOnMobile || typeof window === "undefined") return;
+    const onResize = () => setViewportInnerWidthPx(window.innerWidth);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [fitToViewportOnMobile]);
+  // The canvas has no horizontal padding of its own on mobile now (it bleeds past the host page's
+  // own px-3/sm:px-4/md:px-5 wrapper too — see the canvas div's own className below), so the page
+  // is meant to reach the true screen edges exactly — just a few px of safety margin against
+  // rounding, since erring toward a hair smaller is harmless but erring the other way reintroduces
+  // the "clipped off the right edge" bug this whole calculation exists to avoid.
+  const SHEET_FIT_HORIZONTAL_INSET_PX = 4;
+  const sheetFitScale =
+    fitToViewportOnMobile && mockPageBoxWidthPx > 0
+      ? Math.max(0.1, Math.min(1, (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx))
+      : 1;
+  const [sheetZoom, setSheetZoom] = useState(1);
+  const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
+  const sheetGestureRef = useRef<{
+    mode: "none" | "pinch" | "pan";
+    startScale: number;
+    startOffsetX: number;
+    startOffsetY: number;
+    startDistance: number;
+    startCenterX: number;
+    startCenterY: number;
+    startPointX: number;
+    startPointY: number;
+  }>({
+    mode: "none",
+    startScale: 1,
+    startOffsetX: 0,
+    startOffsetY: 0,
+    startDistance: 0,
+    startCenterX: 0,
+    startCenterY: 0,
+    startPointX: 0,
+    startPointY: 0,
+  });
+  // No explicit reset-on-content-change needed for sheetZoom/sheetPan: the host page already
+  // remounts this whole component (specsSheetEditorKey/quoteGridEditorKey bump) whenever the
+  // live/saved-version content actually swaps, which resets every piece of local state here,
+  // these included, for free.
+  // The content is transform-origin: top left (see the fit-scale comment on that transform below
+  // for why — mx-auto collapses to 0 once the unscaled box is wider than its container, so the box
+  // is already flush against the viewport's top-left corner, and scaling from that same corner is
+  // what makes the shrunk-to-fit result land flush there too). At rest (sheetZoom 1) the content
+  // exactly fills the viewport by definition of "fit", so zooming to sheetZoom makes it
+  // viewportSize * sheetZoom on screen — pan can slide it left/up by up to that excess to reveal
+  // the far edge, but never right/down past its own flush-left/top starting position (which would
+  // just reveal blank space beyond the content's own left/top edge).
+  const clampSheetPan = (x: number, y: number, zoom = sheetZoom) => {
+    if (zoom <= 1) return { x: 0, y: 0 };
+    const viewport = sheetFitViewportRef.current;
+    if (!viewport) return { x: 0, y: 0 };
+    const minX = -viewport.clientWidth * (zoom - 1);
+    const minY = -viewport.clientHeight * (zoom - 1);
+    return { x: Math.max(minX, Math.min(0, x)), y: Math.max(minY, Math.min(0, y)) };
+  };
+  const getSheetTouchDistance = (a: { clientX: number; clientY: number }, b: { clientX: number; clientY: number }) =>
+    Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+  const onSheetViewportTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const viewport = sheetFitViewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const gesture = sheetGestureRef.current;
+    if (event.touches.length >= 2) {
+      const [first, second] = [event.touches[0], event.touches[1]];
+      gesture.mode = "pinch";
+      gesture.startScale = sheetZoom;
+      gesture.startOffsetX = sheetPan.x;
+      gesture.startOffsetY = sheetPan.y;
+      gesture.startDistance = Math.max(1, getSheetTouchDistance(first, second));
+      gesture.startCenterX = (first.clientX + second.clientX) / 2 - rect.left;
+      gesture.startCenterY = (first.clientY + second.clientY) / 2 - rect.top;
+      event.preventDefault();
+      return;
+    }
+    if (event.touches.length === 1 && sheetZoom > 1) {
+      gesture.mode = "pan";
+      gesture.startScale = sheetZoom;
+      gesture.startOffsetX = sheetPan.x;
+      gesture.startOffsetY = sheetPan.y;
+      gesture.startPointX = event.touches[0].clientX - rect.left;
+      gesture.startPointY = event.touches[0].clientY - rect.top;
+      event.preventDefault();
+    }
+  };
+  const onSheetViewportTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const viewport = sheetFitViewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const gesture = sheetGestureRef.current;
+    if (gesture.mode === "pinch" && event.touches.length >= 2) {
+      const [first, second] = [event.touches[0], event.touches[1]];
+      const nextDistance = Math.max(1, getSheetTouchDistance(first, second));
+      const nextZoom = Math.max(1, Math.min(4, Number(((gesture.startScale * nextDistance) / gesture.startDistance).toFixed(3))));
+      const centerX = (first.clientX + second.clientX) / 2 - rect.left;
+      const centerY = (first.clientY + second.clientY) / 2 - rect.top;
+      // Keeps whatever content point is under the fingers visually stable as zoom changes — derived
+      // directly against the viewport's own top-left corner (no "recenter around the middle" term),
+      // matching the content's actual transform-origin: top left (see clampSheetPan's own comment).
+      const unclampedX = centerX - ((gesture.startCenterX - gesture.startOffsetX) / gesture.startScale) * nextZoom;
+      const unclampedY = centerY - ((gesture.startCenterY - gesture.startOffsetY) / gesture.startScale) * nextZoom;
+      setSheetZoom(nextZoom);
+      setSheetPan(clampSheetPan(unclampedX, unclampedY, nextZoom));
+      event.preventDefault();
+      return;
+    }
+    if (gesture.mode === "pan" && event.touches.length === 1 && gesture.startScale > 1) {
+      const pointX = event.touches[0].clientX - rect.left;
+      const pointY = event.touches[0].clientY - rect.top;
+      setSheetPan(clampSheetPan(gesture.startOffsetX + (pointX - gesture.startPointX), gesture.startOffsetY + (pointY - gesture.startPointY), gesture.startScale));
+      event.preventDefault();
+    }
+  };
+  const onSheetViewportTouchEnd = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const gesture = sheetGestureRef.current;
+    if (event.touches.length === 0) {
+      gesture.mode = "none";
+    }
+  };
+
   // The grip handle's own hover keeps a group "active" even once the pointer has moved off its rows
   // and onto the handle itself (see manuallyHoveredGroupId's own comment) — falls back to whichever
   // group the currently-hovered ROW belongs to otherwise.
@@ -1983,7 +2128,20 @@ export default function SpecsGridEditor({
           via the shared blur backdrop as the page scrolls. The company template builder keeps its own
           self-contained scroll (still bounded inside its own modal), unchanged. */}
       <div
-        className={isProjectSheetView ? "relative p-6" : "relative min-h-0 flex-1 overflow-auto p-6"}
+        className={
+          fitToViewportOnMobile
+            ? // No horizontal padding, and bled out past the host page's own px-3/sm:px-4/md:px-5
+              // wrapper (see the host's "flex-1 px-3 pb-3 sm:px-4..." div in
+              // projects/[projectId]/page.tsx — matched breakpoint-for-breakpoint here so the
+              // cancellation is exact at every width) — the white page below reaches the TRUE
+              // screen edges with no grey canvas showing on either side, instead of sitting inset
+              // inside two stacked paddings that don't belong to this component's own asked-for
+              // "edge to edge" mobile layout.
+              "relative py-6 -mx-3 sm:-mx-4 md:-mx-5"
+            : isProjectSheetView
+              ? "relative p-6"
+              : "relative min-h-0 flex-1 overflow-auto p-6"
+        }
         // Deliberately NOT inset by toolbarFixedLeftPx/RightPx — those two only steer the fixed
         // TOOLBAR's own bounds now (so its buttons stay clear of the host page's title labels/
         // bubbles sitting at the same height), not the canvas below it. The sheet stays centered at
@@ -1992,11 +2150,49 @@ export default function SpecsGridEditor({
         style={{ backgroundColor: "#EDEFF4" }}
       >
         {belowToolbarBanner ? (
-          <div className="relative mx-auto mb-3" style={{ width: mockPageBoxWidthPx }}>
+          <div className="relative mx-auto mb-3" style={{ width: fitToViewportOnMobile ? "100%" : mockPageBoxWidthPx, maxWidth: mockPageBoxWidthPx }}>
             {belowToolbarBanner}
           </div>
         ) : null}
-        <div className="relative mx-auto" style={{ width: mockPageBoxWidthPx, minHeight: mockPageBoxHeightPx, backgroundColor: "#ffffff", boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)" }}>
+        {/* fitToViewportOnMobile: a fixed-height, overflow-hidden viewport the page below is scaled
+            down INTO (transform: scale, not a layout-affecting resize — the mm-accurate table inside
+            stays exactly as-authored) so it starts fully visible on a phone screen instead of
+            overflowing off the right edge. sheetZoom/sheetPan (pinch/pan, see their own state
+            comments above) layer a user-controlled zoom-in on top of this base fit, clipped to this
+            same viewport rather than growing it, matching a standard photo-viewer feel. */}
+        <div
+          ref={fitToViewportOnMobile ? sheetFitViewportRef : undefined}
+          onTouchStart={fitToViewportOnMobile ? onSheetViewportTouchStart : undefined}
+          onTouchMove={fitToViewportOnMobile ? onSheetViewportTouchMove : undefined}
+          onTouchEnd={fitToViewportOnMobile ? onSheetViewportTouchEnd : undefined}
+          style={
+            fitToViewportOnMobile
+              ? { overflow: "hidden", height: mockPageBoxHeightPx * sheetFitScale, touchAction: sheetZoom > 1 ? "none" : "pan-y" }
+              : undefined
+          }
+        >
+        <div
+          className="relative mx-auto"
+          style={{
+            width: mockPageBoxWidthPx,
+            minHeight: mockPageBoxHeightPx,
+            backgroundColor: "#ffffff",
+            boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)",
+            ...(fitToViewportOnMobile
+              ? {
+                  // top left, not top center: with mx-auto's margins collapsing to 0 once the
+                  // unscaled box (its real width, mockPageBoxWidthPx, unaffected by transform) is
+                  // wider than its container, the box already sits flush at the container's LEFT
+                  // edge — scaling around its own (much further right) unscaled center left the
+                  // visible, shrunk content still off-center and partly clipped past the right
+                  // edge. Scaling from the same top-left corner it's already flush against keeps
+                  // the shrunk result flush there too, filling the viewport from x=0.
+                  transform: `scale(${sheetFitScale * sheetZoom}) translate(${sheetPan.x / (sheetFitScale * sheetZoom)}px, ${sheetPan.y / (sheetFitScale * sheetZoom)}px)`,
+                  transformOrigin: "top left",
+                }
+              : {}),
+          }}
+        >
         {/* Insets the table + every overlay below it (borders, selection, resize handles, the row
             +/- buttons) by the real print margin as ONE unit, so a project's own copy reads centered
             on the page instead of flush against its left/top edge. Positioned via absolute left/top
@@ -2665,6 +2861,7 @@ export default function SpecsGridEditor({
             ))}
           </>
         )}
+        </div>
         </div>
         </div>
       </div>

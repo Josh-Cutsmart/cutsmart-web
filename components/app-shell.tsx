@@ -560,10 +560,17 @@ export function AppShell({
       topBar.style.transition = transition;
       topBar.style.transform = transform;
     }
+    // mainPushRef, unlike topBar, is an ANCESTOR of every page's own content — a `transform` on it
+    // (even transiently, mid-drag) makes it a new containing block for any `position: sticky`
+    // descendant (e.g. Changelog's sticky headers), which can leave that descendant "stuck" out of
+    // sync with real scroll position once the transform clears, until the next scroll event
+    // recalculates it. `marginTop` achieves the same visual push without that side effect, at the
+    // cost of a real layout reflow per frame — acceptable for this slow, deliberate drag gesture
+    // (unlike the sidebar/notif push, which stays on transform for its own higher-frequency drag).
     const main = mainPushRef.current;
     if (main) {
-      main.style.transition = transition;
-      main.style.transform = transform;
+      main.style.transition = animate ? "margin-top 200ms ease" : "none";
+      main.style.marginTop = pulledPx > 0 ? `${pulledPx}px` : "";
     }
   };
   const resetPullBanner = (animate: boolean) => {

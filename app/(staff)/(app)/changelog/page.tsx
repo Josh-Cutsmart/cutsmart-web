@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
-import { Search } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronLeft, Search } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import {
   fetchAppChangelogHistory,
   fetchAppReports,
@@ -20,6 +22,7 @@ import {
 } from "@/lib/update-notes-utils";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { retryAsync } from "@/lib/load-retry";
+import { useAppTabs } from "@/lib/app-tabs-context";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
@@ -70,6 +73,18 @@ function detectDeviceType(): ReportDeviceType {
 export default function ChangelogPage() {
   const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
   const { user } = useAuth();
+  const router = useRouter();
+  const { setReduceMainTopPadding } = useAppTabs();
+  // This page's own sticky header used a negative top margin on its ancestor to cancel <main>'s
+  // default top padding, which reproducibly froze the header at its unshifted (i.e. under the
+  // fixed global top bar) position on load instead of the intended flush-below-it start — the
+  // exact bug already diagnosed and fixed for project details/company settings/recently deleted
+  // (see those pages' own comments). Opting out of <main>'s own top padding here directly, the
+  // same way, fixes it without a negative margin.
+  useEffect(() => {
+    setReduceMainTopPadding(true);
+    return () => setReduceMainTopPadding(false);
+  }, [setReduceMainTopPadding]);
   const [entries, setEntries] = useState<UpdateChangelogEntry[]>([]);
   const [activeVersion, setActiveVersion] = useState("");
   const [entriesPerPage, setEntriesPerPage] = useState<number>(10);
@@ -99,13 +114,28 @@ export default function ChangelogPage() {
   // single combined row used to wrap its buttons onto extra lines inside a fixed h-[56px] box on
   // narrow viewports, clipping them. pageHeaderRef always points at whichever is the LOWER of the
   // two (the buttons bar), since that's the real boundary content should scroll under.
+  // Mobile only (below lg) — desktop has room to keep the original single combined row (title +
+  // version badge + buttons together); this bar only splits off on narrow screens, where it used
+  // to wrap its buttons onto extra lines inside a fixed h-[56px] box, clipping them.
+  const [isCompactChangelogViewport, setIsCompactChangelogViewport] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = window.matchMedia("(max-width: 1023px)");
+    setIsCompactChangelogViewport(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setIsCompactChangelogViewport(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
   const titleBarRef = useRef<HTMLDivElement | null>(null);
   const pageHeaderRef = useRef<HTMLDivElement | null>(null);
   const [buttonsBarHeight, setButtonsBarHeight] = useState(0);
   useLayoutEffect(() => {
     if (typeof ResizeObserver === "undefined") return;
     const el = pageHeaderRef.current;
-    if (!el) return;
+    if (!el) {
+      setButtonsBarHeight(0);
+      return;
+    }
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setButtonsBarHeight(Math.ceil(entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height));
@@ -114,7 +144,7 @@ export default function ChangelogPage() {
     observer.observe(el);
     setButtonsBarHeight(el.getBoundingClientRect().height);
     return () => observer.disconnect();
-  }, []);
+  }, [isCompactChangelogViewport]);
   const sidebarPlaceholderRef = useRef<HTMLDivElement | null>(null);
   const [sidebarLeft, setSidebarLeft] = useState<number | null>(null);
   const suppressScrollSyncRef = useRef(false);
@@ -125,6 +155,59 @@ export default function ChangelogPage() {
   const [versionHighlightRect, setVersionHighlightRect] = useState<{ top: number; height: number } | null>(null);
   const versionListRef = useRef<HTMLDivElement | null>(null);
   const versionItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  // Mobile-only version list drawer: the desktop sidebar (versionListRef's own <aside>, hidden
+  // below lg) becomes a swipe-in edge drawer on mobile instead — same push-the-whole-page-over
+  // mechanism as the project page's Specs/Quote Version History drawers (see that file's own
+  // comment on why a transform on the page's own outer ref also drags its `position: sticky`
+  // title/buttons bars along, since a transformed ancestor becomes their containing block).
+  const changelogPageRef = useRef<HTMLDivElement | null>(null);
+  const mobileVersionsPanelRef = useRef<HTMLDivElement | null>(null);
+  const [isMobileVersionsPanelOpen, setIsMobileVersionsPanelOpen] = useState(false);
+  const mobileVersionsSwipe = useSwipeToClose(
+    isCompactChangelogViewport && isMobileVersionsPanelOpen,
+    () => setIsMobileVersionsPanelOpen(false),
+    mobileVersionsPanelRef,
+    { edge: "left", pushRef: changelogPageRef },
+  );
+  // Swiping anywhere on the page (not already inside the open drawer, which handles its own
+  // drag-to-close) opens it — mirrors the project page's own makeSpecsQuoteMobileSwipeHandlers,
+  // just one direction/one panel here instead of two.
+  const mobileVersionsSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  const MOBILE_VERSIONS_SWIPE_THRESHOLD_PX = 60;
+  const mobileVersionsSwipeHandlers = {
+    onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
+      if (!isCompactChangelogViewport || isMobileVersionsPanelOpen) {
+        mobileVersionsSwipeStartRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      if (!touch) return;
+      mobileVersionsSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    },
+    onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = mobileVersionsSwipeStartRef.current;
+      if (!start) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      if (!start.axis) {
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+      }
+    },
+    onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
+      const start = mobileVersionsSwipeStartRef.current;
+      mobileVersionsSwipeStartRef.current = null;
+      if (!start || start.axis !== "horizontal") return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.clientX - start.x;
+      if (dx < -MOBILE_VERSIONS_SWIPE_THRESHOLD_PX) {
+        setIsMobileVersionsPanelOpen(true);
+      }
+    },
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -535,39 +618,134 @@ export default function ChangelogPage() {
   return (
     <>
         <div
-          className="-mt-3 flex flex-col bg-transparent md:-mt-4 lg:-mt-4"
+          ref={changelogPageRef}
+          className="flex flex-col bg-transparent"
           style={{
             marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
             marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
           }}
+          {...(isCompactChangelogViewport ? mobileVersionsSwipeHandlers : {})}
         >
           <div
             ref={titleBarRef}
-            className="glass-page-header sticky top-12 z-[95] flex h-[56px] shrink-0 items-center gap-5 px-4 md:px-5"
+            className={
+              isCompactChangelogViewport
+                ? "glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center gap-5 px-4 md:px-5 lg:top-[48px]"
+                : "glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between gap-2 px-4 md:px-5 lg:top-[48px]"
+            }
           >
-            <div className="inline-flex min-w-0 items-center gap-2">
-              <Search size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
-              <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                Changelog
-              </p>
+            <div className="flex min-w-0 flex-wrap items-center gap-5">
+              <div className="inline-flex min-w-0 items-center gap-2">
+                <Search size={16} style={{ color: "var(--text-main)" }} strokeWidth={2.1} />
+                <p className="truncate text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                  Changelog
+                </p>
+              </div>
+              <div className="hidden items-center gap-2 border-l pl-5 sm:flex" style={{ borderColor: "var(--glass-border)" }}>
+                <span className="text-[11px] font-bold uppercase tracking-[0.4px]" style={{ color: "var(--text-muted)" }}>
+                  Current version
+                </span>
+                <span
+                  className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                >
+                  {formatVersionLabel(appVersion || entries[0]?.version || "")}
+                </span>
+              </div>
             </div>
-            <div className="hidden items-center gap-2 border-l pl-5 sm:flex" style={{ borderColor: "var(--glass-border)" }}>
-              <span className="text-[11px] font-bold uppercase tracking-[0.4px]" style={{ color: "var(--text-muted)" }}>
-                Current version
-              </span>
-              <span
-                className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+            {/* Mobile only — Report Issue/Suggest Feature live in the top bar itself here (not the
+                second row below, which keeps just entries-per-page/dev toggle), with a Back chevron
+                pinned to the true right edge via the flex-1 scroll area ahead of it taking up all
+                remaining space — same "let it run off-screen and scroll rather than wrap" and
+                "right-aligned Back button" conventions as the project page's own mobile bars. */}
+            {isCompactChangelogViewport && (
+              <div className="hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
+                  className="h-8 shrink-0 whitespace-nowrap rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                >
+                  Report Issue
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
+                  className="h-8 shrink-0 whitespace-nowrap rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                  style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                >
+                  Suggest Feature
+                </button>
+              </div>
+            )}
+            {isCompactChangelogViewport && (
+              <button
+                type="button"
+                onClick={() => router.back()}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                aria-label="Back"
               >
-                {formatVersionLabel(appVersion || entries[0]?.version || "")}
-              </span>
-            </div>
+                <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
+              </button>
+            )}
+            {/* Desktop only — same button group as the mobile bar below, just inline on this one
+                combined row instead of a second row, since desktop has the width for both. */}
+            {!isCompactChangelogViewport && (
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={entriesPerPage}
+                  onChange={(e) => onChangeEntriesPerPage(Number(e.target.value || 10))}
+                  className="h-8 rounded-[8px] border px-3 text-[12px] font-bold outline-none"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                >
+                  <option value={10}>10 per page</option>
+                  <option value={20}>20 per page</option>
+                  <option value={50}>50 per page</option>
+                </select>
+                {isDevUser && (
+                  <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowDevReports((prev) => !prev)}
+                      className="h-8 rounded-[8px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                      style={
+                        showDevReports
+                          ? { backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)", color: "#fff" }
+                          : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }
+                      }
+                    >
+                      {showDevReports ? "View Changelog" : "View Reports"}
+                    </button>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
+                  <button
+                    type="button"
+                    onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
+                    className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                  >
+                    Report Issue
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
+                    className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
+                    style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                  >
+                    Suggest Feature
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-          <div
-            ref={pageHeaderRef}
-            className="glass-page-header sticky top-[104px] z-[94] flex flex-wrap items-center gap-3 border-t px-4 py-2.5 md:px-5"
-            style={{ borderColor: "var(--glass-border)" }}
-          >
+          {isCompactChangelogViewport && (
+            <div
+              ref={pageHeaderRef}
+              className="glass-page-header sticky top-[56px] z-[94] flex flex-wrap items-center gap-3 border-t px-4 py-2.5 md:px-5"
+              style={{ borderColor: "var(--glass-border)" }}
+            >
               <select
                 value={entriesPerPage}
                 onChange={(e) => onChangeEntriesPerPage(Number(e.target.value || 10))}
@@ -594,25 +772,8 @@ export default function ChangelogPage() {
                   </button>
                 </div>
               )}
-              <div className="flex items-center gap-2 border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
-                <button
-                  type="button"
-                  onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
-                  className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
-                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-                >
-                  Report Issue
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
-                  className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                >
-                  Suggest Feature
-                </button>
-              </div>
-          </div>
+            </div>
+          )}
           <div className="grid gap-0 lg:grid-cols-[240px_minmax(0,1fr)]">
               {!!entries.length && <div ref={sidebarPlaceholderRef} aria-hidden="true" className="hidden lg:block" />}
 
@@ -943,6 +1104,57 @@ export default function ChangelogPage() {
                 })}
               </div>
             </aside>
+          )}
+
+          {/* Mobile-only version list drawer — same content as the desktop <aside> above, but its
+              own separate DOM/refs (not sharing versionListRef/versionItemRefs, since the desktop
+              <aside> stays mounted, just CSS-hidden, at mobile widths too — sharing refs between
+              two simultaneously-mounted elements would have them fight over the same ref) and no
+              sliding highlight bar, just a plain active-row tint. Closes itself after a version is
+              picked, same as tapping a version used to just scroll to it on desktop. */}
+          {isCompactChangelogViewport && !!entries.length && mobileVersionsSwipe.shouldRender && (
+            <div className="fixed inset-0 z-[120]">
+              <button
+                type="button"
+                data-swipe-backdrop="true"
+                className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
+                onClick={() => setIsMobileVersionsPanelOpen(false)}
+                aria-label="Close versions backdrop"
+              />
+              <div
+                ref={mobileVersionsPanelRef}
+                {...mobileVersionsSwipe.touchHandlers}
+                className="hide-scrollbar absolute inset-y-0 left-0 z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-0.5 overflow-y-auto p-2"
+                style={{ backgroundColor: "var(--bg-app)", paddingTop: 56 + 12, boxShadow: "var(--shadow-glass)" }}
+              >
+                <p className="mb-1 px-1 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                  Versions
+                </p>
+                {entries.map((entry) => {
+                  const isActive = activeVersion === entry.version;
+                  return (
+                    <button
+                      key={`mobile_side_${entry.version}_${entry.capturedAtIso}`}
+                      type="button"
+                      onClick={() => {
+                        openVersionFromSidebar(entry.version);
+                        setIsMobileVersionsPanelOpen(false);
+                      }}
+                      className="flex h-9 w-full shrink-0 items-center justify-between gap-2 rounded-[8px] px-3 text-left text-[13px] font-bold transition-colors"
+                      style={{
+                        backgroundColor: isActive ? "var(--brand-soft)" : "transparent",
+                        color: isActive ? "var(--brand)" : "var(--text-main)",
+                      }}
+                    >
+                      <span className="truncate">{entry.version || "Unknown"}</span>
+                      <span className="shrink-0 text-[11px] font-semibold" style={{ color: isActive ? "var(--brand)" : "var(--text-muted)" }}>
+                        {formatUpdateDate(entry.capturedAtIso)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           {shouldRenderComposer && typeof document !== "undefined" && createPortal(
