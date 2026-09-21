@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Bell, Building2, Check, ClipboardList, Download, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Smartphone, Trash2, UserCog, X } from "lucide-react";
+import { Bell, Building2, Check, ClipboardList, Download, HelpCircle, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Share, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { isIosDevice, promptPwaInstall, usePwaInstall } from "@/lib/pwa-install";
@@ -111,6 +112,10 @@ export default function UserSettingsPage() {
       window.setTimeout(() => setPwaInstallStatusMsg(""), 5000);
     }
   };
+  // Shown instead of the Download App button whenever there's no native install prompt available
+  // (iOS always, or Android/Chrome before it decides the site is install-eligible) — walks through
+  // the manual "Add to Home Screen" steps rather than leaving people to look it up themselves.
+  const [isPwaHelpOpen, setIsPwaHelpOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
@@ -608,10 +613,10 @@ export default function UserSettingsPage() {
       {/* Mobile only — lets someone install the app straight from a button press instead of
           visiting the site and manually bookmarking it. Just the button, full width to match the
           containers below rather than living inside its own card. Hidden entirely once already
-          installed, or when there's nothing actionable to offer yet (Android/Chrome only fires its
-          install-eligibility event after some engagement, and iOS never exposes a programmatic
-          install at all — shown as static instructions there instead). */}
-      {isCompactUserSettingsViewport && !pwaIsInstalled && (pwaCanInstall || isIosInstallHint) && (
+          installed. When there's no native install prompt available (iOS always, or Android/
+          Chrome before it decides the site is install-eligible), shows a Help button that opens
+          manual instructions instead of a dead/no-op button. */}
+      {isCompactUserSettingsViewport && !pwaIsInstalled && (
         <div>
           {pwaCanInstall ? (
             <button
@@ -624,18 +629,92 @@ export default function UserSettingsPage() {
               Download App
             </button>
           ) : (
-            <div
-              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-semibold"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+            <button
+              type="button"
+              onClick={() => setIsPwaHelpOpen(true)}
+              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-bold text-white transition hover:brightness-95"
+              style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
             >
-              <Download size={15} />
-              Tap Share, then &quot;Add to Home Screen&quot;
-            </div>
+              <HelpCircle size={15} />
+              Help — Save as App
+            </button>
           )}
           {pwaInstallStatusMsg ? (
             <p className="mt-1.5 text-center text-[11px] font-semibold" style={{ color: "var(--brand-strong)" }}>{pwaInstallStatusMsg}</p>
           ) : null}
         </div>
+      )}
+
+      {isPwaHelpOpen && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close help backdrop"
+            onClick={() => setIsPwaHelpOpen(false)}
+            className="glass-modal-backdrop absolute inset-0"
+          />
+          <div className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
+            <div className="glass-modal-header flex h-[50px] items-center justify-between px-4">
+              <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                Save as App
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsPwaHelpOpen(false)}
+                className="h-8 rounded-[8px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-4 p-4 sm:p-6">
+              {isIosInstallHint ? (
+                <div>
+                  <p className="mb-3 text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                    On iPhone/iPad, this only works from Safari (not Chrome or another app).
+                  </p>
+                  <ol className="space-y-3">
+                    <li className="flex items-start gap-2.5">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>1</span>
+                      <span className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--text-main)" }}>
+                        Tap the <Share size={14} className="inline" style={{ color: "var(--text-main)" }} /> Share icon in Safari&apos;s toolbar.
+                      </span>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>2</span>
+                      <span className="text-[13px]" style={{ color: "var(--text-main)" }}>Scroll down and tap &quot;Add to Home Screen&quot;.</span>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>3</span>
+                      <span className="text-[13px]" style={{ color: "var(--text-main)" }}>Tap &quot;Add&quot; in the top right.</span>
+                    </li>
+                  </ol>
+                </div>
+              ) : (
+                <div>
+                  <p className="mb-3 text-[12px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                    Steps can vary slightly by browser — this is the usual Chrome flow.
+                  </p>
+                  <ol className="space-y-3">
+                    <li className="flex items-start gap-2.5">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>1</span>
+                      <span className="text-[13px]" style={{ color: "var(--text-main)" }}>Tap the ⋮ menu in the top right of the browser.</span>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>2</span>
+                      <span className="text-[13px]" style={{ color: "var(--text-main)" }}>Tap &quot;Add to Home screen&quot; or &quot;Install app&quot;.</span>
+                    </li>
+                    <li className="flex items-start gap-2.5">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundImage: "var(--brand-gradient)" }}>3</span>
+                      <span className="text-[13px]" style={{ color: "var(--text-main)" }}>Confirm by tapping &quot;Add&quot; or &quot;Install&quot;.</span>
+                    </li>
+                  </ol>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
