@@ -2994,6 +2994,9 @@ function nestingPieceTooltip(mainName: string, subName: string, room: string, wi
 // oversized reserved area as crosshatched "trim after cutting" scrap on top of the real shape.
 const NESTING_MACHINE_MIN_MM = 100;
 const NESTING_MACHINE_MIN_TRIM_NOTE = "Undersize piece - Cut after machining";
+// Cap on the CNC mobile row list's Part Name column width (in ch) — past this, a name marquees
+// instead of the whole column (and everything after it) growing to fit it.
+const CNC_MOBILE_PART_NAME_CH_MAX = 16;
 
 type NestingFlatPiece = {
   id: string;
@@ -39189,8 +39192,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     // Mobile row list: a real fixed column for Part Name, sized to fit this
                     // board's own longest name (+ a little padding) — Size then sits right after
                     // that same spot on every row instead of hugging each row's own, differently
-                    // long name.
-                    const cncMobilePartNameCh = Math.max(4, ...group.rows.map((row) => String(row.name || "").length)) + 1;
+                    // long name. Capped at CNC_MOBILE_PART_NAME_CH_MAX so one very long name can't
+                    // push Size/Qty far over for every row on the board — names past that cap get
+                    // an auto-scrolling marquee instead (see the row rendering below).
+                    const cncMobilePartNameCh = Math.min(
+                      CNC_MOBILE_PART_NAME_CH_MAX,
+                      Math.max(4, ...group.rows.map((row) => String(row.name || "").length)) + 1,
+                    );
                     const boardSectionContent = (
                     <section
                       key={group.boardKey}
@@ -39330,10 +39338,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </span>
                                   ) : null}
                                 </span>
-                                <span className="shrink-0 truncate text-[12px] font-semibold" style={{ color: "#000000", width: `${cncMobilePartNameCh}ch` }}>
-                                  {row.name || ""}
-                                  {rowIsBankFront && bankInfo ? ` (${bankInfo})` : ""}
-                                </span>
+                                {(() => {
+                                  const displayName = `${row.name || ""}${rowIsBankFront && bankInfo ? ` (${bankInfo})` : ""}`;
+                                  // Longer than the (capped) column can show even at full width —
+                                  // marquee it instead of letting it clip silently.
+                                  const needsMarquee = displayName.length > cncMobilePartNameCh - 1;
+                                  return (
+                                    <span
+                                      className={needsMarquee ? "shrink-0 overflow-hidden text-[12px] font-semibold" : "shrink-0 truncate text-[12px] font-semibold"}
+                                      style={{ color: "#000000", width: `${cncMobilePartNameCh}ch` }}
+                                    >
+                                      {needsMarquee ? (
+                                        <span className="marquee-track">
+                                          <span className="whitespace-nowrap pr-6">{displayName}</span>
+                                          <span aria-hidden="true" className="whitespace-nowrap pr-6">{displayName}</span>
+                                        </span>
+                                      ) : (
+                                        displayName
+                                      )}
+                                    </span>
+                                  );
+                                })()}
                                 <span className="ml-2 shrink-0 text-[11px] font-medium" style={{ color: "#000000" }}>
                                   {[row.height, row.width, row.depth].filter((dim) => String(dim || "").trim()).join("×")}
                                 </span>

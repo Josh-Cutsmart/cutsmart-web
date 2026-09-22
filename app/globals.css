@@ -803,3 +803,25 @@ body[data-theme="dark"] .row-glow {
   transform-origin: top center;
   animation: bell-wobble-frames 500ms ease;
 }
+
+/* Auto-scrolling ticker for text that's too long for its column (e.g. CNC mobile's Part Name
+   cell). The track holds the text TWICE back to back with a gap, then loops by translating
+   exactly -50% (the width of one copy + the gap) — a seamless loop with no snap-back, working
+   for any text length without needing to measure overflow in JS. Only meant to be applied when
+   the text actually doesn't fit; short text should just render normally, not spin needlessly. */
+@keyframes marquee-scroll-frames {
+  0%,
+  10% {
+    transform: translateX(0);
+  }
+  90%,
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee-track {
+  display: inline-flex;
+  width: max-content;
+  animation: marquee-scroll-frames 6s linear infinite;
+}
