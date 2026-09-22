@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, Search } from "lucide-react";
+import { ChevronDown, ChevronLeft, Search, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import {
   fetchAppChangelogHistory,
   fetchAppReports,
@@ -68,6 +67,103 @@ function detectDeviceType(): ReportDeviceType {
   if ((hasCoarsePointer || maxTouchPoints > 0) && width <= 1200) return "tablet";
 
   return "desktop";
+}
+
+// Same glass dropdown treatment as the dashboard's own mobile quick-filter menu (trigger button +
+// a `position: fixed`, portalled options list positioned off the trigger's own measured rect) —
+// used here for "entries per page" on both mobile and desktop, replacing the plain native
+// <select>, whose own OS-drawn option list can't be restyled to match.
+function PerPageDropdown({
+  value,
+  options,
+  onChange,
+}: {
+  value: number;
+  options: readonly number[];
+  onChange: (value: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (triggerRef.current?.contains(target)) return;
+      if ((target as HTMLElement).closest?.('[data-per-page-menu="true"]')) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [open]);
+
+  return (
+    <div className="relative inline-block">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          const rect = triggerRef.current?.getBoundingClientRect();
+          if (rect) {
+            const menuWidth = Math.max(130, rect.width);
+            setPos({
+              left: Math.min(Math.max(8, rect.left), window.innerWidth - menuWidth - 8),
+              top: rect.bottom + 4,
+              width: menuWidth,
+            });
+          }
+          setOpen(true);
+        }}
+        className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-3 text-[12px] font-bold outline-none"
+        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+      >
+        {value} per page
+        <ChevronDown size={12} />
+      </button>
+      {open && pos && typeof document !== "undefined" && createPortal(
+        <div
+          data-per-page-menu="true"
+          className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
+          style={{
+            left: pos.left,
+            top: pos.top,
+            width: pos.width,
+            zIndex: 2147483647,
+            borderColor: "var(--glass-border)",
+            backgroundColor: "var(--glass-modal-bg)",
+            backdropFilter: "blur(12px) saturate(220%)",
+            WebkitBackdropFilter: "blur(12px) saturate(220%)",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => {
+                onChange(opt);
+                setOpen(false);
+              }}
+              className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] font-bold"
+              style={{
+                backgroundImage: value === opt ? "var(--brand-gradient)" : "none",
+                color: value === opt ? "#FFFFFF" : "var(--text-main)",
+              }}
+            >
+              {opt} per page
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
 }
 
 export default function ChangelogPage() {
@@ -155,59 +251,21 @@ export default function ChangelogPage() {
   const [versionHighlightRect, setVersionHighlightRect] = useState<{ top: number; height: number } | null>(null);
   const versionListRef = useRef<HTMLDivElement | null>(null);
   const versionItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  // Mobile-only version list drawer: the desktop sidebar (versionListRef's own <aside>, hidden
-  // below lg) becomes a swipe-in edge drawer on mobile instead — same push-the-whole-page-over
-  // mechanism as the project page's Specs/Quote Version History drawers (see that file's own
-  // comment on why a transform on the page's own outer ref also drags its `position: sticky`
-  // title/buttons bars along, since a transformed ancestor becomes their containing block).
-  const changelogPageRef = useRef<HTMLDivElement | null>(null);
-  const mobileVersionsPanelRef = useRef<HTMLDivElement | null>(null);
-  const [isMobileVersionsPanelOpen, setIsMobileVersionsPanelOpen] = useState(false);
-  const mobileVersionsSwipe = useSwipeToClose(
-    isCompactChangelogViewport && isMobileVersionsPanelOpen,
-    () => setIsMobileVersionsPanelOpen(false),
-    mobileVersionsPanelRef,
-    { edge: "left", pushRef: changelogPageRef },
-  );
-  // Swiping anywhere on the page (not already inside the open drawer, which handles its own
-  // drag-to-close) opens it — mirrors the project page's own makeSpecsQuoteMobileSwipeHandlers,
-  // just one direction/one panel here instead of two.
-  const mobileVersionsSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
-  const MOBILE_VERSIONS_SWIPE_THRESHOLD_PX = 60;
-  const mobileVersionsSwipeHandlers = {
-    onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
-      if (!isCompactChangelogViewport || isMobileVersionsPanelOpen) {
-        mobileVersionsSwipeStartRef.current = null;
-        return;
-      }
-      const touch = event.touches[0];
-      if (!touch) return;
-      mobileVersionsSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
-    },
-    onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
-      const start = mobileVersionsSwipeStartRef.current;
-      if (!start) return;
-      const touch = event.touches[0];
-      if (!touch) return;
-      if (!start.axis) {
-        const dx = touch.clientX - start.x;
-        const dy = touch.clientY - start.y;
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-        start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
-      }
-    },
-    onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
-      const start = mobileVersionsSwipeStartRef.current;
-      mobileVersionsSwipeStartRef.current = null;
-      if (!start || start.axis !== "horizontal") return;
-      const touch = event.changedTouches[0];
-      if (!touch) return;
-      const dx = touch.clientX - start.x;
-      if (dx < -MOBILE_VERSIONS_SWIPE_THRESHOLD_PX) {
-        setIsMobileVersionsPanelOpen(true);
-      }
-    },
-  };
+  // Mobile: no swipe drawer any more — the version list is just a stacked list of compact cards in
+  // the page's own flow, and tapping one opens its changes in a glass popup instead. This tracks
+  // which version (by its own key, matching entries.map's own) that popup last showed — "" means
+  // never opened yet. Deliberately NOT cleared on close (see isMobileVersionPopupOpen below) so
+  // the entry lookup stays valid for the whole close animation instead of the content vanishing
+  // out from under it mid-animation.
+  const [openMobileVersionKey, setOpenMobileVersionKey] = useState("");
+  const openMobileVersionEntry = entries.find((entry) => `${entry.version}_${entry.capturedAtIso}` === openMobileVersionKey) || null;
+  // Same "grow out of the button that opened it" glass-modal pop animation as the Report Issue/
+  // Suggest Feature composer — isOpen is tracked separately from the key above specifically so
+  // closing doesn't clear the entry the popup needs to keep rendering while it animates shut.
+  const [isMobileVersionPopupOpen, setIsMobileVersionPopupOpen] = useState(false);
+  const [mobileVersionPopupOrigin, setMobileVersionPopupOrigin] = useState<GlassModalOrigin>(null);
+  const mobileVersionPopupPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderMobileVersionPopup = useGlassModalPopOrigin(isMobileVersionPopupOpen, mobileVersionPopupOrigin, mobileVersionPopupPanelRef);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -618,13 +676,11 @@ export default function ChangelogPage() {
   return (
     <>
         <div
-          ref={changelogPageRef}
           className="flex flex-col bg-transparent"
           style={{
             marginLeft: "calc(-1 * max(12px, env(safe-area-inset-left)))",
             marginRight: "calc(-1 * max(12px, env(safe-area-inset-right)))",
           }}
-          {...(isCompactChangelogViewport ? mobileVersionsSwipeHandlers : {})}
         >
           <div
             ref={titleBarRef}
@@ -653,31 +709,10 @@ export default function ChangelogPage() {
                 </span>
               </div>
             </div>
-            {/* Mobile only — Report Issue/Suggest Feature live in the top bar itself here (not the
-                second row below, which keeps just entries-per-page/dev toggle), with a Back chevron
-                pinned to the true right edge via the flex-1 scroll area ahead of it taking up all
-                remaining space — same "let it run off-screen and scroll rather than wrap" and
-                "right-aligned Back button" conventions as the project page's own mobile bars. */}
-            {isCompactChangelogViewport && (
-              <div className="hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto">
-                <button
-                  type="button"
-                  onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
-                  className="h-8 shrink-0 whitespace-nowrap rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
-                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-                >
-                  Report Issue
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
-                  className="h-8 shrink-0 whitespace-nowrap rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
-                  style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
-                >
-                  Suggest Feature
-                </button>
-              </div>
-            )}
+            {/* Mobile only — Back chevron pinned to the true right edge via the flex-1 spacer ahead
+                of it (Report Issue/Suggest Feature moved to their own full-width bottom bar
+                instead — see that block further down). */}
+            {isCompactChangelogViewport && <div className="min-w-0 flex-1" />}
             {isCompactChangelogViewport && (
               <button
                 type="button"
@@ -693,16 +728,7 @@ export default function ChangelogPage() {
                 combined row instead of a second row, since desktop has the width for both. */}
             {!isCompactChangelogViewport && (
               <div className="flex flex-wrap items-center gap-3">
-                <select
-                  value={entriesPerPage}
-                  onChange={(e) => onChangeEntriesPerPage(Number(e.target.value || 10))}
-                  className="h-8 rounded-[8px] border px-3 text-[12px] font-bold outline-none"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                >
-                  <option value={10}>10 per page</option>
-                  <option value={20}>20 per page</option>
-                  <option value={50}>50 per page</option>
-                </select>
+                <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
                 {isDevUser && (
                   <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
                     <button
@@ -746,16 +772,7 @@ export default function ChangelogPage() {
               className="glass-page-header sticky top-[56px] z-[94] flex flex-wrap items-center gap-3 border-t px-4 py-2.5 md:px-5"
               style={{ borderColor: "var(--glass-border)" }}
             >
-              <select
-                value={entriesPerPage}
-                onChange={(e) => onChangeEntriesPerPage(Number(e.target.value || 10))}
-                className="h-8 rounded-[8px] border px-3 text-[12px] font-bold outline-none"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-              >
-                <option value={10}>10 per page</option>
-                <option value={20}>20 per page</option>
-                <option value={50}>50 per page</option>
-              </select>
+              <PerPageDropdown value={entriesPerPage} options={PAGE_SIZE_OPTIONS} onChange={onChangeEntriesPerPage} />
               {isDevUser && (
                 <div className="flex items-center border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
                   <button
@@ -777,7 +794,7 @@ export default function ChangelogPage() {
           <div className="grid gap-0 lg:grid-cols-[240px_minmax(0,1fr)]">
               {!!entries.length && <div ref={sidebarPlaceholderRef} aria-hidden="true" className="hidden lg:block" />}
 
-              <div className="space-y-4 p-3 md:p-4 lg:p-5">
+              <div className={`space-y-4 p-3 md:p-4 lg:p-5 ${isCompactChangelogViewport ? "pb-[68px]" : ""}`}>
                   {isDevUser && showDevReports && (
                     <div
                       className="rounded-[16px] border p-3"
@@ -998,40 +1015,89 @@ export default function ChangelogPage() {
 
                   {!showDevReports && !!entries.length && (
                     <>
-                      {visibleEntries.map((entry) => (
-                        <div
-                          key={`${entry.version}_${entry.capturedAtIso}`}
-                          ref={(el) => {
-                            entryRefs.current[entry.version] = el;
-                          }}
-                          className="relative flex w-full flex-col overflow-hidden rounded-[16px] border"
-                          style={{
-                            borderColor: "var(--glass-border)",
-                            backgroundColor: "var(--glass-bg-strong)",
-                            backdropFilter: "blur(20px) saturate(180%)",
-                            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                            boxShadow: "var(--shadow-glass)",
-                          }}
-                        >
-                          <div
-                            className="flex h-[50px] shrink-0 items-center justify-between border-b px-3"
-                            style={{ borderColor: "var(--glass-border)" }}
-                          >
-                            <p className="text-[20px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                              {entry.version || "Unknown Version"}
-                            </p>
-                          </div>
-                          <div className="px-4 py-4">
-                            <div
-                              className="text-[15px] leading-7"
-                              style={{ color: "var(--text-main)" }}
-                              dangerouslySetInnerHTML={{
-                                __html: updateNotesToDisplayHtml(entry.whatsNew || "- No update notes provided."),
+                      {isCompactChangelogViewport ? (
+                        // Mobile: a stacked list of compact cards — version + date only, no inline
+                        // content — tapping one opens its actual changes in the glass popup further
+                        // down instead of expanding inline. Desktop keeps the original full-content
+                        // cards below.
+                        <div className="space-y-2">
+                          {visibleEntries.map((entry) => (
+                            <button
+                              key={`${entry.version}_${entry.capturedAtIso}`}
+                              type="button"
+                              onClick={(e) => {
+                                setOpenMobileVersionKey(`${entry.version}_${entry.capturedAtIso}`);
+                                // Not captureGlassModalOrigin(e) (the whole, full-width card) —
+                                // animating a FLIP from a box that's already nearly screen-width
+                                // barely scales horizontally at all, only vertically, which reads
+                                // as a lopsided "unfurl downward" instead of the Report Issue
+                                // composer's own proportional pop. Using just the small version
+                                // badge inside the card as the origin keeps both axes scaling by a
+                                // comparable amount, matching that feel.
+                                const badge = e.currentTarget.querySelector<HTMLElement>("[data-version-popup-origin]");
+                                const originEl = badge ?? e.currentTarget;
+                                const rect = originEl.getBoundingClientRect();
+                                setMobileVersionPopupOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                                setIsMobileVersionPopupOpen(true);
                               }}
-                            />
-                          </div>
+                              className="flex w-full items-center justify-between gap-3 rounded-[14px] border px-4 py-3 text-left transition hover:brightness-95"
+                              style={{
+                                borderColor: "var(--glass-border)",
+                                backgroundColor: "var(--glass-bg-strong)",
+                                backdropFilter: "blur(20px) saturate(180%)",
+                                WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                                boxShadow: "var(--shadow-glass)",
+                              }}
+                            >
+                              <span
+                                data-version-popup-origin="true"
+                                className="truncate text-[15px] font-bold uppercase tracking-[1px]"
+                                style={{ color: "var(--text-main)" }}
+                              >
+                                {entry.version || "Unknown Version"}
+                              </span>
+                              <span className="shrink-0 text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                                {formatUpdateDate(entry.capturedAtIso)}
+                              </span>
+                            </button>
+                          ))}
                         </div>
-                      ))}
+                      ) : (
+                        visibleEntries.map((entry) => (
+                          <div
+                            key={`${entry.version}_${entry.capturedAtIso}`}
+                            ref={(el) => {
+                              entryRefs.current[entry.version] = el;
+                            }}
+                            className="relative flex w-full flex-col overflow-hidden rounded-[16px] border"
+                            style={{
+                              borderColor: "var(--glass-border)",
+                              backgroundColor: "var(--glass-bg-strong)",
+                              backdropFilter: "blur(20px) saturate(180%)",
+                              WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                              boxShadow: "var(--shadow-glass)",
+                            }}
+                          >
+                            <div
+                              className="flex h-[50px] shrink-0 items-center justify-between border-b px-3"
+                              style={{ borderColor: "var(--glass-border)" }}
+                            >
+                              <p className="text-[20px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                                {entry.version || "Unknown Version"}
+                              </p>
+                            </div>
+                            <div className="px-4 py-4">
+                              <div
+                                className="text-[15px] leading-7"
+                                style={{ color: "var(--text-main)" }}
+                                dangerouslySetInnerHTML={{
+                                  __html: updateNotesToDisplayHtml(entry.whatsNew || "- No update notes provided."),
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ))
+                      )}
                       {visibleEntryCount < entries.length && (
                         <div className="flex justify-center pt-1">
                           <button
@@ -1106,61 +1172,73 @@ export default function ChangelogPage() {
             </aside>
           )}
 
-          {/* Mobile-only version list drawer — same content as the desktop <aside> above, but its
-              own separate DOM/refs (not sharing versionListRef/versionItemRefs, since the desktop
-              <aside> stays mounted, just CSS-hidden, at mobile widths too — sharing refs between
-              two simultaneously-mounted elements would have them fight over the same ref) and no
-              sliding highlight bar, just a plain active-row tint. Closes itself after a version is
-              picked, same as tapping a version used to just scroll to it on desktop. */}
-          {/* Portalled to <body> — this page's own outer wrapper (changelogPageRef) is what gets
-              the live push transform, and a transform on any ancestor becomes the containing block
-              for a `position: fixed` descendant (per spec). Left in place, this drawer's `fixed
-              inset-0` would resolve against that transformed, ALSO-being-pushed-off-screen ancestor
-              instead of the real viewport, dragging the whole drawer (backdrop included) off-screen
-              right along with the main content — the "swipe opens it but the screen just goes
-              blank/grey" bug. A portal sidesteps this: its DOM parent is <body>, untouched by the
-              push. */}
-          {isCompactChangelogViewport && !!entries.length && mobileVersionsSwipe.shouldRender && typeof document !== "undefined" && createPortal(
-            <div className="fixed inset-0 z-[120]">
+          {/* Mobile only — Report Issue/Suggest Feature as their own full-width bottom bar, each
+              button filling half of it, matching the project page's own mobile bottom action bars. */}
+          {isCompactChangelogViewport && (
+            <div
+              className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-stretch gap-2 border-t p-2"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+            >
               <button
                 type="button"
-                data-swipe-backdrop="true"
-                className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
-                onClick={() => setIsMobileVersionsPanelOpen(false)}
-                aria-label="Close versions backdrop"
-              />
-              <div
-                ref={mobileVersionsPanelRef}
-                {...mobileVersionsSwipe.touchHandlers}
-                className="hide-scrollbar absolute inset-y-0 left-0 z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-0.5 overflow-y-auto p-2"
-                style={{ backgroundColor: "var(--bg-app)", paddingTop: 56 + 12, boxShadow: "var(--shadow-glass)" }}
+                onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
+                className="flex-1 rounded-[8px] border text-[12px] font-bold text-white transition hover:brightness-95"
+                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
               >
-                <p className="mb-1 px-1 text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
-                  Versions
-                </p>
-                {entries.map((entry) => {
-                  const isActive = activeVersion === entry.version;
-                  return (
-                    <button
-                      key={`mobile_side_${entry.version}_${entry.capturedAtIso}`}
-                      type="button"
-                      onClick={() => {
-                        openVersionFromSidebar(entry.version);
-                        setIsMobileVersionsPanelOpen(false);
-                      }}
-                      className="flex h-9 w-full shrink-0 items-center justify-between gap-2 rounded-[8px] px-3 text-left text-[13px] font-bold transition-colors"
-                      style={{
-                        backgroundColor: isActive ? "var(--brand-soft)" : "transparent",
-                        color: isActive ? "var(--brand)" : "var(--text-main)",
-                      }}
-                    >
-                      <span className="truncate">{entry.version || "Unknown"}</span>
-                      <span className="shrink-0 text-[11px] font-semibold" style={{ color: isActive ? "var(--brand)" : "var(--text-muted)" }}>
-                        {formatUpdateDate(entry.capturedAtIso)}
-                      </span>
-                    </button>
-                  );
-                })}
+                Report Issue
+              </button>
+              <button
+                type="button"
+                onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
+                className="flex-1 rounded-[8px] border text-[12px] font-bold text-white transition hover:brightness-95"
+                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+              >
+                Suggest Feature
+              </button>
+            </div>
+          )}
+
+          {/* Mobile-only: this version's full changes, opened by tapping its compact card in the
+              stacked list below — same "grow out of the button that opened it" glass popup
+              animation as the Report Issue/Suggest Feature composer further down. */}
+          {isCompactChangelogViewport && shouldRenderMobileVersionPopup && openMobileVersionEntry && typeof document !== "undefined" && createPortal(
+            <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+              <button
+                type="button"
+                aria-label="Close version details backdrop"
+                onClick={() => setIsMobileVersionPopupOpen(false)}
+                className="glass-modal-backdrop absolute inset-0"
+              />
+              <div ref={mobileVersionPopupPanelRef} className="glass-modal-panel relative flex w-full max-w-[520px] flex-col overflow-hidden" style={{ maxHeight: "80svh" }}>
+                <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
+                  <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    {openMobileVersionEntry.version || "Unknown Version"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsMobileVersionPopupOpen(false)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
+                    style={{
+                      borderColor: "var(--danger-glass-border)",
+                      backgroundColor: "var(--danger-glass-bg)",
+                      backdropFilter: "blur(10px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                      color: "#FFFFFF",
+                    }}
+                    title="Close"
+                  >
+                    <X size={16} strokeWidth={2.4} />
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                  <div
+                    className="text-[15px] leading-7"
+                    style={{ color: "var(--text-main)" }}
+                    dangerouslySetInnerHTML={{
+                      __html: updateNotesToDisplayHtml(openMobileVersionEntry.whatsNew || "- No update notes provided."),
+                    }}
+                  />
+                </div>
               </div>
             </div>,
             document.body,

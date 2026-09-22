@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -6534,12 +6534,38 @@ export default function ProjectDetailsPage() {
   const [cncPartTypeFilter, setCncPartTypeFilter] = useState("All Part Types");
   const [cncExportMenuOpen, setCncExportMenuOpen] = useState(false);
   const [cncActiveGrainInfoKey, setCncActiveGrainInfoKey] = useState<string | null>(null);
-  const [cncMobilePanel, setCncMobilePanel] = useState<"cutlist" | "visibility">("cutlist");
+  // Mobile: the cutlist pager (one board type per page) is always the main view now — Visibility
+  // is a full-screen overlay reached via the bottom bar's own button (matching Quote's mobile
+  // bottom action bar), not a second tab that replaces the cutlist entirely.
+  const [isCncMobileVisibilityOpen, setIsCncMobileVisibilityOpen] = useState(false);
   const [cncVisibilitySearch, setCncVisibilitySearch] = useState("");
+  // Mobile: the cutlist row list only shows Part Type/Name, Size, Qty per row — tapping a row
+  // opens this popup with the rest of that piece's details (Room, Height/Width/Depth, Quantity,
+  // Clashing, Information).
+  const [cncMobileRowDetail, setCncMobileRowDetail] = useState<{
+    boardLabel: string;
+    partName: string;
+    partType: string;
+    room: string;
+    height: string;
+    width: string;
+    depth: string;
+    quantity: string;
+    clashing: string;
+    informationLines: string[];
+  } | null>(null);
+  const [isCncMobileRowDetailOpen, setIsCncMobileRowDetailOpen] = useState(false);
+  const [cncMobileRowDetailOrigin, setCncMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
+  const cncMobileRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderCncMobileRowDetail = useGlassModalPopOrigin(
+    isCncMobileRowDetailOpen,
+    cncMobileRowDetailOrigin,
+    cncMobileRowDetailPanelRef,
+  );
   // Desktop-only toggle for the floating "Edit Visibility" sidebar — mirrors Quote Extras' own
   // title-in-the-header/chevron toggle AND its full open/close animation sequencing (see
   // toggleQuoteExtrasPanel's own comment for why "closing" stays mounted one more frame). Mobile
-  // already has its own Cutlist/Visibility tab switcher (cncMobilePanel above) and ignores this.
+  // has its own isCncMobileVisibilityOpen overlay above and ignores this.
   const [isCncVisibilityPanelOpen, setIsCncVisibilityPanelOpen] = useState(true);
   const [isCncVisibilityPanelClosing, setIsCncVisibilityPanelClosing] = useState(false);
   // True only for a brief window right after the panel opens (including a fresh page entry that
@@ -6578,11 +6604,26 @@ export default function ProjectDetailsPage() {
   const [cncCollapsedGroups, setCncCollapsedGroups] = useState<Record<string, boolean>>({});
   const [cncVisibilityMap, setCncVisibilityMap] = useState<Record<string, boolean>>({});
   const [nestingSearch, setNestingSearch] = useState("");
+  // Still used by the embedded (non-fullscreen) Production-tab Nesting preview's own Sheets/
+  // Visibility tab switcher — the FULLSCREEN view below has its own separate
+  // isNestingMobileVisibilityOpen instead (a bottom-bar-triggered overlay, not a second tab).
   const [nestingMobilePanel, setNestingMobilePanel] = useState<"layouts" | "visibility">("layouts");
+  // Mobile-only, fullscreen Nesting view: Visibility is a full-screen overlay reached via the
+  // bottom bar's own button (matching Quote's mobile bottom action bar), not a second tab that
+  // replaces the sheet pager.
+  const [isNestingMobileVisibilityOpen, setIsNestingMobileVisibilityOpen] = useState(false);
+  // The overlay above stays mounted at all times on mobile (see the aside's own comment) so it
+  // can be dragged open from its closed, off-screen-below position by swiping up on the bottom
+  // bar — a conditionally-mounted panel would have nothing in the DOM yet to drag.
+  const nestingMobileVisibilityPanelRef = useRef<HTMLDivElement | null>(null);
+  const nestingMobileVisibilityDragRef = useRef<{ startY: number; dragging: boolean; panelHeight: number }>({
+    startY: 0,
+    dragging: false,
+    panelHeight: 0,
+  });
   // Desktop-only toggle for the floating "Edit Visibility" sidebar — mirrors CNC's own
   // toggleCncVisibilityPanel exactly (see its own comment for why "closing" stays mounted one more
-  // frame). Mobile already has its own Sheets/Visibility tab switcher (nestingMobilePanel above)
-  // and ignores this.
+  // frame). Mobile has its own isNestingMobileVisibilityOpen overlay above and ignores this.
   const [isNestingVisibilityPanelOpen, setIsNestingVisibilityPanelOpen] = useState(true);
   const [isNestingVisibilityPanelClosing, setIsNestingVisibilityPanelClosing] = useState(false);
   const [isNestingVisibilityPanelJustOpened, setIsNestingVisibilityPanelJustOpened] = useState(false);
@@ -6617,45 +6658,11 @@ export default function ProjectDetailsPage() {
   const [isCompactProjectViewport, setIsCompactProjectViewport] = useState(false);
   const [projectViewportWidth, setProjectViewportWidth] = useState(0);
   const [nestingCompactBoardKey, setNestingCompactBoardKey] = useState("");
-  // Swiping left/right anywhere on the mobile Nesting/CNC board content moves to the
-  // next/previous board type, instead of having to tap the (now-removed) tab buttons above it.
-  const boardSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
-  const BOARD_SWIPE_THRESHOLD_PX = 50;
-  const makeBoardSwipeHandlers = (boardKeys: string[], activeKey: string, setActiveKey: (key: string) => void) => ({
-    onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
-      const touch = event.touches[0];
-      if (!touch) return;
-      boardSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
-    },
-    onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
-      const start = boardSwipeStartRef.current;
-      if (!start) return;
-      const touch = event.touches[0];
-      if (!touch) return;
-      if (!start.axis) {
-        const dx = touch.clientX - start.x;
-        const dy = touch.clientY - start.y;
-        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
-        start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
-      }
-    },
-    onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
-      const start = boardSwipeStartRef.current;
-      boardSwipeStartRef.current = null;
-      if (!start || start.axis !== "horizontal" || boardKeys.length < 2) return;
-      const touch = event.changedTouches[0];
-      if (!touch) return;
-      const dx = touch.clientX - start.x;
-      if (Math.abs(dx) < BOARD_SWIPE_THRESHOLD_PX) return;
-      const currentIndex = Math.max(0, boardKeys.indexOf(activeKey));
-      const nextIndex = dx < 0
-        ? Math.min(boardKeys.length - 1, currentIndex + 1)
-        : Math.max(0, currentIndex - 1);
-      if (boardKeys[nextIndex] && boardKeys[nextIndex] !== activeKey) {
-        setActiveKey(boardKeys[nextIndex]);
-      }
-    },
-  });
+  // Mobile-only board-type pager (one board type per page, native horizontal scroll-snap) — same
+  // shape as CNC's own cncTableScrollRef/cncBoardSectionRefs, see scrollToNestingBoard's own
+  // comment further down for the full reasoning.
+  const nestingCompactScrollRef = useRef<HTMLDivElement | null>(null);
+  const nestingCompactBoardSectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const [nestingSheetPreview, setNestingSheetPreview] = useState<{ boardKey: string; sheetIndex: number } | null>(null);
   // Separate from nestingSheetPreview itself (the content selector, which is deliberately left
   // populated through the close animation so the panel has real content to shrink back into its
@@ -6874,15 +6881,28 @@ export default function ProjectDetailsPage() {
   // see the Save & Back refs' own identical comment above for why.
   const specsMobileVersionsPanelRef = useRef<HTMLDivElement | null>(null);
   const specsMobileSectionsPanelRef = useRef<HTMLDivElement | null>(null);
+  // Mobile drawers close through a dedicated, IMMEDIATE setter — not the shared toggle* functions
+  // above — because those toggles deliberately hold `isXOpen` true for 360ms after a close so the
+  // DESKTOP bubble's own per-row CSS pop-out animation has time to play before unmount. Reusing
+  // that as useSwipeToClose's `onClose` meant its `isOpen` input never actually flipped false until
+  // that 360ms elapsed, so the drawer's own slide-out + page-unpush (which only run once `isOpen`
+  // goes false) sat frozen for 360ms after a tap/swipe-to-close — during which the backdrop was
+  // still up and the pushed content still off-screen, reading as "goes grey with nothing on it"
+  // before it finally caught up. Closing immediately here lets useSwipeToClose drive its own
+  // animation on its own proper timeline instead.
+  const closeSpecsVersionsSidebarMobile = useCallback(() => setIsSpecsVersionsSidebarOpen(false), []);
+  const closeSpecsSectionsPanelMobile = useCallback(() => setIsSpecsSectionsPanelOpen(false), []);
+  const closeQuoteHistoryPanelMobile = useCallback(() => setIsQuoteHistoryPanelOpen(false), []);
+  const closeQuoteExtrasPanelMobile = useCallback(() => setIsQuoteExtrasPanelOpen(false), []);
   const specsMobileVersionsSwipe = useSwipeToClose(
     isCompactProjectViewport && isSpecsVersionsSidebarOpen,
-    toggleSpecsVersionsSidebar,
+    closeSpecsVersionsSidebarMobile,
     specsMobileVersionsPanelRef,
     { edge: "left", pushRef: salesSpecsScrollRef },
   );
   const specsMobileSectionsSwipe = useSwipeToClose(
     isCompactProjectViewport && isSpecsSectionsPanelOpen,
-    toggleSpecsSectionsPanel,
+    closeSpecsSectionsPanelMobile,
     specsMobileSectionsPanelRef,
     { edge: "right", pushRef: salesSpecsScrollRef },
   );
@@ -6890,13 +6910,13 @@ export default function ProjectDetailsPage() {
   const quoteMobileExtrasPanelRef = useRef<HTMLDivElement | null>(null);
   const quoteMobileVersionsSwipe = useSwipeToClose(
     isCompactProjectViewport && isQuoteHistoryPanelOpen,
-    toggleQuoteHistoryPanel,
+    closeQuoteHistoryPanelMobile,
     quoteMobileVersionsPanelRef,
     { edge: "left", pushRef: salesQuoteScrollRef },
   );
   const quoteMobileExtrasSwipe = useSwipeToClose(
     isCompactProjectViewport && isQuoteExtrasPanelOpen,
-    toggleQuoteExtrasPanel,
+    closeQuoteExtrasPanelMobile,
     quoteMobileExtrasPanelRef,
     { edge: "right", pushRef: salesQuoteScrollRef },
   );
@@ -6946,15 +6966,27 @@ export default function ProjectDetailsPage() {
     },
   });
   // Swiping anywhere on the sheet (not already inside one of the drawers above, which handle
-  // their own drag-to-close) opens the corresponding drawer — mirrors app-shell.tsx's own
-  // onMainTouchStart/Move/End for the sidebar/notifications swipe, scoped to just these two
-  // scroll containers. Per the exact mapping asked for: dragging LEFT opens Version History
-  // (the left-edge panel), dragging RIGHT opens Sections/Quote Extras (the right-edge panel).
+  // their own drag-to-close, and not starting on the formatting toolbar or the bottom action bar —
+  // see SPECS_QUOTE_SWIPE_EXCLUDE_ATTR below) opens the corresponding drawer — mirrors
+  // app-shell.tsx's own onMainTouchStart/Move/End for the sidebar/notifications swipe, scoped to
+  // just these two scroll containers. Per the exact mapping asked for: dragging LEFT-TO-RIGHT
+  // (finger moves right) opens Version History (the left-edge panel, sliding in from the left,
+  // under the finger); dragging RIGHT-TO-LEFT opens Sections/Quote Extras (the right-edge panel).
   const specsQuoteMobileSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
   const SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX = 60;
+  // Data attribute marking the formatting toolbar and the bottom action bar — a swipe starting
+  // inside either of those shouldn't also be interpreted as "open a drawer" (they're their own
+  // horizontally-scrollable strips, and dragging across them to scroll would otherwise fight with
+  // this page-wide gesture).
+  const SPECS_QUOTE_SWIPE_EXCLUDE_ATTR = "data-specs-quote-swipe-exclude";
   const makeSpecsQuoteMobileSwipeHandlers = (openVersions: () => void, openExtras: () => void, versionsOpen: boolean, extrasOpen: boolean) => ({
     onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
       if (!isCompactProjectViewport || versionsOpen || extrasOpen) {
+        specsQuoteMobileSwipeStartRef.current = null;
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(`[${SPECS_QUOTE_SWIPE_EXCLUDE_ATTR}]`)) {
         specsQuoteMobileSwipeStartRef.current = null;
         return;
       }
@@ -6981,9 +7013,9 @@ export default function ProjectDetailsPage() {
       const touch = event.changedTouches[0];
       if (!touch) return;
       const dx = touch.clientX - start.x;
-      if (dx < -SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
+      if (dx > SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
         openVersions();
-      } else if (dx > SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
+      } else if (dx < -SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
         openExtras();
       }
     },
@@ -22527,38 +22559,155 @@ export default function ProjectDetailsPage() {
   // IntersectionObserver effect below, so the bar stays correct on a manual scroll too.
   const [cncCompactActiveBoardKey, setCncCompactActiveBoardKey] = useState("");
   const cncBoardSectionRefs = useRef<Record<string, HTMLElement | null>>({});
+  // The mobile scroll-snap row itself — NOT cncTableScrollRef, which is shared with desktop's own
+  // (differently-overflowing) <section> and doesn't point at the actual overflow-x-auto element on
+  // mobile, so scrolling it here was a no-op (the reported "arrows don't change board type" bug).
+  const cncCompactScrollRef = useRef<HTMLDivElement | null>(null);
+  // Mobile-only (the prev/next arrow buttons) — the table section pages horizontally there now
+  // (one board type per screen, scroll-snap), so this targets scrollLeft instead of scrollTop.
+  // The scroll-snap container corrects for any imprecision in this offset on its own once it
+  // settles, so an approximate "scroll roughly to this element" is enough to land on its page.
   const scrollToCncBoard = (boardKey: string) => {
-    const container = cncTableScrollRef.current;
+    const container = cncCompactScrollRef.current;
     const target = cncBoardSectionRefs.current[boardKey];
     if (!container || !target) return;
-    const containerTop = container.getBoundingClientRect().top;
-    const targetTop = target.getBoundingClientRect().top;
-    container.scrollTo({ top: container.scrollTop + (targetTop - containerTop) - 8, behavior: "smooth" });
+    const containerLeft = container.getBoundingClientRect().left;
+    const targetLeft = target.getBoundingClientRect().left;
+    container.scrollTo({ left: container.scrollLeft + (targetLeft - containerLeft) - 8, behavior: "smooth" });
     setCncCompactActiveBoardKey(boardKey);
   };
+  // Tracks scrollLeft directly (nearest-page-to-center, one rAF-throttled update per frame) —
+  // same fix as Nesting's own equivalent effect, and for the same reason: an IntersectionObserver
+  // callback only ever receives the entries that just crossed a threshold, not a full recompute of
+  // every board's current visibility, so it could report the wrong board mid-swipe.
   useLayoutEffect(() => {
-    if (!isCompactProjectViewport || cncMobilePanel !== "cutlist" || typeof IntersectionObserver === "undefined") return;
-    const container = cncTableScrollRef.current;
+    if (!isCompactProjectViewport) return;
+    const container = cncCompactScrollRef.current;
     if (!container) return;
     const boardKeys = cncRowsByBoardNonCab.map((group) => group.boardKey);
     if (!boardKeys.length) return;
-    setCncCompactActiveBoardKey((prev) => (boardKeys.includes(prev) ? prev : boardKeys[0]));
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const mostVisible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-        const key = mostVisible?.target.getAttribute("data-cnc-board-key");
-        if (key) setCncCompactActiveBoardKey(key);
-      },
-      { root: container, threshold: [0.35, 0.6] },
-    );
-    for (const key of boardKeys) {
-      const el = cncBoardSectionRefs.current[key];
-      if (el) observer.observe(el);
+    let rafId = 0;
+    const updateActiveBoard = () => {
+      rafId = 0;
+      const width = container.clientWidth || 1;
+      const index = Math.min(boardKeys.length - 1, Math.max(0, Math.round(container.scrollLeft / width)));
+      const key = boardKeys[index];
+      if (key) setCncCompactActiveBoardKey(key);
+    };
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(updateActiveBoard);
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    updateActiveBoard();
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [isCompactProjectViewport, cncRowsByBoardNonCab]);
+  // Points at whichever board page is currently active, for the custom mobile scrollbar thumb —
+  // same shape as Nesting's own equivalent ref.
+  const cncCompactActiveBoardScrollRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    cncCompactActiveBoardScrollRef.current = cncBoardSectionRefs.current[cncCompactActiveBoardKey] ?? null;
+  }, [cncCompactActiveBoardKey]);
+  // The mobile Visibility overlay below stays mounted at all times (see its own comment) so it can
+  // be dragged open from its closed, off-screen-below position by swiping up on the bottom bar —
+  // exact same shape as Nesting's own equivalent block.
+  const cncMobileVisibilityPanelRef = useRef<HTMLDivElement | null>(null);
+  const cncMobileVisibilityDragRef = useRef<{ startY: number; dragging: boolean; panelHeight: number }>({
+    startY: 0,
+    dragging: false,
+    panelHeight: 0,
+  });
+  const CNC_VISIBILITY_CLOSED_TRANSFORM = "translateY(100%)";
+  useLayoutEffect(() => {
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!panel) return;
+    const duration = 280;
+    const easing = "cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transition = `transform ${duration}ms ${easing}`;
+    panel.style.transform = isCncMobileVisibilityOpen ? "translateY(0px)" : CNC_VISIBILITY_CLOSED_TRANSFORM;
+  }, [isCncMobileVisibilityOpen, isCompactProjectViewport]);
+  const onCncVisibilityBarTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!touch || !panel || isCncMobileVisibilityOpen) return;
+    cncMobileVisibilityDragRef.current = {
+      startY: touch.clientY,
+      dragging: true,
+      panelHeight: panel.getBoundingClientRect().height || 1,
+    };
+  };
+  const onCncVisibilityBarTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = cncMobileVisibilityDragRef.current;
+    const touch = e.touches[0];
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!drag.dragging || !touch || !panel) return;
+    const dy = touch.clientY - drag.startY;
+    if (dy >= 0) return;
+    if (dy > -6) return;
+    e.preventDefault();
+    const progress = Math.min(1, Math.abs(dy) / drag.panelHeight);
+    panel.style.transition = "none";
+    panel.style.transform = `translateY(${(1 - progress) * drag.panelHeight}px)`;
+  };
+  const onCncVisibilityBarTouchEnd = () => {
+    const drag = cncMobileVisibilityDragRef.current;
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!drag.dragging) return;
+    drag.dragging = false;
+    if (!panel) return;
+    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
+    const currentPx = match ? Number.parseFloat(match[1]) : drag.panelHeight;
+    const progress = drag.panelHeight > 0 ? 1 - currentPx / drag.panelHeight : 0;
+    if (progress > 0.35) {
+      setIsCncMobileVisibilityOpen(true);
+      return;
     }
-    return () => observer.disconnect();
-  }, [isCompactProjectViewport, cncMobilePanel, cncRowsByBoardNonCab]);
+    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transform = `translateY(${drag.panelHeight}px)`;
+  };
+  const onCncVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!touch || !panel || !isCncMobileVisibilityOpen) return;
+    if ((e.target as HTMLElement).closest?.('[data-cnc-visibility-search="true"]')) return;
+    cncMobileVisibilityDragRef.current = {
+      startY: touch.clientY,
+      dragging: true,
+      panelHeight: panel.getBoundingClientRect().height || 1,
+    };
+  };
+  const onCncVisibilityHeaderTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = cncMobileVisibilityDragRef.current;
+    const touch = e.touches[0];
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!drag.dragging || !touch || !panel) return;
+    const dy = touch.clientY - drag.startY;
+    if (dy <= 0) return;
+    if (dy < 6) return;
+    e.preventDefault();
+    const progress = Math.min(1, dy / drag.panelHeight);
+    panel.style.transition = "none";
+    panel.style.transform = `translateY(${progress * drag.panelHeight}px)`;
+  };
+  const onCncVisibilityHeaderTouchEnd = () => {
+    const drag = cncMobileVisibilityDragRef.current;
+    const panel = cncMobileVisibilityPanelRef.current;
+    if (!drag.dragging) return;
+    drag.dragging = false;
+    if (!panel) return;
+    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
+    const currentPx = match ? Number.parseFloat(match[1]) : 0;
+    const progress = drag.panelHeight > 0 ? currentPx / drag.panelHeight : 0;
+    if (progress > 0.35) {
+      setIsCncMobileVisibilityOpen(false);
+      return;
+    }
+    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transform = "translateY(0px)";
+  };
   const cncRowsByBoardForPrintIds = useMemo(() => {
     const rank = new Map(partTypeOptions.map((name, idx) => [name, idx]));
     const pieceKindRank = (name: string) => {
@@ -23287,6 +23436,172 @@ export default function ProjectDetailsPage() {
       setNestingCompactBoardKey(nestingBoardLayouts[0]?.boardKey || "");
     }
   }, [nestingBoardLayouts, nestingCompactBoardKey]);
+  // Mobile-only (the prev/next arrow buttons) — the board section pages horizontally there now
+  // (one board type per screen, scroll-snap, same treatment as CNC's own board pager), so this
+  // targets scrollLeft instead of filtering to a single board. The scroll-snap container corrects
+  // for any imprecision in this offset on its own once it settles, so an approximate "scroll
+  // roughly to this element" is enough to land on its page.
+  const scrollToNestingBoard = (boardKey: string) => {
+    const container = nestingCompactScrollRef.current;
+    const target = nestingCompactBoardSectionRefs.current[boardKey];
+    if (!container || !target) return;
+    const containerLeft = container.getBoundingClientRect().left;
+    const targetLeft = target.getBoundingClientRect().left;
+    container.scrollTo({ left: container.scrollLeft + (targetLeft - containerLeft) - 8, behavior: "smooth" });
+    setNestingCompactBoardKey(boardKey);
+  };
+  // Tracks scrollLeft directly (nearest-page-to-center, one rAF-throttled update per frame)
+  // instead of IntersectionObserver — the observer's callback only ever receives the entries
+  // that just crossed a threshold, not a full recompute of every board's current visibility, so
+  // mid-swipe it could momentarily report whichever board crossed a threshold first even when
+  // the other board was still more visible, flashing the title/pill through the wrong board
+  // before settling. Scroll position has no such gap: it always reflects the true nearest page.
+  useLayoutEffect(() => {
+    if (!isCompactProjectViewport) return;
+    const container = nestingCompactScrollRef.current;
+    if (!container) return;
+    const boardKeys = nestingBoardLayouts.map((group) => group.boardKey);
+    if (!boardKeys.length) return;
+    let rafId = 0;
+    const updateActiveBoard = () => {
+      rafId = 0;
+      const width = container.clientWidth || 1;
+      const index = Math.min(boardKeys.length - 1, Math.max(0, Math.round(container.scrollLeft / width)));
+      const key = boardKeys[index];
+      if (key) setNestingCompactBoardKey(key);
+    };
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(updateActiveBoard);
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    updateActiveBoard();
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [isCompactProjectViewport, nestingBoardLayouts]);
+  // Points at whichever board page is currently active, for the custom mobile scrollbar thumb
+  // below — kept as its own ref (rather than reading nestingCompactBoardSectionRefs directly at
+  // render time) since GlassScrollbarThumb needs a stable RefObject, and this one's .current is
+  // free to keep being reassigned as the active board changes without changing ITS identity.
+  const nestingCompactActiveBoardScrollRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    nestingCompactActiveBoardScrollRef.current = nestingCompactBoardSectionRefs.current[nestingCompactBoardKey] ?? null;
+  }, [nestingCompactBoardKey]);
+  // Slides the mobile Visibility overlay up from below the bottom bar (closed) to flush against
+  // the underside of the top bar (open) whenever isNestingMobileVisibilityOpen changes — runs
+  // before paint so the panel's very first render is already off-screen, not a visible flash of
+  // "open" before this effect gets a chance to hide it. useLayoutEffect (not the touch handlers
+  // below, which write the same transform imperatively for 1:1 drag tracking) owns every
+  // non-drag transition, matching useSwipeToClose's own split between the two.
+  //
+  // The panel now spans all the way to the true bottom of the screen (bottom-0, not bottom-[56px])
+  // so the visible row list reaches the bottom edge once open — the separate bottom trigger bar
+  // unmounts entirely while open (see the isNestingMobileVisibilityOpen check further down) rather
+  // than sitting on top of it, so there's no longer a bar height to reserve space for. That makes
+  // a plain translateY(100%) exactly clear the viewport when closed, matched by the <aside>'s own
+  // static default `style` for its very first paint, before this effect has run.
+  const NESTING_VISIBILITY_CLOSED_TRANSFORM = "translateY(100%)";
+  useLayoutEffect(() => {
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!panel) return;
+    const duration = 280;
+    const easing = "cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transition = `transform ${duration}ms ${easing}`;
+    panel.style.transform = isNestingMobileVisibilityOpen ? "translateY(0px)" : NESTING_VISIBILITY_CLOSED_TRANSFORM;
+    // isCompactProjectViewport: the panel only mounts (and this ref only populates) once the
+    // viewport is compact, which can happen well after the initial isNestingMobileVisibilityOpen
+    // value was set — re-running this effect on that transition is what actually applies the
+    // closed position to a freshly-mounted panel rather than leaving it at its unstyled default.
+  }, [isNestingMobileVisibilityOpen, isCompactProjectViewport]);
+  // Lets a swipe-up starting on the bottom bar drag the (always-mounted, currently off-screen)
+  // Visibility overlay open in step with the finger, same 1:1-while-dragging /
+  // snap-on-release shape as useSwipeToClose, just vertical and opening rather than closing.
+  const onNestingVisibilityBarTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!touch || !panel || isNestingMobileVisibilityOpen) return;
+    nestingMobileVisibilityDragRef.current = {
+      startY: touch.clientY,
+      dragging: true,
+      panelHeight: panel.getBoundingClientRect().height || 1,
+    };
+  };
+  const onNestingVisibilityBarTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = nestingMobileVisibilityDragRef.current;
+    const touch = e.touches[0];
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!drag.dragging || !touch || !panel) return;
+    const dy = touch.clientY - drag.startY;
+    if (dy >= 0) return;
+    if (dy > -6) return;
+    e.preventDefault();
+    const progress = Math.min(1, Math.abs(dy) / drag.panelHeight);
+    panel.style.transition = "none";
+    panel.style.transform = `translateY(${(1 - progress) * drag.panelHeight}px)`;
+  };
+  const onNestingVisibilityBarTouchEnd = () => {
+    const drag = nestingMobileVisibilityDragRef.current;
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!drag.dragging) return;
+    drag.dragging = false;
+    if (!panel) return;
+    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
+    const currentPx = match ? Number.parseFloat(match[1]) : drag.panelHeight;
+    const progress = drag.panelHeight > 0 ? 1 - currentPx / drag.panelHeight : 0;
+    if (progress > 0.35) {
+      setIsNestingMobileVisibilityOpen(true);
+      return;
+    }
+    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transform = `translateY(${drag.panelHeight}px)`;
+  };
+  // Mirror of the three handlers above, for the open panel's own header bar: drags it back down
+  // to close instead of up to open. Shares the same drag ref since exactly one of "closed
+  // trigger bar" or "open panel header" is ever actually reachable by touch at a given time.
+  const onNestingVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!touch || !panel || !isNestingMobileVisibilityOpen) return;
+    // Don't hijack a touch that starts inside the search field — tapping in to place the caret
+    // or select text shouldn't risk being read as the start of a close-drag.
+    if ((e.target as HTMLElement).closest?.('[data-nesting-visibility-search="true"]')) return;
+    nestingMobileVisibilityDragRef.current = {
+      startY: touch.clientY,
+      dragging: true,
+      panelHeight: panel.getBoundingClientRect().height || 1,
+    };
+  };
+  const onNestingVisibilityHeaderTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = nestingMobileVisibilityDragRef.current;
+    const touch = e.touches[0];
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!drag.dragging || !touch || !panel) return;
+    const dy = touch.clientY - drag.startY;
+    if (dy <= 0) return;
+    if (dy < 6) return;
+    e.preventDefault();
+    const progress = Math.min(1, dy / drag.panelHeight);
+    panel.style.transition = "none";
+    panel.style.transform = `translateY(${progress * drag.panelHeight}px)`;
+  };
+  const onNestingVisibilityHeaderTouchEnd = () => {
+    const drag = nestingMobileVisibilityDragRef.current;
+    const panel = nestingMobileVisibilityPanelRef.current;
+    if (!drag.dragging) return;
+    drag.dragging = false;
+    if (!panel) return;
+    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
+    const currentPx = match ? Number.parseFloat(match[1]) : 0;
+    const progress = drag.panelHeight > 0 ? currentPx / drag.panelHeight : 0;
+    if (progress > 0.35) {
+      setIsNestingMobileVisibilityOpen(false);
+      return;
+    }
+    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
+    panel.style.transform = "translateY(0px)";
+  };
   const nestingPrintPageCount = useMemo(
     () =>
       nestingBoardLayouts.reduce(
@@ -24430,6 +24745,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         setIsCncVisibilityPanelJustOpened(false);
         cncVisibilityPanelOpenTimeoutRef.current = null;
       }, 800);
+      // Same reset as Nesting's own equivalent effect — this whole page component stays mounted
+      // across leaving/re-entering CNC fullscreen, so isCncMobileVisibilityOpen would otherwise
+      // still be true here if it was left open on a previous visit.
+      setIsCncMobileVisibilityOpen(false);
     }
     wasCncFullscreenRef.current = isCncFullscreen;
   }, [isCncFullscreen]);
@@ -24505,6 +24824,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         setIsNestingVisibilityPanelJustOpened(false);
         nestingVisibilityPanelOpenTimeoutRef.current = null;
       }, 800);
+      // This whole page component stays mounted across leaving/re-entering Nesting fullscreen
+      // (it's just a conditional render, not a remount), so isNestingMobileVisibilityOpen would
+      // otherwise still be true here if it was left open on a previous visit — e.g. tapping "Save
+      // and back" without closing the mobile Visibility overlay first. That left the bottom
+      // trigger bar looking like it "wasn't showing up" (it was correctly hidden — the panel was
+      // just stuck open and easy to miss). Reset it on every fresh entry, mirroring the
+      // just-opened bubble-animation flag right above.
+      setIsNestingMobileVisibilityOpen(false);
     }
     wasNestingFullscreenRef.current = isNestingFullscreen;
   }, [isNestingFullscreen]);
@@ -38588,8 +38915,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {/* Same shared-backdrop-behind-a-fixed-bar treatment as the Quote/Specifications
               fullscreen views — one static-height blurred div, content-only bars on top. Desktop
               gets a second 49px band below the 56px header for the "Edit Visibility" toggle (see
-              below) — same as Quote Extras' own toolbar-row toggle; mobile has no equivalent (it
-              uses cncMobilePanel's Cutlist/Visibility tab switcher instead), so stays just 56px. */}
+              below) — same as Quote Extras' own toolbar-row toggle; mobile has no equivalent (its
+              own Visibility overlay covers the full screen instead), so stays just 56px. */}
           <div
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
@@ -38601,7 +38928,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           />
           <div
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between pl-3 pr-3 md:pl-5 md:pr-3"
-            style={{ color: "var(--text-main)" }}
+            // Mobile-only plain white, matching Nesting's own top bar — desktop keeps relying
+            // solely on the shared backdrop div above (untouched).
+            style={isCompactProjectViewport ? { color: "var(--text-main)", backgroundColor: "#FFFFFF" } : { color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -38692,8 +39021,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
           {/* Second bar below the main header — same "title lives in its own toolbar-row bar, no
               background of its own (the shared blur backdrop above shows through), chevron flips
-              on open/close" treatment as Quote Extras' own toggle button. Desktop only; mobile uses
-              cncMobilePanel's Cutlist/Visibility tab switcher instead. */}
+              on open/close" treatment as Quote Extras' own toggle button. Desktop only; mobile
+              reaches Visibility through its own bottom-bar button instead. */}
           {!isCompactProjectViewport ? (
             <>
               {/* Full page-width divider under the whole 49px band, not just under the 360px
@@ -38741,69 +39070,61 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   }
             }
           >
-            {isCompactProjectViewport ? (
-              <div className="mt-[56px] grid shrink-0 grid-cols-2 overflow-hidden border-b" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}>
-                <button
-                  type="button"
-                  onClick={() => setCncMobilePanel("cutlist")}
-                  className="h-10 text-[12px] font-bold"
-                  style={{
-                    backgroundColor: cncMobilePanel === "cutlist" ? "var(--brand-soft)" : "transparent",
-                    color: cncMobilePanel === "cutlist" ? "var(--brand-strong)" : "var(--text-main)",
-                    borderRight: "1px solid var(--glass-border)",
-                  }}
-                >
-                  Cutlist
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCncMobilePanel("visibility")}
-                  className="h-10 text-[12px] font-bold"
-                  style={{
-                    backgroundColor: cncMobilePanel === "visibility" ? "var(--brand-soft)" : "transparent",
-                    color: cncMobilePanel === "visibility" ? "var(--brand-strong)" : "var(--text-main)",
-                  }}
-                >
-                  Visibility
-                </button>
-              </div>
-            ) : null}
-            {isCompactProjectViewport && cncMobilePanel === "cutlist" && cncRowsByBoardNonCab.length > 0 && (() => {
+            {/* Fixed second band (56-105), same treatment/style as Nesting's own board-type bar:
+                plain white, bigger centered title with its own count pill (not squeezed into the
+                leftover space between unevenly-sized chevron buttons), black chevrons. */}
+            {isCompactProjectViewport && cncRowsByBoardNonCab.length > 0 && (() => {
               const boardKeys = cncRowsByBoardNonCab.map((group) => group.boardKey);
               const currentIndex = Math.max(0, boardKeys.indexOf(cncCompactActiveBoardKey));
               const currentLabel = cncRowsByBoardNonCab[currentIndex]?.boardLabel || "";
               return (
                 <div
-                  className="mx-3 mt-3 flex h-9 shrink-0 items-center justify-between gap-2 rounded-[10px] border px-2 text-[12px] font-bold"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  className="fixed inset-x-0 z-[95] flex items-center justify-between gap-2 px-3"
+                  style={{ top: 56, height: 49, backgroundColor: "#FFFFFF" }}
                 >
                   <button
                     type="button"
                     disabled={boardKeys.length < 2}
                     onClick={() => scrollToCncBoard(boardKeys[Math.max(0, currentIndex - 1)] || cncCompactActiveBoardKey)}
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                    style={{ color: "#000000" }}
                     aria-label="Previous board type"
                   >
-                    <ArrowLeft size={14} />
+                    <ChevronLeft size={18} strokeWidth={2.5} />
                   </button>
-                  <span className="min-w-0 flex-1 truncate text-center" style={{ color: "var(--brand-strong)" }}>
-                    {currentLabel}
-                    {boardKeys.length > 1 ? ` (${currentIndex + 1}/${boardKeys.length})` : ""}
+                  <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
+                    <span className="min-w-0 truncate text-[15px] font-bold" style={{ color: "#000000" }}>
+                      {currentLabel}
+                    </span>
+                    {boardKeys.length > 1 && (
+                      <span
+                        className="shrink-0 rounded-[999px] px-2 py-[1px] text-[11px] font-bold"
+                        style={{
+                          backgroundColor: isDarkMode ? "rgba(255,255,255,0.12)" : "#DEE6F3",
+                          color: isDarkMode ? "#f1f1f1" : "#45658A",
+                        }}
+                      >
+                        {currentIndex + 1}/{boardKeys.length}
+                      </span>
+                    )}
                   </span>
                   <button
                     type="button"
                     disabled={boardKeys.length < 2}
                     onClick={() => scrollToCncBoard(boardKeys[Math.min(boardKeys.length - 1, currentIndex + 1)] || cncCompactActiveBoardKey)}
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                    style={{ color: "#000000" }}
                     aria-label="Next board type"
                   >
-                    <ArrowRight size={14} />
+                    <ChevronRight size={18} strokeWidth={2.5} />
                   </button>
                 </div>
               );
             })()}
-            {(!isCompactProjectViewport || cncMobilePanel === "cutlist") && (
-            // pl-10 (not pl-3) on desktop — the board cards' own var(--shadow-glass) has a 32px
+            {(
+            // Mobile: always shown now (Visibility moved to its own bottom-bar-triggered overlay,
+            // not a second tab that replaces this) — pl-10 (not pl-3) on desktop — the board cards'
+            // own var(--shadow-glass) has a 32px
             // blur radius, so with only 12px of padding this section's own overflow-auto (which
             // clips shadows at its own edge) cut the shadow off in a visible hard line right where
             // the old opaque sidebar used to sit and hide it. Wider padding here gives the shadow
@@ -38812,15 +39133,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             // tables sit on the right with the Edit Visibility panel on the left.
             <section
               ref={cncTableScrollRef}
-              className={isCompactProjectViewport ? "min-h-0 flex-1 overflow-auto px-3 pb-3 pt-3 hide-native-scrollbar" : "h-full min-h-0 overflow-auto pl-10 pr-3 pb-3 pt-3 hide-native-scrollbar"}
+              className={isCompactProjectViewport ? "min-h-0 flex-1 overflow-hidden" : "h-full min-h-0 overflow-auto pl-10 pr-3 pb-3 pt-3 hide-native-scrollbar"}
               style={isCompactProjectViewport ? undefined : { gridColumn: 2 }}
-              {...(isCompactProjectViewport
-                ? makeBoardSwipeHandlers(
-                    cncRowsByBoardNonCab.map((group) => group.boardKey),
-                    cncCompactActiveBoardKey,
-                    scrollToCncBoard,
-                  )
-                : {})}
+              // Mobile: opts this whole region out of app-shell.tsx's own page-level swipe gesture
+              // (nav drawer / pull-to-reveal), since it now drives its own native horizontal
+              // scroll-snap paging below — see that file's onMainTouchStart for the check.
+              {...(isCompactProjectViewport ? { "data-horizontal-swipe-scroll": "true" } : {})}
             >
               {/* This section fills the full viewport height (its parent no longer reserves space
                   for the fixed header), so a spacer matching the header's own height replaces that
@@ -38831,10 +39149,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {/* pt-0 (not py-2's usual top half) — the section above already carries its own pt-3,
                   matching the Visibility panel's p-3 gap from the divider down to its search bar
                   exactly (12px), rather than stacking on top of it. */}
-              <div className="space-y-3 px-0 pb-2 pt-0">
+              {/* Mobile: one board type per page — a native horizontal scroll-snap row (not a
+                  hand-rolled drag) so paging gets real, finger-tracked sliding for free, with
+                  momentum and snapping the browser already does better than a custom transform
+                  would. Each page below gets its own vertical scroll + the padding this container
+                  used to carry. Desktop is untouched (still the plain vertical stack). */}
+              <div
+                ref={isCompactProjectViewport ? cncCompactScrollRef : undefined}
+                className={
+                  isCompactProjectViewport
+                    ? "hide-native-scrollbar flex h-full snap-x snap-mandatory overflow-x-auto overscroll-x-contain"
+                    : "space-y-3 px-0 pb-2 pt-0"
+                }
+                style={isCompactProjectViewport ? { scrollBehavior: "smooth", backgroundColor: "var(--bg-app)" } : undefined}
+              >
                 {cncRowsByBoardNonCab.length === 0 && cncCabinetCards.length === 0 && (
                   <div
-                    className="rounded-[14px] border border-dashed px-3 py-8 text-center text-[12px] font-semibold"
+                    className={
+                      isCompactProjectViewport
+                        ? "flex h-full w-full shrink-0 snap-start items-center justify-center rounded-[14px] border border-dashed px-3 py-8 text-center text-[12px] font-semibold"
+                        : "rounded-[14px] border border-dashed px-3 py-8 text-center text-[12px] font-semibold"
+                    }
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", color: "var(--text-muted)" }}
                   >
                     No visible CNC rows.
@@ -38851,7 +39186,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     const showBoardGrainHelper = boardGrainFor(group.boardKey);
                     const isBoardGrainInfoOpen = cncActiveGrainInfoKey === `board:${group.boardKey}`;
                     const boardEdgingLabel = boardEdgingFor(group.boardKey);
-                    return (
+                    // Mobile row list: a real fixed column for Part Name, sized to fit this
+                    // board's own longest name (+ a little padding) — Size then sits right after
+                    // that same spot on every row instead of hugging each row's own, differently
+                    // long name.
+                    const cncMobilePartNameCh = Math.max(4, ...group.rows.map((row) => String(row.name || "").length)) + 1;
+                    const boardSectionContent = (
                     <section
                       key={group.boardKey}
                       ref={(el) => {
@@ -38935,6 +39275,81 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         }}
                       >
                       <div className="overflow-hidden">
+                      {isCompactProjectViewport ? (
+                        // Mobile: Part Type + Part Name, Size, Qty only — tap a row for every
+                        // other column (Room, Clashing, Grain, Information, bank-front linking)
+                        // in a popup instead, rather than the desktop table's dense wide grid.
+                        <div className="divide-y divide-[#E4E7EE] bg-white">
+                          <div
+                            className="flex items-center gap-2 border-b border-[#E4E7EE] bg-[#F8FAFC] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.4px]"
+                            style={{ color: "#7A8798" }}
+                          >
+                            <span className="w-[54px] shrink-0">Type</span>
+                            {/* text-[12px] font-semibold normal-case, NOT the header row's own
+                                text-[10px] font-bold uppercase — ch is the width of the font's own
+                                "0" glyph, so it only matches the data rows' actual Part Name column
+                                width if this span renders in that exact same font size/weight. */}
+                            <span className="shrink-0 truncate text-[12px] font-semibold normal-case tracking-normal" style={{ width: `${cncMobilePartNameCh}ch` }}>Part</span>
+                            <span className="ml-2 shrink-0">Size</span>
+                            <span className="ml-auto mr-2 w-[28px] shrink-0 text-center">Qty</span>
+                          </div>
+                          {group.rows.map((row, idx) => {
+                            const partColor = partTypeColors[row.partType || "Unassigned"] ?? "#CBD5E1";
+                            const partText = isLightHex(partColor) ? "#0F172A" : "#F8FAFC";
+                            const rowIsBankFront = Boolean(row.bankGroupId);
+                            const bankInfo = rowIsBankFront && row.bankFrontIndexes?.length ? row.bankFrontIndexes.join(", ") : "";
+                            return (
+                              <button
+                                key={`cnc_mobile_row_${group.boardKey}_${row.id}_${idx}`}
+                                type="button"
+                                onClick={(e) => {
+                                  setCncMobileRowDetailOrigin(captureGlassModalOrigin(e));
+                                  setCncMobileRowDetail({
+                                    boardLabel: group.boardLabel,
+                                    partName: String(row.name || ""),
+                                    partType: String(row.partType || ""),
+                                    room: String(row.room || ""),
+                                    height: String(row.height || ""),
+                                    width: String(row.width || ""),
+                                    depth: String(row.depth || ""),
+                                    quantity: String(row.quantity || ""),
+                                    clashing: joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "",
+                                    informationLines: informationLinesFromValue(String(row.information || "")),
+                                  });
+                                  setIsCncMobileRowDetailOpen(true);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left active:bg-[#F6F8FB]"
+                              >
+                                <span className="w-[54px] shrink-0 truncate">
+                                  {row.partType ? (
+                                    <span
+                                      className="inline-block max-w-full truncate rounded-[7px] px-2 py-[2px] text-[10px] font-semibold"
+                                      style={{ backgroundColor: partColor, color: partText }}
+                                    >
+                                      {row.partType}
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <span className="shrink-0 truncate text-[12px] font-semibold" style={{ color: "#000000", width: `${cncMobilePartNameCh}ch` }}>
+                                  {row.name || ""}
+                                  {rowIsBankFront && bankInfo ? ` (${bankInfo})` : ""}
+                                </span>
+                                <span className="ml-2 shrink-0 text-[11px] font-medium" style={{ color: "#000000" }}>
+                                  {[row.height, row.width, row.depth].filter((dim) => String(dim || "").trim()).join("×")}
+                                </span>
+                                <span className="ml-auto mr-2 w-[28px] shrink-0 text-center text-[12px] font-bold" style={{ color: "#000000" }}>
+                                  {row.quantity || ""}
+                                </span>
+                              </button>
+                            );
+                          })}
+                          {group.rows.length === 0 && (
+                            <p className="px-3 py-4 text-center text-[11px] font-semibold" style={{ color: "#7A8798" }}>
+                              No parts for this board
+                            </p>
+                          )}
+                        </div>
+                      ) : (
                       <div className="overflow-x-auto overflow-y-hidden bg-white">
                         <table
                           className="table-fixed text-left text-[12px]"
@@ -39154,13 +39569,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           </tbody>
                         </table>
                       </div>
+                      )}
                       </div>
                       </div>
                     </section>
                   );
+                  // Mobile: each board type is wrapped as its own full-height page in the
+                  // scroll-snap row above, with its own vertical scroll + the padding the shared
+                  // container used to carry. Desktop returns the section as-is, unchanged.
+                  return isCompactProjectViewport ? (
+                    <div key={`cnc_board_page_${group.boardKey}`} className="hide-native-scrollbar h-full w-full shrink-0 snap-start overflow-y-auto px-3" style={{ paddingTop: 115, paddingBottom: 66 }}>
+                      {boardSectionContent}
+                    </div>
+                  ) : (
+                    boardSectionContent
+                  );
                   });
                 })()}
-                {cncCabinetCards.length > 0 && (
+                {cncCabinetCards.length > 0 && (() => {
+                  const cabinetSectionContent = (
                   <section
                     className="overflow-hidden rounded-[14px] border"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)` }}
@@ -39569,11 +39996,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                     </div>
                   </section>
-                )}
+                  );
+                  // Mobile: cabinets get their own page too, appended after the board-type pages —
+                  // same page-wrapper treatment as each board's own section above.
+                  return isCompactProjectViewport ? (
+                    <div className="hide-native-scrollbar h-full w-full shrink-0 snap-start overflow-y-auto px-3" style={{ paddingTop: 115, paddingBottom: 66 }}>
+                      {cabinetSectionContent}
+                    </div>
+                  ) : (
+                    cabinetSectionContent
+                  );
+                })()}
               </div>
             </section>
             )}
-            {(isCompactProjectViewport ? cncMobilePanel === "visibility" : isCncVisibilityPanelOpen) && (
+            {/* Desktop only now — mobile has its own separate Nesting-style slide-up <aside>
+                below instead of sharing this section, since its interaction model (always
+                mounted, drag open/closed, expanding search) is different enough from this
+                floating-sidebar desktop panel that ternary-ing one JSX tree between both no
+                longer made sense. */}
+            {!isCompactProjectViewport && isCncVisibilityPanelOpen && (
             // No enclosing bar here — same "floating bubbles over the page background" treatment
             // as Quote's own Version History sidebar (see its own comment: "No outer box here
             // either... each entry is already its own rounded+bordered 'bubble', floating
@@ -39584,11 +40026,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             // table section does — see that section's own comment — with a matching 105px spacer
             // as the first child instead, so content scrolls up genuinely behind the blurred fixed
             // header bars instead of stopping dead at a hard top: 105 boundary.
+            // Mobile: a full-screen overlay (below the 56px title bar, above the bottom bar) that
+            // opens over the always-mounted cutlist pager, instead of replacing it as a second tab.
             <section
               ref={cncVisibilityScrollRef}
-              className={isCompactProjectViewport ? "min-h-0 flex-1 overflow-y-auto hide-native-scrollbar" : "self-start min-h-0 overflow-y-auto hide-native-scrollbar"}
+              className={isCompactProjectViewport ? "fixed inset-x-0 top-[56px] bottom-[56px] z-[130] overflow-y-auto hide-native-scrollbar" : "self-start min-h-0 overflow-y-auto hide-native-scrollbar"}
               style={
-                isCompactProjectViewport ? undefined : { position: "fixed", left: 0, top: 0, width: 360, height: "100svh" }
+                isCompactProjectViewport
+                  ? { backgroundColor: "var(--bg-app)" }
+                  : { position: "fixed", left: 0, top: 0, width: 360, height: "100svh" }
               }
             >
               {!isCompactProjectViewport && <div style={{ height: 105 }} />}
@@ -39605,6 +40051,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       : undefined
                 }
               >
+                {isCompactProjectViewport && (
+                  <button
+                    type="button"
+                    onClick={() => setIsCncMobileVisibilityOpen(false)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                    aria-label="Close Visibility"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                )}
                 <input
                   value={cncVisibilitySearch}
                   onChange={(e) => setCncVisibilitySearch(e.target.value)}
@@ -39752,7 +40209,199 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </section>
             )}
+            {/* Mobile-only Visibility overlay — same design as Nesting's own: always mounted
+                (rather than only while open) so it's actually there in the DOM to drag open, its
+                resting "closed" position off-screen below the bottom bar, reaching the true
+                bottom of the screen once open (bottom-0, not bottom-[56px]) since the separate
+                bottom trigger bar unmounts entirely while it's open. */}
+            {isCompactProjectViewport && (
+              <aside
+                ref={cncMobileVisibilityPanelRef}
+                className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto bg-white"
+                style={{ transform: "translateY(100%)" }}
+              >
+                {/* Same bar (height, glass style) as the closed-state trigger bar below — it
+                    visually IS that bar, now sitting as the open panel's own header, so dragging
+                    it down closes back to that same resting spot. Search (left) expands over the
+                    "Visibility" label on focus exactly like the dashboard's own mobile search;
+                    Show All (right) only fades in once the panel is actually open. */}
+                <div
+                  className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
+                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+                  onClick={() => setIsCncMobileVisibilityOpen(false)}
+                  onTouchStart={onCncVisibilityHeaderTouchStart}
+                  onTouchMove={onCncVisibilityHeaderTouchMove}
+                  onTouchEnd={onCncVisibilityHeaderTouchEnd}
+                >
+                  <div
+                    data-cnc-visibility-search="true"
+                    className="peer relative z-10 w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                    <input
+                      value={cncVisibilitySearch}
+                      onChange={(e) => setCncVisibilitySearch(e.target.value)}
+                      placeholder="Search"
+                      className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white pl-8 pr-2 text-[12px] outline-none transition focus:border-[var(--brand)]"
+                    />
+                  </div>
+                  {/* Must come AFTER the search wrapper in the DOM — peer-focus-within only
+                      matches siblings that follow the .peer element. */}
+                  <div
+                    className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full transition-opacity duration-200 peer-focus-within:opacity-0"
+                    style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
+                  />
+                  <span
+                    className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[13px] font-bold transition-opacity duration-200 peer-focus-within:opacity-0"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    Visibility
+                  </span>
+                  <button
+                    type="button"
+                    disabled={productionReadOnly}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onShowAllCncRows();
+                    }}
+                    className={`relative z-10 ml-auto shrink-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] transition-opacity duration-[280ms] disabled:opacity-55 ${isCncMobileVisibilityOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                  >
+                    Show All
+                  </button>
+                </div>
+                <div className="px-3 pb-3 pt-[10px]">
+                  <div className="space-y-1">
+                    {cncSidebarGroups.map((group) => {
+                      const color = partTypeColors[group.partType] ?? "#CBD5E1";
+                      const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
+                      const partTypeCollapseKey = `cnc:pt:${group.partType}`;
+                      const collapsed = Boolean(cncCollapsedGroups[partTypeCollapseKey]);
+                      const totalQty = group.rows.reduce(
+                        (sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1),
+                        0,
+                      );
+                      const visibleCount = group.rows.reduce((sum, row) => {
+                        const checked = typeof cncVisibilityMap[row.id] === "boolean"
+                          ? cncVisibilityMap[row.id]
+                          : true;
+                        return sum + (checked ? 1 : 0);
+                      }, 0);
+                      const allChecked = group.rows.length > 0 && visibleCount === group.rows.length;
+                      const someChecked = visibleCount > 0 && !allChecked;
+                      return (
+                        <div key={`cnc_group_compact_${group.partType}`} className="space-y-1">
+                          <div
+                            className="flex items-center justify-between rounded-full pl-[5px] text-[11px] font-extrabold"
+                            style={{ backgroundColor: color, color: textColor }}
+                          >
+                            <span style={{ paddingLeft: 5 }}>{group.partType} ({totalQty})</span>
+                            <div className="ml-auto inline-flex items-center">
+                              <span className="inline-flex h-7 items-center self-center pr-2">
+                                <input
+                                  type="checkbox"
+                                  checked={allChecked}
+                                  ref={(el) => {
+                                    if (el) el.indeterminate = someChecked;
+                                  }}
+                                  disabled={productionReadOnly || group.rows.length === 0}
+                                  onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    group.rows.forEach((row) => {
+                                      void onToggleCncVisibility(row.id, checked);
+                                    });
+                                  }}
+                                  className="h-4 w-4 accent-[#12345B]"
+                                  title={allChecked ? "Untick all in part type" : "Tick all in part type"}
+                                />
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleCncGroup(partTypeCollapseKey)}
+                                className="inline-flex h-7 w-8 items-center justify-center rounded-r-full border-l border-black/15 hover:bg-black/10"
+                                style={{ color: textColor }}
+                                title={collapsed ? "Expand part type" : "Collapse part type"}
+                              >
+                                {collapsed ? <Plus size={14} strokeWidth={2.6} /> : <Minus size={14} strokeWidth={2.6} />}
+                              </button>
+                            </div>
+                          </div>
+                          {!collapsed && group.rows.map((row) => {
+                            const checked = typeof cncVisibilityMap[row.id] === "boolean"
+                              ? cncVisibilityMap[row.id]
+                              : true;
+                            const rowColor = partTypeColors[row.partType] ?? "#CBD5E1";
+                            const rowBg = lightenHex(rowColor, 0.72);
+                            return (
+                              <label
+                                key={`cnc_vis_compact_${row.id}`}
+                                className="flex items-start gap-2 rounded-[16px] border px-3 py-2"
+                                style={{ backgroundColor: rowBg, borderColor: darkenHex(rowColor, 0.12) }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={productionReadOnly}
+                                  onChange={(e) => void onToggleCncVisibility(row.id, e.target.checked)}
+                                  className="mt-[2px] h-4 w-4"
+                                />
+                                <span className="flex min-w-0 flex-1 items-start justify-between gap-2 text-[11px] text-[#334155]">
+                                  <span className="min-w-0">
+                                    <span className="block truncate font-bold text-[#0F172A]">{row.name || "Part"}</span>
+                                    <span className="mt-[1px] block truncate text-[10px]">{row.room || "-"}</span>
+                                  </span>
+                                  <span className="shrink-0 text-right">
+                                    <span className="block pt-[1px] font-bold text-[#0F172A]">
+                                      {Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1)}
+                                    </span>
+                                    <span className="mt-[1px] block text-[10px] text-[#475569]">
+                                      {boardDisplayLabel(row.board) || "No board"}
+                                    </span>
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                    {cncSourceRows.length === 0 && (
+                      <p
+                        className="rounded-[16px] border border-dashed px-3 py-4 text-center text-[12px] font-semibold"
+                        style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+                      >
+                        No cutlist rows yet.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </aside>
+            )}
           </div>
+          {/* Mobile only, same design as Nesting's own bottom trigger bar: plain white, unmounts
+              entirely (not just faded) the instant the panel commits open, so it reads as having
+              slid up rather than lingering underneath. Drag handle + touch handlers let it be
+              dragged open, not just tapped. */}
+          {isCompactProjectViewport && !isCncMobileVisibilityOpen && (
+            <div
+              data-horizontal-swipe-scroll="true"
+              className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "#FFFFFF" }}
+              onTouchStart={onCncVisibilityBarTouchStart}
+              onTouchMove={onCncVisibilityBarTouchMove}
+              onTouchEnd={onCncVisibilityBarTouchEnd}
+            >
+              <div className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full" style={{ backgroundColor: "rgba(0,0,0,0.22)" }} />
+              <button
+                type="button"
+                onClick={() => setIsCncMobileVisibilityOpen(true)}
+                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
+                style={{ color: "var(--text-main)" }}
+              >
+                Visibility
+              </button>
+            </div>
+          )}
         </div>
         {!isCompactProjectViewport && (
           <>
@@ -39760,6 +40409,119 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <GlassScrollbarThumb scrollRef={cncTableScrollRef} side="right" />
           </>
         )}
+        {/* Mobile: same fixed-position, active-page-tracking thumb as Nesting's own — see
+            cncCompactActiveBoardScrollRef's own comment. */}
+        {isCompactProjectViewport && (cncRowsByBoardNonCab.length > 0 || cncCabinetCards.length > 0) && (
+          <GlassScrollbarThumb
+            scrollRef={cncCompactActiveBoardScrollRef}
+            anchorRef={cncCompactScrollRef}
+            refreshKey={cncCompactActiveBoardKey}
+            side="right"
+            thumbWidthPx={4}
+          />
+        )}
+        {/* Mobile row-detail popup — same FLIP-from-the-tapped-row shape as Nesting's own sheet
+            preview popup: glass backdrop, danger-glass X close button, panel grows out of the
+            row that opened it. */}
+        {shouldRenderCncMobileRowDetail && cncMobileRowDetail && (() => {
+          const detail = cncMobileRowDetail;
+          const label = "text-[10px] font-bold uppercase tracking-[0.6px]";
+          return (
+            <div
+              className="glass-modal-backdrop fixed inset-0 z-[200] flex items-center justify-center p-4"
+              onClick={() => setIsCncMobileRowDetailOpen(false)}
+            >
+              <div
+                ref={cncMobileRowDetailPanelRef}
+                className="glass-modal-panel flex w-fit min-w-[320px] max-w-[92vw] flex-col overflow-hidden"
+                style={{ maxHeight: "calc(100svh - 32px)" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="glass-modal-header relative flex min-h-[50px] items-center justify-between gap-3 px-3">
+                  <div className="min-w-0">
+                    <p className="whitespace-nowrap text-[16px] font-medium" style={{ color: "#000000" }}>{detail.partName || "Part"}</p>
+                    <p className="whitespace-nowrap text-[11px]" style={{ color: "#000000" }}>{detail.boardLabel}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsCncMobileRowDetailOpen(false)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
+                    style={{
+                      borderColor: "var(--danger-glass-border)",
+                      backgroundColor: "var(--danger-glass-bg)",
+                      backdropFilter: "blur(10px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                      color: "#FFFFFF",
+                    }}
+                    title="Close"
+                  >
+                    <X size={16} strokeWidth={2.4} />
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto p-3 text-[12px]" style={{ color: "#000000" }}>
+                  {/* max-content columns (not grid-cols-N's minmax(0, 1fr)) — a 1fr track clips
+                      long content instead of growing, which would defeat the panel's own w-fit
+                      sizing. Label and value share this one grid so their columns are computed
+                      together and always land in the same place, however long either one is —
+                      Room/Part Name are the two fields most likely to run long, so this row (and
+                      Information below) size to content; Height/Width/Depth and Quantity/Clashing
+                      below are short, fixed-format values, so they keep the even grid split
+                      requested earlier instead. */}
+                  {/* Bar is a plain absolute-fill sibling, not a spanning grid item — the grid's
+                      own tracks are max-content (so the label/value columns line up with each
+                      other regardless of content length), but that leaves the grid itself only as
+                      wide as its content, narrower than the panel whenever another row (e.g.
+                      Information) is what's actually driving the panel's width. An absolutely
+                      positioned div fills its w-full parent's real width instead, so this bar
+                      spans exactly as wide as the other rows' below. */}
+                  {/* Column 2 is minmax(max-content, 1fr), not a plain max-content — it never
+                      clips Part Name's own content (the max-content floor), but ALSO stretches to
+                      fill any extra width the panel ends up at because some OTHER row (e.g.
+                      Information) is what's actually driving it wider. That's what lets the
+                      spanning background bar below reach the panel's full width instead of
+                      stopping wherever this row's own content happens to end. */}
+                  <div className="grid w-full gap-x-3 gap-y-1" style={{ gridTemplateColumns: "max-content minmax(max-content, 1fr)" }}>
+                    <div className="rounded-[6px]" style={{ gridColumn: "1 / -1", gridRow: 1, backgroundColor: "#E4E7EE" }} />
+                    <p className={`${label} whitespace-nowrap px-2 py-1`} style={{ gridColumn: 1, gridRow: 1, color: "#000000" }}>Room</p>
+                    <p className={`${label} whitespace-nowrap px-2 py-1`} style={{ gridColumn: 2, gridRow: 1, color: "#000000" }}>Part Name</p>
+                    <p className="whitespace-nowrap px-2" style={{ gridColumn: 1, gridRow: 2, color: "#000000" }}>{detail.room || "-"}</p>
+                    <p className="whitespace-nowrap px-2" style={{ gridColumn: 2, gridRow: 2, color: "#000000" }}>{detail.partName || "-"}</p>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-3 rounded-[6px] px-2 py-1 text-center" style={{ backgroundColor: "#E4E7EE" }}>
+                    <p className={label} style={{ color: "#000000" }}>Height</p>
+                    <p className={label} style={{ color: "#000000" }}>Width</p>
+                    <p className={label} style={{ color: "#000000" }}>Depth</p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 px-2 pt-1 text-center">
+                    <p style={{ color: "#000000" }}>{detail.height || "-"}</p>
+                    <p style={{ color: "#000000" }}>{detail.width || "-"}</p>
+                    <p style={{ color: "#000000" }}>{detail.depth || "-"}</p>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3 rounded-[6px] px-2 py-1 text-center" style={{ backgroundColor: "#E4E7EE" }}>
+                    <p className={label} style={{ color: "#000000" }}>Quantity</p>
+                    <p className={label} style={{ color: "#000000" }}>Clashing</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 px-2 pt-1 text-center">
+                    <p className="font-bold" style={{ color: "#000000" }}>{detail.quantity || "-"}</p>
+                    <p style={{ color: "#000000" }}>{detail.clashing || "-"}</p>
+                  </div>
+                  {detail.informationLines.length > 0 && (
+                    <>
+                      <div className="mt-3 rounded-[6px] px-2 py-1" style={{ backgroundColor: "#E4E7EE" }}>
+                        <p className={label} style={{ color: "#000000" }}>Information</p>
+                      </div>
+                      <div className="px-2 pt-1">
+                        {detail.informationLines.map((line, lineIdx) => (
+                          <p key={`cnc_detail_info_${lineIdx}`} className="whitespace-nowrap" style={{ color: "#000000" }}>{line}</p>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </ProtectedRoute>
     );
   }
@@ -40052,6 +40814,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               screen instead of squeezing onto the title row — desktop keeps them all inline above. */}
           {isCompactProjectViewport && (
             <div
+              {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
@@ -40308,7 +41071,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       data-swipe-backdrop="true"
                       className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
-                      onClick={toggleQuoteExtrasPanel}
+                      onClick={closeQuoteExtrasPanelMobile}
                       aria-label="Close Quote Extras backdrop"
                     />
                     <div
@@ -40530,7 +41293,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       data-swipe-backdrop="true"
                       className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
-                      onClick={toggleQuoteHistoryPanel}
+                      onClick={closeQuoteHistoryPanelMobile}
                       aria-label="Close Version History backdrop"
                     />
                     <div
@@ -41122,6 +41885,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               screen instead of squeezing onto the title row — desktop keeps them all inline above. */}
           {isCompactProjectViewport && (
             <div
+              {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
@@ -41424,7 +42188,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       data-swipe-backdrop="true"
                       className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
-                      onClick={toggleSpecsVersionsSidebar}
+                      onClick={closeSpecsVersionsSidebarMobile}
                       aria-label="Close Version History backdrop"
                     />
                     <div
@@ -41514,7 +42278,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       data-swipe-backdrop="true"
                       className="absolute inset-0 bg-[rgba(15,23,42,0.45)]"
-                      onClick={toggleSpecsSectionsPanel}
+                      onClick={closeSpecsSectionsPanelMobile}
                       aria-label="Close Sections backdrop"
                     />
                     <div
@@ -42648,19 +43412,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         <div className="h-[100svh] overflow-hidden bg-[var(--bg-app)]">
           {/* Same shared-backdrop-behind-a-fixed-bar treatment as CNC's own — one static-height
               blurred div, content-only bars on top. Desktop gets a second 49px band below the 56px
-              header for the "Edit Visibility" toggle (see below); mobile has no equivalent (it uses
-              nestingMobilePanel's Layouts/Visibility tab switcher instead), so stays just 56px. */}
+              header for the "Edit Visibility" toggle (see below); mobile now has its own equivalent
+              second band (the board-type prev/next bar further down), so both stay 56+49. */}
           <div
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: isCompactProjectViewport ? 56 : 56 + 49,
+              height: 56 + 49,
               backgroundColor: "var(--glass-modal-bg)",
               backdropFilter: "blur(12px) saturate(220%)",
               WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
             }}
           />
           <div
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between gap-3 px-3 md:px-5"
+            // Mobile-only plain white — desktop keeps relying solely on the shared backdrop div
+            // above (untouched).
+            style={isCompactProjectViewport ? { backgroundColor: "#FFFFFF" } : undefined}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: projectPalette.border }} />
             <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -42727,101 +43497,84 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             </>
           )}
-          <div className={`relative min-h-0 overflow-hidden ${isCompactProjectViewport ? "mt-[56px] h-[calc(100svh-56px)]" : "mt-[105px] h-[calc(100svh-105px)]"}`}>
-            {isCompactProjectViewport ? (
-              <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto">
-                <div
-                  className="grid grid-cols-2 overflow-hidden border-b"
-                  style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg }}
+          {/* Mobile-only: board-type prev/next bar, its own fixed second band (same 56+49 shared
+              backdrop the desktop toggle band above uses) — content below can now scroll all the
+              way up underneath both this bar and the true top bar, instead of being pushed down
+              by a margin with nothing ever running under either of them. */}
+          {isCompactProjectViewport && nestingBoardLayouts.length > 0 && (() => {
+            const boardKeys = nestingBoardLayouts.map((group) => group.boardKey);
+            const currentIndex = Math.max(0, boardKeys.indexOf(nestingCompactBoardKey));
+            const currentLabel = nestingBoardLayouts[currentIndex]?.boardLabel || "";
+            return (
+              <div
+                className="fixed inset-x-0 z-[95] flex items-center justify-between gap-2 px-3"
+                style={{ top: 56, height: 49, backgroundColor: "#FFFFFF" }}
+              >
+                <button
+                  type="button"
+                  disabled={boardKeys.length < 2}
+                  onClick={() => scrollToNestingBoard(boardKeys[Math.max(0, currentIndex - 1)] || nestingCompactBoardKey)}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                  style={{ color: "#000000" }}
+                  aria-label="Previous board type"
                 >
-                  <button
-                    type="button"
-                    onClick={() => setNestingMobilePanel("layouts")}
-                    className="h-10 text-[12px] font-bold"
-                    style={{
-                      backgroundColor:
-                        nestingMobilePanel === "layouts"
-                          ? productionContainerHeaderBg
-                          : projectPalette.panelBg,
-                      color:
-                        nestingMobilePanel === "layouts"
-                          ? (isDarkMode ? "#f1f1f1" : "#12345B")
-                          : projectPalette.textSoft,
-                      borderRight: `1px solid ${projectPalette.border}`,
-                    }}
-                  >
-                    Sheets
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNestingMobilePanel("visibility")}
-                    className="h-10 text-[12px] font-bold"
-                    style={{
-                      backgroundColor:
-                        nestingMobilePanel === "visibility"
-                          ? productionContainerHeaderBg
-                          : projectPalette.panelBg,
-                      color:
-                        nestingMobilePanel === "visibility"
-                          ? (isDarkMode ? "#f1f1f1" : "#12345B")
-                          : projectPalette.textSoft,
-                    }}
-                  >
-                    Visibility
-                  </button>
-                </div>
-
-                {nestingMobilePanel === "layouts" ? (
-                  <section className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+                  <ChevronLeft size={18} strokeWidth={2.5} />
+                </button>
+                <span className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
+                  <span className="min-w-0 truncate text-[15px] font-bold" style={{ color: "#000000" }}>
+                    {currentLabel}
+                  </span>
+                  {boardKeys.length > 1 && (
+                    <span
+                      className="shrink-0 rounded-[999px] px-2 py-[1px] text-[11px] font-bold"
+                      style={{
+                        backgroundColor: isDarkMode ? "rgba(255,255,255,0.12)" : "#DEE6F3",
+                        color: isDarkMode ? "#f1f1f1" : "#45658A",
+                      }}
+                    >
+                      {currentIndex + 1}/{boardKeys.length}
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={boardKeys.length < 2}
+                  onClick={() => scrollToNestingBoard(boardKeys[Math.min(boardKeys.length - 1, currentIndex + 1)] || nestingCompactBoardKey)}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
+                  style={{ color: "#000000" }}
+                  aria-label="Next board type"
+                >
+                  <ChevronRight size={18} strokeWidth={2.5} />
+                </button>
+              </div>
+            );
+          })()}
+          <div className={`relative min-h-0 overflow-hidden ${isCompactProjectViewport ? "h-[100svh]" : "mt-[105px] h-[calc(100svh-105px)]"}`}>
+            {isCompactProjectViewport ? (
+              <>
+              <div className="flex h-full min-h-0 flex-col">
+                {(
+                  <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     {nestingBoardLayouts.length === 0 && (
-                      <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
-                        No visible nesting pieces. Use Visibility to choose what shows here.
+                      <div className="flex h-full flex-col justify-center px-3" style={{ paddingTop: 105, paddingBottom: 56 }}>
+                        <div className="rounded-[10px] border border-dashed border-[#D8DEE8] bg-[#F8FAFC] px-3 py-8 text-center text-[12px] font-semibold text-[#667085]">
+                          No visible nesting pieces. Use Visibility to choose what shows here.
+                        </div>
                       </div>
                     )}
-                    {nestingBoardLayouts.length > 0 && (() => {
-                      const boardKeys = nestingBoardLayouts.map((group) => group.boardKey);
-                      const currentIndex = Math.max(0, boardKeys.indexOf(nestingCompactBoardKey));
-                      const currentLabel = nestingBoardLayouts[currentIndex]?.boardLabel || "";
-                      return (
-                        <div
-                          className="mb-3 flex h-9 shrink-0 items-center justify-between gap-2 rounded-[10px] border px-2 text-[12px] font-bold"
-                          style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.textSoft }}
-                        >
-                          <button
-                            type="button"
-                            disabled={boardKeys.length < 2}
-                            onClick={() => setNestingCompactBoardKey(boardKeys[Math.max(0, currentIndex - 1)] || nestingCompactBoardKey)}
-                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
-                            aria-label="Previous board type"
-                          >
-                            <ArrowLeft size={14} />
-                          </button>
-                          <span className="min-w-0 flex-1 truncate text-center" style={{ color: isDarkMode ? "#f1f1f1" : "#12345B" }}>
-                            {currentLabel}
-                            {boardKeys.length > 1 ? ` (${currentIndex + 1}/${boardKeys.length})` : ""}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={boardKeys.length < 2}
-                            onClick={() => setNestingCompactBoardKey(boardKeys[Math.min(boardKeys.length - 1, currentIndex + 1)] || nestingCompactBoardKey)}
-                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] disabled:opacity-30"
-                            aria-label="Next board type"
-                          >
-                            <ArrowRight size={14} />
-                          </button>
-                        </div>
-                      );
-                    })()}
+                    {/* One board type per page — native horizontal scroll-snap (same technique as
+                        CNC's own board pager) so swiping between board types gets real,
+                        finger-tracked sliding with momentum/snapping for free, instead of an
+                        instant jump. The prev/next arrow bar above scrolls this same container
+                        (see scrollToNestingBoard) rather than filtering, so both ways of moving
+                        between boards stay in sync via the IntersectionObserver below. */}
                     <div
-                      className="grid grid-cols-1 gap-3"
-                      {...makeBoardSwipeHandlers(
-                        nestingBoardLayouts.map((group) => group.boardKey),
-                        nestingCompactBoardKey,
-                        setNestingCompactBoardKey,
-                      )}
+                      ref={nestingCompactScrollRef}
+                      className="hide-native-scrollbar flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overscroll-x-contain"
+                      style={{ scrollBehavior: "smooth", backgroundColor: "var(--bg-app)" }}
+                      data-horizontal-swipe-scroll="true"
                     >
                       {nestingBoardLayouts
-                        .filter((group) => group.boardKey === nestingCompactBoardKey)
                         .map((group) => {
                         const partsCount = group.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
                         const boardHasGrain = boardGrainFor(group.boardKey);
@@ -42834,24 +43587,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
                         ];
                         return (
-                          <div key={`${group.boardKey}_compact`} className="flex min-h-0 flex-col overflow-hidden rounded-[12px] border border-[#D7DEE8] bg-[#F5F7FA]">
-                            <div className="border-b border-[#DCE3EC] bg-[#EEF2F6] px-[5px] py-1">
-                              <div className="mb-1 flex items-center justify-between gap-2">
-                                <span className="shrink-0 rounded-[999px] bg-[#DEE6F3] px-2 py-[1px] text-[11px] font-bold text-[#45658A]">
-                                  {group.sheetWidth}x{group.sheetHeight}
-                                </span>
-                                <span className="inline-flex shrink-0 min-w-[74px] justify-end rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
-                                  {group.sheets.length} sheets
-                                </span>
-                              </div>
-                              <div className="flex items-start justify-between gap-2 px-2">
-                                <p className="min-w-0 flex-1 truncate leading-[1.1] text-[11px] font-bold text-[#1F2F46]">{group.boardLabel}</p>
-                                <span className="inline-flex shrink-0 min-w-[74px] justify-end leading-[1.1] text-right text-[11px] font-bold text-[#4A5D76]">
-                                  {formatPartCount(partsCount)}
-                                </span>
-                              </div>
-                            </div>
-                            <div className="min-h-0 flex-1 space-y-2 overflow-auto p-2">
+                          <div
+                            key={`${group.boardKey}_page`}
+                            ref={(el) => {
+                              nestingCompactBoardSectionRefs.current[group.boardKey] = el;
+                            }}
+                            data-nesting-board-key={group.boardKey}
+                            className="hide-native-scrollbar flex h-full w-full shrink-0 snap-start flex-col overflow-y-auto px-3"
+                            style={{ paddingTop: 115, paddingBottom: 66, backgroundColor: "var(--bg-app)" }}
+                          >
+                          {/* No card wrapper (border/background) here anymore — the sheet
+                              previews sit directly on the page background. The board type itself
+                              (group.boardLabel) is dropped from this row entirely since it's
+                              already shown once, large, at the top of the page (the arrow bar's
+                              title) — repeating it per board here was redundant. */}
+                          <div className="mb-2 flex items-center gap-2">
+                            <span className="shrink-0 rounded-[999px] bg-[#DEE6F3] px-2 py-[1px] text-[11px] font-bold text-[#45658A]">
+                              {group.sheetWidth}x{group.sheetHeight}
+                            </span>
+                            <span className="shrink-0 rounded-[999px] bg-[#E9EEF6] px-2 py-[1px] text-[11px] font-bold text-[#395174]">
+                              {group.sheets.length} sheets
+                            </span>
+                            <span className="ml-auto shrink-0 text-[11px] font-bold text-[#4A5D76]">
+                              {formatPartCount(partsCount)}
+                            </span>
+                          </div>
+                          {/* Sheets within a board stay a plain vertical stack (one column) —
+                              the horizontal swipe gesture is for paging between board TYPES
+                              (see the scroll-snap row this whole board card now lives inside),
+                              not for paging between a board's own individual sheets. */}
+                            <div className="space-y-2">
                               {group.sheets.map((sheet) => (
                                 <div key={`${group.boardKey}_sheet_compact_${sheet.index}`} className="p-0">
                                   <p className="mb-1 text-[11px] font-bold text-[#6B7D94]">Sheet {sheet.index}</p>
@@ -42974,29 +43739,78 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       })}
                     </div>
                   </section>
-                ) : (
-                  <aside className="min-h-0 flex-1 overflow-y-auto bg-white">
-                    <div className="flex h-[46px] items-center justify-between border-b border-[#DCE3EC] px-3">
-                      <p className="text-[13px] font-medium text-[#111827]">Visibility</p>
-                      <button
-                        type="button"
-                        disabled={productionReadOnly}
-                        onClick={() => void onShowAllNestingRows()}
-                        className="rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] disabled:opacity-55"
-                      >
-                        Show All
-                      </button>
-                    </div>
-                    <div className="p-3">
+                )}
+              </div>
+              {/* Mobile-only Visibility overlay — reached via the bottom bar button below, instead
+                  of being a second tab that replaced the sheet pager. Always mounted (rather than
+                  only while open) so it's actually there in the DOM to drag open — its resting
+                  "closed" position is off-screen below the bottom bar (see the useLayoutEffect and
+                  onNestingVisibilityBarTouch* handlers), not unmounted. */}
+              {isCompactProjectViewport && (
+                <aside
+                  ref={nestingMobileVisibilityPanelRef}
+                  className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto bg-white"
+                  style={{ transform: "translateY(100%)" }}
+                >
+                  {/* Same bar (height, glass style) as the closed-state trigger bar below — it
+                      visually IS that bar, now sitting as the open panel's own header, so
+                      dragging it down closes back to that same resting spot instead of a
+                      differently-styled in-panel header. Search (left) expands over the
+                      "Visibility" label on focus exactly like the dashboard's own mobile search
+                      (peer + focus-within, see its own comment there); Show All (right) only
+                      fades in once the panel is actually open. */}
+                  <div
+                    className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
+                    style={{ borderColor: projectPalette.border, backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+                    onClick={() => setIsNestingMobileVisibilityOpen(false)}
+                    onTouchStart={onNestingVisibilityHeaderTouchStart}
+                    onTouchMove={onNestingVisibilityHeaderTouchMove}
+                    onTouchEnd={onNestingVisibilityHeaderTouchEnd}
+                  >
+                    <div
+                      data-nesting-visibility-search="true"
+                      className="peer relative z-10 w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: projectPalette.textMuted }} />
                       <input
                         value={nestingSearch}
                         onChange={(e) => setNestingSearch(e.target.value)}
-                        placeholder="Search pieces..."
-                        className="h-8 w-full rounded-[8px] border border-[#D8DEE8] bg-white px-2 text-[12px]"
+                        placeholder="Search"
+                        className="h-9 w-full rounded-[8px] border border-[#D8DEE8] bg-white pl-8 pr-2 text-[12px] outline-none transition focus:border-[var(--brand)]"
                       />
                     </div>
-                    <div className="px-3 pb-3">
-                      <div className="space-y-1">
+                    {/* Must come AFTER the search wrapper in the DOM — peer-focus-within only
+                        matches siblings that follow the .peer element. */}
+                    <div
+                      className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full transition-opacity duration-200 peer-focus-within:opacity-0"
+                      style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
+                    />
+                    {/* Absolutely centered on the BAR, not on the leftover space between the
+                        search box and Show All — those two are different widths, so a flex-1
+                        text-center slot between them wasn't the bar's true center. Just a label
+                        now (not its own button): the whole bar closes on tap/drag-down, this no
+                        longer needs to be the one specific hit target for that. */}
+                    <span
+                      className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[13px] font-bold transition-opacity duration-200 peer-focus-within:opacity-0"
+                      style={{ color: projectPalette.text }}
+                    >
+                      Visibility
+                    </span>
+                    <button
+                      type="button"
+                      disabled={productionReadOnly}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onShowAllNestingRows();
+                      }}
+                      className={`relative z-10 ml-auto shrink-0 rounded-[8px] border border-[#D8DEE8] bg-white px-2 py-1 text-[11px] font-bold text-[#334155] transition-opacity duration-[280ms] disabled:opacity-55 ${isNestingMobileVisibilityOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                    >
+                      Show All
+                    </button>
+                  </div>
+                  <div className="px-3 pb-3 pt-[10px]">
+                    <div className="space-y-1">
                         {nestingSidebarGroups.map((group) => {
                           const color = partTypeColors[group.partType] ?? "#CBD5E1";
                           const textColor = isLightHex(color) ? "#0F172A" : "#F8FAFC";
@@ -43100,9 +43914,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         )}
                       </div>
                     </div>
-                  </aside>
-                )}
-              </div>
+                </aside>
+              )}
+              </>
             ) : (
               <div className="h-full min-h-0 overflow-hidden pr-3 pt-3">
                 <section
@@ -43719,6 +44533,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <pre className="m-0 whitespace-pre font-mono leading-[1.35]">{nestingTooltip.text}</pre>
             </div>
           )}
+          {/* Mobile only: same fixed-bottom-bar treatment as Quote's own mobile action bar —
+              Visibility opens as a full-screen overlay from here instead of being a second top tab
+              that replaced the sheet pager. */}
+          {isCompactProjectViewport && !isNestingMobileVisibilityOpen && (
+            <div
+              data-horizontal-swipe-scroll="true"
+              className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
+              style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
+              onTouchStart={onNestingVisibilityBarTouchStart}
+              onTouchMove={onNestingVisibilityBarTouchMove}
+              onTouchEnd={onNestingVisibilityBarTouchEnd}
+            >
+              <div className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full" style={{ backgroundColor: "rgba(0,0,0,0.22)" }} />
+              <button
+                type="button"
+                onClick={() => setIsNestingMobileVisibilityOpen(true)}
+                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
+                style={{ color: projectPalette.text }}
+              >
+                Visibility
+              </button>
+            </div>
+          )}
         </div>
         {!isCompactProjectViewport && (
           <>
@@ -43727,6 +44564,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <GlassScrollbarThumb key={group.boardKey} scrollRef={getNestingBoardScrollRef(group.boardKey)} side="right" />
             ))}
           </>
+        )}
+        {/* Mobile: tracks whichever board page is currently active (see
+            nestingCompactActiveBoardScrollRef's own comment), anchored to the outer scroll-snap
+            row's own (horizontally stationary) bounding box — not the active page's, which moves
+            left/right as it swipes into view — so the thumb stays parked at a fixed spot on
+            screen instead of sliding along with the board-type swipe. */}
+        {isCompactProjectViewport && nestingBoardLayouts.length > 0 && (
+          <GlassScrollbarThumb
+            scrollRef={nestingCompactActiveBoardScrollRef}
+            anchorRef={nestingCompactScrollRef}
+            refreshKey={nestingCompactBoardKey}
+            side="right"
+            thumbWidthPx={4}
+          />
         )}
       </ProtectedRoute>
     );

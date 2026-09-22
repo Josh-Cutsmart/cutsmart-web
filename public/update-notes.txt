@@ -1,43 +1,32 @@
-Version: v0.3.4
+Version: v0.3.5
 
 whatsNew: [
-<u><b>Changelog Popup</b></u>
-* "Updated popup now uses the same glass modal styling as the rest of the app, with the red glass X close button (matching the nesting single-sheet preview popup) instead of an OK button
+<u><b>Changelog Page</b></u>
+* Mobile: "per page" filter is now the same glass dropdown used on the Dashboard, on both mobile and desktop
+* Mobile: Report Issue / Suggest Feature moved into their own full-width bottom bar, split 50/50
+* Version popup now grows out of the version card you tapped (same animation as the Report Issue popup) instead of just appearing
 
-<u><b>Accounts</b></u>
-* Fixed a bug where signing into a different account on the same browser could still show a previous account's company/project tabs — the "active company" override in local storage is now cleared on logout and sign-in
+<u><b>Nesting (Mobile)</b></u>
+* Board-type title bar redesigned: bigger centred title, sheet count moved into its own pill, black text, and the prev/next buttons are now < / > chevrons matching the Save & Back button
+* Fixed the board title flickering/flashing through the wrong board name mid-swipe
+* Removed the card/border wrapper around sheet previews on each board page — they now sit directly on the page background, with the board type name no longer repeated per-board (it's already shown once at the top)
+* Sheets within a board stay in a single column (was briefly showing as rows)
+* Visibility is now a true slide-up panel: drag up from the bottom bar (or tap it) to open, drag down (or tap) the panel's own header to close, with a drag handle, an expanding search box, and a "Show All" button that fades in once open; the panel now reaches the very top and bottom of the screen
+* Visibility button fills the full width and edges of its bottom bar
+* Fixed a white flash during the board-type swipe transition
+* Top bar, board-type bar, and the Visibility bar are now plain white on mobile
+* Added a thin glass-style scrollbar that stays put while swiping between board types instead of sliding along with the page
 
-<u><b>Dashboard</b></u>
-* Mobile: fixed the screen zooming in when tapping a search box
-* Mobile: filter buttons (All/Active/Completed) now collapse into a single filter icon that opens a glass dropdown
-* Mobile: added a swipe-up-from-top gesture — swipe up and release for a full-width "Dashboard" bar, or release on the left side for "Reload"
-* Mobile: swiping a board column left/right no longer accidentally opens the side nav
-* Fixed a mismatched-colour strip above the board (Kanban) columns and list view
-* Fixed the gap/divider between the filter toolbar and the columns/rows below (board view keeps a divider, list view doesn't)
-* Added a loading spinner to "Loading Projects" (list, board, and table view, plus "Loading more")
-* Right-aligned Created/Modified dates on mobile; Created/Modified moved under the status pill; Tags + assigned user regrouped
-* Search bar no longer shifts the view-toggle button when filter buttons slide out of view
-* Stat cards can now be toggled off in User Settings, and no longer leave a grey gap above the filter bar when hidden
+<u><b>CNC Cutlist (Mobile)</b></u>
+* Fixed the prev/next board-type arrows not actually changing board (they updated the title but never scrolled)
+* Board-type bar redesigned to match Nesting's: fixed position, bigger centred title with a count pill, black chevrons, white background
+* Mobile Visibility rebuilt to match Nesting's new slide-up panel exactly (desktop's own sidebar panel is unchanged)
+* Row list simplified to Part Type, Part Name, Size (showing whichever of Height/Width/Depth are filled in), and Quantity — tap a row to see everything else (Room, Height/Width/Depth, Quantity, Clashing, Information) in a popup
+* That popup now sizes itself to its content instead of filling the screen, with black text and each group of fields under its own shaded label bar
+* Added the same glass-style scrollbar as Nesting
 
-<u><b>Project Details</b></u>
-* Fixed inconsistent top padding/gaps between the tab bar and page content across General/Design/Production/Settings tabs, so it matches the side padding at every screen size
-* Added a subtle shadow under the sticky General/Design/Production/Settings tab bar
-* Side nav buttons (Overview/Cutlist/etc.) now line up with the top of the containers next to them, on all 4 tabs
-* Production tab: cabinetry textboxes (Base Cab Height, Foot Distance Back, Tall Cab Height, Foot Height, Hob Centre) now show black text, and Foot Distance Back / Tall Cab Height swapped order
-* Fixed projects sometimes getting stuck on "Loading project..." until you backed out and reopened (was a stalled request during tab backgrounding that never timed out)
-* Loading screen now shows a spinner ring, not just text — applied to every full-page loading state app-wide (workspace load, project load, sales, company settings, recently deleted, changelog, protected routes)
-* Fixed sticky headers sliding under the top tab bar mid-scroll and leaving a grey gap at the bottom of the screen on mobile
-
-<u><b>Mobile Navigation</b></u>
-* Notification panel now pushes the page content over, same as the left-hand sidebar does on open/close
-* Swipe left/right on any main page to open the side nav or notifications
-* Sidebar: removed the X button — full-width slide with swipe-to-close; added a close arrow instead
-
-<u><b>User Settings</b></u>
-* Added a new "Preferences" section with three toggles: "Notifications as Creator" (auto-subscribes you to notifications on projects you create), "Mobile Top Nav Bar" on/off, and "Dashboard Stat Cards" on/off
-* Fixed the sidebar nav buttons sometimes rendering on top of the user settings slide-up card instead of underneath it (z-index fix)
-
-<u><b>Add to Home Screen (PWA)</b></u>
-* The app now installs as a real full-screen app from the phone's home screen — no more browser address bar/tab chrome
-* Designed a new app icon: blue diagonal-corner "CutSmart" wordmark tile
+<u><b>Top Tab Bar</b></u>
+* Removed the visible scrollbar from the tab strip on both mobile and desktop
+* Mobile: tabs are still scrollable by swiping
+* Desktop: tabs now shrink evenly to fit as more are opened, instead of scrolling
 ]

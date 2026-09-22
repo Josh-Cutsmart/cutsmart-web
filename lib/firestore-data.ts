@@ -807,13 +807,17 @@ export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]
     // meaning every dashboard load downloaded every project across every company in the database,
     // not just the current one. Firestore's `in` operator caps at 30 values per query, so a user
     // in more companies than that gets chunked, queried in parallel, and merged.
-    const companyIds = Array.from(
-      new Set([
-        ...(await fetchCompanyIdsForUser(userId)),
-        ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
-      ]),
-    );
-    if (companyIds.length) {
+    //
+    // `preferredCompanyIds` (the dashboard's own localStorage-cached "last active company") costs
+    // nothing to read — try the query with just that first, before paying for
+    // fetchCompanyIdsForUser's own 4-way Firestore lookup. That lookup is only needed as a
+    // fallback (a genuinely fresh login with nothing cached yet, or the cached id turning out to
+    // be stale/wrong) — awaiting it unconditionally on every load added a real, avoidable chain of
+    // round trips to the critical path before the actual projects query could even start, worst on
+    // a cold first load right after auth resolves, which is exactly when it was being felt as
+    // "the projects just don't show up for a long time."
+    const runScopedProjectsQuery = async (companyIds: string[]): Promise<Project[]> => {
+      if (!companyIds.length) return [];
       const CHUNK_SIZE = 30;
       const chunks: string[][] = [];
       for (let i = 0; i < companyIds.length; i += CHUNK_SIZE) {
@@ -823,34 +827,45 @@ export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]
         chunks.map((chunk) => getDocs(query(collection(database, "projects"), where("companyId", "in", chunk)))),
       );
       const topLevelDocs = snaps.flatMap((snap) => snap.docs);
-      if (topLevelDocs.length > 0) {
-        const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
-        const companyDocCache = new Map<string, Record<string, unknown> | null>();
-        const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
-        const filtered = await Promise.all(
-          rows.map(async (row) => {
-            const companyId = String(row.companyId || "").trim();
-            if (!companyId) return row;
-            if (!companyDocCache.has(companyId)) {
-              companyDocCache.set(companyId, await fetchCompanyDoc(companyId));
-            }
-            if (!companyAccessCache.has(companyId)) {
-              companyAccessCache.set(companyId, userId ? await fetchCompanyAccess(companyId, userId) : null);
-            }
-            const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
-              (companyDocCache.get(companyId) as Record<string, unknown> | null)?.staffDisplayNamesByUid,
-            );
-            const normalized = applyCompanyStaffDisplayNameOverridesToProject(row, displayNameOverridesByUid);
-            if (!canUserViewProject(normalized, userId, companyAccessCache.get(companyId) ?? null)) {
-              return null;
-            }
-            return normalized;
-          }),
-        );
-        const result = filtered.filter(Boolean) as Project[];
-        if (result.length > 0) {
-          return result;
-        }
+      if (!topLevelDocs.length) return [];
+      const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
+      const companyDocCache = new Map<string, Record<string, unknown> | null>();
+      const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
+      const filtered = await Promise.all(
+        rows.map(async (row) => {
+          const companyId = String(row.companyId || "").trim();
+          if (!companyId) return row;
+          if (!companyDocCache.has(companyId)) {
+            companyDocCache.set(companyId, await fetchCompanyDoc(companyId));
+          }
+          if (!companyAccessCache.has(companyId)) {
+            companyAccessCache.set(companyId, userId ? await fetchCompanyAccess(companyId, userId) : null);
+          }
+          const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
+            (companyDocCache.get(companyId) as Record<string, unknown> | null)?.staffDisplayNamesByUid,
+          );
+          const normalized = applyCompanyStaffDisplayNameOverridesToProject(row, displayNameOverridesByUid);
+          if (!canUserViewProject(normalized, userId, companyAccessCache.get(companyId) ?? null)) {
+            return null;
+          }
+          return normalized;
+        }),
+      );
+      return filtered.filter(Boolean) as Project[];
+    };
+
+    const preferredIds = (preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean);
+    const fastResult = await runScopedProjectsQuery(preferredIds);
+    if (fastResult.length > 0) {
+      return fastResult;
+    }
+    // Fast path came up empty (nothing cached yet, or the cached id was stale/wrong) — only now
+    // pay for the slower 4-way membership lookup, merged with whatever the fast path already had.
+    const resolvedIds = Array.from(new Set([...preferredIds, ...(await fetchCompanyIdsForUser(userId))]));
+    if (resolvedIds.length && resolvedIds.some((id) => !preferredIds.includes(id))) {
+      const slowResult = await runScopedProjectsQuery(resolvedIds);
+      if (slowResult.length > 0) {
+        return slowResult;
       }
     }
   } catch {

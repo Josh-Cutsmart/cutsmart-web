@@ -18,16 +18,30 @@ import { createPortal } from "react-dom";
 // full-viewport page or a small modal's own scroll box).
 export function GlassScrollbarThumb({
   scrollRef,
+  anchorRef,
+  refreshKey,
   side = "right",
   insetPx = 2,
   zIndexClassName = "z-[80]",
+  thumbWidthPx = 6,
 }: {
   scrollRef: RefObject<HTMLElement | null>;
+  // Element whose bounding box positions the track (left/top/height) — defaults to scrollRef's
+  // own element. Pass a separate, non-scrolling ancestor when scrollRef itself is one page of a
+  // horizontally-paged row (e.g. Nesting/CNC's mobile board-type swiper): the page's own bounding
+  // box moves left/right as it scrolls into and out of view, which would otherwise drag the thumb
+  // along with the horizontal swipe instead of leaving it parked at a fixed screen position.
+  anchorRef?: RefObject<HTMLElement | null>;
+  // Include whatever identifies "which element scrollRef.current now points at" (e.g. an active
+  // board key) so the effect re-subscribes when that changes — mutating scrollRef.current in
+  // place doesn't itself change the ref OBJECT's identity, so effect deps alone can't see it.
+  refreshKey?: unknown;
   side?: "left" | "right";
   insetPx?: number;
   // Must stay BELOW any sticky/fixed header rendered inside the same scroll container, so that
   // header keeps correctly painting over the thumb wherever they overlap.
   zIndexClassName?: string;
+  thumbWidthPx?: number;
 }) {
   const [track, setTrack] = useState<{ left: number; top: number; height: number } | null>(null);
   const [thumb, setThumb] = useState<{ top: number; height: number } | null>(null);
@@ -35,21 +49,22 @@ export function GlassScrollbarThumb({
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
+    const anchorEl = anchorRef?.current ?? el;
+    if (!el || !anchorEl) return;
     const update = () => {
-      const box = el.getBoundingClientRect();
+      const anchorBox = anchorEl.getBoundingClientRect();
       setTrack({
-        left: side === "left" ? box.left + insetPx : box.right - insetPx - 6,
-        top: box.top,
-        height: box.height,
+        left: side === "left" ? anchorBox.left + insetPx : anchorBox.right - insetPx - thumbWidthPx,
+        top: anchorBox.top,
+        height: anchorBox.height,
       });
       if (el.scrollHeight <= el.clientHeight + 1) {
         setThumb(null);
         return;
       }
       const ratio = el.clientHeight / el.scrollHeight;
-      const thumbHeight = Math.max(24, box.height * ratio);
-      const maxThumbTop = box.height - thumbHeight;
+      const thumbHeight = Math.max(24, anchorBox.height * ratio);
+      const maxThumbTop = anchorBox.height - thumbHeight;
       const scrollableDist = el.scrollHeight - el.clientHeight;
       const scrollRatio = scrollableDist > 0 ? el.scrollTop / scrollableDist : 0;
       setThumb({ top: scrollRatio * maxThumbTop, height: thumbHeight });
@@ -58,13 +73,14 @@ export function GlassScrollbarThumb({
     el.addEventListener("scroll", update);
     window.addEventListener("resize", update);
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
-    ro?.observe(el);
+    ro?.observe(anchorEl);
+    if (anchorEl !== el) ro?.observe(el);
     return () => {
       el.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
       ro?.disconnect();
     };
-  }, [scrollRef, side, insetPx]);
+  }, [scrollRef, anchorRef, side, insetPx, thumbWidthPx, refreshKey]);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
@@ -91,13 +107,14 @@ export function GlassScrollbarThumb({
   return createPortal(
     <div
       className={`pointer-events-none fixed ${zIndexClassName}`}
-      style={{ left: track.left, top: track.top, height: track.height, width: 6 }}
+      style={{ left: track.left, top: track.top, height: track.height, width: thumbWidthPx }}
     >
       <div
         onPointerDown={(event) => {
           const el = scrollRef.current;
-          if (!el) return;
-          const box = el.getBoundingClientRect();
+          const anchorEl = anchorRef?.current ?? el;
+          if (!el || !anchorEl) return;
+          const box = anchorEl.getBoundingClientRect();
           const ratio = el.clientHeight / el.scrollHeight;
           const thumbHeight = Math.max(24, box.height * ratio);
           draggingRef.current = {
@@ -112,7 +129,7 @@ export function GlassScrollbarThumb({
           left: 0,
           top: thumb.top,
           height: thumb.height,
-          width: 6,
+          width: thumbWidthPx,
           backgroundColor: "var(--custom-scrollbar-thumb)",
           cursor: "pointer",
         }}

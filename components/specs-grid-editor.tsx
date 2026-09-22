@@ -1561,6 +1561,11 @@ export default function SpecsGridEditor({
         <div style={{ height: PROJECT_TOOLBAR_HEIGHT_PX }} />
       ) : null}
       <div
+        // Marks this toolbar so the host page's own page-wide "swipe anywhere to open a drawer"
+        // gesture (Specs/Quote mobile only) ignores touches starting here — this strip is already
+        // its own horizontal scroller, and dragging across it to scroll would otherwise also get
+        // read as a page-level swipe.
+        data-specs-quote-swipe-exclude="true"
         className={
           isProjectSheetView
             ? "hide-native-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto p-2"

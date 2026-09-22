@@ -832,7 +832,11 @@ export function GlobalAppTabsBar() {
             onDragOver={handleTabsStripDragOver}
             onDragLeave={handleTabsStripDragLeave}
             onDrop={handleTabsStripDrop}
-            className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"
+            // hide-native-scrollbar: never shows a scrollbar (width or height) here either way.
+            // Mobile keeps overflow-x-auto so the strip is still pull/swipe-scrollable by touch;
+            // desktop's own tabs shrink to fit instead (see their flex-1/min-w below), with
+            // overflow-x-auto left on only as a defensive fallback if that floor is ever hit.
+            className="hide-native-scrollbar flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overflow-y-hidden"
           >
             {scrollableTabGroups.map((group) => {
               // Which sub-view represents this project's tab: whichever one is the current route,
@@ -857,7 +861,15 @@ export function GlobalAppTabsBar() {
                     groupNodeRefs.current[group.groupKey] = node;
                   }}
                   data-app-tab-group={group.groupKey}
-                  className="group relative inline-flex h-9 min-w-[140px] max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
+                  // Mobile: fixed min/max width, never shrinks — the strip scrolls (by touch)
+                  // instead. Desktop: flex-1 with a shared flex-basis of 0 makes every tab the
+                  // same width and shrink together as more get added, down to the min-width
+                  // floor, instead of the strip ever needing to scroll.
+                  className={
+                    isDesktopViewport
+                      ? "group relative inline-flex h-9 min-w-[90px] max-w-[220px] flex-1 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
+                      : "group relative inline-flex h-9 min-w-[140px] max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
+                  }
                   onDrop={(event) => handleGroupDrop(group.groupKey, event)}
                   style={{
                     backgroundColor: isActiveTab ? shellPalette.panelBg : shellPalette.tabIdleBg,
@@ -1019,6 +1031,10 @@ export function GlobalAppTabsBar() {
               <div
                 ref={mobileNotifPanelRef}
                 {...mobileNotifTouchHandlers}
+                // Queried from app-shell.tsx's own live open-drag handler (a different component,
+                // so no direct ref access) — same cross-component pattern as this file's own
+                // mainPushRef lookup by data-app-main-push above.
+                data-mobile-notif-panel="true"
                 className="relative ml-auto flex h-full w-full flex-col overflow-hidden"
                 style={{
                   backgroundColor: "var(--panel-bg)",

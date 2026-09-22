@@ -518,6 +518,46 @@ export function AppShell({
   // before committing to horizontal vs vertical) so a vertical scroll never gets hijacked.
   const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
   const MAIN_SWIPE_OPEN_THRESHOLD_PX = 70;
+  // Live-drag state for the OPEN side of this gesture — separate from useSwipeToClose's own
+  // internal drag state (which only ever runs once a panel is ALREADY open, for the CLOSE side).
+  // `kind` is set the instant the drag axis locks horizontal, which also fires setMobileNavOpen/
+  // setNotifOpen right away (mounting the panel) so every subsequent touchmove tick can drag its
+  // real transform to follow the finger — this is what makes the panel visibly slide in DURING the
+  // drag instead of only animating once after release.
+  const mainOpenDragRef = useRef<{ kind: "nav" | "notif" | null }>({ kind: null });
+  // Mirrors useSwipeToClose's own applyPush/edge-sign math (see that file for the full reasoning)
+  // but driven by a live pixel offset instead of a 0..1 progress value, since this runs every
+  // touchmove tick rather than only at fixed open/close endpoints. `dx` is the raw, unclamped
+  // horizontal distance from where the finger started.
+  const applyMainOpenDrag = (kind: "nav" | "notif", dx: number) => {
+    const panel = kind === "nav"
+      ? mobileNavPanelRef.current
+      : document.querySelector<HTMLElement>('[data-mobile-notif-panel="true"]');
+    if (!panel) return;
+    const push = mainPushRef.current;
+    const width = panel.getBoundingClientRect().width || window.innerWidth;
+    if (kind === "nav") {
+      // edge "left": closed = translateX(-100%), fully open = translateX(0).
+      const clampedDx = Math.max(0, Math.min(width, dx));
+      const progress = width > 0 ? clampedDx / width : 0;
+      panel.style.transition = "none";
+      panel.style.transform = `translateX(calc(-100% + ${clampedDx}px))`;
+      if (push) {
+        push.style.transition = "none";
+        push.style.transform = progress === 0 ? "" : `translateX(${progress * 100}%)`;
+      }
+    } else {
+      // edge "right": closed = translateX(100%), fully open = translateX(0).
+      const clampedDx = Math.max(-width, Math.min(0, dx));
+      const progress = width > 0 ? Math.abs(clampedDx) / width : 0;
+      panel.style.transition = "none";
+      panel.style.transform = `translateX(calc(100% + ${clampedDx}px))`;
+      if (push) {
+        push.style.transition = "none";
+        push.style.transform = progress === 0 ? "" : `translateX(${-progress * 100}%)`;
+      }
+    }
+  };
   // Pull-to-navigate: dragging down past the top of an already-at-top page (the same gesture
   // that would otherwise just rubber-band bounce) reveals a full-width action bar pinned to the
   // true top of the viewport (position: fixed, not a normal-flow element pushing content down —
@@ -557,20 +597,21 @@ export function AppShell({
     }
   };
   const applyPullPush = (pulledPx: number, animate: boolean) => {
-    const transition = animate ? "transform 200ms ease" : "none";
-    const transform = pulledPx > 0 ? `translateY(${pulledPx}px)` : "";
+    // Both pushed via `top`/`margin-top` (not transform) — different CSS properties can be written
+    // in the same JS tick and still land in different rendering pipelines (transform is compositor-
+    // only; a plain layout property like these two forces a reflow), which let the tab bar visibly
+    // drift out of sync with the page during a fast drag: it tracked the finger smoothly while the
+    // page's own reflow-bound motion lagged a frame or more behind, reading as "the tab bar sticks
+    // to the revealed banner, not the page." Keeping both on the same reflow-triggering category
+    // means the browser recalculates and paints them together in one layout pass every touchmove,
+    // so they move as a single visual unit. (mainPushRef itself still can't use transform for a
+    // different reason — see its own comment on why that would break `position: sticky`
+    // descendants like Changelog's own sticky headers.)
     const topBar = pullTopBarElRef.current;
     if (topBar) {
-      topBar.style.transition = transition;
-      topBar.style.transform = transform;
+      topBar.style.transition = animate ? "top 200ms ease" : "none";
+      topBar.style.top = pulledPx > 0 ? `${pulledPx}px` : "";
     }
-    // mainPushRef, unlike topBar, is an ANCESTOR of every page's own content — a `transform` on it
-    // (even transiently, mid-drag) makes it a new containing block for any `position: sticky`
-    // descendant (e.g. Changelog's sticky headers), which can leave that descendant "stuck" out of
-    // sync with real scroll position once the transform clears, until the next scroll event
-    // recalculates it. `marginTop` achieves the same visual push without that side effect, at the
-    // cost of a real layout reflow per frame — acceptable for this slow, deliberate drag gesture
-    // (unlike the sidebar/notif push, which stays on transform for its own higher-frequency drag).
     const main = mainPushRef.current;
     if (main) {
       main.style.transition = animate ? "margin-top 200ms ease" : "none";
@@ -601,6 +642,7 @@ export function AppShell({
     const touch = event.touches[0];
     if (!touch) return;
     mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    mainOpenDragRef.current.kind = null;
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
     if (alreadyAtTop && mobileTopBarEnabled) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
@@ -619,6 +661,29 @@ export function AppShell({
       const dy = touch.clientY - start.y;
       if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
       start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+    }
+    if (start.axis === "horizontal") {
+      const dx = touch.clientX - start.x;
+      // First tick of a horizontal drag decides which panel it's opening and fires the real
+      // state update right away — this is what mounts the panel (via useSwipeToClose's own
+      // shouldRender) early enough for the drag below to actually have something to move. On the
+      // very tick this fires the panel usually isn't in the DOM yet (React hasn't re-rendered),
+      // so applyMainOpenDrag below just no-ops until a later tick finds it.
+      if (!mainOpenDragRef.current.kind) {
+        if (dx > 0) {
+          mainOpenDragRef.current.kind = "nav";
+          setMobileNavOpen(true);
+        } else if (dx < 0) {
+          mainOpenDragRef.current.kind = "notif";
+          setNotifOpen(true);
+        }
+      }
+      const kind = mainOpenDragRef.current.kind;
+      if (kind) {
+        event.preventDefault();
+        applyMainOpenDrag(kind, dx);
+      }
+      return;
     }
     const pull = pullDashboardRef.current;
     if (!pull || start.axis !== "vertical") return;
@@ -671,14 +736,43 @@ export function AppShell({
       }
       return;
     }
-    if (!start || start.axis !== "horizontal") return;
+    if (!start || start.axis !== "horizontal") {
+      mainOpenDragRef.current.kind = null;
+      return;
+    }
+    const kind = mainOpenDragRef.current.kind;
+    mainOpenDragRef.current.kind = null;
+    if (!kind) return;
     const touch = event.changedTouches[0];
     if (!touch) return;
     const dx = touch.clientX - start.x;
-    if (dx > MAIN_SWIPE_OPEN_THRESHOLD_PX) {
-      setMobileNavOpen(true);
-    } else if (dx < -MAIN_SWIPE_OPEN_THRESHOLD_PX) {
-      setNotifOpen(true);
+    const panel = kind === "nav"
+      ? mobileNavPanelRef.current
+      : document.querySelector<HTMLElement>('[data-mobile-notif-panel="true"]');
+    const width = panel?.getBoundingClientRect().width || window.innerWidth;
+    const progress = kind === "nav"
+      ? Math.max(0, Math.min(1, dx / width))
+      : Math.max(0, Math.min(1, -dx / width));
+    if (progress < MAIN_SWIPE_OPEN_THRESHOLD_PX / width) {
+      // Didn't drag far enough — abort. setMobileNavOpen/setNotifOpen(false) hands off to
+      // useSwipeToClose's own close effect, which transitions from wherever this drag left the
+      // panel rather than snapping back to fully open first (see that hook's own comment).
+      if (kind === "nav") setMobileNavOpen(false);
+      else setNotifOpen(false);
+      return;
+    }
+    // Dragged far enough — commit. isOpen was already set true the moment this drag started, so
+    // useSwipeToClose's own open effect already ran (and won't fire again); settle the rest of
+    // the way to fully open ourselves, matching that hook's own duration/easing.
+    if (panel) {
+      const transition = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)";
+      panel.style.transition = transition;
+      panel.style.transform = "translateX(0px)";
+      const push = mainPushRef.current;
+      if (push) {
+        push.style.transition = transition;
+        push.style.transform = kind === "nav" ? "translateX(100%)" : "translateX(-100%)";
+      }
     }
   };
   const normalizedEffectivePermissions = useMemo(
