@@ -585,7 +585,6 @@ export function AppShell({
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
-  const PULL_ACTION_MAX_PX = 100;
   const applyPullZoneStyles = (selected: PullZone, armed: boolean) => {
     const zones: Array<[PullZone, HTMLDivElement | null]> = [
       ["reload", pullReloadZoneRef.current],
@@ -718,8 +717,11 @@ export function AppShell({
     pull.active = true;
     event.preventDefault();
     // Damped (not 1:1 with the finger) so it reads as resistance, same rubber-band feel as the
-    // native overscroll bounce this replaces — and capped so it can't grow unbounded.
-    const pulled = Math.min(dy * 0.5, PULL_ACTION_MAX_PX);
+    // native overscroll bounce this replaces — but no longer capped at a fixed max height. It used
+    // to stop growing past 100px while the finger kept moving, which read as the tab bar/banner
+    // "sticking" mid-drag instead of tracking the finger — now it just keeps stretching with the
+    // drag, however far that goes; only the arming threshold below stays fixed.
+    const pulled = dy * 0.5;
     pull.armed = pulled >= PULL_ACTION_THRESHOLD_PX;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;

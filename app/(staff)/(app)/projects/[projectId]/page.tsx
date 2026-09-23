@@ -7217,6 +7217,30 @@ export default function ProjectDetailsPage() {
     // isNestingPreviewFullscreen is derived from scale, so resetting it to 1 above already exits
     // full-screen — nothing further to reset here.
   }, [nestingSheetPreview?.boardKey, nestingSheetPreview?.sheetIndex]);
+  // Mobile: the popup panel itself never moves or resizes for zoom anymore — only a separate,
+  // real top-level overlay (outside the panel's backdrop-filter, which traps position:fixed
+  // descendants inside its own stacking context/containing block) grows in front of it. That
+  // overlay needs to know where the static, never-moving slot sits on screen so it can line up
+  // exactly on top of it at rest (progress 0) before growing toward full-screen. The slot's own
+  // size is already known analytically (nestingPreviewSmallWidthPx/HeightPx below), so only its
+  // on-screen position needs measuring — and only on open/resize, since the slot is now static.
+  const nestingPreviewSlotRef = useRef<HTMLDivElement | null>(null);
+  const [nestingPreviewSlotRect, setNestingPreviewSlotRect] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!isCompactProjectViewport || !shouldRenderNestingSheetPreview) {
+      setNestingPreviewSlotRect(null);
+      return;
+    }
+    const measure = () => {
+      const el = nestingPreviewSlotRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setNestingPreviewSlotRect({ left: rect.left, top: rect.top });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [isCompactProjectViewport, shouldRenderNestingSheetPreview, nestingSheetPreview?.boardKey, nestingSheetPreview?.sheetIndex]);
   const clampNestingPreviewOffset = (x: number, y: number, scale = nestingPreviewScale) => {
     const viewport = nestingPreviewViewportRef.current;
     if (!viewport || scale <= 1) return { x: 0, y: 0 };
@@ -29425,6 +29449,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const nestingPreviewSmallHeightPx = Math.min((nestingPreviewWindowWidthPx - 32) / selectedNestingSheetRatio, nestingPreviewWindowHeightPx - 260);
   const nestingPreviewInterpWidthPx = nestingPreviewSmallWidthPx + (nestingPreviewWindowWidthPx - nestingPreviewSmallWidthPx) * nestingPreviewFullscreenProgress;
   const nestingPreviewInterpHeightPx = nestingPreviewSmallHeightPx + (nestingPreviewWindowHeightPx - nestingPreviewSmallHeightPx) * nestingPreviewFullscreenProgress;
+  // The floating overlay's own screen position — lerps from exactly on top of the static slot
+  // (measured above) at progress 0, to centered full-screen at progress 1. Falls back to the
+  // slot's analytic resting position (undoing the same centering math the CSS class applies)
+  // until the first real measurement lands, so there's no flash of an unpositioned overlay.
+  const nestingPreviewSlotLeftPx = nestingPreviewSlotRect?.left ?? (nestingPreviewWindowWidthPx - nestingPreviewSmallWidthPx) / 2;
+  const nestingPreviewSlotTopPx = nestingPreviewSlotRect?.top ?? nestingPreviewWindowHeightPx * 0.06 + 50 + 8;
+  // Full-screen target left/top is always 0 — the overlay spans the whole window at progress 1.
+  const nestingPreviewInterpLeftPx = nestingPreviewSlotLeftPx * (1 - nestingPreviewFullscreenProgress);
+  const nestingPreviewInterpTopPx = nestingPreviewSlotTopPx * (1 - nestingPreviewFullscreenProgress);
   const selectedNestingSheetStats = (() => {
     if (!selectedNestingSheet) return null;
     const sheetAreaMm2 = Math.max(1, selectedNestingSheet.group.sheetWidth * selectedNestingSheet.group.sheetHeight);
@@ -29443,6 +29476,189 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       largest,
     };
   })();
+  // Extracted so the exact same placements/grain markup can be rendered from two different spots
+  // (the desktop in-place viewport, and the mobile floating zoom overlay that sits outside the
+  // popup entirely) without duplicating this ~150-line block.
+  const renderNestingPreviewSheetContent = () => {
+    if (!selectedNestingSheet) return null;
+    return (
+      <div
+        className="absolute inset-0"
+        style={{
+          transform: `translate(${nestingPreviewOffset.x}px, ${nestingPreviewOffset.y}px) scale(${nestingPreviewScale})`,
+          transformOrigin: "center center",
+          transition: nestingPreviewDragging ? "none" : "transform 120ms ease",
+        }}
+      >
+        {selectedNestingSheet.sheet.placements.map((placement) => {
+          const hoverPlacementKey = `${placement.piece.id}__${placement.x}__${placement.y}__${placement.w}__${placement.h}`;
+          const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+          const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
+          const showWidthDimension = placement.w >= 120;
+          const showHeightDimension = placement.h >= 120;
+          const marginX = (selectedNestingSheet.group.sheetWidth - selectedNestingSheet.group.innerW) / 2;
+          const marginY = (selectedNestingSheet.group.sheetHeight - selectedNestingSheet.group.innerH) / 2;
+          const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
+          return (
+            <div
+              key={`preview_${placement.piece.id}_${placement.x}_${placement.y}`}
+              className="group absolute z-[10] border px-[7px] py-[2px] text-[11px] font-semibold leading-tight"
+              onMouseEnter={(e) => {
+                setNestingPreviewHoverPieceId(hoverPlacementKey);
+                const base = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
+                setNestingTooltip({
+                  text: nestingPieceTooltip(
+                    String(placement.piece.row.parentName || placement.piece.name || "Part"),
+                    String(placement.piece.name || "Part"),
+                    String(placement.piece.room || placement.piece.row.room || "-"),
+                    hitMin ? trueOnSheetW : placement.w,
+                    hitMin ? trueOnSheetH : placement.h,
+                    hitMin ? NESTING_MACHINE_MIN_TRIM_NOTE : undefined,
+                  ),
+                  x: e.clientX + 14,
+                  y: e.clientY + 14,
+                  bg: lightenHex(base, 0.72),
+                  border: darkenHex(base, 0.18),
+                  textColor: isLightHex(base) ? "#0F172A" : "#F8FAFC",
+                });
+              }}
+              onMouseMove={(e) => {
+                setNestingTooltip((prev) =>
+                  prev
+                    ? { ...prev, x: e.clientX + 14, y: e.clientY + 14 }
+                    : prev,
+                );
+              }}
+              onMouseLeave={() => {
+                setNestingPreviewHoverPieceId(null);
+                setNestingTooltip(null);
+              }}
+              style={{
+                left: `${((marginX + placement.x) / selectedNestingSheet.group.sheetWidth) * 100}%`,
+                top: `${((marginY + placement.y) / selectedNestingSheet.group.sheetHeight) * 100}%`,
+                width: `${(placement.w / selectedNestingSheet.group.sheetWidth) * 100}%`,
+                height: `${(placement.h / selectedNestingSheet.group.sheetHeight) * 100}%`,
+                backgroundColor: hitMin ? "transparent" : lightenHex(c, 0.18),
+                backgroundImage: hitMin
+                  ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
+                  : undefined,
+                borderColor: darkenHex(c, 0.22),
+                borderStyle: hitMin ? "dashed" : "solid",
+                color: t,
+                zIndex: nestingPreviewHoverPieceId === hoverPlacementKey ? 20 : 10,
+                boxShadow:
+                  nestingPreviewHoverPieceId === hoverPlacementKey
+                    ? "0 0 0 2px rgba(15,23,42,0.55), 0 0 0 3px rgba(255,255,255,0.9)"
+                    : "none",
+              }}
+            >
+              {hitMin && (
+                <div
+                  className="absolute left-0 top-0 border-r border-b border-dashed"
+                  style={{
+                    width: `${Math.min(100, (trueOnSheetW / placement.w) * 100)}%`,
+                    height: `${Math.min(100, (trueOnSheetH / placement.h) * 100)}%`,
+                    backgroundColor: lightenHex(c, 0.18),
+                    borderColor: darkenHex(c, 0.4),
+                    zIndex: -1,
+                  }}
+                  title="Actual piece size — surrounding area is trimmed after cutting"
+                />
+              )}
+              <div
+                className="absolute inset-0 z-[120] items-center justify-center"
+                style={{ display: nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
+              >
+                <button
+                  type="button"
+                  onMouseEnter={() => setNestingPreviewHoverPieceId(hoverPlacementKey)}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    jumpToCutlistFromDerivedRowId(String(placement.piece.row.id || ""));
+                  }}
+                  className="inline-flex h-6 min-w-[48px] px-2 items-center justify-center rounded-[6px] text-[10px] font-bold shadow-sm backdrop-blur-[1px]"
+                  style={{
+                    backgroundColor: lightenHex(c, 0.52),
+                    border: `1px solid ${darkenHex(c, 0.2)}`,
+                    color: "#000000",
+                  }}
+                  title="Edit in cutlist"
+                >
+                  Edit
+                </button>
+              </div>
+              {showWidthDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                <span
+                  className="pointer-events-none absolute"
+                  style={{ left: "50%", top: "2px", transform: "translateX(-50%)", zIndex: 40 }}
+                >
+                  <span
+                    className="inline-block rounded-[4px] px-1 text-[10px] font-bold"
+                    style={{ color: t, backgroundColor: "rgba(15,23,42,0.18)" }}
+                  >
+                    {formatMm(placement.w)}
+                  </span>
+                </span>
+              )}
+              {showHeightDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
+                <span
+                  className="pointer-events-none absolute top-1/2 rounded-[4px] px-1 text-[10px] font-bold"
+                  style={{
+                    color: t,
+                    backgroundColor: "rgba(15,23,42,0.18)",
+                    left: "-2px",
+                    transform: "translateY(-50%) rotate(270deg)",
+                    transformOrigin: "center",
+                  }}
+                >
+                  {formatMm(placement.h)}
+                </span>
+              )}
+              {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
+                <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0 }}>
+                  <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
+                  <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
+                </span>
+              ) : (
+                <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0, paddingLeft: 4 }}>
+                  {placement.piece.name}
+                </span>
+              )}
+            </div>
+          );
+        })}
+        {boardGrainFor(selectedNestingSheet.group.boardKey) && (
+          <div className="pointer-events-none absolute inset-0 z-[30]" style={{ zIndex: 999 }}>
+            {[
+              [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
+              [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
+              [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
+              [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
+              [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
+            ].map(([x, y], idx) => (
+              <img
+                key={`preview_grain_${idx}`}
+                src="/arrow-right.png"
+                alt=""
+                aria-hidden="true"
+                className="absolute opacity-55"
+                style={{
+                  left: `${x}%`,
+                  top: `${y}%`,
+                  width: "15px",
+                  height: "15px",
+                  transform: `translate(-50%, -50%) rotate(${selectedNestingSheet.group.sheetWidth >= selectedNestingSheet.group.sheetHeight ? 0 : 90}deg)`,
+                  zIndex: 1000,
+                  filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
   const orderBoardSummary = productionForm.boardTypes
     .map((row) => {
       const sheetsRequired = Math.max(0, requiredSheetCountByBoardRowId[row.id] ?? 0);
@@ -38926,7 +39142,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
           />
           <div
-            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between pl-3 pr-3 md:pl-5 md:pr-3"
+            // z-[100]: strictly above the mobile board-type pager bar below (z-[95], fixed at
+            // top:56/height:49) — this header is also fixed, its own separate stacking context, so
+            // the Export button's dropdown (opening downward from near the bottom of this 56px
+            // header) was getting visually painted UNDER that later-in-DOM sibling bar wherever
+            // their vertical ranges overlap, no matter how high the dropdown's own nested z-index
+            // was set — a child's z-index only ever competes within its own parent's stacking
+            // context, not against the parent's siblings.
+            className="fixed left-0 right-0 top-0 z-[100] flex h-[56px] items-center justify-between pl-3 pr-3 md:pl-5 md:pr-3"
             // Mobile-only plain white, matching Nesting's own top bar — desktop keeps relying
             // solely on the shared backdrop div above (untouched).
             style={isCompactProjectViewport ? { color: "var(--text-main)", backgroundColor: "#FFFFFF" } : { color: "var(--text-main)" }}
@@ -40239,7 +40462,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <aside
                 ref={cncMobileVisibilityPanelRef}
                 data-app-gesture-exempt="true"
-                className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto bg-white"
+                // overscroll-contain: without it, the rubber-band overscroll at the top/bottom of
+                // this panel's own scroll bleeds into scrolling the page underneath once this
+                // panel's own scroll is exhausted — both "content behind scrolls too" and "gets
+                // stuck at the bottom" (the browser handing the gesture to the page behind).
+                className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
                 style={{ transform: "translateY(100%)" }}
               >
                 {/* Same bar (height, glass style) as the closed-state trigger bar below — it
@@ -40260,11 +40487,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   onTouchStart={onCncVisibilityHeaderTouchStart}
                   onTouchMove={onCncVisibilityHeaderTouchMove}
                   onTouchEnd={onCncVisibilityHeaderTouchEnd}
+                  onTouchCancel={onCncVisibilityHeaderTouchEnd}
                 >
                   <div
                     data-cnc-visibility-search="true"
                     className="peer relative z-10 w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
                     onClick={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
                   >
                     <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
                     <input
@@ -43774,7 +44003,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <aside
                   ref={nestingMobileVisibilityPanelRef}
                   data-app-gesture-exempt="true"
-                  className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto bg-white"
+                  // overscroll-contain: without it, iOS/Android let the rubber-band overscroll at
+                  // the top/bottom of this panel's own scroll "bleed through" into scrolling the
+                  // dashboard page underneath once this panel's own scroll is exhausted — which is
+                  // both "the content behind scrolls too" and "gets stuck at the bottom, can't
+                  // scroll back up" (the stuck feeling is the browser having handed the gesture to
+                  // the page behind instead of this panel's own scroller).
+                  className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
                   style={{ transform: "translateY(100%)" }}
                 >
                   {/* Same bar (height, glass style) as the closed-state trigger bar below — it
@@ -43797,11 +44032,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     onTouchStart={onNestingVisibilityHeaderTouchStart}
                     onTouchMove={onNestingVisibilityHeaderTouchMove}
                     onTouchEnd={onNestingVisibilityHeaderTouchEnd}
+                    onTouchCancel={onNestingVisibilityHeaderTouchEnd}
                   >
                     <div
                       data-nesting-visibility-search="true"
                       className="peer relative z-10 w-[84px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1"
                       onClick={(e) => e.stopPropagation()}
+                      // Stops the touch itself at the DOM level (not just via the header's own
+                      // closest() check) so tapping in to type can never be read as the start of
+                      // the header's own close-drag gesture.
+                      onTouchStart={(e) => e.stopPropagation()}
                     >
                       <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: projectPalette.textMuted }} />
                       <input
@@ -44287,27 +44527,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             )}
           </div>
           {shouldRenderNestingSheetPreview && selectedNestingSheet && (
+            <>
             <div
               data-app-gesture-exempt="true"
-              className={`glass-modal-backdrop fixed inset-0 z-[200] ${isCompactProjectViewport ? "" : "p-8"}`}
-              // Mobile: padding and background darken continuously with the SAME progress driving
-              // the panel/viewport below, instead of snapping the instant any zoom starts — no
-              // transition on either, since this should track the live pinch 1:1, not animate on
-              // its own timer.
-              style={
-                isCompactProjectViewport
-                  ? {
-                      padding: `${8 * (1 - nestingPreviewFullscreenProgress)}px`,
-                      backgroundColor: `rgba(0,0,0,${(0.14 + 0.86 * nestingPreviewFullscreenProgress).toFixed(3)})`,
-                    }
-                  : undefined
-              }
+              className={`glass-modal-backdrop fixed inset-0 z-[200] ${isCompactProjectViewport ? "p-4" : "p-8"}`}
+              // Mobile: this backdrop/panel never moves or resizes for zoom — it stays exactly
+              // as it always looked. Only the separate floating overlay below (a true top-level
+              // sibling, rendered outside this backdrop) grows in front of it as the pinch
+              // progresses, since backdrop-filter here traps a position:fixed descendant inside
+              // its own stacking context/containing block and would clip it to this box.
               onClick={() => {
-                // Tapping outside the image backs out of full-screen (by resetting the zoom that
-                // drives it) first, same as a real photo viewer — a second tap outside is what
-                // actually closes the whole popup. In practice full-screen leaves no backdrop
-                // exposed to tap (the panel fills the whole screen), so this mostly matters as a
-                // fallback.
+                // Tapping outside backs out of an active zoom first (same as a real photo
+                // viewer), same as before — a second tap outside then closes the whole popup.
                 if (isNestingPreviewFullscreen) {
                   setNestingPreviewScale(1);
                   setNestingPreviewOffset({ x: 0, y: 0 });
@@ -44320,29 +44551,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               <div
                 ref={nestingSheetPreviewPanelRef}
-                // Mobile: always the same "sizes to its own content" structural classes — no more
-                // switching wholesale to a separate h-full/w-full/rounded-none layout the instant
-                // any zoom starts. max-width/margin-top below instead lerp continuously from the
-                // small resting values toward full-bleed as the pinch progresses, so the panel
-                // grows in step with the sheet inside it rather than jumping ahead of it.
-                className={`glass-modal-panel mx-auto flex flex-col overflow-hidden ${isCompactProjectViewport ? "max-h-[calc(100svh-16px)]" : "mt-[6vh]"}`}
-                style={
-                  isCompactProjectViewport
-                    ? {
-                        width: "fit-content",
-                        maxWidth: `${94 + 6 * nestingPreviewFullscreenProgress}vw`,
-                        marginTop: `${6 * (1 - nestingPreviewFullscreenProgress)}vh`,
-                      }
-                    : { width: "fit-content", maxWidth: "88vw" }
-                }
+                className={`glass-modal-panel mx-auto flex flex-col overflow-hidden ${isCompactProjectViewport ? "max-h-[calc(100svh-16px)] mt-[6vh]" : "mt-[6vh]"}`}
+                style={isCompactProjectViewport ? { width: "fit-content", maxWidth: "94vw" } : { width: "fit-content", maxWidth: "88vw" }}
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* Fades out (not an instant unmount) as the sheet grows — fully removed only once
-                    genuinely at full-screen (progress hits 1), reclaiming its space for the image. */}
-                {!(isCompactProjectViewport && nestingPreviewFullscreenProgress >= 1) && (
                 <div
                   className={`glass-modal-header relative flex items-center justify-between px-3 ${isCompactProjectViewport ? "min-h-[50px]" : "h-[46px]"}`}
-                  style={isCompactProjectViewport ? { opacity: 1 - nestingPreviewFullscreenProgress } : undefined}
                 >
                   {/* Mobile: the board label moves below the sheet preview instead (left-aligned,
                       see its own comment there) — "Sheet N" stays exactly where it was, centered. */}
@@ -44381,43 +44595,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <X size={16} strokeWidth={2.4} />
                   </button>
                 </div>
-                )}
                 <div className={isCompactProjectViewport ? "relative min-h-0 flex-1" : `min-h-0 overflow-auto ${isCompactProjectViewport ? "flex-1 p-2" : "overflow-hidden p-3"}`}>
-                  {/* Full-screen mode's own close button, floating over the image — the header
-                      carrying the normal one fades out as this fades in. Always mounted (mobile
-                      only) rather than conditionally rendered, so it can actually fade smoothly —
-                      tapping it resets the zoom that drives full-screen in the first place. */}
-                  {isCompactProjectViewport && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNestingPreviewScale(1);
-                        setNestingPreviewOffset({ x: 0, y: 0 });
-                      }}
-                      className={`absolute right-3 top-3 z-[50] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border hover:brightness-95 ${isNestingPreviewFullscreen ? "" : "pointer-events-none"}`}
-                      style={{
-                        borderColor: "var(--danger-glass-border)",
-                        backgroundColor: "var(--danger-glass-bg)",
-                        backdropFilter: "blur(10px) saturate(180%)",
-                        WebkitBackdropFilter: "blur(10px) saturate(180%)",
-                        color: "#FFFFFF",
-                        opacity: nestingPreviewFullscreenProgress,
-                      }}
-                      title="Exit full screen"
-                    >
-                      <X size={18} strokeWidth={2.4} />
-                    </button>
-                  )}
+                  {/* Mobile: this is now just a static, empty spacer reserving the sheet's resting
+                      footprint in the (never-moving) popup layout — the real, interactive sheet is
+                      rendered separately below as its own always-fixed top-level overlay, which
+                      sits exactly on top of this box at rest and grows independently in front of
+                      the popup as the user pinch-zooms. Desktop is untouched: it still renders the
+                      sheet directly in place here, same as always. */}
                   <div
-                    ref={nestingPreviewViewportRef}
-                    className="relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white"
-                    onTouchStart={handleNestingPreviewTouchStart}
-                    onTouchMove={handleNestingPreviewTouchMove}
-                    onTouchEnd={handleNestingPreviewTouchEnd}
-                    onTouchCancel={handleNestingPreviewTouchEnd}
+                    ref={isCompactProjectViewport ? nestingPreviewSlotRef : nestingPreviewViewportRef}
+                    className={`relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white ${isCompactProjectViewport ? "invisible" : ""}`}
+                    onTouchStart={isCompactProjectViewport ? undefined : handleNestingPreviewTouchStart}
+                    onTouchMove={isCompactProjectViewport ? undefined : handleNestingPreviewTouchMove}
+                    onTouchEnd={isCompactProjectViewport ? undefined : handleNestingPreviewTouchEnd}
+                    onTouchCancel={isCompactProjectViewport ? undefined : handleNestingPreviewTouchEnd}
                     style={
                       isCompactProjectViewport
-                        ? { width: nestingPreviewInterpWidthPx, height: nestingPreviewInterpHeightPx, maxWidth: "100%", touchAction: "none" }
+                        ? { width: nestingPreviewSmallWidthPx, height: nestingPreviewSmallHeightPx, maxWidth: "100%" }
                         : {
                             width: selectedNestingSheetViewportWidth,
                             height: selectedNestingSheetViewportHeight,
@@ -44426,193 +44620,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           }
                     }
                   >
-                    <div
-                      className="absolute inset-0"
-                      style={{
-                        transform: `translate(${nestingPreviewOffset.x}px, ${nestingPreviewOffset.y}px) scale(${nestingPreviewScale})`,
-                        transformOrigin: "center center",
-                        transition: nestingPreviewDragging ? "none" : "transform 120ms ease",
-                      }}
-                    >
-                      {selectedNestingSheet.sheet.placements.map((placement) => {
-                        const hoverPlacementKey = `${placement.piece.id}__${placement.x}__${placement.y}__${placement.w}__${placement.h}`;
-                        const c = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
-                        const t = isLightHex(c) ? "#0F172A" : "#F8FAFC";
-                        const showWidthDimension = placement.w >= 120;
-                        const showHeightDimension = placement.h >= 120;
-                        const marginX = (selectedNestingSheet.group.sheetWidth - selectedNestingSheet.group.innerW) / 2;
-                        const marginY = (selectedNestingSheet.group.sheetHeight - selectedNestingSheet.group.innerH) / 2;
-                        const { trueOnSheetW, trueOnSheetH, hitMin } = nestingPlacementTrueSize(placement.piece, placement.rotated, nestingSettings.minPieceSize);
-                        return (
-                          <div
-                            key={`preview_${placement.piece.id}_${placement.x}_${placement.y}`}
-                            className="group absolute z-[10] border px-[7px] py-[2px] text-[11px] font-semibold leading-tight"
-                            onMouseEnter={(e) => {
-                              setNestingPreviewHoverPieceId(hoverPlacementKey);
-                              const base = partTypeColors[placement.piece.partType] ?? "#CBD5E1";
-                              setNestingTooltip({
-                                text: nestingPieceTooltip(
-                                  String(placement.piece.row.parentName || placement.piece.name || "Part"),
-                                  String(placement.piece.name || "Part"),
-                                  String(placement.piece.room || placement.piece.row.room || "-"),
-                                  hitMin ? trueOnSheetW : placement.w,
-                                  hitMin ? trueOnSheetH : placement.h,
-                                  hitMin ? NESTING_MACHINE_MIN_TRIM_NOTE : undefined,
-                                ),
-                                x: e.clientX + 14,
-                                y: e.clientY + 14,
-                                bg: lightenHex(base, 0.72),
-                                border: darkenHex(base, 0.18),
-                                textColor: isLightHex(base) ? "#0F172A" : "#F8FAFC",
-                              });
-                            }}
-                            onMouseMove={(e) => {
-                              setNestingTooltip((prev) =>
-                                prev
-                                  ? { ...prev, x: e.clientX + 14, y: e.clientY + 14 }
-                                  : prev,
-                              );
-                            }}
-                            onMouseLeave={() => {
-                              setNestingPreviewHoverPieceId(null);
-                              setNestingTooltip(null);
-                            }}
-                            style={{
-                              left: `${((marginX + placement.x) / selectedNestingSheet.group.sheetWidth) * 100}%`,
-                              top: `${((marginY + placement.y) / selectedNestingSheet.group.sheetHeight) * 100}%`,
-                              width: `${(placement.w / selectedNestingSheet.group.sheetWidth) * 100}%`,
-                              height: `${(placement.h / selectedNestingSheet.group.sheetHeight) * 100}%`,
-                              backgroundColor: hitMin ? "transparent" : lightenHex(c, 0.18),
-                              backgroundImage: hitMin
-                                ? `repeating-linear-gradient(45deg, ${darkenHex(c, 0.12)}55 0px, ${darkenHex(c, 0.12)}55 5px, transparent 5px, transparent 10px)`
-                                : undefined,
-                              borderColor: darkenHex(c, 0.22),
-                              borderStyle: hitMin ? "dashed" : "solid",
-                              color: t,
-                              zIndex: nestingPreviewHoverPieceId === hoverPlacementKey ? 20 : 10,
-                              boxShadow:
-                                nestingPreviewHoverPieceId === hoverPlacementKey
-                                  ? "0 0 0 2px rgba(15,23,42,0.55), 0 0 0 3px rgba(255,255,255,0.9)"
-                                  : "none",
-                            }}
-                          >
-                            {hitMin && (
-                              <div
-                                className="absolute left-0 top-0 border-r border-b border-dashed"
-                                style={{
-                                  width: `${Math.min(100, (trueOnSheetW / placement.w) * 100)}%`,
-                                  height: `${Math.min(100, (trueOnSheetH / placement.h) * 100)}%`,
-                                  backgroundColor: lightenHex(c, 0.18),
-                                  borderColor: darkenHex(c, 0.4),
-                                  zIndex: -1,
-                                }}
-                                title="Actual piece size — surrounding area is trimmed after cutting"
-                              />
-                            )}
-                            <div
-                              className="absolute inset-0 z-[120] items-center justify-center"
-                              style={{ display: nestingPreviewHoverPieceId === hoverPlacementKey ? "flex" : "none" }}
-                            >
-                              <button
-                                type="button"
-                                onMouseEnter={() => setNestingPreviewHoverPieceId(hoverPlacementKey)}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  jumpToCutlistFromDerivedRowId(String(placement.piece.row.id || ""));
-                                }}
-                                className="inline-flex h-6 min-w-[48px] px-2 items-center justify-center rounded-[6px] text-[10px] font-bold shadow-sm backdrop-blur-[1px]"
-                                style={{
-                                  backgroundColor: lightenHex(c, 0.52),
-                                  border: `1px solid ${darkenHex(c, 0.2)}`,
-                                  color: "#000000",
-                                }}
-                                title="Edit in cutlist"
-                              >
-                                Edit
-                              </button>
-                            </div>
-                            {showWidthDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
-                              <span
-                                className="pointer-events-none absolute"
-                                style={{ left: "50%", top: "2px", transform: "translateX(-50%)", zIndex: 40 }}
-                              >
-                                <span
-                                  className="inline-block rounded-[4px] px-1 text-[10px] font-bold"
-                                  style={{ color: t, backgroundColor: "rgba(15,23,42,0.18)" }}
-                                >
-                                  {formatMm(placement.w)}
-                                </span>
-                              </span>
-                            )}
-                            {showHeightDimension && nestingPreviewHoverPieceId !== hoverPlacementKey && (
-                              <span
-                                className="pointer-events-none absolute top-1/2 rounded-[4px] px-1 text-[10px] font-bold"
-                                style={{
-                                  color: t,
-                                  backgroundColor: "rgba(15,23,42,0.18)",
-                                  left: "-2px",
-                                  transform: "translateY(-50%) rotate(270deg)",
-                                  transformOrigin: "center",
-                                }}
-                              >
-                                {formatMm(placement.h)}
-                              </span>
-                            )}
-                            {(isCabinetryPartType(placement.piece.partType) || isDrawerPartType(placement.piece.partType)) && placement.piece.row.parentName ? (
-                              <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0 }}>
-                                <span className="block truncate text-[10px] leading-tight opacity-85" style={{ paddingLeft: 4 }}>{placement.piece.row.parentName}</span>
-                                <span className="block truncate text-[10px] leading-tight" style={{ paddingLeft: 4 }}>{placement.piece.name}</span>
-                              </span>
-                            ) : (
-                              <span className="block truncate" style={{ marginTop: showWidthDimension ? 12 : 0, paddingLeft: 4 }}>
-                                {placement.piece.name}
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })}
-                      {boardGrainFor(selectedNestingSheet.group.boardKey) && (
-                        <div className="pointer-events-none absolute inset-0 z-[30]" style={{ zIndex: 999 }}>
-                          {[
-                            [8, 14], [22, 14], [36, 14], [50, 14], [64, 14], [78, 14], [92, 14],
-                            [15, 34], [29, 34], [43, 34], [57, 34], [71, 34], [85, 34],
-                            [8, 54], [22, 54], [36, 54], [50, 54], [64, 54], [78, 54], [92, 54],
-                            [15, 74], [29, 74], [43, 74], [57, 74], [71, 74], [85, 74],
-                            [8, 90], [22, 90], [36, 90], [50, 90], [64, 90], [78, 90], [92, 90],
-                          ].map(([x, y], idx) => (
-                            <img
-                              key={`preview_grain_${idx}`}
-                              src="/arrow-right.png"
-                              alt=""
-                              aria-hidden="true"
-                              className="absolute opacity-55"
-                              style={{
-                                left: `${x}%`,
-                                top: `${y}%`,
-                                width: "15px",
-                                height: "15px",
-                                transform: `translate(-50%, -50%) rotate(${selectedNestingSheet.group.sheetWidth >= selectedNestingSheet.group.sheetHeight ? 0 : 90}deg)`,
-                                zIndex: 1000,
-                                filter: "drop-shadow(0 0 1px rgba(255,255,255,0.75))",
-                              }}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    {!isCompactProjectViewport && renderNestingPreviewSheetContent()}
                   </div>
                   {/* Mobile only: board label ("sheet colour") moved here from the header, left-
-                      aligned, below the preview — "Sheet N" stays put in the header. Fades out
-                      (fully removed only once genuinely full-screen) along with Sheet Stats below —
-                      a true full-screen image has nothing else on screen but the image and its
-                      exit button. */}
-                  {isCompactProjectViewport && nestingPreviewFullscreenProgress < 1 && (
-                    <p className="mt-2 truncate text-left text-[13px] font-medium" style={{ color: "#000000", opacity: 1 - nestingPreviewFullscreenProgress }}>
+                      aligned, below the preview — "Sheet N" stays put in the header. This popup
+                      never changes for zoom anymore, so this and Sheet Stats below always stay
+                      put too — the zoomed sheet floats independently in front of all of this. */}
+                  {isCompactProjectViewport && (
+                    <p className="mt-2 truncate text-left text-[13px] font-medium" style={{ color: "#000000" }}>
                       {selectedNestingSheet.group.boardLabel}
                     </p>
                   )}
-                  {selectedNestingSheetStats && !(isCompactProjectViewport && nestingPreviewFullscreenProgress >= 1) && (
+                  {selectedNestingSheetStats && (
                     <div
                       className="mt-3 mx-auto rounded-[10px] border border-[#DCE3EC] p-3 text-[12px]"
                       style={{
@@ -44621,7 +44640,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         backgroundColor: "rgba(248,250,252,0.35)",
                         backdropFilter: "blur(6px)",
                         WebkitBackdropFilter: "blur(6px)",
-                        opacity: isCompactProjectViewport ? 1 - nestingPreviewFullscreenProgress : 1,
                       }}
                     >
                       <p className="mb-2 text-[12px] font-medium uppercase tracking-[0.7px]" style={{ color: "#000000" }}>Sheet Stats</p>
@@ -44646,6 +44664,58 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           </div>
+            {/* Mobile only: the actual interactive, zoomable sheet — rendered as a true top-level
+                sibling of the popup above (not nested inside it), since the popup's own
+                backdrop-filter creates a stacking context/containing block that would trap and
+                clip a position:fixed descendant to its own bounds. This is the ONE thing that
+                actually moves/grows for zoom; the popup itself (just reverted above) never does.
+                At rest (progress 0) it sits pixel-for-pixel on top of the static, invisible slot
+                reserved inside the popup, so it reads as part of the popup even though it isn't
+                one in the DOM; as the pinch progresses it grows independently, in front of
+                everything, toward covering the whole screen. */}
+            {isCompactProjectViewport && (
+              <div
+                ref={nestingPreviewViewportRef}
+                data-app-gesture-exempt="true"
+                className="fixed z-[210] overflow-hidden border border-[#D4DCE8] bg-white"
+                onTouchStart={handleNestingPreviewTouchStart}
+                onTouchMove={handleNestingPreviewTouchMove}
+                onTouchEnd={handleNestingPreviewTouchEnd}
+                onTouchCancel={handleNestingPreviewTouchEnd}
+                style={{
+                  left: nestingPreviewInterpLeftPx,
+                  top: nestingPreviewInterpTopPx,
+                  width: nestingPreviewInterpWidthPx,
+                  height: nestingPreviewInterpHeightPx,
+                  touchAction: "none",
+                }}
+              >
+                {renderNestingPreviewSheetContent()}
+                {/* Same red X as the popup's own close button — fades in only once actually
+                    zoomed, tapping it resets the zoom that grows this overlay in the first
+                    place. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNestingPreviewScale(1);
+                    setNestingPreviewOffset({ x: 0, y: 0 });
+                  }}
+                  className={`absolute right-3 top-3 z-[50] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border hover:brightness-95 ${isNestingPreviewFullscreen ? "" : "pointer-events-none"}`}
+                  style={{
+                    borderColor: "var(--danger-glass-border)",
+                    backgroundColor: "var(--danger-glass-bg)",
+                    backdropFilter: "blur(10px) saturate(180%)",
+                    WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                    color: "#FFFFFF",
+                    opacity: nestingPreviewFullscreenProgress,
+                  }}
+                  title="Exit full screen"
+                >
+                  <X size={18} strokeWidth={2.4} />
+                </button>
+              </div>
+            )}
+            </>
           )}
           {nestingTooltip && (
             <div
