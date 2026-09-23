@@ -579,12 +579,6 @@ export function AppShell({
   const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
   const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
   const pullSaveBackZoneRef = useRef<HTMLDivElement | null>(null);
-  // The global top tab bar (hamburger/tab pills/bell) lives in a sibling component
-  // (global-app-tabs-bar.tsx, tagged data-app-top-bar) — queried fresh each gesture (cheap, and
-  // avoids a stale ref if that bar mounts/unmounts around this one) so it can be pushed down in
-  // sync with mainPushRef, both moving together as pulledPx grows, instead of the banner just
-  // growing underneath a tab bar that stays pinned in place.
-  const pullTopBarElRef = useRef<HTMLElement | null>(null);
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
@@ -602,35 +596,22 @@ export function AppShell({
       if (el) Object.assign(el.style, zone === selected ? activeStyle : inactiveStyle);
     }
   };
-  const applyPullPush = (pulledPx: number, animate: boolean) => {
-    // Both pushed via `top`/`margin-top` (not transform) — different CSS properties can be written
-    // in the same JS tick and still land in different rendering pipelines (transform is compositor-
-    // only; a plain layout property like these two forces a reflow), which let the tab bar visibly
-    // drift out of sync with the page during a fast drag: it tracked the finger smoothly while the
-    // page's own reflow-bound motion lagged a frame or more behind, reading as "the tab bar sticks
-    // to the revealed banner, not the page." Keeping both on the same reflow-triggering category
-    // means the browser recalculates and paints them together in one layout pass every touchmove,
-    // so they move as a single visual unit. (mainPushRef itself still can't use transform for a
-    // different reason — see its own comment on why that would break `position: sticky`
-    // descendants like Changelog's own sticky headers.)
-    const topBar = pullTopBarElRef.current;
-    if (topBar) {
-      topBar.style.transition = animate ? "top 200ms ease" : "none";
-      topBar.style.top = pulledPx > 0 ? `${pulledPx}px` : "";
-    }
-    const main = mainPushRef.current;
-    if (main) {
-      main.style.transition = animate ? "margin-top 200ms ease" : "none";
-      main.style.marginTop = pulledPx > 0 ? `${pulledPx}px` : "";
-    }
-  };
+  // Previously also pushed the top tab bar (`top`) and the page content (`margin-top`) down by
+  // the same pixel amount every touchmove tick, so the whole page read as sliding down to reveal
+  // this banner. In practice, on-device, those two independent style writes on two different
+  // elements kept visibly drifting out of sync with each other and with the banner's own `height`
+  // growth despite being driven by the identical number every tick — a real, repeated regression
+  // no amount of same-tick/same-reflow-category writes fully closed. The banner now just overlays
+  // on top of the page instead: the tab bar and the page content underneath never move AT ALL (so
+  // they can never drift relative to each other), and this is the only thing that changes — it
+  // grows in height, positioned to start right below the tab bar's fixed 48px, covering the top of
+  // the page as it grows rather than pushing that page down.
   const resetPullBanner = (animate: boolean) => {
     const banner = pullBannerRef.current;
     if (banner) {
       banner.style.transition = animate ? "height 200ms ease" : "none";
       banner.style.height = "0px";
     }
-    applyPullPush(0, animate);
     applyPullZoneStyles("dashboard", false);
   };
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
@@ -663,7 +644,6 @@ export function AppShell({
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
     if (alreadyAtTop && mobileTopBarEnabled) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
-      pullTopBarElRef.current = document.querySelector<HTMLElement>('[data-app-top-bar="true"]');
     } else {
       pullDashboardRef.current = null;
     }
@@ -734,10 +714,6 @@ export function AppShell({
       banner.style.transition = "none";
       banner.style.height = `${pulled}px`;
     }
-    // Pushes the tab bar + page content down by the exact same amount the banner has grown, so it
-    // reads as the whole page sliding down to reveal this bar — not the bar growing underneath a
-    // tab bar that never moves.
-    applyPullPush(pulled, false);
     applyPullZoneStyles(pull.selected, pull.armed);
   };
   const onMainTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
@@ -804,8 +780,14 @@ export function AppShell({
       panel.style.transform = "translateX(0px)";
       const push = mainPushRef.current;
       if (push) {
+        // Pixels (matching `width`, the panel's own measured width — same value used just above
+        // for `progress`), not a percentage of push's own width — this settle-to-open step was
+        // still using the old percentage-based transform even after the live-drag path above was
+        // fixed to track in pixels, so releasing past the open threshold could snap to a slightly
+        // different final offset than the drag had been tracking toward, reading as the page
+        // drifting away from the panel over the course of the gesture.
         push.style.transition = transition;
-        push.style.transform = kind === "nav" ? "translateX(100%)" : "translateX(-100%)";
+        push.style.transform = kind === "nav" ? `translateX(${width}px)` : `translateX(${-width}px)`;
       }
     }
   };
@@ -2655,13 +2637,19 @@ export function AppShell({
           document root) no matter how high its own z-index was set. As a real top-level sibling
           here, it stacks normally against the tab bar. Shown on every mobile page regardless of
           chromeHidden (fullscreen views included) — only the "Mobile Top Nav Bar" preference turns
-          the gesture off. */}
+          the gesture off.
+          Positioned to start right BELOW the tab bar's fixed 48px (not top-0, and no longer pushing
+          that bar or the page down to "reveal" itself) — it grows in height and overlays on top of
+          the page's own top edge instead, so the tab bar and page never move at all, only this
+          does. z-[150] already puts it above the page's own normal-stacking content; a solid
+          background (not just the individual zones', which are transparent at rest) is what
+          actually keeps the page from showing through underneath while it's mid-grow. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
           aria-hidden="true"
-          className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
-          style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)" }}
+          className="fixed left-0 right-0 top-12 z-[150] flex overflow-hidden border-b"
+          style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)", backgroundColor: "var(--panel-bg)" }}
         >
           <div
             ref={pullReloadZoneRef}

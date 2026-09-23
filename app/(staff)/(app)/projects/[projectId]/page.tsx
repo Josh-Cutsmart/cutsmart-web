@@ -29502,24 +29502,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : `min(calc((54vw - 80px) / ${selectedNestingSheetRatio}), calc(100svh - 440px))`
     : "min(48vh, 420px)";
   // Mobile: the SAME small-viewport formula as above, but computed as plain numbers (not a CSS
-  // calc() string) so it can be lerped toward the full viewport size by
-  // nestingPreviewFullscreenProgress — this is what makes the sheet grow smoothly in step with the
-  // pinch instead of its container snapping straight to full-screen the instant scale exceeds 1.
+  // calc() string) so it can be lerped toward a full-screen size by nestingPreviewFullscreenProgress
+  // — this is what makes the sheet grow smoothly in step with the pinch instead of its container
+  // snapping straight to full-screen the instant scale exceeds 1.
   const nestingPreviewWindowWidthPx = typeof window !== "undefined" ? window.innerWidth : 375;
   const nestingPreviewWindowHeightPx = typeof window !== "undefined" ? window.innerHeight : 700;
   const nestingPreviewSmallWidthPx = Math.min(nestingPreviewWindowWidthPx - 32, (nestingPreviewWindowHeightPx - 260) * selectedNestingSheetRatio);
   const nestingPreviewSmallHeightPx = Math.min((nestingPreviewWindowWidthPx - 32) / selectedNestingSheetRatio, nestingPreviewWindowHeightPx - 260);
-  const nestingPreviewInterpWidthPx = nestingPreviewSmallWidthPx + (nestingPreviewWindowWidthPx - nestingPreviewSmallWidthPx) * nestingPreviewFullscreenProgress;
-  const nestingPreviewInterpHeightPx = nestingPreviewSmallHeightPx + (nestingPreviewWindowHeightPx - nestingPreviewSmallHeightPx) * nestingPreviewFullscreenProgress;
+  // The "full-screen" target is the LARGEST box that (a) fits within the window and (b) keeps the
+  // sheet's own aspect ratio — the same "contain fit" formula as the small size just above, just
+  // against the whole window instead of the window minus header/stats/padding. Interpolating two
+  // same-ratio rectangles preserves that ratio at every step in between too (both dimensions scale
+  // by the same factor at every t), which is what keeps the overlay looking like the sheet — not a
+  // screen-shaped rectangle — throughout the zoom, instead of stretching toward the window's own
+  // (generally different) aspect ratio the way growing toward the window's raw width/height
+  // independently used to.
+  const nestingPreviewFullWidthPx = Math.min(nestingPreviewWindowWidthPx, nestingPreviewWindowHeightPx * selectedNestingSheetRatio);
+  const nestingPreviewFullHeightPx = Math.min(nestingPreviewWindowWidthPx / selectedNestingSheetRatio, nestingPreviewWindowHeightPx);
+  const nestingPreviewInterpWidthPx = nestingPreviewSmallWidthPx + (nestingPreviewFullWidthPx - nestingPreviewSmallWidthPx) * nestingPreviewFullscreenProgress;
+  const nestingPreviewInterpHeightPx = nestingPreviewSmallHeightPx + (nestingPreviewFullHeightPx - nestingPreviewSmallHeightPx) * nestingPreviewFullscreenProgress;
   // The floating overlay's own screen position — lerps from exactly on top of the static slot
-  // (measured above) at progress 0, to centered full-screen at progress 1. Falls back to the
-  // slot's analytic resting position (undoing the same centering math the CSS class applies)
-  // until the first real measurement lands, so there's no flash of an unpositioned overlay.
+  // (measured above) at progress 0, to centered (letterboxed, since the ratio-preserving full size
+  // above generally doesn't fill BOTH window dimensions at once) at progress 1. Falls back to the
+  // slot's analytic resting position (undoing the same centering math the CSS class applies) until
+  // the first real measurement lands, so there's no flash of an unpositioned overlay.
   const nestingPreviewSlotLeftPx = nestingPreviewSlotRect?.left ?? (nestingPreviewWindowWidthPx - nestingPreviewSmallWidthPx) / 2;
   const nestingPreviewSlotTopPx = nestingPreviewSlotRect?.top ?? nestingPreviewWindowHeightPx * 0.06 + 50 + 8;
-  // Full-screen target left/top is always 0 — the overlay spans the whole window at progress 1.
-  const nestingPreviewInterpLeftPx = nestingPreviewSlotLeftPx * (1 - nestingPreviewFullscreenProgress);
-  const nestingPreviewInterpTopPx = nestingPreviewSlotTopPx * (1 - nestingPreviewFullscreenProgress);
+  const nestingPreviewFullLeftPx = (nestingPreviewWindowWidthPx - nestingPreviewFullWidthPx) / 2;
+  const nestingPreviewFullTopPx = (nestingPreviewWindowHeightPx - nestingPreviewFullHeightPx) / 2;
+  const nestingPreviewInterpLeftPx = nestingPreviewSlotLeftPx + (nestingPreviewFullLeftPx - nestingPreviewSlotLeftPx) * nestingPreviewFullscreenProgress;
+  const nestingPreviewInterpTopPx = nestingPreviewSlotTopPx + (nestingPreviewFullTopPx - nestingPreviewSlotTopPx) * nestingPreviewFullscreenProgress;
   const selectedNestingSheetStats = (() => {
     if (!selectedNestingSheet) return null;
     const sheetAreaMm2 = Math.max(1, selectedNestingSheet.group.sheetWidth * selectedNestingSheet.group.sheetHeight);
