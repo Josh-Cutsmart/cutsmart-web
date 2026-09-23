@@ -6694,17 +6694,9 @@ export default function ProjectDetailsPage() {
   const [nestingPreviewScale, setNestingPreviewScale] = useState(1);
   const [nestingPreviewOffset, setNestingPreviewOffset] = useState({ x: 0, y: 0 });
   const [nestingPreviewDragging, setNestingPreviewDragging] = useState(false);
-  // Mobile: pinching in on the sheet (not a tap) is what grows it toward full-screen — tracked as
-  // a continuous 0-1 progress tied directly to the live zoom scale (not a one-time animation), so
-  // a tiny pinch only grows the box a tiny bit instead of it popping straight to full-screen the
-  // instant scale crosses 1. Reaches full-screen once scale hits NESTING_PREVIEW_FULLSCREEN_ZOOM;
-  // pinching back out (or tapping the X that fades in top-right as this rises) shrinks it back the
-  // same way, in lockstep with the gesture, since nothing here uses a CSS transition.
-  const NESTING_PREVIEW_FULLSCREEN_ZOOM = 2.2;
-  const nestingPreviewFullscreenProgress = isCompactProjectViewport
-    ? Math.max(0, Math.min(1, (nestingPreviewScale - 1) / (NESTING_PREVIEW_FULLSCREEN_ZOOM - 1)))
-    : 0;
-  const isNestingPreviewFullscreen = nestingPreviewFullscreenProgress > 0;
+  // Mobile: pinching in on the sheet (not a tap) is what grows it toward full-screen. See
+  // nestingPreviewFullscreenProgress's own definition further down (after the box's small/full
+  // pixel sizes are known) for how this is actually computed.
   const [nestingTooltip, setNestingTooltip] = useState<null | {
     text: string;
     x: number;
@@ -22769,7 +22761,9 @@ export default function ProjectDetailsPage() {
     const touch = e.touches[0];
     const panel = cncMobileVisibilityPanelRef.current;
     if (!touch || !panel || !isCncMobileVisibilityOpen) return;
-    if ((e.target as HTMLElement).closest?.('[data-cnc-visibility-search="true"]')) return;
+    // See Nesting's identical onNestingVisibilityHeaderTouchStart comment — identity check instead
+    // of a closest()-based exclusion list for the search box.
+    if (e.target !== e.currentTarget) return;
     cncMobileVisibilityDragRef.current = {
       startY: touch.clientY,
       dragging: true,
@@ -23632,9 +23626,14 @@ export default function ProjectDetailsPage() {
     const touch = e.touches[0];
     const panel = nestingMobileVisibilityPanelRef.current;
     if (!touch || !panel || !isNestingMobileVisibilityOpen) return;
-    // Don't hijack a touch that starts inside the search field — tapping in to place the caret
-    // or select text shouldn't risk being read as the start of a close-drag.
-    if ((e.target as HTMLElement).closest?.('[data-nesting-visibility-search="true"]')) return;
+    // Only start a close-drag if the touch actually landed on the header's own background, not on
+    // ANY child (search box, input, Show All button) — e.target === e.currentTarget is true only
+    // for the header itself. This replaced a closest()-based exclusion list for the search box
+    // specifically, which kept letting some taps on/near the search field through as "background"
+    // anyway (an event-timing or hit-precision quirk that never showed up in static review) —
+    // checking identity instead of enumerating exclusions makes it airtight regardless of which
+    // descendant, or how imprecisely, was actually touched.
+    if (e.target !== e.currentTarget) return;
     nestingMobileVisibilityDragRef.current = {
       startY: touch.clientY,
       dragging: true,
@@ -29502,8 +29501,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : `min(calc((54vw - 80px) / ${selectedNestingSheetRatio}), calc(100svh - 440px))`
     : "min(48vh, 420px)";
   // Mobile: the SAME small-viewport formula as above, but computed as plain numbers (not a CSS
-  // calc() string) so it can be lerped toward a full-screen size by nestingPreviewFullscreenProgress
-  // — this is what makes the sheet grow smoothly in step with the pinch instead of its container
+  // calc() string) so the box can be grown directly by the live pinch scale (see
+  // nestingPreviewSizeScale below) — this is what makes the sheet grow smoothly in step with the
+  // pinch instead of its container
   // snapping straight to full-screen the instant scale exceeds 1.
   const nestingPreviewWindowWidthPx = typeof window !== "undefined" ? window.innerWidth : 375;
   const nestingPreviewWindowHeightPx = typeof window !== "undefined" ? window.innerHeight : 700;
@@ -29519,8 +29519,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // independently used to.
   const nestingPreviewFullWidthPx = Math.min(nestingPreviewWindowWidthPx, nestingPreviewWindowHeightPx * selectedNestingSheetRatio);
   const nestingPreviewFullHeightPx = Math.min(nestingPreviewWindowWidthPx / selectedNestingSheetRatio, nestingPreviewWindowHeightPx);
-  const nestingPreviewInterpWidthPx = nestingPreviewSmallWidthPx + (nestingPreviewFullWidthPx - nestingPreviewSmallWidthPx) * nestingPreviewFullscreenProgress;
-  const nestingPreviewInterpHeightPx = nestingPreviewSmallHeightPx + (nestingPreviewFullHeightPx - nestingPreviewSmallHeightPx) * nestingPreviewFullscreenProgress;
+  // The pinch scale (1..up to 4, see nestingPreviewScale) at which the box would exactly reach its
+  // full-screen size — always >= 1, since "full" fits a strictly larger area (the whole window)
+  // than "small" (window minus header/stats/padding) does. Driving the box's OWN width/height
+  // directly by min(scale, this cap) — not by a separately-shaped 0..1 progress curve toward a
+  // fixed pixel target — is what keeps the box's growth factor matched to the content's own zoom
+  // factor: pinching to 1.5x now genuinely makes the box 1.5x its resting size (up to the point it
+  // hits the screen's edges), instead of the box's growth rate being whatever unrelated ratio
+  // happened to fall out of interpolating toward a fixed "full-screen" pixel size over a 0..1
+  // curve — the box and the zoom now visibly grow at the same rate, not just start and end
+  // together with a different rate in between.
+  const nestingPreviewGrowthCapScale = nestingPreviewSmallWidthPx > 0 ? nestingPreviewFullWidthPx / nestingPreviewSmallWidthPx : 1;
+  const nestingPreviewSizeScale = isCompactProjectViewport ? Math.min(nestingPreviewScale, nestingPreviewGrowthCapScale) : 1;
+  const nestingPreviewInterpWidthPx = nestingPreviewSmallWidthPx * nestingPreviewSizeScale;
+  const nestingPreviewInterpHeightPx = nestingPreviewSmallHeightPx * nestingPreviewSizeScale;
+  // Reaches 1 exactly when the box's own growth above hits its cap (not at some fixed, unrelated
+  // pinch-scale constant) — driving the overlay's position lerp, the fade-in exit button, and the
+  // "tap backdrop to reset zoom vs. close the popup" gate below in a way that stays consistent with
+  // what the box itself is actually doing.
+  const nestingPreviewFullscreenProgress = isCompactProjectViewport && nestingPreviewGrowthCapScale > 1
+    ? Math.max(0, Math.min(1, (nestingPreviewSizeScale - 1) / (nestingPreviewGrowthCapScale - 1)))
+    : (isCompactProjectViewport && nestingPreviewScale > 1 ? 1 : 0);
+  const isNestingPreviewFullscreen = nestingPreviewFullscreenProgress > 0;
   // The floating overlay's own screen position — lerps from exactly on top of the static slot
   // (measured above) at progress 0, to centered (letterboxed, since the ratio-preserving full size
   // above generally doesn't fill BOTH window dimensions at once) at progress 1. Falls back to the
@@ -40552,10 +40572,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
                   onClick={(e) => {
-                    // Belt-and-suspenders alongside the search wrapper's own stopPropagation —
-                    // checks the actual tap target directly instead of relying solely on a
-                    // descendant having stopped it from bubbling this far.
-                    if ((e.target as HTMLElement).closest?.('[data-cnc-visibility-search="true"]')) return;
+                    // Only closes for a tap on the header's own background — see Nesting's
+                    // identical comment for why this replaced a closest()-based exclusion check.
+                    if (e.target !== e.currentTarget) return;
                     setIsCncMobileVisibilityOpen(false);
                   }}
                   onTouchStart={onCncVisibilityHeaderTouchStart}
@@ -44097,10 +44116,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
                     style={{ borderColor: projectPalette.border, backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
                     onClick={(e) => {
-                      // Belt-and-suspenders alongside the search wrapper's own stopPropagation —
-                      // checks the actual tap target directly instead of relying solely on a
-                      // descendant having stopped it from bubbling this far.
-                      if ((e.target as HTMLElement).closest?.('[data-nesting-visibility-search="true"]')) return;
+                      // Only closes for a tap on the header's own background — e.target ===
+                      // e.currentTarget is true only when nothing else (search box, input, Show
+                      // All button) was actually hit. See onNestingVisibilityHeaderTouchStart's own
+                      // comment for why this replaced a closest()-based exclusion check.
+                      if (e.target !== e.currentTarget) return;
                       setIsNestingMobileVisibilityOpen(false);
                     }}
                     onTouchStart={onNestingVisibilityHeaderTouchStart}

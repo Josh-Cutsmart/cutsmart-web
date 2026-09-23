@@ -704,7 +704,10 @@ export function AppShell({
     // to stop growing past 100px while the finger kept moving, which read as the tab bar/banner
     // "sticking" mid-drag instead of tracking the finger — now it just keeps stretching with the
     // drag, however far that goes; only the arming threshold below stays fixed.
-    const pulled = dy * 0.5;
+    // 1:1 with the finger now (no 0.5 damping) — the banner is the only thing moving at all these
+    // days (see its own comment), so there's nothing left for it to feel out of step with; a
+    // damping factor here just meant its height undershot how far the finger had actually moved.
+    const pulled = dy;
     pull.armed = pulled >= PULL_ACTION_THRESHOLD_PX;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
@@ -2638,17 +2641,18 @@ export function AppShell({
           here, it stacks normally against the tab bar. Shown on every mobile page regardless of
           chromeHidden (fullscreen views included) — only the "Mobile Top Nav Bar" preference turns
           the gesture off.
-          Positioned to start right BELOW the tab bar's fixed 48px (not top-0, and no longer pushing
-          that bar or the page down to "reveal" itself) — it grows in height and overlays on top of
-          the page's own top edge instead, so the tab bar and page never move at all, only this
-          does. z-[150] already puts it above the page's own normal-stacking content; a solid
-          background (not just the individual zones', which are transparent at rest) is what
-          actually keeps the page from showing through underneath while it's mid-grow. */}
+          Starts at the true top (top-0), growing down OVER the tab bar (z-[150] against its
+          z-[95]) rather than pushing it down or starting below it — it no longer moves the tab bar
+          or the page at all (see their own comments), so this is the only thing that changes, and
+          it should visually read as sliding out from above/in front of the tab bar as it grows,
+          not emerging from underneath it. A solid background (not just the individual zones',
+          which are transparent at rest) is what keeps the page from showing through underneath
+          while it's mid-grow. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
           aria-hidden="true"
-          className="fixed left-0 right-0 top-12 z-[150] flex overflow-hidden border-b"
+          className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
           style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)", backgroundColor: "var(--panel-bg)" }}
         >
           <div

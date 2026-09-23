@@ -106,10 +106,16 @@ export function useSwipeToClose(
         backdrop.style.transition = "none";
         backdrop.style.opacity = "0";
       }
-      // Force a reflow so the browser actually paints the closed position above before the
-      // transition below is applied — otherwise both style writes coalesce into one frame and
-      // there's nothing to animate from.
+      // Force a reflow on BOTH the panel and the page it pushes so the browser actually paints
+      // their closed positions above before the transition below is applied — otherwise both
+      // style writes coalesce into one frame and there's nothing to animate from. Reading only the
+      // panel's own offsetWidth here (not the push target's too) left room for the two elements'
+      // CSS transitions to start on different frames — a fixed head-start/lag baked in from the
+      // very first frame of the animation and held for its entire duration, reading as the page
+      // steadily pulling away from the panel while it slides open. Reading both up front makes
+      // sure neither one is still mid-flush when the transition below kicks in for either.
       void panel.offsetWidth;
+      if (pushRef?.current) void pushRef.current.offsetWidth;
       panel.style.transition = transition;
       panel.style.transform = "translateX(0px)";
       applyPush(1, transition, panelWidthPx);
