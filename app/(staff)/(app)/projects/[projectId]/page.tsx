@@ -6709,6 +6709,49 @@ export default function ProjectDetailsPage() {
     textColor: string;
   }>(null);
   const nestingPreviewViewportRef = useRef<HTMLDivElement | null>(null);
+  // FLIP animation for the small-preview <-> full-screen transition (mobile only): rather than the
+  // box's size/position just snapping between the two layouts, this makes it visually grow out of
+  // (or shrink back into) wherever it was an instant ago — same technique as
+  // useGlassModalPopOrigin's own "grow out of the button that opened it", just triggered by the
+  // pinch-derived isNestingPreviewFullscreen flipping instead of an isOpen prop.
+  //
+  // nestingPreviewFlipPrevRectRef is updated on EVERY render (by the second effect below, declared
+  // AFTER this one so it always runs second) to the viewport's just-rendered geometry — so by the
+  // time the FIRST effect below runs on some LATER render where isNestingPreviewFullscreen has
+  // changed, that ref still holds the geometry from the render before the flip, not the new one.
+  const nestingPreviewFlipPrevRectRef = useRef<DOMRect | null>(null);
+  const nestingPreviewFlipPrevFullscreenRef = useRef(false);
+  useLayoutEffect(() => {
+    const viewport = nestingPreviewViewportRef.current;
+    const prevRect = nestingPreviewFlipPrevRectRef.current;
+    const wasFullscreen = nestingPreviewFlipPrevFullscreenRef.current;
+    if (viewport && prevRect && wasFullscreen !== isNestingPreviewFullscreen) {
+      const newRect = viewport.getBoundingClientRect();
+      const scaleX = prevRect.width / newRect.width || 1;
+      const scaleY = prevRect.height / newRect.height || 1;
+      const translateX = (prevRect.left + prevRect.width / 2) - (newRect.left + newRect.width / 2);
+      const translateY = (prevRect.top + prevRect.height / 2) - (newRect.top + newRect.height / 2);
+      viewport.style.transition = "none";
+      viewport.style.transformOrigin = "center center";
+      viewport.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
+      void viewport.offsetWidth;
+      viewport.style.transition = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)";
+      viewport.style.transform = "translate(0px, 0px) scale(1, 1)";
+      const clearInlineStyles = () => {
+        viewport.style.transition = "";
+        viewport.style.transform = "";
+        viewport.style.transformOrigin = "";
+      };
+      viewport.addEventListener("transitionend", clearInlineStyles, { once: true });
+    }
+    nestingPreviewFlipPrevFullscreenRef.current = isNestingPreviewFullscreen;
+  });
+  useLayoutEffect(() => {
+    const viewport = nestingPreviewViewportRef.current;
+    if (viewport) {
+      nestingPreviewFlipPrevRectRef.current = viewport.getBoundingClientRect();
+    }
+  });
   const nestingPreviewGestureRef = useRef<{
     mode: "none" | "pan" | "pinch";
     startScale: number;
@@ -44261,6 +44304,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
           {shouldRenderNestingSheetPreview && selectedNestingSheet && (
             <div
+              data-app-gesture-exempt="true"
               className={`glass-modal-backdrop fixed inset-0 z-[200] ${
                 isCompactProjectViewport && isNestingPreviewFullscreen ? "p-0" : isCompactProjectViewport ? "p-2" : "p-8"
               }`}

@@ -520,7 +520,7 @@ export function AppShell({
   // useSwipeToClose's job, inside each panel) open the left nav or notifications, mirroring how
   // swiping an open panel closes it. Same axis-lock approach as useSwipeToClose (6px of movement
   // before committing to horizontal vs vertical) so a vertical scroll never gets hijacked.
-  const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  const mainSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical"; horizontalExempt: boolean } | null>(null);
   const MAIN_SWIPE_OPEN_THRESHOLD_PX = 70;
   // Live-drag state for the OPEN side of this gesture — separate from useSwipeToClose's own
   // internal drag state (which only ever runs once a panel is ALREADY open, for the CLOSE side).
@@ -632,23 +632,31 @@ export function AppShell({
     applyPullZoneStyles("dashboard", false);
   };
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
-    // A page's own horizontal swiper (e.g. the dashboard's board-view columns, or a fullscreen
-    // room-tab strip) needs the same left/right drag gesture for its own purposes — bail out
-    // entirely rather than fight it for the same touch. data-app-gesture-exempt covers the same
-    // idea for a page's own VERTICAL drag surface (e.g. Nesting/CNC's mobile Visibility slide-up
-    // panel, which owns its own open/close drag) — without it, tapping into that panel's search
-    // box could get swept into this page-level pull-to-reveal/nav-swipe system and closed.
-    const startedOnHorizontalScroller = (event.target as HTMLElement | null)?.closest(
-      '[data-horizontal-swipe-scroll="true"], [data-app-gesture-exempt="true"]',
-    );
-    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnHorizontalScroller) {
+    // data-app-gesture-exempt is a page surface that owns BOTH axes of its own touch handling
+    // entirely (e.g. Nesting/CNC's mobile Visibility slide-up panel, or the sheet preview's
+    // pinch-zoom) — without it, tapping into that panel's search box, or pinching the preview,
+    // could get swept into this page-level pull-to-reveal/nav-swipe system.
+    //
+    // data-horizontal-swipe-scroll is narrower: a page's own horizontal swiper (e.g. the
+    // dashboard's board-view columns) needs the same left/right drag gesture for its own
+    // purposes, so THAT direction should stay hands-off — but a touch that starts there can still
+    // resolve to a genuinely VERTICAL drag (e.g. a column that's already scrolled to its own top,
+    // handed the scroll off to the page — the page moving further is a vertical gesture, not a
+    // horizontal one), and that should still be free to arm pull-to-reveal/reload like anywhere
+    // else on the page. So this one is only checked once the axis is known, in onMainTouchMove's
+    // horizontal branch, not bailed out of here.
+    const startedOnGestureExempt = (event.target as HTMLElement | null)?.closest('[data-app-gesture-exempt="true"]');
+    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt) {
       mainSwipeStartRef.current = null;
       pullDashboardRef.current = null;
       return;
     }
+    const startedOnHorizontalScroller = Boolean(
+      (event.target as HTMLElement | null)?.closest('[data-horizontal-swipe-scroll="true"]'),
+    );
     const touch = event.touches[0];
     if (!touch) return;
-    mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+    mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "", horizontalExempt: startedOnHorizontalScroller };
     mainOpenDragRef.current.kind = null;
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
     if (alreadyAtTop && mobileTopBarEnabled) {
@@ -670,6 +678,10 @@ export function AppShell({
       start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
     }
     if (start.axis === "horizontal") {
+      // The touch started on the page's own horizontal swiper (e.g. dashboard board columns) —
+      // leave it alone entirely so the native horizontal scroll-snap keeps working, same as
+      // before. A vertical resolve for the same touch is NOT covered by this — see onMainTouchStart.
+      if (start.horizontalExempt) return;
       const dx = touch.clientX - start.x;
       // First tick of a horizontal drag decides which panel it's opening and fires the real
       // state update right away — this is what mounts the panel (via useSwipeToClose's own
