@@ -37,7 +37,8 @@ export type CutlistRow = {
   fixedShelfDrilling?: string;
   adjustableShelfDrilling?: string;
   cabinetryKind?: "base" | "wall";
-  cabinetryClashBottom?: boolean;
+  // "" | "Bottom" | "Top/Bottom" — which shelf edge(s) clash on a Cabinetry row.
+  cabinetryClashBottom?: string;
   cabinetryClashBottomManual?: boolean;
   // Base cabinets get 2 Rails instead of a full Top by default (see buildCabinetryDerivedPieces) —
   // this opts a specific Base cabinet back into a full Top anyway. Wall cabinets always keep a

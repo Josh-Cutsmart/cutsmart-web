@@ -25,8 +25,9 @@ import {
 } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
-import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { retryAsync } from "@/lib/load-retry";
+import { hasPermissionKey, invalidateCompanyAccessCache, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
+import { invalidateCompanyRoleOverridesCache } from "@/lib/membership";
 import { type RoleRow, normalizeRoles, normalizeRoleKey } from "@/lib/company-roles";
 import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
@@ -1307,9 +1308,6 @@ export default function CompanySettingsPage() {
   // Confirm then looked like nothing happened at all.
   const [staffRemovalError, setStaffRemovalError] = useState("");
   const [showJoinKey, setShowJoinKey] = useState(false);
-  const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
-  const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
-  const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
   const openStaffRoleMenuRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState({
     name: "",
@@ -1626,15 +1624,16 @@ export default function CompanySettingsPage() {
     return sections.filter((s) => s.label.toLowerCase().includes(q));
   }, [search]);
 
+  const access = useCompanyAccess();
+
   const currentMemberRole = useMemo(() => {
     const fromMembership = staff.find((m) => m.uid === user?.uid)?.role;
-    const fromEffective = effectiveCompanyRole;
     const fromUser = (user as { role?: string } | null)?.role;
-    if (companyAccessResolved) {
-      return String(fromMembership ?? fromEffective ?? fromUser ?? "").trim().toLowerCase();
+    if (access.status === "ready") {
+      return String(fromMembership ?? access.role ?? fromUser ?? "").trim().toLowerCase();
     }
     return String(fromMembership ?? fromUser ?? "").trim().toLowerCase();
-  }, [companyAccessResolved, effectiveCompanyRole, staff, user]);
+  }, [access.role, access.status, staff, user]);
 
   // Unverified accounts never actually reach this page (see app/(app)/layout.tsx's own
   // VerifyEmailGate), but these guards stay as a second layer of defense in case that gate is
@@ -1643,69 +1642,38 @@ export default function CompanySettingsPage() {
   const canEditCompanySettings = isUserVerified;
 
   const canAddStaff = useMemo(() => {
-    if (currentMemberRole === "owner" || currentMemberRole === "admin") {
+    if (isOwnerOrAdmin(currentMemberRole)) {
       return true;
     }
-    const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
-    return perms.some((p) => String(p).trim().toLowerCase() === "staff.add");
-  }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
+    const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
+    return hasPermissionKey(perms, "staff.add");
+  }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
   const canChangeStaffDisplayName = useMemo(() => {
     if (currentMemberRole === "owner") return true;
-    const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
-    return perms.some((p) => String(p).trim().toLowerCase() === "staff.change.display_name");
-  }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
+    const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
+    return hasPermissionKey(perms, "staff.change.display_name");
+  }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
   const canChangeStaffRole = useMemo(() => {
     if (currentMemberRole === "owner") return true;
-    const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
-    return perms.some((p) => String(p).trim().toLowerCase() === "staff.change.role");
-  }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
+    const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
+    return hasPermissionKey(perms, "staff.change.role");
+  }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
   const canRemoveStaff = useMemo(() => {
     if (currentMemberRole === "owner") return true;
-    const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
-    return perms.some((p) => String(p).trim().toLowerCase() === "staff.remove");
-  }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
+    const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
+    return hasPermissionKey(perms, "staff.remove");
+  }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
   const canAccessCompanySettings = useMemo(() => {
-    if (currentMemberRole === "owner" || currentMemberRole === "admin") {
+    if (isOwnerOrAdmin(currentMemberRole)) {
       return true;
     }
-    const perms = companyAccessResolved ? effectiveCompanyPermissions : Array.isArray(user?.permissions) ? user.permissions : [];
-    return perms.some((p) => String(p).trim().toLowerCase() === "company.settings");
-  }, [companyAccessResolved, currentMemberRole, effectiveCompanyPermissions, user?.permissions]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadCompanyAccess = async () => {
-      if (!cancelled) {
-        setCompanyAccessResolved(false);
-      }
-      const storedCompanyId =
-        typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
-      const directCompanyId = String(user?.companyId || "").trim();
-      const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
-      const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-      if (!user?.uid || !companyId) {
-        if (!cancelled) {
-          setEffectiveCompanyRole(String(user?.role || "").trim().toLowerCase());
-          setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
-          setCompanyAccessResolved(true);
-        }
-        return;
-      }
-      const companyAccess = await fetchCompanyAccess(companyId, user.uid);
-      if (cancelled) return;
-      setEffectiveCompanyRole(String(companyAccess?.role || user?.role || "").trim().toLowerCase());
-      setEffectiveCompanyPermissions(companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []));
-      setCompanyAccessResolved(true);
-    };
-    void loadCompanyAccess();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
+    const perms = access.status === "ready" ? access.permissionKeys : Array.isArray(user?.permissions) ? user.permissions : [];
+    return hasPermissionKey(perms, "company.settings");
+  }, [access.permissionKeys, access.status, currentMemberRole, user?.permissions]);
 
   const staffRoleOptions = useMemo(() => {
     const merged = new Map<string, RoleRow>();
@@ -1895,6 +1863,7 @@ export default function CompanySettingsPage() {
           : member,
       ),
     );
+    invalidateCompanyAccessCache({ companyId: activeCompanyId });
     setSaveLabel("Saved");
     const previousRole = staffRoleOptions.find((role) => normalizeRoleKey(role.id || role.name) === currentRoleId);
     void addUserNotification(uid, {
@@ -1949,6 +1918,7 @@ export default function CompanySettingsPage() {
           : member,
       ),
     );
+    invalidateCompanyAccessCache({ companyId: activeCompanyId });
     setPendingOwnerTransfer(null);
     setPendingOwnerTransferTargetUid("");
     setSaveLabel("Saved");
@@ -2766,6 +2736,11 @@ export default function CompanySettingsPage() {
       setSaveLabel(`Save failed (${result.error})`);
     }
     if (ok) {
+        // This save includes `roles` (permission definitions) — anyone whose effective
+        // permissions come from a role affected by this change needs a fresh lookup, not a
+        // stale cached one from before the save.
+        invalidateCompanyAccessCache({ companyId: activeCompanyId });
+        invalidateCompanyRoleOverridesCache(activeCompanyId);
         setCompany((prev) => ({
           ...(prev ?? {}),
           ...form,
@@ -3043,12 +3018,27 @@ export default function CompanySettingsPage() {
 
   return (
     <>
-        {!companyAccessResolved ? (
+        {access.status === "loading" ? (
           <div
             className="rounded-[16px] border p-6 text-[13px] font-semibold"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
           >
             Checking access...
+          </div>
+        ) : access.status === "error" ? (
+          <div
+            className="rounded-[16px] border p-6 text-[13px] font-semibold"
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+          >
+            <p>Couldn&apos;t check your access to Company Settings — the connection may be slow or offline.</p>
+            <button
+              type="button"
+              onClick={() => access.retry()}
+              className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+            >
+              Retry
+            </button>
           </div>
         ) : !canAccessCompanySettings ? (
           <div
@@ -5449,20 +5439,16 @@ export default function CompanySettingsPage() {
                       </div>
                       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
                           <div className="min-h-0 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
-                            {companyAccessResolved ? (
-                              <SpecsGridEditor
-                                key={specsTemplateEditorKey}
-                                value={specsTemplateGrid ?? createEmptyGrid()}
-                                onChange={onSpecsTemplateChange}
-                                className="flex h-full w-full flex-col"
-                                showPageSizeSelector
-                                companyLogoUrl={form.logoPath || undefined}
-                                companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
-                                companyRoleOptions={specsGroupRoleOptions}
-                              />
-                            ) : (
-                              <div className="flex h-full items-center justify-center text-[12px]" style={{ color: "var(--text-muted)" }}>Loading template…</div>
-                            )}
+                            <SpecsGridEditor
+                              key={specsTemplateEditorKey}
+                              value={specsTemplateGrid ?? createEmptyGrid()}
+                              onChange={onSpecsTemplateChange}
+                              className="flex h-full w-full flex-col"
+                              showPageSizeSelector
+                              companyLogoUrl={form.logoPath || undefined}
+                              companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
+                              companyRoleOptions={specsGroupRoleOptions}
+                            />
                           </div>
                           <div
                             className="overflow-y-auto rounded-[14px] border p-3"
@@ -5559,21 +5545,17 @@ export default function CompanySettingsPage() {
                       </div>
                       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 text-[12px] lg:grid-cols-[1fr_280px]">
                           <div className="min-h-0 overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
-                            {companyAccessResolved ? (
-                              <SpecsGridEditor
-                                key={quoteTemplateEditorKey}
-                                value={quoteGridTemplate ?? createEmptyGrid()}
-                                onChange={onQuoteTemplateChange}
-                                className="flex h-full w-full flex-col"
-                                showPageSizeSelector
-                                companyLogoUrl={form.logoPath || undefined}
-                                companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
-                                groupsSupportPricing
-                                companyRoleOptions={specsGroupRoleOptions}
-                              />
-                            ) : (
-                              <div className="flex h-full items-center justify-center text-[12px]" style={{ color: "var(--text-muted)" }}>Loading template…</div>
-                            )}
+                            <SpecsGridEditor
+                              key={quoteTemplateEditorKey}
+                              value={quoteGridTemplate ?? createEmptyGrid()}
+                              onChange={onQuoteTemplateChange}
+                              className="flex h-full w-full flex-col"
+                              showPageSizeSelector
+                              companyLogoUrl={form.logoPath || undefined}
+                              companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
+                              groupsSupportPricing
+                              companyRoleOptions={specsGroupRoleOptions}
+                            />
                           </div>
                           <div
                             className="overflow-y-auto rounded-[14px] border p-3"

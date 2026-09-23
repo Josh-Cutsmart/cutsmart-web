@@ -8,7 +8,6 @@ import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { useAppTabs } from "@/lib/app-tabs-context";
-import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import {
   fetchCompanyDoc,
   fetchCompanyMembers,
@@ -25,6 +24,7 @@ import type { Project } from "@/lib/types";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
 import { captureGlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 type StatusRow = { name: string; color: string };
 type RoleRow = { id: string; name: string; color: string };
@@ -650,9 +650,7 @@ export default function DashboardPage() {
   const staffCardRef = useRef<HTMLDivElement | null>(null);
   const staffModalTimerRef = useRef<number | null>(null);
   const staffMembersScrollRef = useRef<HTMLDivElement | null>(null);
-  const [effectiveCompanyRole, setEffectiveCompanyRole] = useState("");
-  const [effectiveCompanyPermissions, setEffectiveCompanyPermissions] = useState<string[]>([]);
-  const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
+  const access = useCompanyAccess();
   useEffect(() => {
     if (typeof window === "undefined" || !user?.uid) return;
     try {
@@ -733,15 +731,9 @@ export default function DashboardPage() {
       window.removeEventListener("resize", onScrollOrResize);
     };
   }, []);
-  const canAccessDashboard = useMemo(() => {
-    const role = String(effectiveCompanyRole || user?.role || "").trim().toLowerCase();
-    if (role === "owner" || role === "admin") {
-      return true;
-    }
-    return (effectiveCompanyPermissions.length ? effectiveCompanyPermissions : user?.permissions ?? []).some(
-      (permission) => String(permission || "").trim().toLowerCase() === "company.dashboard.view",
-    );
-  }, [effectiveCompanyPermissions, effectiveCompanyRole, user?.permissions, user?.role]);
+  const canAccessDashboard =
+    access.status === "ready" &&
+    (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "company.dashboard.view"));
 
   useEffect(() => {
     setThemeMode(readThemeMode());
@@ -770,60 +762,6 @@ export default function DashboardPage() {
       window.removeEventListener(DASHBOARD_STAT_CARDS_UPDATED_EVENT, onUpdated as EventListener);
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadCompanyAccess = async () => {
-      if (!cancelled) {
-        setCompanyAccessResolved(false);
-      }
-      try {
-        const storedCompanyId =
-          typeof window !== "undefined"
-            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-            : "";
-        const directCompanyId = String(user?.companyId || "").trim();
-        const fallbackMembership = !directCompanyId && user?.uid
-          ? await withTimeout(
-              retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 }),
-              15000,
-              "Membership lookup timed out",
-            )
-          : null;
-        const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-        if (!user?.uid || !companyId) {
-          if (!cancelled) {
-            setEffectiveCompanyRole(String(user?.role || "").trim().toLowerCase());
-            setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
-            setCompanyAccessResolved(true);
-          }
-          return;
-        }
-        const companyAccess = await withTimeout(
-          retryAsync(() => fetchCompanyAccess(companyId, user.uid!), { attempts: 2, delayMs: 250 }),
-          15000,
-          "Company access lookup timed out",
-        );
-        if (cancelled) return;
-        setEffectiveCompanyRole(String(companyAccess?.role || user?.role || "").trim().toLowerCase());
-        setEffectiveCompanyPermissions(companyAccess?.permissionKeys ?? (Array.isArray(user?.permissions) ? user.permissions : []));
-      } catch {
-        if (!cancelled) {
-          setEffectiveCompanyRole(String(user?.role || "").trim().toLowerCase());
-          setEffectiveCompanyPermissions(Array.isArray(user?.permissions) ? user.permissions : []);
-          setCompanyAccessResolved(true);
-        }
-        return;
-      }
-      if (!cancelled) {
-        setCompanyAccessResolved(true);
-      }
-    };
-    void loadCompanyAccess();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -974,10 +912,10 @@ export default function DashboardPage() {
   const canEditProjectFromDashboard = (project: Project) =>
     projectTabAccess(
       project,
-      String(effectiveCompanyRole || user?.role || "").trim().toLowerCase() || "staff",
+      String(access.role || user?.role || "").trim().toLowerCase() || "staff",
       "general",
       user?.uid,
-      effectiveCompanyPermissions.length ? effectiveCompanyPermissions : user?.permissions ?? [],
+      access.permissionKeys.length ? access.permissionKeys : user?.permissions ?? [],
     ).edit && Boolean(user?.verified);
 
   const openProjectInDashboard = async (projectId: string, projectName?: string) => {
@@ -2162,7 +2100,7 @@ export default function DashboardPage() {
 
   return (
     <>
-          {!companyAccessResolved ? (
+          {access.status === "loading" ? (
             <div
               className="rounded-[14px] p-6 text-[13px] font-semibold"
               style={{
@@ -2173,6 +2111,26 @@ export default function DashboardPage() {
               }}
             >
               Checking access...
+            </div>
+          ) : access.status === "error" ? (
+            <div
+              className="rounded-[14px] p-6 text-[13px] font-semibold"
+              style={{
+                border: `1px solid ${dashboardPalette.border}`,
+                backgroundColor: dashboardPalette.panelBg,
+                color: dashboardPalette.textSoft,
+                boxShadow: dashboardPalette.strongShadow,
+              }}
+            >
+              <p>Couldn&apos;t check your access to the dashboard — the connection may be slow or offline.</p>
+              <button
+                type="button"
+                onClick={() => access.retry()}
+                className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+                style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelBg, color: dashboardPalette.textSoft }}
+              >
+                Retry
+              </button>
             </div>
           ) : !canAccessDashboard ? (
             <div

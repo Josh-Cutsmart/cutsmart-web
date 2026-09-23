@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { MailCheck, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -17,16 +17,13 @@ export function VerifyEmailGate() {
   const { user, logout } = useAuth();
   const { setChromeHidden } = useAppTabs();
   const { code, setCode, error, busy, resendCooldown, onSend, onConfirm } = useAccountVerification();
-
-  // Fire the first code automatically so a freshly-registered user doesn't have to know to press
-  // "Resend" themselves — the registration/company-creation flows already trigger a send too, but
-  // this covers the case where that earlier fire-and-forget attempt failed silently (e.g. Resend
-  // was briefly down) or where an already-existing unverified account is logging back in without
-  // ever having gone through the registration flow's own send.
-  useEffect(() => {
-    void onSend();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Sending is always an explicit tap now, never a side effect of this gate merely mounting — a
+  // slow/ambiguous membership load used to be able to mount this component for an already-verified
+  // user (see the callers' own membershipStatus guard), and the old auto-send effect turned that
+  // UI glitch into a real, unwanted "we sent you a code" email. The registration/company-creation
+  // flows already trigger their own first send on a genuine fresh signup, so this gate never needs
+  // to assume one is already on its way.
+  const [hasRequestedCode, setHasRequestedCode] = useState(false);
 
   // GlobalAppTabsBar (rendered by the root layout, above this component) only knows to hide
   // itself on the pre-app "/" and "/company-onboarding" routes by pathname — it has no idea this
@@ -67,43 +64,64 @@ export function VerifyEmailGate() {
             Verify your email
           </h1>
           <p className="mt-2 text-[13px] text-[#475467]">
-            We&apos;ve sent a 6-digit code to <span className="font-semibold text-[#0F172A]">{user?.email || "your email"}</span>
+            {hasRequestedCode ? (
+              <>We&apos;ve sent a 6-digit code to <span className="font-semibold text-[#0F172A]">{user?.email || "your email"}</span></>
+            ) : (
+              <>Confirm <span className="font-semibold text-[#0F172A]">{user?.email || "your email"}</span> to continue — we&apos;ll send you a 6-digit code.</>
+            )}
           </p>
         </div>
 
-        <div className="mt-6 space-y-3">
-          <input
-            autoFocus
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void onConfirm();
-              }
-            }}
-            placeholder="6-digit code"
-            inputMode="numeric"
-            className="h-12 w-full rounded-[10px] border border-[#D8DEE8] bg-white/80 px-4 text-center text-[18px] font-bold tracking-[6px] text-[#0F172A] outline-none"
-          />
-          {error ? <p className="text-[12px] font-semibold text-[#B42318]">{error}</p> : null}
-          <button
-            type="button"
-            disabled={busy || code.trim().length !== 6}
-            onClick={() => void onConfirm()}
-            className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-          >
-            {busy ? "Verifying..." : "Verify"}
-          </button>
-          <button
-            type="button"
-            disabled={busy || resendCooldown > 0}
-            onClick={() => void onSend()}
-            className="h-11 w-full rounded-[10px] border border-[#D8DEE8] bg-white/60 text-[13px] font-bold text-[#334155] hover:brightness-95 disabled:opacity-55"
-          >
-            {resendCooldown > 0 ? `Resend Code (${resendCooldown}s)` : "Resend Code"}
-          </button>
-        </div>
+        {hasRequestedCode ? (
+          <div className="mt-6 space-y-3">
+            <input
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void onConfirm();
+                }
+              }}
+              placeholder="6-digit code"
+              inputMode="numeric"
+              className="h-12 w-full rounded-[10px] border border-[#D8DEE8] bg-white/80 px-4 text-center text-[18px] font-bold tracking-[6px] text-[#0F172A] outline-none"
+            />
+            {error ? <p className="text-[12px] font-semibold text-[#B42318]">{error}</p> : null}
+            <button
+              type="button"
+              disabled={busy || code.trim().length !== 6}
+              onClick={() => void onConfirm()}
+              className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+            >
+              {busy ? "Verifying..." : "Verify"}
+            </button>
+            <button
+              type="button"
+              disabled={busy || resendCooldown > 0}
+              onClick={() => void onSend()}
+              className="h-11 w-full rounded-[10px] border border-[#D8DEE8] bg-white/60 text-[13px] font-bold text-[#334155] hover:brightness-95 disabled:opacity-55"
+            >
+              {resendCooldown > 0 ? `Resend Code (${resendCooldown}s)` : "Resend Code"}
+            </button>
+          </div>
+        ) : (
+          <div className="mt-6 space-y-3">
+            {error ? <p className="text-[12px] font-semibold text-[#B42318]">{error}</p> : null}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setHasRequestedCode(true);
+                void onSend();
+              }}
+              className="h-11 w-full rounded-[10px] bg-[#2F6BFF] text-[13px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+            >
+              {busy ? "Sending..." : "Send Code"}
+            </button>
+          </div>
+        )}
 
         <button
           type="button"

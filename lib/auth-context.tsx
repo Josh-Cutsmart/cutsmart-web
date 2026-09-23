@@ -2,9 +2,11 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -18,13 +20,25 @@ import {
   type User,
 } from "firebase/auth";
 import { auth, hasFirebaseConfig } from "@/lib/firebase";
+import { retryAsync, withTimeout } from "@/lib/load-retry";
 import { fetchPrimaryMembership, fetchUserProfileSummary } from "@/lib/membership";
 import type { AppUser, UserRole } from "@/lib/types";
+
+// "loading": the initial membership/profile fetch for the current sign-in hasn't settled yet.
+// "ready": it succeeded — user.role/companyId/permissions/verified reflect the real data.
+// "error": it failed after retries — user is a bare, minimal fallback (companyId undefined,
+// permissions [], verified undefined) that must NEVER be treated as "this account genuinely has
+// no company/permissions" or "confirmed unverified." Every downstream access/verification check
+// must gate on this being "ready" before trusting a denial — an "error" status calls for a
+// distinct "couldn't load your account, retry" state instead.
+export type MembershipStatus = "loading" | "ready" | "error";
 
 interface AuthContextValue {
   user: AppUser | null;
   isLoading: boolean;
   isDemoMode: boolean;
+  membershipStatus: MembershipStatus;
+  retryMembershipLoad: () => void;
   signIn: (email: string, password: string, rememberOnDevice?: boolean) => Promise<void>;
   signInDemo: (role: UserRole) => void;
   logout: () => Promise<void>;
@@ -44,9 +58,15 @@ const REMEMBER_DEVICE_STORAGE_KEY = "cutsmart_web_remember_device";
 // in afterward on the same browser.
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 // A cold, first-time connection (fresh browser, no cached Firestore/Auth state) is measurably
-// slower and more failure-prone than a warm reload — bound how long the membership/profile fetch
-// is allowed to hang so a stalled network call can never leave the loading screen stuck forever.
-const MEMBERSHIP_LOAD_TIMEOUT_MS = 12000;
+// slower and more failure-prone than a warm reload — bound how long a single membership/profile
+// fetch attempt is allowed to hang, and retry a bounded number of times, so a stalled network call
+// can never leave the loading screen stuck forever AND a merely-slow-but-fine connection gets a
+// real second chance instead of one shot before permanently degrading to an "error" status. Total
+// worst case (~12s) matches the old single-timeout budget, but a real success on a well-formed
+// account now typically lands in well under a second — membership resolution is a single indexed
+// query these days, not up to 4 sequential ones (see lib/membership.ts's own comments).
+const MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS = 6000;
+const MEMBERSHIP_LOAD_ATTEMPTS = 2;
 // Same "cold connection can hang forever" concern as MEMBERSHIP_LOAD_TIMEOUT_MS above, but for the
 // auth *subscription* itself — onAuthStateChanged does its own internal IndexedDB-backed
 // auth-state restore before ever invoking its callback, and on a cold tab/flaky first connection
@@ -61,12 +81,6 @@ const MEMBERSHIP_LOAD_TIMEOUT_MS = 12000;
 const AUTH_CALLBACK_TIMEOUT_MS = 10000;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-function timeoutAfter<T>(ms: number): Promise<T> {
-  return new Promise((_resolve, reject) => {
-    window.setTimeout(() => reject(new Error("Membership load timed out")), ms);
-  });
-}
 
 function fromFirebaseUser(
   user: User,
@@ -128,6 +142,94 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
   const [isLoading, setIsLoading] = useState(hasFirebaseConfig);
   const [isDemoMode, setIsDemoMode] = useState(!hasFirebaseConfig);
+  const [membershipStatus, setMembershipStatus] = useState<MembershipStatus>(
+    hasFirebaseConfig ? "loading" : "ready",
+  );
+  // Mirrors `active` (the effect's own cleanup flag) but as a ref, so loadMembership — hoisted out
+  // of the effect below so retryMembershipLoad can call it again later, from outside that effect's
+  // own closure — can still tell whether its caller has since unmounted.
+  const activeRef = useRef(true);
+  // The most recent Firebase user handed to us by onAuthStateChanged, kept for retryMembershipLoad
+  // to re-run against without needing its own subscription.
+  const currentFirebaseUserRef = useRef<User | null>(null);
+
+  const loadMembership = useCallback(async (firebaseUser: User | null) => {
+    if (!firebaseUser) {
+      if (!activeRef.current) return;
+      setUser(null);
+      setIsLoading(false);
+      setIsDemoMode(false);
+      setMembershipStatus("ready");
+      return;
+    }
+
+    setMembershipStatus("loading");
+    try {
+      // Retries a bounded number of times before giving up — see MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS's
+      // own comment for why this replaces a single Promise.race: a merely-slow (not broken)
+      // connection now gets a real second attempt instead of one shot before permanently degrading.
+      const [membership, profile] = await retryAsync(
+        () =>
+          withTimeout(
+            Promise.all([
+              fetchPrimaryMembership(firebaseUser.uid),
+              fetchUserProfileSummary(firebaseUser.uid),
+            ]),
+            MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS,
+            "Membership load timed out",
+          ),
+        { attempts: MEMBERSHIP_LOAD_ATTEMPTS, delayMs: 300 },
+      );
+      if (!activeRef.current) {
+        return;
+      }
+      const resolvedName =
+        membership?.displayName ||
+        profile?.displayName ||
+        firebaseUser.displayName ||
+        fallbackNameFromEmail(firebaseUser.email ?? profile?.email ?? "");
+
+      setUser(
+        {
+          ...fromFirebaseUser(
+            firebaseUser,
+            membership?.role ?? "staff",
+            membership?.companyId || profile?.companyId,
+            resolvedName,
+            profile?.userColor,
+            profile?.mobile,
+            Boolean(profile?.verified),
+            Boolean(profile?.notifyAsCreator),
+          ),
+          permissions: membership?.permissionKeys ?? [],
+        },
+      );
+      setMembershipStatus("ready");
+    } catch {
+      if (!activeRef.current) return;
+      // A genuine, repeated failure (not just one slow attempt — see the retry above) must never
+      // be treated as "this account has no company/permissions" or "confirmed unverified." Build
+      // the minimal identity the Firebase user alone can support — companyId undefined,
+      // permissions [], verified UNDEFINED (never false: false must only ever mean "confirmed
+      // unverified") — and mark membershipStatus "error" so every consumer (dashboard, project
+      // page, verification gate) can render a distinct "couldn't load your account — retry" state
+      // instead of silently treating this as a real, final, empty-permissions user.
+      setUser({
+        ...fromFirebaseUser(firebaseUser, "staff", undefined, undefined, undefined, undefined, undefined),
+        permissions: [],
+      });
+      setMembershipStatus("error");
+    } finally {
+      if (activeRef.current) {
+        setIsLoading(false);
+        setIsDemoMode(false);
+      }
+    }
+  }, []);
+
+  const retryMembershipLoad = useCallback(() => {
+    void loadMembership(currentFirebaseUserRef.current);
+  }, [loadMembership]);
 
   useEffect(() => {
     if (!hasFirebaseConfig || !auth) {
@@ -135,14 +237,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const firebaseAuth = auth;
-    let active = true;
+    activeRef.current = true;
     let unsubscribeAuth: (() => void) | null = null;
     let authCallbackFired = false;
     const fallbackTimer = window.setTimeout(() => {
-      if (!active || authCallbackFired) return;
+      if (!activeRef.current || authCallbackFired) return;
       setUser(null);
       setIsLoading(false);
       setIsDemoMode(false);
+      setMembershipStatus("ready");
     }, AUTH_CALLBACK_TIMEOUT_MS);
 
     const boot = async () => {
@@ -154,84 +257,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Ignore persistence bootstrap issues and continue with auth observer.
       }
 
-      if (!active) return;
+      if (!activeRef.current) return;
       try {
-      unsubscribeAuth = onAuthStateChanged(firebaseAuth, (firebaseUser) => {
-      authCallbackFired = true;
-      window.clearTimeout(fallbackTimer);
-      const loadMembership = async () => {
-        if (!firebaseUser) {
-          if (!active) {
-            return;
-          }
-          setUser(null);
-          setIsLoading(false);
-          setIsDemoMode(false);
-          return;
-        }
-
-        try {
-          const [membership, profile] = await Promise.race([
-            Promise.all([
-              fetchPrimaryMembership(firebaseUser.uid),
-              fetchUserProfileSummary(firebaseUser.uid),
-            ]),
-            timeoutAfter<[Awaited<ReturnType<typeof fetchPrimaryMembership>>, Awaited<ReturnType<typeof fetchUserProfileSummary>>]>(MEMBERSHIP_LOAD_TIMEOUT_MS),
-          ]);
-          if (!active) {
-            return;
-          }
-          const resolvedName =
-            membership?.displayName ||
-            profile?.displayName ||
-            firebaseUser.displayName ||
-            fallbackNameFromEmail(firebaseUser.email ?? profile?.email ?? "");
-
-          setUser(
-            {
-              ...fromFirebaseUser(
-                firebaseUser,
-                membership?.role ?? "staff",
-                membership?.companyId || profile?.companyId,
-                resolvedName,
-                profile?.userColor,
-                profile?.mobile,
-                Boolean(profile?.verified),
-                Boolean(profile?.notifyAsCreator),
-              ),
-              permissions: membership?.permissionKeys ?? [],
-            },
-          );
-        } catch {
-          if (!active) return;
-          // A slow/failed membership or profile fetch (most likely on a cold, first-time
-          // connection with no cached Firestore state) should never leave the loading screen
-          // stuck forever — fall back to a basic signed-in user built straight from the Firebase
-          // user object so the app is still usable; the user can retry whatever needed the
-          // missing membership/profile data once it's actually reachable.
-          setUser({
-            ...fromFirebaseUser(firebaseUser, "staff", undefined, undefined, undefined, undefined, false),
-            permissions: [],
-          });
-        } finally {
-          if (active) {
-            setIsLoading(false);
-            setIsDemoMode(false);
-          }
-        }
-      };
-
-      void loadMembership();
-      });
+        unsubscribeAuth = onAuthStateChanged(firebaseAuth, (firebaseUser) => {
+          authCallbackFired = true;
+          window.clearTimeout(fallbackTimer);
+          currentFirebaseUserRef.current = firebaseUser;
+          void loadMembership(firebaseUser);
+        });
       } catch {
         // onAuthStateChanged threw synchronously (corrupted IndexedDB, restricted storage state,
         // etc.) — same treat-as-signed-out fallback as the timeout above, just immediate since
         // there's no callback left to ever wait on.
         window.clearTimeout(fallbackTimer);
-        if (active) {
+        if (activeRef.current) {
           setUser(null);
           setIsLoading(false);
           setIsDemoMode(false);
+          setMembershipStatus("ready");
         }
       }
     };
@@ -239,17 +282,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void boot();
 
     return () => {
-      active = false;
+      activeRef.current = false;
       window.clearTimeout(fallbackTimer);
       if (unsubscribeAuth) unsubscribeAuth();
     };
-  }, []);
+  }, [loadMembership]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
       isLoading,
       isDemoMode,
+      membershipStatus,
+      retryMembershipLoad,
       signIn: async (email, password, rememberOnDevice = false) => {
         if (!auth) {
           throw new Error("Firebase is not configured.");
@@ -270,6 +315,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setIsDemoMode(true);
         setUser(createDemoUser(role));
+        setMembershipStatus("ready");
       },
       logout: async () => {
         if (typeof window !== "undefined") {
@@ -313,7 +359,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser((prev) => (prev ? { ...prev, verified } : prev));
       },
     }),
-    [isDemoMode, isLoading, user],
+    [isDemoMode, isLoading, user, membershipStatus, retryMembershipLoad],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

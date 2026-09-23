@@ -6,6 +6,7 @@ import { Check, ChevronRight, RotateCcw, Search, Trash2, X } from "lucide-react"
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyAccess } from "@/lib/membership";
+import { hasPermissionKey, isOwnerOrAdmin } from "@/lib/use-company-access";
 import {
   fetchCompanyDoc,
   fetchDeletedProjects,
@@ -410,14 +411,13 @@ export default function RecentlyDeletedPage() {
     setCreatorColorByUid(userColorMap);
     if (selectedCompanyId && user?.uid) {
       const access = await retryAsync(() => fetchCompanyAccess(selectedCompanyId, user.uid), { attempts: 2, delayMs: 300 });
-      const role = String(access?.role || "").trim().toLowerCase();
+      // Matches leads.tsx's own semantics for the same permission (was previously a bespoke
+      // inline check that only recognized the literal "company.*"/"leads.*" wildcards and never
+      // the actual "leads.view"/"leads.view.others" keys those wildcards are supposed to grant).
       const permitted =
-        role === "owner" ||
-        role === "admin" ||
-        (access?.permissionKeys ?? []).some((item) => {
-          const normalized = String(item || "").trim().toLowerCase();
-          return normalized === "company.*" || normalized === "leads.*";
-        });
+        isOwnerOrAdmin(access?.role) ||
+        hasPermissionKey(access?.permissionKeys, "leads.view") ||
+        hasPermissionKey(access?.permissionKeys, "leads.view.others");
       setCanAccessDeletedLeads(permitted);
     } else {
       setCanAccessDeletedLeads(false);

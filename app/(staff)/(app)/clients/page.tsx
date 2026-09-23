@@ -5,52 +5,9 @@ import Link from "next/link";
 import { ChevronDown, ChevronRight, Search, Users } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyClientById, fetchCompanyClients, fetchCompanyDoc, type CompanyClientRow } from "@/lib/firestore-data";
-import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { retryAsync } from "@/lib/load-retry";
-
-const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
-
-function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
-  const target = String(key || "").trim().toLowerCase();
-  if (!target) return false;
-  return (permissionKeys ?? []).some((item) => {
-    const normalized = String(item || "").trim().toLowerCase();
-    return normalized === "company.*" || normalized === target;
-  });
-}
-
-function normalizeRoleKey(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_");
-}
-
-function extractRolePermissionKeys(
-  companyDoc: Record<string, unknown> | null | undefined,
-  roleCandidates: Array<unknown>,
-): string[] {
-  const roles = Array.isArray(companyDoc?.roles) ? (companyDoc?.roles as Array<Record<string, unknown>>) : [];
-  if (!roles.length) return [];
-  const wanted = new Set(roleCandidates.map((value) => normalizeRoleKey(value)).filter(Boolean));
-  if (!wanted.size) return [];
-  const out = new Set<string>();
-  for (const role of roles) {
-    const roleKey = normalizeRoleKey(role.id ?? role.name);
-    if (!roleKey || !wanted.has(roleKey)) continue;
-    const permissions =
-      role.permissions && typeof role.permissions === "object" && !Array.isArray(role.permissions)
-        ? (role.permissions as Record<string, unknown>)
-        : {};
-    for (const [key, value] of Object.entries(permissions)) {
-      if (value === true) {
-        out.add(String(key || "").trim());
-      }
-    }
-  }
-  return Array.from(out).filter(Boolean);
-}
+import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 
 function formatClientDate(value: string) {
   const d = new Date(String(value || ""));
@@ -83,15 +40,13 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<CompanyClientRow[]>([]);
   const [clientDetailsById, setClientDetailsById] = useState<Record<string, CompanyClientRow>>({});
   const [expandedClientId, setExpandedClientId] = useState("");
-  const [activeCompanyId, setActiveCompanyId] = useState("");
   const [companyName, setCompanyName] = useState("Company");
   const [loading, setLoading] = useState(true);
   const [detailLoadingClientId, setDetailLoadingClientId] = useState("");
-  const [permissionKeys, setPermissionKeys] = useState<string[]>([]);
-  const [accessResolved, setAccessResolved] = useState(false);
-  const [canViewAllClients, setCanViewAllClients] = useState(false);
 
   const isDarkMode = themeMode === "dark";
+  const access = useCompanyAccess();
+  const activeCompanyId = access.companyId;
 
   useEffect(() => {
     setThemeMode(readThemeMode());
@@ -103,62 +58,33 @@ export default function ClientsPage() {
     return () => window.removeEventListener(THEME_MODE_UPDATED_EVENT, onTheme as EventListener);
   }, []);
 
+  const canViewAllClients =
+    access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "clients.view.all"));
+  const canAccessClients =
+    access.status === "ready" &&
+    (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "clients.view") || canViewAllClients);
+
   useEffect(() => {
+    // Access itself is still loading/erroring — lib/use-company-access.ts's own status drives the
+    // "Checking access..." / error+retry render below; nothing to fetch here yet.
+    if (access.status !== "ready") {
+      return;
+    }
+    if (!activeCompanyId) {
+      setCompanyName("Company");
+      setClients([]);
+      setClientDetailsById({});
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     const load = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-        setAccessResolved(false);
-        const storedCompanyId =
-          typeof window !== "undefined"
-            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-            : "";
-        const membership = user?.uid ? await retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 }) : null;
-        const activeCompanyId = storedCompanyId || String(user?.companyId || membership?.companyId || "").trim();
-        if (!activeCompanyId) {
-          if (!cancelled) {
-            setActiveCompanyId("");
-            setClients([]);
-            setClientDetailsById({});
-            setCompanyName("Company");
-            setPermissionKeys(Array.isArray(user?.permissions) ? user.permissions : []);
-            setAccessResolved(true);
-          }
-          return;
-        }
-        const [companyDoc, access] = await retryAsync(
-          () =>
-            Promise.all([
-              fetchCompanyDoc(activeCompanyId),
-              user?.uid ? fetchCompanyAccess(activeCompanyId, user.uid) : Promise.resolve(null),
-            ]),
-          { attempts: 2, delayMs: 250 },
-        );
+        const companyDoc = await retryAsync(() => fetchCompanyDoc(activeCompanyId), { attempts: 2, delayMs: 250 });
         if (cancelled) return;
-        setActiveCompanyId(activeCompanyId);
-        const roleDerivedPermissions = extractRolePermissionKeys(companyDoc as Record<string, unknown> | null, [
-          access?.roleId,
-          access?.role,
-          user?.role,
-        ]);
-        const nextPermissionKeys = Array.from(
-          new Set([
-            ...(access?.permissionKeys ?? []),
-            ...roleDerivedPermissions,
-            ...(Array.isArray(user?.permissions) ? user.permissions : []),
-          ]),
-        );
         setCompanyName(String(companyDoc?.companyName ?? companyDoc?.name ?? "Company").trim() || "Company");
-        setPermissionKeys(nextPermissionKeys);
-        setAccessResolved(true);
-        const role = String(access?.role || user?.role || "").trim().toLowerCase();
-        const nextCanViewAllClients =
-          role === "owner" ||
-          role === "admin" ||
-          hasPermissionKey(nextPermissionKeys, "clients.view.all");
-        const permitted = nextCanViewAllClients || hasPermissionKey(nextPermissionKeys, "clients.view");
-        setCanViewAllClients(nextCanViewAllClients);
-        if (!permitted) {
+        if (!canAccessClients) {
           setClients([]);
           setClientDetailsById({});
           return;
@@ -168,7 +94,7 @@ export default function ClientsPage() {
           companyClients = await retryAsync(
             async () => {
               const response = await fetch(
-                `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${nextCanViewAllClients ? "all" : "mine"}`,
+                `/api/clients?companyId=${encodeURIComponent(activeCompanyId)}&mode=summary&viewerUid=${encodeURIComponent(String(user?.uid || ""))}&scope=${canViewAllClients ? "all" : "mine"}`,
                 {
                   method: "GET",
                   cache: "no-store",
@@ -180,7 +106,7 @@ export default function ClientsPage() {
               }
               return await fetchCompanyClients(activeCompanyId, {
                 viewerUid: String(user?.uid || "").trim(),
-                includeAll: nextCanViewAllClients,
+                includeAll: canViewAllClients,
               });
             },
             { attempts: 2, delayMs: 300 },
@@ -190,7 +116,7 @@ export default function ClientsPage() {
             () =>
               fetchCompanyClients(activeCompanyId, {
                 viewerUid: String(user?.uid || "").trim(),
-                includeAll: nextCanViewAllClients,
+                includeAll: canViewAllClients,
               }),
             { attempts: 2, delayMs: 300 },
           );
@@ -206,7 +132,6 @@ export default function ClientsPage() {
         if (!cancelled) {
           setClients([]);
           setClientDetailsById({});
-          setAccessResolved(true);
         }
       } finally {
         if (!cancelled) {
@@ -218,13 +143,7 @@ export default function ClientsPage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.companyId, user?.permissions, user?.role, user?.uid]);
-
-  const canAccessClients = useMemo(() => {
-    const role = String(user?.role || "").trim().toLowerCase();
-    if (role === "owner" || role === "admin") return true;
-    return hasPermissionKey(permissionKeys, "clients.view") || hasPermissionKey(permissionKeys, "clients.view.all");
-  }, [permissionKeys, user?.role]);
+  }, [access.status, activeCompanyId, canAccessClients, canViewAllClients, user?.uid]);
 
   const filteredClients = useMemo(() => {
     const q = String(search || "").trim().toLowerCase();
@@ -315,9 +234,21 @@ export default function ClientsPage() {
 
   return (
     <>
-        {!accessResolved ? (
+        {access.status === "loading" ? (
           <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>
             Checking access...
+          </div>
+        ) : access.status === "error" ? (
+          <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>
+            <p>Couldn&apos;t check your access to clients — the connection may be slow or offline.</p>
+            <button
+              type="button"
+              onClick={() => access.retry()}
+              className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+              style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}
+            >
+              Retry
+            </button>
           </div>
         ) : !canAccessClients ? (
           <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: border, backgroundColor: panelBg, color: textSoft }}>

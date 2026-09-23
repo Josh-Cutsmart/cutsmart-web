@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { useAuth } from "@/lib/auth-context";
-import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -21,8 +20,8 @@ import { retryAsync } from "@/lib/load-retry";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
+import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 
-const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const SAMPLE_LEADS_STORAGE_KEY_PREFIX = "cutsmart_sample_leads:";
 const LEADS_BOARD_PREFS_STORAGE_PREFIX = "cutsmart_leads_board_prefs:";
 const LEAD_ARCHIVE_UPDATED_EVENT = "cutsmart_lead_archive_updated";
@@ -187,21 +186,6 @@ function persistSampleLeads(companyId: string, rows: CompanyLeadRow[]) {
   } catch {
     // ignore local storage persistence failure
   }
-}
-
-function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
-  const target = String(key || "").trim().toLowerCase();
-  if (!target) return false;
-  return (permissionKeys ?? []).some((item) => {
-    const normalized = String(item || "").trim().toLowerCase();
-    if (normalized === "company.*" || normalized === target) {
-      return true;
-    }
-    if (normalized === "leads.*" && (target === "leads.view" || target === "leads.view.others")) {
-      return true;
-    }
-    return false;
-  });
 }
 
 function formatLeadDate(value: string) {
@@ -604,10 +588,10 @@ export default function LeadsPage() {
   // in app/(app)/projects/[projectId]/page.tsx's own comment for the fuller reasoning.
   const isUserVerified = Boolean(user?.verified);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
-  const [companyAccessResolved, setCompanyAccessResolved] = useState(false);
-  const [canAccessLeads, setCanAccessLeads] = useState(false);
-  const [canViewOtherLeads, setCanViewOtherLeads] = useState(false);
-  const [activeCompanyId, setActiveCompanyId] = useState("");
+  const access = useCompanyAccess();
+  const activeCompanyId = access.companyId;
+  const canAccessLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view"));
+  const canViewOtherLeads = access.status === "ready" && (isOwnerOrAdmin(access.role) || hasPermissionKey(access.permissionKeys, "leads.view.others"));
   const [leads, setLeads] = useState<CompanyLeadRow[]>([]);
   const [leadDetailsById, setLeadDetailsById] = useState<Record<string, CompanyLeadRow>>({});
   const [search, setSearch] = useState("");
@@ -1150,53 +1134,35 @@ export default function LeadsPage() {
   }, [canViewOtherLeads, currentUserUid]);
 
   useEffect(() => {
+    // Access itself is still loading/erroring — the render below is driven by access.status
+    // directly; nothing to fetch here yet (see canAccessLeads/canViewOtherLeads above, both
+    // derived from `access`).
+    if (access.status !== "ready") {
+      return;
+    }
+    if (activeCompanyId && !sampleLeadsRef.current[activeCompanyId]) {
+      sampleLeadsRef.current[activeCompanyId] = readPersistedSampleLeads(activeCompanyId) ?? buildTemporarySampleLeads(activeCompanyId);
+      persistSampleLeads(activeCompanyId, sampleLeadsRef.current[activeCompanyId]);
+    }
+    if (!activeCompanyId) {
+      setIsLoading(false);
+      return;
+    }
+    let cancelled = false;
     const run = async () => {
       try {
-        if (!user?.uid) {
-          setCompanyAccessResolved(true);
-          setCanAccessLeads(false);
-          setCanViewOtherLeads(false);
-          return;
-        }
-        const storedCompanyId =
-          typeof window !== "undefined" ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim() : "";
-        const directCompanyId = String(user.companyId || "").trim();
-        const fallbackMembership = !directCompanyId
-          ? await retryAsync(() => fetchPrimaryMembership(user.uid!), { attempts: 2, delayMs: 250 })
-          : null;
-        const companyId = storedCompanyId || directCompanyId || String(fallbackMembership?.companyId || "").trim();
-        setActiveCompanyId(companyId);
-        if (companyId && !sampleLeadsRef.current[companyId]) {
-          sampleLeadsRef.current[companyId] = readPersistedSampleLeads(companyId) ?? buildTemporarySampleLeads(companyId);
-          persistSampleLeads(companyId, sampleLeadsRef.current[companyId]);
-        }
-        if (!companyId) {
-          setCompanyAccessResolved(true);
-          setCanAccessLeads(false);
-          setCanViewOtherLeads(false);
-          return;
-        }
-        const [access, companyDoc, userColorMap] = await retryAsync(
+        const [companyDoc, userColorMap] = await retryAsync(
           () =>
             Promise.all([
-              fetchCompanyAccess(companyId, user.uid!),
-              fetchCompanyDoc(companyId),
-              fetchUserColorMapByUids([user.uid!], companyId),
+              fetchCompanyDoc(activeCompanyId),
+              user?.uid ? fetchUserColorMapByUids([user.uid], activeCompanyId) : Promise.resolve({} as Record<string, string>),
             ]),
           { attempts: 2, delayMs: 250 },
         );
-        const role = String(access?.role || "").trim().toLowerCase();
-        const permitted =
-          role === "owner" ||
-          role === "admin" ||
-          hasPermissionKey(access?.permissionKeys, "leads.view");
-        const canViewAll =
-          role === "owner" ||
-          role === "admin" ||
-          hasPermissionKey(access?.permissionKeys, "leads.view.others");
+        if (cancelled) return;
         setCompanyName(String(companyDoc?.name || "").trim());
         setCompanyThemeColor(String(companyDoc?.themeColor || "").trim() || "#2F6BFF");
-        setCurrentUserPinColor(String(userColorMap[String(user.uid || "").trim()] || "").trim());
+        setCurrentUserPinColor(String(userColorMap[String(user?.uid || "").trim()] || "").trim());
         setLeadFormUrl(String(companyDoc?.salesLeadFormUrl || "").trim());
         setLeadStatusRows(normalizeLeadStatuses((companyDoc as Record<string, unknown> | null)?.leadStatuses));
         setFieldLayout(
@@ -1204,25 +1170,26 @@ export default function LeadsPage() {
             ((companyDoc?.integrations as Record<string, unknown> | undefined)?.zapierLeads as Record<string, unknown> | undefined)?.fieldLayout,
           ),
         );
-        setCompanyAccessResolved(true);
-        setCanAccessLeads(permitted);
-        setCanViewOtherLeads(canViewAll);
-        if (!permitted) {
+        if (!canAccessLeads) {
           setLeads([]);
           return;
         }
-        await loadLeads(companyId, canViewAll);
+        await loadLeads(activeCompanyId, canViewOtherLeads);
       } catch {
-        setCompanyAccessResolved(true);
-        setCanAccessLeads(false);
-        setCanViewOtherLeads(false);
-        setLeads([]);
+        if (!cancelled) {
+          setLeads([]);
+        }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     };
     void run();
-  }, [loadLeads, user?.uid, user?.companyId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [access.status, activeCompanyId, canAccessLeads, canViewOtherLeads, loadLeads, user?.uid]);
 
   const getLeadById = useCallback(
     (leadId: string) => {
@@ -1289,12 +1256,12 @@ export default function LeadsPage() {
   );
 
   useEffect(() => {
-    if (!companyAccessResolved || !canAccessLeads || !activeCompanyId) return;
+    if (access.status !== "ready" || !canAccessLeads || !activeCompanyId) return;
     const intervalId = window.setInterval(() => {
       void loadLeads(activeCompanyId);
     }, 4000);
     return () => window.clearInterval(intervalId);
-  }, [activeCompanyId, canAccessLeads, companyAccessResolved, loadLeads]);
+  }, [access.status, activeCompanyId, canAccessLeads, loadLeads]);
 
   useEffect(() => {
     if (!selectedLeadId) return;
@@ -3346,9 +3313,21 @@ export default function LeadsPage() {
 
   return (
     <>
-        {!companyAccessResolved ? (
+        {access.status === "loading" ? (
           <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
             Checking access...
+          </div>
+        ) : access.status === "error" ? (
+          <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>
+            <p>Couldn&apos;t check your access to Leads — the connection may be slow or offline.</p>
+            <button
+              type="button"
+              onClick={() => access.retry()}
+              className="mt-3 inline-flex h-9 items-center rounded-[8px] border px-3 text-[12px] font-bold hover:brightness-95"
+              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+            >
+              Retry
+            </button>
           </div>
         ) : !canAccessLeads ? (
           <div className="rounded-[14px] border p-6 text-[13px] font-semibold" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}>

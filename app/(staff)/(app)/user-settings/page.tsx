@@ -17,6 +17,7 @@ import {
   saveUserProfilePatchDetailed,
 } from "@/lib/firestore-data";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
+import { retryAsync, withTimeout } from "@/lib/load-retry";
 import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import {
   readDashboardStatCardsEnabled,
@@ -213,7 +214,10 @@ export default function UserSettingsPage() {
           ? String(window.localStorage.getItem(ACTIVE_COMPANY_THEME_COLOR_STORAGE_KEY) || "").trim()
           : "";
       const directCompanyId = String(user?.companyId || "").trim();
-      const fallbackMembership = !directCompanyId && user?.uid ? await fetchPrimaryMembership(user.uid) : null;
+      const fallbackMembership =
+        !directCompanyId && user?.uid
+          ? await retryAsync(() => withTimeout(fetchPrimaryMembership(user.uid!), 6000, "Membership lookup timed out"), { attempts: 2, delayMs: 250 }).catch(() => null)
+          : null;
       const membershipCompanyId = String(fallbackMembership?.companyId || "").trim();
 
       const candidateIds = new Set<string>();
@@ -264,7 +268,10 @@ export default function UserSettingsPage() {
 
       if (resolvedId && user?.uid) {
         try {
-          const access = await fetchCompanyAccess(resolvedId, user.uid);
+          const access = await retryAsync(
+            () => withTimeout(fetchCompanyAccess(resolvedId, user.uid!), 6000, "Company access lookup timed out"),
+            { attempts: 2, delayMs: 250 },
+          );
           const roleKey = normalizeRoleKey(access?.roleId || access?.role || user?.role);
           let label = "";
           let color = "";

@@ -321,7 +321,7 @@ export function AppShell({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, logout, isDemoMode } = useAuth();
+  const { user, logout, isDemoMode, membershipStatus } = useAuth();
   const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen, saveAndBackHandler } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
@@ -344,11 +344,15 @@ export function AppShell({
       autoVerifyPromptedUidRef.current = null;
       return;
     }
-    if (!user?.verified && autoVerifyPromptedUidRef.current !== uid) {
+    // membershipStatus === "ready" is required alongside verified === false — a slow/failed
+    // membership load leaves user.verified as an UNKNOWN (not a confirmed false), and without
+    // this guard an already-verified user hitting that fallback got this popup opened purely
+    // from fetch latency, not real account state (the reported "phantom verification prompt").
+    if (membershipStatus === "ready" && user?.verified === false && autoVerifyPromptedUidRef.current !== uid) {
       autoVerifyPromptedUidRef.current = uid;
       setIsAutoVerifyModalOpen(true);
     }
-  }, [user?.uid, user?.verified]);
+  }, [membershipStatus, user?.uid, user?.verified]);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
@@ -582,6 +586,7 @@ export function AppShell({
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
+  const PULL_ACTION_MAX_PX = 100;
   const applyPullZoneStyles = (selected: PullZone, armed: boolean) => {
     const zones: Array<[PullZone, HTMLDivElement | null]> = [
       ["reload", pullReloadZoneRef.current],
@@ -606,10 +611,11 @@ export function AppShell({
   // they can never drift relative to each other), and this is the only thing that changes — it
   // grows in height, positioned to start right below the tab bar's fixed 48px, covering the top of
   // the page as it grows rather than pushing that page down.
+  const PULL_BANNER_RESET_DURATION_MS = 200;
   const resetPullBanner = (animate: boolean) => {
     const banner = pullBannerRef.current;
     if (banner) {
-      banner.style.transition = animate ? "height 200ms ease" : "none";
+      banner.style.transition = animate ? `height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
       banner.style.height = "0px";
     }
     applyPullZoneStyles("dashboard", false);
@@ -641,7 +647,22 @@ export function AppShell({
     if (!touch) return;
     mainSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "", horizontalExempt: startedOnHorizontalScroller };
     mainOpenDragRef.current.kind = null;
-    const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0;
+    // Checking ONLY <main>'s own scrollTop isn't enough — the dashboard's board-view columns
+    // become their own independently-scrollable regions once their sticky panel locks in place
+    // (see dashboard/page.tsx's own setCardListsScrollable), and <main> itself stops advancing
+    // once that happens. That left <main>.scrollTop reading 0 (or some small, stale value) while
+    // the user was genuinely scrolled deep into a locked column's card list, arming the pull-down
+    // menu mid-scroll instead of only at the true top of the page. Walking up from the actual
+    // touch target catches any such nested scrolled region, not just the outer page scroll.
+    const touchTarget = event.target as HTMLElement | null;
+    let hasScrolledAncestor = false;
+    for (let node = touchTarget; node && node !== mainScrollRef.current; node = node.parentElement) {
+      if (node.scrollTop > 0) {
+        hasScrolledAncestor = true;
+        break;
+      }
+    }
+    const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0 && !hasScrolledAncestor;
     if (alreadyAtTop && mobileTopBarEnabled) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
     } else {
@@ -674,9 +695,20 @@ export function AppShell({
         if (dx > 0) {
           mainOpenDragRef.current.kind = "nav";
           setMobileNavOpen(true);
+          // touch-action: none on the whole page for the rest of this gesture — belt-and-braces
+          // alongside preventDefault() below. Dragging open the LEFT (nav) drawer starts right at
+          // the screen's left edge, which on iOS Safari can be claimed by the OS's own "swipe from
+          // edge to go back" gesture recognizer before our touchmove handler ever runs, no matter
+          // how early preventDefault() is called — that's what showed up as the page behind the
+          // drawer doing its own separate native scroll/rubber-band bounce, and as still being
+          // able to scroll vertically mid-drag. Setting touch-action directly is respected earlier
+          // in the browser's own gesture-recognition pipeline than a JS preventDefault() call can
+          // be, which is what actually suppresses it. Reset in onMainTouchEnd.
+          if (typeof document !== "undefined") document.body.style.touchAction = "none";
         } else if (dx < 0) {
           mainOpenDragRef.current.kind = "notif";
           setNotifOpen(true);
+          if (typeof document !== "undefined") document.body.style.touchAction = "none";
         }
       }
       const kind = mainOpenDragRef.current.kind;
@@ -699,15 +731,11 @@ export function AppShell({
     }
     pull.active = true;
     event.preventDefault();
-    // Damped (not 1:1 with the finger) so it reads as resistance, same rubber-band feel as the
-    // native overscroll bounce this replaces — but no longer capped at a fixed max height. It used
-    // to stop growing past 100px while the finger kept moving, which read as the tab bar/banner
-    // "sticking" mid-drag instead of tracking the finger — now it just keeps stretching with the
-    // drag, however far that goes; only the arming threshold below stays fixed.
-    // 1:1 with the finger now (no 0.5 damping) — the banner is the only thing moving at all these
-    // days (see its own comment), so there's nothing left for it to feel out of step with; a
-    // damping factor here just meant its height undershot how far the finger had actually moved.
-    const pulled = dy;
+    // 1:1 with the finger (no damping) up to a fixed max height — the banner is the only thing
+    // that moves at all now (see its own comment), so there's nothing for a 1:1 rate to feel out
+    // of step with; the cap just keeps the reveal from growing indefinitely as the finger keeps
+    // dragging past it.
+    const pulled = Math.min(dy, PULL_ACTION_MAX_PX);
     pull.armed = pulled >= PULL_ACTION_THRESHOLD_PX;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
@@ -724,6 +752,10 @@ export function AppShell({
     const pull = pullDashboardRef.current;
     mainSwipeStartRef.current = null;
     pullDashboardRef.current = null;
+    // Always reset, not just when a nav/notif drag actually happened — cheap no-op otherwise, and
+    // this is the one place that must never leave touch-action stuck at "none" (which would break
+    // scrolling everywhere) no matter which path through this gesture the touch actually took.
+    if (typeof document !== "undefined") document.body.style.touchAction = "";
     // Unconditional now, not gated behind pull?.active — a drag that had already been cancelled
     // mid-gesture (dragged down then back past the start point, which flips .active back to
     // false and does its own mid-drag reset) left nothing to force the push/banner back to their
@@ -737,15 +769,22 @@ export function AppShell({
     }
     if (pull?.active) {
       if (pull.armed) {
-        if (pull.selected === "reload") {
-          window.location.reload();
-        } else if (pull.selected === "dashboard") {
-          router.push("/dashboard");
-        } else if (saveAndBackHandler) {
-          void saveAndBackHandler();
-        } else {
-          router.back();
-        }
+        // Let the banner's own release animation (just kicked off above, via the unconditional
+        // resetPullBanner(true)) actually play before firing the action, instead of it starting to
+        // slide back to hidden and then immediately being torn away by a reload/navigation — this
+        // is what makes it read as "sliding back closed while the task it was released on runs" the
+        // way a native pull-to-refresh spinner does, rather than snapping away instantly.
+        window.setTimeout(() => {
+          if (pull.selected === "reload") {
+            window.location.reload();
+          } else if (pull.selected === "dashboard") {
+            router.push("/dashboard");
+          } else if (saveAndBackHandler) {
+            void saveAndBackHandler();
+          } else {
+            router.back();
+          }
+        }, PULL_BANNER_RESET_DURATION_MS);
       }
       return;
     }
@@ -2702,6 +2741,7 @@ export function AppShell({
           onTouchStart={onMainTouchStart}
           onTouchMove={onMainTouchMove}
           onTouchEnd={onMainTouchEnd}
+          onTouchCancel={onMainTouchEnd}
           style={{
             // Mobile uses svh (not dvh) for its own height here — dvh recalculates live as
             // Safari's address bar shows/hides mid-scroll, and since THIS element is the one

@@ -146,7 +146,7 @@ function describeInviteLookupError(error: unknown, label: string): string {
 
 export default function CompanyOnboardingPage() {
   const router = useRouter();
-  const { user, logout } = useAuth();
+  const { user, logout, membershipStatus } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [hoveredChoice, setHoveredChoice] = useState<"create" | "join" | null>(null);
   const [lockedPreview, setLockedPreview] = useState<"create" | "join" | null>(null);
@@ -576,9 +576,11 @@ export default function CompanyOnboardingPage() {
   };
 
   // A signed-in but unverified account can't reach company creation/joining at all — this is
-  // the other of the two places (besides app/(app)/layout.tsx) an authenticated user can land,
-  // and it's exactly where a fresh registration goes first when no company resolves yet.
-  if (user && !user.verified) {
+  // one of three places (besides app/(app)/layout.tsx and app-shell.tsx's auto-popup) an
+  // authenticated user can land, and it's exactly where a fresh registration goes first when no
+  // company resolves yet. membershipStatus === "ready" is required alongside user.verified ===
+  // false for the same reason as layout.tsx's own identical gate — see its comment.
+  if (user && membershipStatus === "ready" && user.verified === false) {
     return (
       <ProtectedRoute>
         <VerifyEmailGate />

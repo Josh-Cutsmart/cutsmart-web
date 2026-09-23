@@ -40,6 +40,18 @@ export interface CompanyAccessInfo {
 
 const companyRoleOverridesCache = new Map<string, Record<string, string>>();
 
+// This cache never expired on its own — a company doc fetch failure permanently cached an empty
+// override map for that company, and a real staff role-override change made elsewhere was never
+// picked up by an already-open tab without a full reload. Callers that mutate staffRoleIdsByUid
+// (e.g. company-settings' own save handlers) must call this afterward so the next read is fresh.
+export function invalidateCompanyRoleOverridesCache(companyId?: string): void {
+  if (!companyId) {
+    companyRoleOverridesCache.clear();
+    return;
+  }
+  companyRoleOverridesCache.delete(String(companyId).trim());
+}
+
 function normalizeRoleId(raw: unknown): string {
   return String(raw ?? "")
     .trim()
@@ -436,144 +448,55 @@ export async function fetchPrimaryMembership(uid: string): Promise<MembershipInf
     return bestMembership(found);
   }
 
-  // Alternate legacy path: companies/{companyId}/members/{uid}
+  // The three fallbacks that used to live here — collectionGroup("members") by doc id,
+  // collectionGroup("memberships") filtered on a plain "uid" data field, and an unfiltered
+  // collectionGroup("memberships") scan — can never succeed against this app's actual
+  // firestore.rules: a collection-group query is only allowed when Firestore can statically
+  // prove every possible match satisfies the rule, which requires constraining by document ID
+  // the way the query above does. A data-field filter or no filter at all can't be proven safe
+  // (and there's no rule for a "members" collection at all, anywhere), so each of those three
+  // always threw a silently-swallowed permission-denied — pure wasted network round trips (part
+  // of why loading felt slow on a cold connection), never a real safety net.
+  //
+  // The one fallback that IS rules-legitimate: read the user's own profile doc (isSelf(uid)
+  // always allows this) for a companyId hint, then a direct doc get at that company's membership
+  // doc — genuinely useful for the rare account whose membership doc id isn't its own uid.
   try {
-    const byMembersDocId = await getDocs(
-      query(
-        collectionGroup(db, "members"),
-        where(documentId(), "==", uid),
-        limit(50),
-      ),
-    );
-
-    for (const docSnap of byMembersDocId.docs) {
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      const companyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
-      if (!companyId) {
-        continue;
-      }
-
-      const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
-      const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
-      let permissionKeys = collectPermissionKeys(effectiveData);
-      if (roleId) {
-        const cacheKey = `${companyId}::${roleId}`;
-        if (!companyRolePermissionsCache.has(cacheKey)) {
-          const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
-          companyRolePermissionsCache.set(cacheKey, rolePerms);
+    const userSnap = await getDoc(doc(db, "users", uid));
+    const userData = userSnap.exists() ? ((userSnap.data() ?? {}) as Record<string, unknown>) : null;
+    const companyId = userData
+      ? String(userData.companyId ?? userData.activeCompanyId ?? "").trim()
+      : "";
+    if (companyId) {
+      const membershipSnap = await getDoc(doc(db, "companies", companyId, "memberships", uid));
+      if (membershipSnap.exists()) {
+        const data = (membershipSnap.data() ?? {}) as Record<string, unknown>;
+        const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
+        const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
+        let permissionKeys = collectPermissionKeys(effectiveData);
+        if (roleId) {
+          const cacheKey = `${companyId}::${roleId}`;
+          if (!companyRolePermissionsCache.has(cacheKey)) {
+            const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
+            companyRolePermissionsCache.set(cacheKey, rolePerms);
+          }
+          permissionKeys = normalizePermissionKeys([
+            ...permissionKeys,
+            ...(companyRolePermissionsCache.get(cacheKey) ?? []),
+          ]);
         }
-        permissionKeys = normalizePermissionKeys([
-          ...permissionKeys,
-          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
-        ]);
+        const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
+        found.push({
+          role,
+          companyId,
+          displayName: String(effectiveData.displayName ?? "").trim() || undefined,
+          permissionKeys,
+          roleId: roleId || undefined,
+        });
       }
-
-      const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
-      found.push({
-        role,
-        companyId,
-        displayName: String(effectiveData.displayName ?? effectiveData.name ?? "").trim() || undefined,
-        permissionKeys,
-        roleId: roleId || undefined,
-      });
     }
   } catch {
-    // continue fallbacks
-  }
-
-  if (found.length) {
-    return bestMembership(found);
-  }
-
-  try {
-    const snap = await getDocs(
-      query(
-        collectionGroup(db, "memberships"),
-        where("uid", "==", uid),
-        limit(50),
-      ),
-    );
-
-    for (const docSnap of snap.docs) {
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      const companyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
-      if (!companyId) {
-        continue;
-      }
-
-      const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
-      const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
-      let permissionKeys = collectPermissionKeys(effectiveData);
-      if (roleId) {
-        const cacheKey = `${companyId}::${roleId}`;
-        if (!companyRolePermissionsCache.has(cacheKey)) {
-          const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
-          companyRolePermissionsCache.set(cacheKey, rolePerms);
-        }
-        permissionKeys = normalizePermissionKeys([
-          ...permissionKeys,
-          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
-        ]);
-      }
-
-      const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
-      found.push({
-        role,
-        companyId,
-        displayName: String(effectiveData.displayName ?? "").trim() || undefined,
-        permissionKeys,
-        roleId: roleId || undefined,
-      });
-    }
-  } catch {
-    // fallback below
-  }
-
-  if (found.length) {
-    return bestMembership(found);
-  }
-
-  // Legacy fallback: membership doc id can be uid with no `uid` field.
-  try {
-    const snap = await getDocs(query(collectionGroup(db, "memberships"), limit(300)));
-    for (const docSnap of snap.docs) {
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      const uidField = String(data.uid ?? "").trim();
-      const docId = String(docSnap.id ?? "").trim();
-      if (uidField !== uid && docId !== uid) {
-        continue;
-      }
-      const companyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
-      if (!companyId) {
-        continue;
-      }
-
-      const effectiveData = await applyCompanyRoleOverride(companyId, uid, data);
-      const roleId = normalizeRoleId(effectiveData.roleId ?? effectiveData.role);
-      let permissionKeys = collectPermissionKeys(effectiveData);
-      if (roleId) {
-        const cacheKey = `${companyId}::${roleId}`;
-        if (!companyRolePermissionsCache.has(cacheKey)) {
-          const rolePerms = await fetchRolePermissionsForCompany(companyId, roleId);
-          companyRolePermissionsCache.set(cacheKey, rolePerms);
-        }
-        permissionKeys = normalizePermissionKeys([
-          ...permissionKeys,
-          ...(companyRolePermissionsCache.get(cacheKey) ?? []),
-        ]);
-      }
-
-      const role = normalizeRole(effectiveData.roleId ?? effectiveData.role) ?? deriveRoleFromPermissions(permissionKeys) ?? "staff";
-      found.push({
-        role,
-        companyId,
-        displayName: String(effectiveData.displayName ?? "").trim() || undefined,
-        permissionKeys,
-        roleId: roleId || undefined,
-      });
-    }
-  } catch {
-    return null;
+    // no membership found via the profile-doc hint either
   }
 
   return bestMembership(found);
@@ -599,45 +522,14 @@ export async function fetchCompanyAccess(companyId: string, uid: string): Promis
     // continue fallbacks
   }
 
-  // Fallback for schemas where uid is inside doc payload.
-  try {
-    const snap = await getDocs(
-      query(
-        collectionGroup(db, "memberships"),
-        where("uid", "==", userId),
-        limit(100),
-      ),
-    );
-    for (const docSnap of snap.docs) {
-      const parentCompanyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
-      if (parentCompanyId !== cid) {
-        continue;
-      }
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
-    }
-  } catch {
-    // ignore
-  }
-
-  // Last fallback: scan by doc id == uid under collection group.
-  try {
-    const snap = await getDocs(query(collectionGroup(db, "memberships"), limit(500)));
-    for (const docSnap of snap.docs) {
-      const parentCompanyId = String(docSnap.ref.parent.parent?.id ?? "").trim();
-      if (parentCompanyId !== cid) {
-        continue;
-      }
-      if (String(docSnap.id ?? "").trim() !== userId) {
-        continue;
-      }
-      const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
-    }
-  } catch {
-    return accountAccess;
-  }
-
+  // The two fallbacks that used to live here (a collectionGroup("memberships") query filtered on
+  // a plain "uid" data field, and an unfiltered collectionGroup("memberships") scan) can never
+  // succeed against this app's actual firestore.rules — a collection-group query is only allowed
+  // when Firestore can statically prove every possible match satisfies the rule, which the direct
+  // doc-id read above already does correctly; neither of those two shapes can be proven safe, so
+  // they always threw a silently-swallowed permission-denied. Since companyId is already known
+  // here, the direct doc get above is the only rules-legitimate membership check possible — if
+  // it's empty, there's nothing further worth trying.
   return accountAccess;
 }
 

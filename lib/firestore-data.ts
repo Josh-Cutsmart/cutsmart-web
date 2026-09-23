@@ -605,10 +605,13 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
   }
   const database = db;
 
-  // These four lookups are independent of each other (different queries/collections, none reads
-  // another's result) — running them concurrently instead of as a sequential await chain cuts what
-  // was up to 4 round trips down to the slowest single one.
-  const [byDocIdIds, byUidFieldIds, byMembersIds, profileFallbackIds] = await Promise.all([
+  // Two independent lookups, run concurrently. A "uid stored as a field" collectionGroup query
+  // and a collectionGroup("members") query used to live here too — both always threw a silently-
+  // swallowed permission-denied (Firestore can only allow a collection-group query when it can
+  // statically prove every possible match satisfies the security rules, which requires
+  // constraining by document id the way the query below does; a data-field filter can't be proven
+  // safe, and there's no rule for a "members" collection at all) — pure wasted round trips.
+  const [byDocIdIds, profileFallbackIds] = await Promise.all([
     // Primary desktop-compatible path: memberships doc id == uid.
     (async () => {
       try {
@@ -616,26 +619,6 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
           query(collectionGroup(database, "memberships"), where(documentId(), "==", uid), limit(100)),
         );
         return byDocId.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
-      } catch {
-        return [];
-      }
-    })(),
-    // Alternate shape: uid stored as field on membership doc.
-    (async () => {
-      try {
-        const snap = await getDocs(query(collectionGroup(database, "memberships"), where("uid", "==", uid), limit(100)));
-        return snap.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
-      } catch {
-        return [];
-      }
-    })(),
-    // Alternate collection path: companies/{companyId}/members/{uid}
-    (async () => {
-      try {
-        const membersByDocId = await getDocs(
-          query(collectionGroup(database, "members"), where(documentId(), "==", uid), limit(100)),
-        );
-        return membersByDocId.docs.map((docSnap) => docSnap.ref.parent.parent?.id).filter((id): id is string => Boolean(id));
       } catch {
         return [];
       }
@@ -664,7 +647,7 @@ async function fetchCompanyIdsForUser(uid: string): Promise<string[]> {
     })(),
   ]);
 
-  return Array.from(new Set([...byDocIdIds, ...byUidFieldIds, ...byMembersIds, ...profileFallbackIds]));
+  return Array.from(new Set([...byDocIdIds, ...profileFallbackIds]));
 }
 
 async function fetchProjectsFromCompanyJobs(
