@@ -486,7 +486,11 @@ export function AppShell({
   const userInitials = useMemo(() => initials(user?.displayName || "User"), [user?.displayName]);
   const userEmblemColor = String(user?.userColor || "").trim() || companyThemeColor;
   const [isDesktopViewport, setIsDesktopViewport] = useState(false);
-  useEffect(() => {
+  // useLayoutEffect, not useEffect — same reasoning as the project page's own
+  // isCompactProjectViewport: this starts false (mobile-first default) regardless of the real
+  // device, and layout that depends on it would otherwise render wrong for one frame on desktop
+  // before a plain useEffect corrects it after the browser has already painted.
+  useLayoutEffect(() => {
     if (typeof window === "undefined") return;
     const query = window.matchMedia("(min-width: 1024px)");
     setIsDesktopViewport(query.matches);
@@ -630,9 +634,12 @@ export function AppShell({
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
     // A page's own horizontal swiper (e.g. the dashboard's board-view columns, or a fullscreen
     // room-tab strip) needs the same left/right drag gesture for its own purposes — bail out
-    // entirely rather than fight it for the same touch.
+    // entirely rather than fight it for the same touch. data-app-gesture-exempt covers the same
+    // idea for a page's own VERTICAL drag surface (e.g. Nesting/CNC's mobile Visibility slide-up
+    // panel, which owns its own open/close drag) — without it, tapping into that panel's search
+    // box could get swept into this page-level pull-to-reveal/nav-swipe system and closed.
     const startedOnHorizontalScroller = (event.target as HTMLElement | null)?.closest(
-      '[data-horizontal-swipe-scroll="true"]',
+      '[data-horizontal-swipe-scroll="true"], [data-app-gesture-exempt="true"]',
     );
     if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnHorizontalScroller) {
       mainSwipeStartRef.current = null;

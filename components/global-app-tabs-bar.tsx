@@ -87,7 +87,9 @@ export function GlobalAppTabsBar() {
   // shows a full-screen slide-out panel (same treatment as the mobile nav drawer) instead of the
   // small anchored dropdown, which doesn't have room to work well at phone widths.
   const [isDesktopViewport, setIsDesktopViewport] = useState(false);
-  useEffect(() => {
+  // useLayoutEffect, not useEffect — starts false (mobile-first default) regardless of the real
+  // device, same reasoning as app-shell.tsx's own equivalent flag.
+  useLayoutEffect(() => {
     if (typeof window === "undefined") return;
     const query = window.matchMedia("(min-width: 1024px)");
     const sync = () => setIsDesktopViewport(query.matches);

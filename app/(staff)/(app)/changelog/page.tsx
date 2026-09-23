@@ -1173,25 +1173,26 @@ export default function ChangelogPage() {
           )}
 
           {/* Mobile only — Report Issue/Suggest Feature as their own full-width bottom bar, each
-              button filling half of it, matching the project page's own mobile bottom action bars. */}
+              button filling the full height and half the width of it, split 50/50 with no outer
+              padding/gap so they actually touch the bar's own edges (and each other). */}
           {isCompactChangelogViewport && (
             <div
-              className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-stretch gap-2 border-t p-2"
+              className="fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-stretch border-t"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
               <button
                 type="button"
                 onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
-                className="flex-1 rounded-[8px] border text-[12px] font-bold text-white transition hover:brightness-95"
-                style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                className="flex-1 text-[15px] font-bold text-white transition hover:brightness-95"
+                style={{ backgroundImage: "var(--danger-gradient)" }}
               >
                 Report Issue
               </button>
               <button
                 type="button"
                 onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
-                className="flex-1 rounded-[8px] border text-[12px] font-bold text-white transition hover:brightness-95"
-                style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                className="flex-1 text-[15px] font-bold text-white transition hover:brightness-95"
+                style={{ backgroundImage: "var(--success-gradient)" }}
               >
                 Suggest Feature
               </button>

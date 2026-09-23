@@ -2996,7 +2996,7 @@ const NESTING_MACHINE_MIN_MM = 100;
 const NESTING_MACHINE_MIN_TRIM_NOTE = "Undersize piece - Cut after machining";
 // Cap on the CNC mobile row list's Part Name column width (in ch) — past this, a name marquees
 // instead of the whole column (and everything after it) growing to fit it.
-const CNC_MOBILE_PART_NAME_CH_MAX = 16;
+const CNC_MOBILE_PART_NAME_CH_MAX = 22;
 
 type NestingFlatPiece = {
   id: string;
@@ -6615,14 +6615,26 @@ export default function ProjectDetailsPage() {
   // bottom bar's own button (matching Quote's mobile bottom action bar), not a second tab that
   // replaces the sheet pager.
   const [isNestingMobileVisibilityOpen, setIsNestingMobileVisibilityOpen] = useState(false);
-  // The overlay above stays mounted at all times on mobile (see the aside's own comment) so it
-  // can be dragged open from its closed, off-screen-below position by swiping up on the bottom
-  // bar — a conditionally-mounted panel would have nothing in the DOM yet to drag.
+  // The overlay above stays mounted at all times on mobile so its closed position is already
+  // correctly off-screen the moment it needs to open, rather than needing a fresh mount.
   const nestingMobileVisibilityPanelRef = useRef<HTMLDivElement | null>(null);
-  const nestingMobileVisibilityDragRef = useRef<{ startY: number; dragging: boolean; panelHeight: number }>({
+  // lastY/lastT/velocity: sampled every touchmove during the close-drag, so a fast downward
+  // flick can commit to closing on release even short of the distance threshold (see
+  // onNestingVisibilityHeaderTouchEnd) — "throw it down" instead of always dragging it all the way.
+  const nestingMobileVisibilityDragRef = useRef<{
+    startY: number;
+    dragging: boolean;
+    panelHeight: number;
+    lastY: number;
+    lastT: number;
+    velocity: number;
+  }>({
     startY: 0,
     dragging: false,
     panelHeight: 0,
+    lastY: 0,
+    lastT: 0,
+    velocity: 0,
   });
   // Desktop-only toggle for the floating "Edit Visibility" sidebar — mirrors CNC's own
   // toggleCncVisibilityPanel exactly (see its own comment for why "closing" stays mounted one more
@@ -6682,6 +6694,12 @@ export default function ProjectDetailsPage() {
   const [nestingPreviewScale, setNestingPreviewScale] = useState(1);
   const [nestingPreviewOffset, setNestingPreviewOffset] = useState({ x: 0, y: 0 });
   const [nestingPreviewDragging, setNestingPreviewDragging] = useState(false);
+  // Mobile: pinching in on the sheet (not a tap) is what takes it full-screen — derived directly
+  // from the zoom scale rather than its own toggled state, so it's exactly in sync with "the
+  // sheet is actually zoomed in" instead of a separate flag that could drift out of step. Pinching
+  // back out to 1x (or tapping the X that fades in top-right while this is true) returns to the
+  // normal boxed preview.
+  const isNestingPreviewFullscreen = isCompactProjectViewport && nestingPreviewScale > 1;
   const [nestingTooltip, setNestingTooltip] = useState<null | {
     text: string;
     x: number;
@@ -7153,7 +7171,15 @@ export default function ProjectDetailsPage() {
       window.removeEventListener(THEME_MODE_UPDATED_EVENT, onThemeUpdated as EventListener);
     };
   }, []);
-  useEffect(() => {
+  // useLayoutEffect, not useEffect — isCompactProjectViewport starts false regardless of the
+  // real device, and every mobile layout branch in this file (top-bar clearance, padding-vs-
+  // margin content offset, etc.) depends on it. A plain useEffect only corrects it AFTER the
+  // browser's first paint, so on a genuinely mobile device the very first frame renders using the
+  // desktop layout — content sitting flush under the fixed top bar — before snapping to the
+  // correct mobile layout a moment later. That's the "content loads under the top bar" flash;
+  // useLayoutEffect runs before paint instead, so the correct value is already in place by the
+  // time anything is shown.
+  useLayoutEffect(() => {
     if (typeof window === "undefined") return;
     const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
     const syncCompactViewport = () => {
@@ -7183,6 +7209,8 @@ export default function ProjectDetailsPage() {
     setNestingPreviewOffset({ x: 0, y: 0 });
     setNestingPreviewDragging(false);
     nestingPreviewGestureRef.current.mode = "none";
+    // isNestingPreviewFullscreen is derived from scale, so resetting it to 1 above already exits
+    // full-screen — nothing further to reset here.
   }, [nestingSheetPreview?.boardKey, nestingSheetPreview?.sheetIndex]);
   const clampNestingPreviewOffset = (x: number, y: number, scale = nestingPreviewScale) => {
     const viewport = nestingPreviewViewportRef.current;
@@ -22614,14 +22642,26 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     cncCompactActiveBoardScrollRef.current = cncBoardSectionRefs.current[cncCompactActiveBoardKey] ?? null;
   }, [cncCompactActiveBoardKey]);
-  // The mobile Visibility overlay below stays mounted at all times (see its own comment) so it can
-  // be dragged open from its closed, off-screen-below position by swiping up on the bottom bar —
-  // exact same shape as Nesting's own equivalent block.
+  // The mobile Visibility overlay below stays mounted at all times so its closed position is
+  // already correctly off-screen the moment it needs to open, rather than needing a fresh mount.
   const cncMobileVisibilityPanelRef = useRef<HTMLDivElement | null>(null);
-  const cncMobileVisibilityDragRef = useRef<{ startY: number; dragging: boolean; panelHeight: number }>({
+  // lastY/lastT/velocity: sampled every touchmove during the close-drag, so a fast downward flick
+  // can commit to closing on release even short of the distance threshold — "throw it down"
+  // instead of always dragging it all the way. Same shape as Nesting's own equivalent ref.
+  const cncMobileVisibilityDragRef = useRef<{
+    startY: number;
+    dragging: boolean;
+    panelHeight: number;
+    lastY: number;
+    lastT: number;
+    velocity: number;
+  }>({
     startY: 0,
     dragging: false,
     panelHeight: 0,
+    lastY: 0,
+    lastT: 0,
+    velocity: 0,
   });
   const CNC_VISIBILITY_CLOSED_TRANSFORM = "translateY(100%)";
   useLayoutEffect(() => {
@@ -22632,45 +22672,8 @@ export default function ProjectDetailsPage() {
     panel.style.transition = `transform ${duration}ms ${easing}`;
     panel.style.transform = isCncMobileVisibilityOpen ? "translateY(0px)" : CNC_VISIBILITY_CLOSED_TRANSFORM;
   }, [isCncMobileVisibilityOpen, isCompactProjectViewport]);
-  const onCncVisibilityBarTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
-    const touch = e.touches[0];
-    const panel = cncMobileVisibilityPanelRef.current;
-    if (!touch || !panel || isCncMobileVisibilityOpen) return;
-    cncMobileVisibilityDragRef.current = {
-      startY: touch.clientY,
-      dragging: true,
-      panelHeight: panel.getBoundingClientRect().height || 1,
-    };
-  };
-  const onCncVisibilityBarTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
-    const drag = cncMobileVisibilityDragRef.current;
-    const touch = e.touches[0];
-    const panel = cncMobileVisibilityPanelRef.current;
-    if (!drag.dragging || !touch || !panel) return;
-    const dy = touch.clientY - drag.startY;
-    if (dy >= 0) return;
-    if (dy > -6) return;
-    e.preventDefault();
-    const progress = Math.min(1, Math.abs(dy) / drag.panelHeight);
-    panel.style.transition = "none";
-    panel.style.transform = `translateY(${(1 - progress) * drag.panelHeight}px)`;
-  };
-  const onCncVisibilityBarTouchEnd = () => {
-    const drag = cncMobileVisibilityDragRef.current;
-    const panel = cncMobileVisibilityPanelRef.current;
-    if (!drag.dragging) return;
-    drag.dragging = false;
-    if (!panel) return;
-    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
-    const currentPx = match ? Number.parseFloat(match[1]) : drag.panelHeight;
-    const progress = drag.panelHeight > 0 ? 1 - currentPx / drag.panelHeight : 0;
-    if (progress > 0.35) {
-      setIsCncMobileVisibilityOpen(true);
-      return;
-    }
-    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
-    panel.style.transform = `translateY(${drag.panelHeight}px)`;
-  };
+  // Opening is tap-only (no drag-up on the bottom bar) — see Nesting's own identical comment on
+  // why: iOS's own "swipe up from the bottom edge to leave the app" gesture lives right there.
   const onCncVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
     const touch = e.touches[0];
     const panel = cncMobileVisibilityPanelRef.current;
@@ -22680,6 +22683,9 @@ export default function ProjectDetailsPage() {
       startY: touch.clientY,
       dragging: true,
       panelHeight: panel.getBoundingClientRect().height || 1,
+      lastY: touch.clientY,
+      lastT: e.timeStamp,
+      velocity: 0,
     };
   };
   const onCncVisibilityHeaderTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
@@ -22694,6 +22700,10 @@ export default function ProjectDetailsPage() {
     const progress = Math.min(1, dy / drag.panelHeight);
     panel.style.transition = "none";
     panel.style.transform = `translateY(${progress * drag.panelHeight}px)`;
+    const dt = e.timeStamp - drag.lastT;
+    if (dt > 0) drag.velocity = (touch.clientY - drag.lastY) / dt;
+    drag.lastY = touch.clientY;
+    drag.lastT = e.timeStamp;
   };
   const onCncVisibilityHeaderTouchEnd = () => {
     const drag = cncMobileVisibilityDragRef.current;
@@ -22704,7 +22714,7 @@ export default function ProjectDetailsPage() {
     const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
     const currentPx = match ? Number.parseFloat(match[1]) : 0;
     const progress = drag.panelHeight > 0 ? currentPx / drag.panelHeight : 0;
-    if (progress > 0.35) {
+    if (progress > 0.35 || drag.velocity > 0.5) {
       setIsCncMobileVisibilityOpen(false);
       return;
     }
@@ -23518,51 +23528,15 @@ export default function ProjectDetailsPage() {
     // value was set — re-running this effect on that transition is what actually applies the
     // closed position to a freshly-mounted panel rather than leaving it at its unstyled default.
   }, [isNestingMobileVisibilityOpen, isCompactProjectViewport]);
-  // Lets a swipe-up starting on the bottom bar drag the (always-mounted, currently off-screen)
-  // Visibility overlay open in step with the finger, same 1:1-while-dragging /
-  // snap-on-release shape as useSwipeToClose, just vertical and opening rather than closing.
-  const onNestingVisibilityBarTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
-    const touch = e.touches[0];
-    const panel = nestingMobileVisibilityPanelRef.current;
-    if (!touch || !panel || isNestingMobileVisibilityOpen) return;
-    nestingMobileVisibilityDragRef.current = {
-      startY: touch.clientY,
-      dragging: true,
-      panelHeight: panel.getBoundingClientRect().height || 1,
-    };
-  };
-  const onNestingVisibilityBarTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
-    const drag = nestingMobileVisibilityDragRef.current;
-    const touch = e.touches[0];
-    const panel = nestingMobileVisibilityPanelRef.current;
-    if (!drag.dragging || !touch || !panel) return;
-    const dy = touch.clientY - drag.startY;
-    if (dy >= 0) return;
-    if (dy > -6) return;
-    e.preventDefault();
-    const progress = Math.min(1, Math.abs(dy) / drag.panelHeight);
-    panel.style.transition = "none";
-    panel.style.transform = `translateY(${(1 - progress) * drag.panelHeight}px)`;
-  };
-  const onNestingVisibilityBarTouchEnd = () => {
-    const drag = nestingMobileVisibilityDragRef.current;
-    const panel = nestingMobileVisibilityPanelRef.current;
-    if (!drag.dragging) return;
-    drag.dragging = false;
-    if (!panel) return;
-    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
-    const currentPx = match ? Number.parseFloat(match[1]) : drag.panelHeight;
-    const progress = drag.panelHeight > 0 ? 1 - currentPx / drag.panelHeight : 0;
-    if (progress > 0.35) {
-      setIsNestingMobileVisibilityOpen(true);
-      return;
-    }
-    panel.style.transition = "transform 280ms cubic-bezier(0.32, 0.72, 0, 1)";
-    panel.style.transform = `translateY(${drag.panelHeight}px)`;
-  };
-  // Mirror of the three handlers above, for the open panel's own header bar: drags it back down
-  // to close instead of up to open. Shares the same drag ref since exactly one of "closed
-  // trigger bar" or "open panel header" is ever actually reachable by touch at a given time.
+  // Opening is tap-only now (no drag-up on the bottom bar) — on iPhone, the bottom bar sits right
+  // where the OS's own "swipe up from the bottom edge to leave the app" gesture lives, so a
+  // drag-to-open there kept getting eaten by iOS instead of opening the panel. Closing (dragging
+  // the panel's own header down) doesn't have that conflict, so it keeps its drag/fling gesture.
+  //
+  // Drags the open panel back down to close via its own header bar. Tracks velocity (lastY/lastT,
+  // updated every touchmove) alongside plain drag distance — a fast downward flick commits to
+  // closing even released well short of the halfway point, same as "throw it down" on a real
+  // bottom sheet, instead of requiring the drag to be carried all the way.
   const onNestingVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
     const touch = e.touches[0];
     const panel = nestingMobileVisibilityPanelRef.current;
@@ -23574,6 +23548,9 @@ export default function ProjectDetailsPage() {
       startY: touch.clientY,
       dragging: true,
       panelHeight: panel.getBoundingClientRect().height || 1,
+      lastY: touch.clientY,
+      lastT: e.timeStamp,
+      velocity: 0,
     };
   };
   const onNestingVisibilityHeaderTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
@@ -23588,6 +23565,10 @@ export default function ProjectDetailsPage() {
     const progress = Math.min(1, dy / drag.panelHeight);
     panel.style.transition = "none";
     panel.style.transform = `translateY(${progress * drag.panelHeight}px)`;
+    const dt = e.timeStamp - drag.lastT;
+    if (dt > 0) drag.velocity = (touch.clientY - drag.lastY) / dt;
+    drag.lastY = touch.clientY;
+    drag.lastT = e.timeStamp;
   };
   const onNestingVisibilityHeaderTouchEnd = () => {
     const drag = nestingMobileVisibilityDragRef.current;
@@ -23598,7 +23579,7 @@ export default function ProjectDetailsPage() {
     const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
     const currentPx = match ? Number.parseFloat(match[1]) : 0;
     const progress = drag.panelHeight > 0 ? currentPx / drag.panelHeight : 0;
-    if (progress > 0.35) {
+    if (progress > 0.35 || drag.velocity > 0.5) {
       setIsNestingMobileVisibilityOpen(false);
       return;
     }
@@ -39298,7 +39279,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 "0" glyph, so it only matches the data rows' actual Part Name column
                                 width if this span renders in that exact same font size/weight. */}
                             <span className="shrink-0 truncate text-[12px] font-semibold normal-case tracking-normal" style={{ width: `${cncMobilePartNameCh}ch` }}>Part</span>
-                            <span className="ml-2 shrink-0">Size</span>
+                            <span className="ml-5 shrink-0">Size</span>
                             <span className="ml-auto mr-2 w-[28px] shrink-0 text-center">Qty</span>
                           </div>
                           {group.rows.map((row, idx) => {
@@ -39359,8 +39340,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     </span>
                                   );
                                 })()}
-                                <span className="ml-2 shrink-0 text-[11px] font-medium" style={{ color: "#000000" }}>
-                                  {[row.height, row.width, row.depth].filter((dim) => String(dim || "").trim()).join("×")}
+                                <span className="ml-5 shrink-0 text-[11px] font-medium" style={{ color: "#000000" }}>
+                                  {[row.height, row.width, row.depth].filter((dim) => String(dim || "").trim()).join(" × ")}
                                 </span>
                                 <span className="ml-auto mr-2 w-[28px] shrink-0 text-center text-[12px] font-bold" style={{ color: "#000000" }}>
                                   {row.quantity || ""}
@@ -40242,6 +40223,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {isCompactProjectViewport && (
               <aside
                 ref={cncMobileVisibilityPanelRef}
+                data-app-gesture-exempt="true"
                 className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto bg-white"
                 style={{ transform: "translateY(100%)" }}
               >
@@ -40405,18 +40387,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
           {/* Mobile only, same design as Nesting's own bottom trigger bar: plain white, unmounts
               entirely (not just faded) the instant the panel commits open, so it reads as having
-              slid up rather than lingering underneath. Drag handle + touch handlers let it be
-              dragged open, not just tapped. */}
+              slid up rather than lingering underneath. Tap-only — see the touch handlers' own
+              comment on why there's no drag-to-open here. */}
           {isCompactProjectViewport && !isCncMobileVisibilityOpen && (
             <div
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "#FFFFFF" }}
-              onTouchStart={onCncVisibilityBarTouchStart}
-              onTouchMove={onCncVisibilityBarTouchMove}
-              onTouchEnd={onCncVisibilityBarTouchEnd}
             >
-              <div className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full" style={{ backgroundColor: "rgba(0,0,0,0.22)" }} />
               <button
                 type="button"
                 onClick={() => setIsCncMobileVisibilityOpen(true)}
@@ -43774,6 +43752,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {isCompactProjectViewport && (
                 <aside
                   ref={nestingMobileVisibilityPanelRef}
+                  data-app-gesture-exempt="true"
                   className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto bg-white"
                   style={{ transform: "translateY(100%)" }}
                 >
@@ -44282,8 +44261,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           </div>
           {shouldRenderNestingSheetPreview && selectedNestingSheet && (
             <div
-              className={`glass-modal-backdrop fixed inset-0 z-[200] ${isCompactProjectViewport ? "p-2" : "p-8"}`}
+              className={`glass-modal-backdrop fixed inset-0 z-[200] ${
+                isCompactProjectViewport && isNestingPreviewFullscreen ? "p-0" : isCompactProjectViewport ? "p-2" : "p-8"
+              }`}
+              style={isCompactProjectViewport && isNestingPreviewFullscreen ? { backgroundColor: "#000000", backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
               onClick={() => {
+                // Tapping outside the image backs out of full-screen (by resetting the zoom that
+                // drives it) first, same as a real photo viewer — a second tap outside is what
+                // actually closes the whole popup. In practice full-screen leaves no backdrop
+                // exposed to tap (the panel fills the whole screen), so this mostly matters as a
+                // fallback.
+                if (isNestingPreviewFullscreen) {
+                  setNestingPreviewScale(1);
+                  setNestingPreviewOffset({ x: 0, y: 0 });
+                  return;
+                }
                 setIsNestingSheetPreviewOpen(false);
                 setNestingPreviewHoverPieceId(null);
                 setNestingTooltip(null);
@@ -44291,17 +44283,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               <div
                 ref={nestingSheetPreviewPanelRef}
-                className={`glass-modal-panel mx-auto flex flex-col overflow-hidden ${isCompactProjectViewport ? "h-full max-h-[calc(100svh-16px)]" : "mt-[6vh]"}`}
-                style={{
-                  width: isCompactProjectViewport ? "100%" : "fit-content",
-                  maxWidth: isCompactProjectViewport ? "100%" : "88vw",
-                }}
+                // Mobile: sizes to its own content (w-fit, capped) instead of always filling the
+                // full screen height/width — same mt-[6vh] resting spot as desktop, just also
+                // content-sized now rather than forced full. Full-screen mode (tap the sheet
+                // image) drops all of that and takes over the entire screen instead, same idea as
+                // opening a full-screen photo.
+                className={
+                  isCompactProjectViewport && isNestingPreviewFullscreen
+                    ? "glass-modal-panel flex h-full w-full flex-col overflow-hidden rounded-none border-none"
+                    : `glass-modal-panel mx-auto flex flex-col overflow-hidden mt-[6vh] ${isCompactProjectViewport ? "max-h-[calc(100svh-16px)]" : ""}`
+                }
+                style={
+                  isCompactProjectViewport && isNestingPreviewFullscreen
+                    ? undefined
+                    : { width: "fit-content", maxWidth: isCompactProjectViewport ? "94vw" : "88vw" }
+                }
                 onClick={(e) => e.stopPropagation()}
               >
+                {!(isCompactProjectViewport && isNestingPreviewFullscreen) && (
                 <div className={`glass-modal-header relative flex items-center justify-between px-3 ${isCompactProjectViewport ? "min-h-[50px]" : "h-[46px]"}`}>
-                  <div className="min-w-0">
-                    <p className="truncate text-[17px] font-medium" style={{ color: "var(--text-main)" }}>{selectedNestingSheet.group.boardLabel}</p>
-                  </div>
+                  {/* Mobile: the board label moves below the sheet preview instead (left-aligned,
+                      see its own comment there) — "Sheet N" stays exactly where it was, centered. */}
+                  {!isCompactProjectViewport && (
+                    <div className="min-w-0">
+                      <p className="truncate text-[17px] font-medium" style={{ color: "var(--text-main)" }}>{selectedNestingSheet.group.boardLabel}</p>
+                    </div>
+                  )}
                   <p
                     className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[15px] font-semibold"
                     style={{ color: "#000000" }}
@@ -44315,7 +44322,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       setNestingPreviewHoverPieceId(null);
                       setNestingTooltip(null);
                     }}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
+                    // ml-auto: on mobile the board-label div to its left is now hidden (moved
+                    // below the preview), leaving this as justify-between's only flex child —
+                    // with just one item, justify-between collapses it to the start (left)
+                    // instead of the end, so it needs its own explicit push to the right.
+                    className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
                     style={{
                       borderColor: "var(--danger-glass-border)",
                       backgroundColor: "var(--danger-glass-bg)",
@@ -44328,20 +44339,54 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <X size={16} strokeWidth={2.4} />
                   </button>
                 </div>
-                <div className={`min-h-0 overflow-auto ${isCompactProjectViewport ? "flex-1 p-2" : "overflow-hidden p-3"}`}>
+                )}
+                <div className={isCompactProjectViewport && isNestingPreviewFullscreen ? "relative min-h-0 flex-1" : `min-h-0 overflow-auto ${isCompactProjectViewport ? "flex-1 p-2" : "overflow-hidden p-3"}`}>
+                  {/* Full-screen mode's own close button, floating over the image — the header
+                      carrying the normal one is hidden in this mode. Always mounted (mobile only)
+                      rather than conditionally rendered, so it can actually fade in/out with
+                      isNestingPreviewFullscreen instead of just popping in — tapping it resets the
+                      zoom that drives full-screen in the first place. */}
+                  {isCompactProjectViewport && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNestingPreviewScale(1);
+                        setNestingPreviewOffset({ x: 0, y: 0 });
+                      }}
+                      className={`absolute right-3 top-3 z-[50] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border transition-opacity duration-200 hover:brightness-95 ${isNestingPreviewFullscreen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                      style={{
+                        borderColor: "var(--danger-glass-border)",
+                        backgroundColor: "var(--danger-glass-bg)",
+                        backdropFilter: "blur(10px) saturate(180%)",
+                        WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                        color: "#FFFFFF",
+                      }}
+                      title="Exit full screen"
+                    >
+                      <X size={18} strokeWidth={2.4} />
+                    </button>
+                  )}
                   <div
                     ref={nestingPreviewViewportRef}
-                    className="relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white"
+                    className={
+                      isCompactProjectViewport && isNestingPreviewFullscreen
+                        ? "relative h-full w-full overflow-hidden bg-white"
+                        : "relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white"
+                    }
                     onTouchStart={handleNestingPreviewTouchStart}
                     onTouchMove={handleNestingPreviewTouchMove}
                     onTouchEnd={handleNestingPreviewTouchEnd}
                     onTouchCancel={handleNestingPreviewTouchEnd}
-                    style={{
-                      width: selectedNestingSheetViewportWidth,
-                      height: selectedNestingSheetViewportHeight,
-                      maxWidth: "100%",
-                      touchAction: "none",
-                    }}
+                    style={
+                      isCompactProjectViewport && isNestingPreviewFullscreen
+                        ? { width: "100%", height: "100%", touchAction: "none" }
+                        : {
+                            width: selectedNestingSheetViewportWidth,
+                            height: selectedNestingSheetViewportHeight,
+                            maxWidth: "100%",
+                            touchAction: "none",
+                          }
+                    }
                   >
                     <div
                       className="absolute inset-0"
@@ -44519,7 +44564,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       )}
                     </div>
                   </div>
-                  {selectedNestingSheetStats && (
+                  {/* Mobile only: board label ("sheet colour") moved here from the header, left-
+                      aligned, below the preview — "Sheet N" stays put in the header. Hidden in
+                      full-screen mode along with Sheet Stats below — a true full-screen image has
+                      nothing else on screen but the image and its exit button. */}
+                  {isCompactProjectViewport && !isNestingPreviewFullscreen && (
+                    <p className="mt-2 truncate text-left text-[13px] font-medium" style={{ color: "#000000" }}>
+                      {selectedNestingSheet.group.boardLabel}
+                    </p>
+                  )}
+                  {selectedNestingSheetStats && !(isCompactProjectViewport && isNestingPreviewFullscreen) && (
                     <div className="mt-3 mx-auto rounded-[10px] border border-[#DCE3EC] p-3 text-[12px]" style={{ width: isCompactProjectViewport ? "100%" : selectedNestingSheetViewportWidth, maxWidth: "100%", backgroundColor: "rgba(248,250,252,0.35)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}>
                       <p className="mb-2 text-[12px] font-medium uppercase tracking-[0.7px]" style={{ color: "#000000" }}>Sheet Stats</p>
                       <div
@@ -44560,17 +44614,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           )}
           {/* Mobile only: same fixed-bottom-bar treatment as Quote's own mobile action bar —
               Visibility opens as a full-screen overlay from here instead of being a second top tab
-              that replaced the sheet pager. */}
+              that replaced the sheet pager. Tap-only (no drag handle/drag-to-open) — on iPhone
+              this bar sits right where the OS's own "swipe up from the bottom edge" leave-the-app
+              gesture lives, and a drag-up here kept getting eaten by iOS instead. */}
           {isCompactProjectViewport && !isNestingMobileVisibilityOpen && (
             <div
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
-              onTouchStart={onNestingVisibilityBarTouchStart}
-              onTouchMove={onNestingVisibilityBarTouchMove}
-              onTouchEnd={onNestingVisibilityBarTouchEnd}
             >
-              <div className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full" style={{ backgroundColor: "rgba(0,0,0,0.22)" }} />
               <button
                 type="button"
                 onClick={() => setIsNestingMobileVisibilityOpen(true)}
