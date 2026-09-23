@@ -543,22 +543,25 @@ export function AppShell({
     if (kind === "nav") {
       // edge "left": closed = translateX(-100%), fully open = translateX(0).
       const clampedDx = Math.max(0, Math.min(width, dx));
-      const progress = width > 0 ? clampedDx / width : 0;
       panel.style.transition = "none";
       panel.style.transform = `translateX(calc(-100% + ${clampedDx}px))`;
       if (push) {
+        // Pixels, not a percentage of push's OWN width — translateX(N%) is relative to the
+        // element it's applied to, so a percentage here moved the (often wider/narrower) page at
+        // a different rate than the panel's own pixel-based transform above, reading as the two
+        // sliding at different speeds. clampedDx IS the panel's own current pixel offset from
+        // closed, so mirroring it directly keeps them moving 1:1.
         push.style.transition = "none";
-        push.style.transform = progress === 0 ? "" : `translateX(${progress * 100}%)`;
+        push.style.transform = clampedDx === 0 ? "" : `translateX(${clampedDx}px)`;
       }
     } else {
       // edge "right": closed = translateX(100%), fully open = translateX(0).
       const clampedDx = Math.max(-width, Math.min(0, dx));
-      const progress = width > 0 ? Math.abs(clampedDx) / width : 0;
       panel.style.transition = "none";
       panel.style.transform = `translateX(calc(100% + ${clampedDx}px))`;
       if (push) {
         push.style.transition = "none";
-        push.style.transform = progress === 0 ? "" : `translateX(${-progress * 100}%)`;
+        push.style.transform = clampedDx === 0 ? "" : `translateX(${clampedDx}px)`;
       }
     }
   };

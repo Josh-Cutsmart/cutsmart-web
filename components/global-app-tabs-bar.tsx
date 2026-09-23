@@ -351,7 +351,15 @@ export function GlobalAppTabsBar() {
         setAppTabsMenuPos(null);
       }
       const isInsideNotifDropdown = notifDropdownRef.current?.contains(targetNode);
-      if (!isInsideTopBar && !isInsideNotifDropdown) {
+      // The mobile notif panel is a separate portaled subtree (mobileNotifPanelRef), not
+      // notifDropdownRef (the desktop dropdown) — without also checking it here, this listener
+      // treated every tap inside the OPEN mobile panel as "outside" and closed it immediately, so
+      // tapping a notification row (or anywhere else in the panel) never got the chance to do
+      // anything else first. Closing it should only ever come from its own explicit controls (the
+      // header's close button, the backdrop tap, the swipe-to-close drag) or genuinely tapping
+      // outside it, not from this desktop-oriented outside-click check.
+      const isInsideMobileNotifPanel = mobileNotifPanelRef.current?.contains(targetNode);
+      if (!isInsideTopBar && !isInsideNotifDropdown && !isInsideMobileNotifPanel) {
         setIsNotifOpen(false);
       }
     };

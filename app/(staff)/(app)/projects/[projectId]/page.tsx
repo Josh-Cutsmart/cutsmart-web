@@ -7223,7 +7223,7 @@ export default function ProjectDetailsPage() {
   // overlay needs to know where the static, never-moving slot sits on screen so it can line up
   // exactly on top of it at rest (progress 0) before growing toward full-screen. The slot's own
   // size is already known analytically (nestingPreviewSmallWidthPx/HeightPx below), so only its
-  // on-screen position needs measuring — and only on open/resize, since the slot is now static.
+  // on-screen position needs measuring.
   const nestingPreviewSlotRef = useRef<HTMLDivElement | null>(null);
   const [nestingPreviewSlotRect, setNestingPreviewSlotRect] = useState<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
@@ -7237,10 +7237,30 @@ export default function ProjectDetailsPage() {
       const rect = el.getBoundingClientRect();
       setNestingPreviewSlotRect({ left: rect.left, top: rect.top });
     };
-    measure();
+    // The popup panel plays its own "pop from origin" open/close FLIP animation
+    // (useGlassModalPopOrigin) via an inline CSS transform written in ITS OWN layout effect —
+    // which, since that hook is called earlier in this component, runs BEFORE this one on every
+    // commit. A single measurement taken right here would therefore catch the slot mid-animation
+    // (still translated/scaled toward the origin tap point), not its settled resting position —
+    // which is exactly why the floating overlay used to render off-position, over other panel
+    // content. Polling with rAF for a bit longer than that animation's duration (320ms) keeps this
+    // synced with the slot's real on-screen box for its whole open AND close animation; a plain
+    // resize listener covers everything after it settles.
+    let rafId = 0;
+    const pollStart = performance.now();
+    const poll = (now: number) => {
+      measure();
+      if (now - pollStart < 400) {
+        rafId = requestAnimationFrame(poll);
+      }
+    };
+    rafId = requestAnimationFrame(poll);
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [isCompactProjectViewport, shouldRenderNestingSheetPreview, nestingSheetPreview?.boardKey, nestingSheetPreview?.sheetIndex]);
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", measure);
+    };
+  }, [isCompactProjectViewport, shouldRenderNestingSheetPreview, isNestingSheetPreviewOpen, nestingSheetPreview?.boardKey, nestingSheetPreview?.sheetIndex]);
   const clampNestingPreviewOffset = (x: number, y: number, scale = nestingPreviewScale) => {
     const viewport = nestingPreviewViewportRef.current;
     if (!viewport || scale <= 1) return { x: 0, y: 0 };
@@ -22701,6 +22721,48 @@ export default function ProjectDetailsPage() {
     panel.style.transition = `transform ${duration}ms ${easing}`;
     panel.style.transform = isCncMobileVisibilityOpen ? "translateY(0px)" : CNC_VISIBILITY_CLOSED_TRANSFORM;
   }, [isCncMobileVisibilityOpen, isCompactProjectViewport]);
+  // Locks the real page/body from scrolling while either mobile Visibility overlay is open — same
+  // pattern already used for the dashboard's own modals. Without this, tapping the search field
+  // inside the overlay to focus it can trigger the mobile browser's own "scroll the focused input
+  // into view" behavior on the underlying document — normally invisible, but here the overlay is
+  // `position: fixed` over that document, so the browser scrolling the real page out from under it
+  // reads as "the card itself slides down/disappears" even though the overlay's own translateY
+  // never actually changed. Pinning the body via position:fixed (not just overflow:hidden) is what
+  // actually stops iOS Safari from doing this — plain overflow:hidden alone doesn't reliably block
+  // its focus-scroll behavior.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!isNestingMobileVisibilityOpen && !isCncMobileVisibilityOpen) return;
+    const scrollY = window.scrollY;
+    const scrollbarGutterWidth = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevBodyPosition = document.body.style.position;
+    const prevBodyTop = document.body.style.top;
+    const prevBodyLeft = document.body.style.left;
+    const prevBodyRight = document.body.style.right;
+    const prevBodyWidth = document.body.style.width;
+    const prevBodyPaddingRight = document.body.style.paddingRight;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollY}px`;
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+    document.body.style.width = "100%";
+    document.body.style.paddingRight = scrollbarGutterWidth > 0 ? `${scrollbarGutterWidth}px` : prevBodyPaddingRight;
+    return () => {
+      document.documentElement.style.overflow = prevHtmlOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+      document.body.style.position = prevBodyPosition;
+      document.body.style.top = prevBodyTop;
+      document.body.style.left = prevBodyLeft;
+      document.body.style.right = prevBodyRight;
+      document.body.style.width = prevBodyWidth;
+      document.body.style.paddingRight = prevBodyPaddingRight;
+      window.scrollTo(0, scrollY);
+    };
+  }, [isNestingMobileVisibilityOpen, isCncMobileVisibilityOpen]);
   // Opening is tap-only (no drag-up on the bottom bar) — see Nesting's own identical comment on
   // why: iOS's own "swipe up from the bottom edge to leave the app" gesture lives right there.
   const onCncVisibilityHeaderTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {

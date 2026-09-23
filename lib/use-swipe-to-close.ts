@@ -71,11 +71,16 @@ export function useSwipeToClose(
   // direction the panel is entering from, so it reads as being shoved out of the way rather
   // than just sitting underneath the panel. See the edge/sign comment above: the panel's own
   // resting-closed transform is `sign * 100%`, so the content it pushes moves the opposite way.
-  const applyPush = (progress: number, transition: string) => {
+  // panelWidthPx (not a percentage of the push target's OWN width) is what keeps the two moving
+  // at the same speed — translateX(N%) is relative to the element it's applied to, so using `%`
+  // here meant the page (often a different width than the panel, e.g. a 280px drawer sliding over
+  // a 390px-wide page) tracked the finger/panel at the wrong rate, most visible on whichever of
+  // nav/notif has the bigger width mismatch against the page.
+  const applyPush = (progress: number, transition: string, panelWidthPx: number) => {
     const push = pushRef?.current;
     if (!push) return;
     push.style.transition = transition;
-    push.style.transform = progress === 0 ? "" : `translateX(${-sign * progress * 100}%)`;
+    push.style.transform = progress === 0 ? "" : `translateX(${-sign * progress * panelWidthPx}px)`;
   };
 
   useEffect(() => {
@@ -89,13 +94,14 @@ export function useSwipeToClose(
     }
     const backdrop = findSwipeBackdrop(panel);
     const transition = `transform ${duration}ms ${easing}`;
+    const panelWidthPx = panel.getBoundingClientRect().width;
     if (isOpen) {
       // Force the panel (and push target) to their closed positions first, with no transition,
       // then transition to open — so a fresh open always plays the same slide-in regardless of
       // whether this is the very first mount or a re-open after a previous close.
       panel.style.transition = "none";
       panel.style.transform = `translateX(${sign * 100}%)`;
-      applyPush(0, "none");
+      applyPush(0, "none", panelWidthPx);
       if (backdrop) {
         backdrop.style.transition = "none";
         backdrop.style.opacity = "0";
@@ -106,7 +112,7 @@ export function useSwipeToClose(
       void panel.offsetWidth;
       panel.style.transition = transition;
       panel.style.transform = "translateX(0px)";
-      applyPush(1, transition);
+      applyPush(1, transition, panelWidthPx);
       if (backdrop) {
         backdrop.style.transition = `opacity ${duration}ms ease`;
         backdrop.style.opacity = "1";
@@ -127,7 +133,7 @@ export function useSwipeToClose(
     }
     panel.style.transition = transition;
     panel.style.transform = `translateX(${sign * 100}%)`;
-    applyPush(0, transition);
+    applyPush(0, transition, panelWidthPx);
     const timeout = window.setTimeout(() => setShouldRender(false), duration);
     return () => window.clearTimeout(timeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyPush is a plain closure recreated every render, not state
@@ -168,7 +174,7 @@ export function useSwipeToClose(
     panel.style.transition = "none";
     panel.style.transform = `translateX(${closingDx}px)`;
     const progress = drag.width > 0 ? 1 - Math.abs(closingDx) / drag.width : 1;
-    applyPush(progress, "none");
+    applyPush(progress, "none", drag.width);
   };
 
   const onTouchEnd = () => {
@@ -187,7 +193,7 @@ export function useSwipeToClose(
     const transition = `transform ${duration}ms ${easing}`;
     panel.style.transition = transition;
     panel.style.transform = "translateX(0px)";
-    applyPush(1, transition);
+    applyPush(1, transition, drag.width);
   };
 
   return { shouldRender, touchHandlers: { onTouchStart, onTouchMove, onTouchEnd } };
