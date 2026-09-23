@@ -6694,12 +6694,17 @@ export default function ProjectDetailsPage() {
   const [nestingPreviewScale, setNestingPreviewScale] = useState(1);
   const [nestingPreviewOffset, setNestingPreviewOffset] = useState({ x: 0, y: 0 });
   const [nestingPreviewDragging, setNestingPreviewDragging] = useState(false);
-  // Mobile: pinching in on the sheet (not a tap) is what takes it full-screen — derived directly
-  // from the zoom scale rather than its own toggled state, so it's exactly in sync with "the
-  // sheet is actually zoomed in" instead of a separate flag that could drift out of step. Pinching
-  // back out to 1x (or tapping the X that fades in top-right while this is true) returns to the
-  // normal boxed preview.
-  const isNestingPreviewFullscreen = isCompactProjectViewport && nestingPreviewScale > 1;
+  // Mobile: pinching in on the sheet (not a tap) is what grows it toward full-screen — tracked as
+  // a continuous 0-1 progress tied directly to the live zoom scale (not a one-time animation), so
+  // a tiny pinch only grows the box a tiny bit instead of it popping straight to full-screen the
+  // instant scale crosses 1. Reaches full-screen once scale hits NESTING_PREVIEW_FULLSCREEN_ZOOM;
+  // pinching back out (or tapping the X that fades in top-right as this rises) shrinks it back the
+  // same way, in lockstep with the gesture, since nothing here uses a CSS transition.
+  const NESTING_PREVIEW_FULLSCREEN_ZOOM = 2.2;
+  const nestingPreviewFullscreenProgress = isCompactProjectViewport
+    ? Math.max(0, Math.min(1, (nestingPreviewScale - 1) / (NESTING_PREVIEW_FULLSCREEN_ZOOM - 1)))
+    : 0;
+  const isNestingPreviewFullscreen = nestingPreviewFullscreenProgress > 0;
   const [nestingTooltip, setNestingTooltip] = useState<null | {
     text: string;
     x: number;
@@ -6709,49 +6714,6 @@ export default function ProjectDetailsPage() {
     textColor: string;
   }>(null);
   const nestingPreviewViewportRef = useRef<HTMLDivElement | null>(null);
-  // FLIP animation for the small-preview <-> full-screen transition (mobile only): rather than the
-  // box's size/position just snapping between the two layouts, this makes it visually grow out of
-  // (or shrink back into) wherever it was an instant ago — same technique as
-  // useGlassModalPopOrigin's own "grow out of the button that opened it", just triggered by the
-  // pinch-derived isNestingPreviewFullscreen flipping instead of an isOpen prop.
-  //
-  // nestingPreviewFlipPrevRectRef is updated on EVERY render (by the second effect below, declared
-  // AFTER this one so it always runs second) to the viewport's just-rendered geometry — so by the
-  // time the FIRST effect below runs on some LATER render where isNestingPreviewFullscreen has
-  // changed, that ref still holds the geometry from the render before the flip, not the new one.
-  const nestingPreviewFlipPrevRectRef = useRef<DOMRect | null>(null);
-  const nestingPreviewFlipPrevFullscreenRef = useRef(false);
-  useLayoutEffect(() => {
-    const viewport = nestingPreviewViewportRef.current;
-    const prevRect = nestingPreviewFlipPrevRectRef.current;
-    const wasFullscreen = nestingPreviewFlipPrevFullscreenRef.current;
-    if (viewport && prevRect && wasFullscreen !== isNestingPreviewFullscreen) {
-      const newRect = viewport.getBoundingClientRect();
-      const scaleX = prevRect.width / newRect.width || 1;
-      const scaleY = prevRect.height / newRect.height || 1;
-      const translateX = (prevRect.left + prevRect.width / 2) - (newRect.left + newRect.width / 2);
-      const translateY = (prevRect.top + prevRect.height / 2) - (newRect.top + newRect.height / 2);
-      viewport.style.transition = "none";
-      viewport.style.transformOrigin = "center center";
-      viewport.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
-      void viewport.offsetWidth;
-      viewport.style.transition = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1)";
-      viewport.style.transform = "translate(0px, 0px) scale(1, 1)";
-      const clearInlineStyles = () => {
-        viewport.style.transition = "";
-        viewport.style.transform = "";
-        viewport.style.transformOrigin = "";
-      };
-      viewport.addEventListener("transitionend", clearInlineStyles, { once: true });
-    }
-    nestingPreviewFlipPrevFullscreenRef.current = isNestingPreviewFullscreen;
-  });
-  useLayoutEffect(() => {
-    const viewport = nestingPreviewViewportRef.current;
-    if (viewport) {
-      nestingPreviewFlipPrevRectRef.current = viewport.getBoundingClientRect();
-    }
-  });
   const nestingPreviewGestureRef = useRef<{
     mode: "none" | "pan" | "pinch";
     startScale: number;
@@ -29453,6 +29415,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       ? `min(calc((100vw - 32px) / ${selectedNestingSheetRatio}), calc(100svh - 260px))`
       : `min(calc((54vw - 80px) / ${selectedNestingSheetRatio}), calc(100svh - 440px))`
     : "min(48vh, 420px)";
+  // Mobile: the SAME small-viewport formula as above, but computed as plain numbers (not a CSS
+  // calc() string) so it can be lerped toward the full viewport size by
+  // nestingPreviewFullscreenProgress — this is what makes the sheet grow smoothly in step with the
+  // pinch instead of its container snapping straight to full-screen the instant scale exceeds 1.
+  const nestingPreviewWindowWidthPx = typeof window !== "undefined" ? window.innerWidth : 375;
+  const nestingPreviewWindowHeightPx = typeof window !== "undefined" ? window.innerHeight : 700;
+  const nestingPreviewSmallWidthPx = Math.min(nestingPreviewWindowWidthPx - 32, (nestingPreviewWindowHeightPx - 260) * selectedNestingSheetRatio);
+  const nestingPreviewSmallHeightPx = Math.min((nestingPreviewWindowWidthPx - 32) / selectedNestingSheetRatio, nestingPreviewWindowHeightPx - 260);
+  const nestingPreviewInterpWidthPx = nestingPreviewSmallWidthPx + (nestingPreviewWindowWidthPx - nestingPreviewSmallWidthPx) * nestingPreviewFullscreenProgress;
+  const nestingPreviewInterpHeightPx = nestingPreviewSmallHeightPx + (nestingPreviewWindowHeightPx - nestingPreviewSmallHeightPx) * nestingPreviewFullscreenProgress;
   const selectedNestingSheetStats = (() => {
     if (!selectedNestingSheet) return null;
     const sheetAreaMm2 = Math.max(1, selectedNestingSheet.group.sheetWidth * selectedNestingSheet.group.sheetHeight);
@@ -40278,7 +40250,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <div
                   className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
                   style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
-                  onClick={() => setIsCncMobileVisibilityOpen(false)}
+                  onClick={(e) => {
+                    // Belt-and-suspenders alongside the search wrapper's own stopPropagation —
+                    // checks the actual tap target directly instead of relying solely on a
+                    // descendant having stopped it from bubbling this far.
+                    if ((e.target as HTMLElement).closest?.('[data-cnc-visibility-search="true"]')) return;
+                    setIsCncMobileVisibilityOpen(false);
+                  }}
                   onTouchStart={onCncVisibilityHeaderTouchStart}
                   onTouchMove={onCncVisibilityHeaderTouchMove}
                   onTouchEnd={onCncVisibilityHeaderTouchEnd}
@@ -43809,7 +43787,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <div
                     className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
                     style={{ borderColor: projectPalette.border, backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
-                    onClick={() => setIsNestingMobileVisibilityOpen(false)}
+                    onClick={(e) => {
+                      // Belt-and-suspenders alongside the search wrapper's own stopPropagation —
+                      // checks the actual tap target directly instead of relying solely on a
+                      // descendant having stopped it from bubbling this far.
+                      if ((e.target as HTMLElement).closest?.('[data-nesting-visibility-search="true"]')) return;
+                      setIsNestingMobileVisibilityOpen(false);
+                    }}
                     onTouchStart={onNestingVisibilityHeaderTouchStart}
                     onTouchMove={onNestingVisibilityHeaderTouchMove}
                     onTouchEnd={onNestingVisibilityHeaderTouchEnd}
@@ -44305,10 +44289,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {shouldRenderNestingSheetPreview && selectedNestingSheet && (
             <div
               data-app-gesture-exempt="true"
-              className={`glass-modal-backdrop fixed inset-0 z-[200] ${
-                isCompactProjectViewport && isNestingPreviewFullscreen ? "p-0" : isCompactProjectViewport ? "p-2" : "p-8"
-              }`}
-              style={isCompactProjectViewport && isNestingPreviewFullscreen ? { backgroundColor: "#000000", backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
+              className={`glass-modal-backdrop fixed inset-0 z-[200] ${isCompactProjectViewport ? "" : "p-8"}`}
+              // Mobile: padding and background darken continuously with the SAME progress driving
+              // the panel/viewport below, instead of snapping the instant any zoom starts — no
+              // transition on either, since this should track the live pinch 1:1, not animate on
+              // its own timer.
+              style={
+                isCompactProjectViewport
+                  ? {
+                      padding: `${8 * (1 - nestingPreviewFullscreenProgress)}px`,
+                      backgroundColor: `rgba(0,0,0,${(0.14 + 0.86 * nestingPreviewFullscreenProgress).toFixed(3)})`,
+                    }
+                  : undefined
+              }
               onClick={() => {
                 // Tapping outside the image backs out of full-screen (by resetting the zoom that
                 // drives it) first, same as a real photo viewer — a second tap outside is what
@@ -44327,25 +44320,30 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             >
               <div
                 ref={nestingSheetPreviewPanelRef}
-                // Mobile: sizes to its own content (w-fit, capped) instead of always filling the
-                // full screen height/width — same mt-[6vh] resting spot as desktop, just also
-                // content-sized now rather than forced full. Full-screen mode (tap the sheet
-                // image) drops all of that and takes over the entire screen instead, same idea as
-                // opening a full-screen photo.
-                className={
-                  isCompactProjectViewport && isNestingPreviewFullscreen
-                    ? "glass-modal-panel flex h-full w-full flex-col overflow-hidden rounded-none border-none"
-                    : `glass-modal-panel mx-auto flex flex-col overflow-hidden mt-[6vh] ${isCompactProjectViewport ? "max-h-[calc(100svh-16px)]" : ""}`
-                }
+                // Mobile: always the same "sizes to its own content" structural classes — no more
+                // switching wholesale to a separate h-full/w-full/rounded-none layout the instant
+                // any zoom starts. max-width/margin-top below instead lerp continuously from the
+                // small resting values toward full-bleed as the pinch progresses, so the panel
+                // grows in step with the sheet inside it rather than jumping ahead of it.
+                className={`glass-modal-panel mx-auto flex flex-col overflow-hidden ${isCompactProjectViewport ? "max-h-[calc(100svh-16px)]" : "mt-[6vh]"}`}
                 style={
-                  isCompactProjectViewport && isNestingPreviewFullscreen
-                    ? undefined
-                    : { width: "fit-content", maxWidth: isCompactProjectViewport ? "94vw" : "88vw" }
+                  isCompactProjectViewport
+                    ? {
+                        width: "fit-content",
+                        maxWidth: `${94 + 6 * nestingPreviewFullscreenProgress}vw`,
+                        marginTop: `${6 * (1 - nestingPreviewFullscreenProgress)}vh`,
+                      }
+                    : { width: "fit-content", maxWidth: "88vw" }
                 }
                 onClick={(e) => e.stopPropagation()}
               >
-                {!(isCompactProjectViewport && isNestingPreviewFullscreen) && (
-                <div className={`glass-modal-header relative flex items-center justify-between px-3 ${isCompactProjectViewport ? "min-h-[50px]" : "h-[46px]"}`}>
+                {/* Fades out (not an instant unmount) as the sheet grows — fully removed only once
+                    genuinely at full-screen (progress hits 1), reclaiming its space for the image. */}
+                {!(isCompactProjectViewport && nestingPreviewFullscreenProgress >= 1) && (
+                <div
+                  className={`glass-modal-header relative flex items-center justify-between px-3 ${isCompactProjectViewport ? "min-h-[50px]" : "h-[46px]"}`}
+                  style={isCompactProjectViewport ? { opacity: 1 - nestingPreviewFullscreenProgress } : undefined}
+                >
                   {/* Mobile: the board label moves below the sheet preview instead (left-aligned,
                       see its own comment there) — "Sheet N" stays exactly where it was, centered. */}
                   {!isCompactProjectViewport && (
@@ -44384,12 +44382,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   </button>
                 </div>
                 )}
-                <div className={isCompactProjectViewport && isNestingPreviewFullscreen ? "relative min-h-0 flex-1" : `min-h-0 overflow-auto ${isCompactProjectViewport ? "flex-1 p-2" : "overflow-hidden p-3"}`}>
+                <div className={isCompactProjectViewport ? "relative min-h-0 flex-1" : `min-h-0 overflow-auto ${isCompactProjectViewport ? "flex-1 p-2" : "overflow-hidden p-3"}`}>
                   {/* Full-screen mode's own close button, floating over the image — the header
-                      carrying the normal one is hidden in this mode. Always mounted (mobile only)
-                      rather than conditionally rendered, so it can actually fade in/out with
-                      isNestingPreviewFullscreen instead of just popping in — tapping it resets the
-                      zoom that drives full-screen in the first place. */}
+                      carrying the normal one fades out as this fades in. Always mounted (mobile
+                      only) rather than conditionally rendered, so it can actually fade smoothly —
+                      tapping it resets the zoom that drives full-screen in the first place. */}
                   {isCompactProjectViewport && (
                     <button
                       type="button"
@@ -44397,13 +44394,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         setNestingPreviewScale(1);
                         setNestingPreviewOffset({ x: 0, y: 0 });
                       }}
-                      className={`absolute right-3 top-3 z-[50] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border transition-opacity duration-200 hover:brightness-95 ${isNestingPreviewFullscreen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+                      className={`absolute right-3 top-3 z-[50] inline-flex h-9 w-9 items-center justify-center rounded-[8px] border hover:brightness-95 ${isNestingPreviewFullscreen ? "" : "pointer-events-none"}`}
                       style={{
                         borderColor: "var(--danger-glass-border)",
                         backgroundColor: "var(--danger-glass-bg)",
                         backdropFilter: "blur(10px) saturate(180%)",
                         WebkitBackdropFilter: "blur(10px) saturate(180%)",
                         color: "#FFFFFF",
+                        opacity: nestingPreviewFullscreenProgress,
                       }}
                       title="Exit full screen"
                     >
@@ -44412,18 +44410,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   )}
                   <div
                     ref={nestingPreviewViewportRef}
-                    className={
-                      isCompactProjectViewport && isNestingPreviewFullscreen
-                        ? "relative h-full w-full overflow-hidden bg-white"
-                        : "relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white"
-                    }
+                    className="relative mx-auto overflow-hidden border border-[#D4DCE8] bg-white"
                     onTouchStart={handleNestingPreviewTouchStart}
                     onTouchMove={handleNestingPreviewTouchMove}
                     onTouchEnd={handleNestingPreviewTouchEnd}
                     onTouchCancel={handleNestingPreviewTouchEnd}
                     style={
-                      isCompactProjectViewport && isNestingPreviewFullscreen
-                        ? { width: "100%", height: "100%", touchAction: "none" }
+                      isCompactProjectViewport
+                        ? { width: nestingPreviewInterpWidthPx, height: nestingPreviewInterpHeightPx, maxWidth: "100%", touchAction: "none" }
                         : {
                             width: selectedNestingSheetViewportWidth,
                             height: selectedNestingSheetViewportHeight,
@@ -44609,16 +44603,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </div>
                   </div>
                   {/* Mobile only: board label ("sheet colour") moved here from the header, left-
-                      aligned, below the preview — "Sheet N" stays put in the header. Hidden in
-                      full-screen mode along with Sheet Stats below — a true full-screen image has
-                      nothing else on screen but the image and its exit button. */}
-                  {isCompactProjectViewport && !isNestingPreviewFullscreen && (
-                    <p className="mt-2 truncate text-left text-[13px] font-medium" style={{ color: "#000000" }}>
+                      aligned, below the preview — "Sheet N" stays put in the header. Fades out
+                      (fully removed only once genuinely full-screen) along with Sheet Stats below —
+                      a true full-screen image has nothing else on screen but the image and its
+                      exit button. */}
+                  {isCompactProjectViewport && nestingPreviewFullscreenProgress < 1 && (
+                    <p className="mt-2 truncate text-left text-[13px] font-medium" style={{ color: "#000000", opacity: 1 - nestingPreviewFullscreenProgress }}>
                       {selectedNestingSheet.group.boardLabel}
                     </p>
                   )}
-                  {selectedNestingSheetStats && !(isCompactProjectViewport && isNestingPreviewFullscreen) && (
-                    <div className="mt-3 mx-auto rounded-[10px] border border-[#DCE3EC] p-3 text-[12px]" style={{ width: isCompactProjectViewport ? "100%" : selectedNestingSheetViewportWidth, maxWidth: "100%", backgroundColor: "rgba(248,250,252,0.35)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}>
+                  {selectedNestingSheetStats && !(isCompactProjectViewport && nestingPreviewFullscreenProgress >= 1) && (
+                    <div
+                      className="mt-3 mx-auto rounded-[10px] border border-[#DCE3EC] p-3 text-[12px]"
+                      style={{
+                        width: isCompactProjectViewport ? "100%" : selectedNestingSheetViewportWidth,
+                        maxWidth: "100%",
+                        backgroundColor: "rgba(248,250,252,0.35)",
+                        backdropFilter: "blur(6px)",
+                        WebkitBackdropFilter: "blur(6px)",
+                        opacity: isCompactProjectViewport ? 1 - nestingPreviewFullscreenProgress : 1,
+                      }}
+                    >
                       <p className="mb-2 text-[12px] font-medium uppercase tracking-[0.7px]" style={{ color: "#000000" }}>Sheet Stats</p>
                       <div
                         className="items-stretch"

@@ -740,8 +740,18 @@ export function AppShell({
     const pull = pullDashboardRef.current;
     mainSwipeStartRef.current = null;
     pullDashboardRef.current = null;
-    if (pull?.active) {
+    // Unconditional now, not gated behind pull?.active — a drag that had already been cancelled
+    // mid-gesture (dragged down then back past the start point, which flips .active back to
+    // false and does its own mid-drag reset) left nothing to force the push/banner back to their
+    // resting values AT RELEASE beyond whatever that mid-drag reset already did. If any later
+    // finger movement re-armed and re-pushed by even a pixel before lifting, .active would be
+    // true again and this ran anyway — but if it didn't, the page could be left sitting pushed
+    // down under the top bar with nothing to snap it back. Forcing a reset here whenever a pull
+    // was tracked at all (armed or not, active or not) closes that gap for good.
+    if (pull) {
       resetPullBanner(true);
+    }
+    if (pull?.active) {
       if (pull.armed) {
         if (pull.selected === "reload") {
           window.location.reload();
