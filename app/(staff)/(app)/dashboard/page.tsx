@@ -778,14 +778,10 @@ export default function DashboardPage() {
   // re-fires on its own with a correct value.
   const hasAutoRetriedMembershipRef = useRef(false);
   useEffect(() => {
-    // TEMPORARY diagnostic logging — remove once the mobile cold-start loading issue is confirmed
-    // fixed.
-    console.log("[CS-DEBUG] dashboard: membershipStatus=" + membershipStatus + " companyId=" + String(user?.companyId || "(none)"));
     if (membershipStatus !== "error" || hasAutoRetriedMembershipRef.current) return;
     hasAutoRetriedMembershipRef.current = true;
-    console.log("[CS-DEBUG] dashboard: auto-retrying membership load");
     retryMembershipLoad();
-  }, [membershipStatus, retryMembershipLoad, user?.companyId]);
+  }, [membershipStatus, retryMembershipLoad]);
 
   useEffect(() => {
     let cancelled = false;
@@ -800,22 +796,16 @@ export default function DashboardPage() {
             ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
             : "";
         const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
-        console.log(
-          "[CS-DEBUG] dashboard load(): starting — uid=" + String(user?.uid || "(none)") +
-            " storedCompanyId=" + String(storedCompanyId || "(none)") +
-            " user.companyId=" + String(user?.companyId || "(none)") +
-            " preferredCompanyIds=" + JSON.stringify(preferredCompanyIds),
-        );
         // withTimeout must wrap EACH individual attempt, inside retryAsync — not wrap the whole
         // retryAsync call from outside. A hung (never settling, not merely slow) Firestore call
         // makes that difference the entire point: retryAsync only advances to the next attempt
         // once the current one SETTLES, so an outer withTimeout can only ever kill the whole
         // sequence after its one deadline, and retryAsync never gets a real second attempt at all
-        // — confirmed live: a real cold-mobile trace showed membership resolving correctly in
-        // 0.56s, then this call sitting completely silent for exactly 15.002s (the old outer
-        // timeout's bound to the millisecond) before failing, meaning the underlying call hung
-        // and no retry ever actually happened. lib/load-retry.ts's own comment on withTimeout
-        // documents exactly this failure mode.
+        // — confirmed live via a real cold-mobile trace: membership resolved correctly in 0.56s,
+        // then this call sat completely silent for exactly 15.002s (the old outer timeout's bound
+        // to the millisecond) before failing, meaning the underlying call hung and no retry ever
+        // actually happened. lib/load-retry.ts's own comment on withTimeout documents exactly
+        // this failure mode.
         const items = await retryAsync(
           () =>
             withTimeout(
@@ -839,7 +829,6 @@ export default function DashboardPage() {
           },
         );
         if (cancelled) return;
-        console.log("[CS-DEBUG] dashboard load(): fetchProjects returned " + items.length + " project(s)");
         setAllProjects(items);
         const fallbackCompanyId = String(items[0]?.companyId || "").trim();
         // Used below purely for the SEPARATE company-doc/members/status-rows fetch (stat cards,
@@ -880,14 +869,9 @@ export default function DashboardPage() {
               { attempts: 2, delayMs: 250 },
             )
           : null;
-        console.log("[CS-DEBUG] dashboard load(): companyId for stats/staff fetch=" + String(companyId || "(none)"));
         const [userColorMap, companyBundle] = await Promise.all([userColorMapPromise, companyDataPromise]);
         if (cancelled) return;
         setCreatorColorByUid(userColorMap);
-        console.log(
-          "[CS-DEBUG] dashboard load(): companyBundle=" +
-            (companyBundle ? "resolved, members=" + companyBundle[1].length : "null/skipped"),
-        );
         if (companyId && companyBundle) {
           const [companyDoc, members] = companyBundle;
           setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
@@ -904,11 +888,7 @@ export default function DashboardPage() {
           setCompanyMembers([]);
           setRoleRows([]);
         }
-      } catch (error) {
-        console.error(
-          "[CS-DEBUG] dashboard load(): FAILED — " +
-            (error instanceof Error ? error.name + ": " + error.message : String(error)),
-        );
+      } catch {
         if (cancelled) return;
         setAllProjects([]);
         setCreatorColorByUid({});
