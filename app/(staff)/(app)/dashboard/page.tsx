@@ -321,7 +321,7 @@ function assignedDisplayName(project: Project) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, membershipStatus, retryMembershipLoad } = useAuth();
   const { tabs: globalAppTabs, registerScopeTabs } = useAppTabs();
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [search, setSearch] = useState("");
@@ -763,6 +763,26 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // A cold app start (no warm Firebase ID token / IndexedDB auth restore yet — the case a fresh
+  // mobile PWA launch hits every time, since it has nothing cached) can make auth-context's own
+  // membership fetch time out even though the user really is signed in with a real company.
+  // auth-context then publishes a fallback identity with companyId left undefined and
+  // membershipStatus: "error" (see lib/auth-context.tsx) — every consumer is documented to treat
+  // that as "unknown", never as "confirmed no company", but this page previously didn't check it
+  // at all: it just fetched projects with an empty companyId hint, silently got back [], and
+  // showed "No Projects Yet" as if the company genuinely had none. A warm reload afterward always
+  // "fixed" it only because the retry starts from an already-warm connection. Automatically
+  // retrying membership resolution once here (rather than requiring the user to notice and
+  // manually reload) gives the real companyId a real second chance to resolve — once it does,
+  // `user?.companyId` changes, and the project-loading effect below (already depending on it)
+  // re-fires on its own with a correct value.
+  const hasAutoRetriedMembershipRef = useRef(false);
+  useEffect(() => {
+    if (membershipStatus !== "error" || hasAutoRetriedMembershipRef.current) return;
+    hasAutoRetriedMembershipRef.current = true;
+    retryMembershipLoad();
+  }, [membershipStatus, retryMembershipLoad]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -780,9 +800,14 @@ export default function DashboardPage() {
           retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), {
             attempts: 2,
             delayMs: 350,
+            // Retry a first-attempt empty result unconditionally now, not just when
+            // preferredCompanyIds was non-empty — a genuinely fresh device/session (nothing
+            // cached in localStorage yet, membership resolution itself still succeeded) is
+            // exactly the case most likely to hit a cold-start hiccup in fetchProjects' own
+            // company-lookup fallback chain, and it deserves the same one extra chance a
+            // returning user with a cached company hint already got.
             shouldRetryResult: (value, attempt) =>
               attempt === 1 &&
-              preferredCompanyIds.length > 0 &&
               Array.isArray(value) &&
               value.length === 0,
           }),
