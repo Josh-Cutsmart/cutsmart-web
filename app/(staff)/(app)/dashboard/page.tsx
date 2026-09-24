@@ -817,7 +817,17 @@ export default function DashboardPage() {
         if (cancelled) return;
         setAllProjects(items);
         const fallbackCompanyId = String(items[0]?.companyId || "").trim();
-        const companyId = storedCompanyId || fallbackCompanyId;
+        // Used below purely for the SEPARATE company-doc/members/status-rows fetch (stat cards,
+        // staff list, status columns) — this used to fall back only to a project's own companyId,
+        // never to user?.companyId (auth-context's own resolved value, already used above to help
+        // find the projects themselves). So whenever localStorage had no cached company id AND
+        // the projects fetch came back empty (for ANY reason — a genuinely new company, or any of
+        // the cold-start hiccups fixed elsewhere this session), this whole second fetch silently
+        // got skipped entirely (see the `companyId ? ... : null` branch below), even though a
+        // perfectly good companyId was sitting right there on `user`. That's what left every stat
+        // card, the staff list, and the status columns empty while the app otherwise looked like
+        // it had loaded fine.
+        const companyId = storedCompanyId || fallbackCompanyId || String(user?.companyId || "").trim();
         const creatorUids = items.map((row) => String(row.createdByUid || "").trim()).filter(Boolean);
         const assignedUids = items.map((row) => String(row.assignedToUid || "").trim()).filter(Boolean);
         // The user-color lookup and the company doc/members lookup are both derived from `items`
