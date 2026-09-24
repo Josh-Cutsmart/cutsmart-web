@@ -18,7 +18,7 @@ export default function SalesPage() {
     let cancelled = false;
     const routeToProjectSales = async () => {
       try {
-        const projects: Project[] = await retryAsync(() => fetchProjects(user?.uid), { attempts: 2, delayMs: 350 });
+        const projects: Project[] = await retryAsync(() => fetchProjects(user?.uid, undefined, { lightweight: true }), { attempts: 2, delayMs: 350 });
         if (cancelled) return;
         const firstProjectId = projects[0]?.id;
 

@@ -98,7 +98,7 @@ export default function CompanyWrappedPage() {
         const [statsDoc, years, projects, contributions] = await Promise.all([
           retryAsync(() => fetchCompanyStatsDoc(companyId, year), { attempts: 2, delayMs: 250 }),
           retryAsync(() => fetchCompanyStatsYears(companyId), { attempts: 2, delayMs: 250 }),
-          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds), { attempts: 2, delayMs: 350 }),
+          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), { attempts: 2, delayMs: 350 }),
           // Sheets used / edge tape used / lacquer m² aren't a single running total — each project
           // reports its own current value, summed here live (same shape as "Jobs complete this
           // year" below), since a client-side delta can double-count across tabs/reseeds.

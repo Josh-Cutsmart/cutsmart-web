@@ -777,7 +777,7 @@ export default function DashboardPage() {
             : "";
         const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
         const items = await withTimeout(
-          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds), {
+          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), {
             attempts: 2,
             delayMs: 350,
             shouldRetryResult: (value, attempt) =>

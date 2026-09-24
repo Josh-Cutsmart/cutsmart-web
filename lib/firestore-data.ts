@@ -2,6 +2,7 @@ import {
   collection,
   collectionGroup,
   deleteDoc,
+  deleteField,
   doc,
   documentId,
   type DocumentReference,
@@ -20,7 +21,7 @@ import {
 import { auth, db, hasFirebaseConfig } from "@/lib/firebase";
 import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
 import { mockChanges, mockCutlists, mockProjects, mockQuotes } from "@/lib/mock-data";
-import { normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
+import { normalizeSpecsGrid, normalizeSpecsGridVersion, type SpecsGrid, type SpecsGridVersion } from "@/lib/specs-grid-types";
 import type { ProductComparison } from "@/lib/cutlist-types";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageItem, SalesQuote } from "@/lib/types";
 import type { UpdateChangelogEntry } from "@/lib/update-notes-utils";
@@ -142,7 +143,9 @@ function parseCutlistContainer(data: Record<string, unknown>): Record<string, un
   return null;
 }
 
-function parseCutlistRows(data: Record<string, unknown>): unknown[] {
+// Exported for use-project-cutlist.ts's legacy-field fallback read — reused rather than
+// reimplemented, so the `cutlist` vs `cutlistJson` priority logic only lives in one place.
+export function parseCutlistRows(data: Record<string, unknown>): unknown[] {
   const container = parseCutlistContainer(data);
   if (!container) {
     return [];
@@ -150,7 +153,35 @@ function parseCutlistRows(data: Record<string, unknown>): unknown[] {
   return Array.isArray(container.rows) ? (container.rows as unknown[]) : [];
 }
 
-function normalizeProjectImageItems(value: unknown): ProjectImageItem[] {
+// Mirrors the project page's own extractSalesPayloadFromProject candidate-priority logic
+// (projectSettings.sales → sales → projectSettings.salesJson → salesJson, each optionally a
+// JSON string) but reads directly off a raw Firestore document instead of an already-normalized
+// Project object — used by the lazy sales-grid/initial-measure-cutlist subcollection hooks' own
+// legacy fallback, since normalizeProject no longer parses these fields into `project` at all.
+export function extractLegacySalesFieldFromRawDoc(data: Record<string, unknown>, key: string): unknown {
+  const asObject = (value: unknown): Record<string, unknown> | null => {
+    if (value && typeof value === "object") return value as Record<string, unknown>;
+    if (typeof value === "string" && value.trim()) {
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+  const projectSettings = asObject(data.projectSettings) ?? {};
+  const candidates: unknown[] = [projectSettings.sales, data.sales, projectSettings.salesJson, data.salesJson];
+  for (const candidate of candidates) {
+    const parsed = asObject(candidate);
+    if (parsed && key in parsed) return parsed[key];
+  }
+  return undefined;
+}
+
+// Exported for use-project-images.ts's legacy-field fallback read.
+export function normalizeProjectImageItems(value: unknown): ProjectImageItem[] {
   if (!Array.isArray(value)) return [];
   const items: ProjectImageItem[] = [];
   for (const item of value) {
@@ -194,7 +225,10 @@ function normalizeProjectImageItems(value: unknown): ProjectImageItem[] {
   return items;
 }
 
-function normalizeProjectChecklists(value: unknown): ProjectChecklist[] {
+// Exported for use-project-checklists.ts — reused for both the legacy embedded-field fallback
+// read and the (per-checklist, id-injected) new subcollection read, so the validation/shape
+// logic only lives in one place.
+export function normalizeProjectChecklists(value: unknown): ProjectChecklist[] {
   if (!Array.isArray(value)) return [];
   const checklists: ProjectChecklist[] = [];
   for (const entry of value) {
@@ -217,8 +251,8 @@ function normalizeProjectChecklists(value: unknown): ProjectChecklist[] {
   return checklists;
 }
 
-function normalizeProject(id: string, data: Record<string, unknown>): Project {
-  const rows = parseCutlistRows(data);
+function normalizeProject(id: string, data: Record<string, unknown>, options?: { lightweight?: boolean }): Project {
+  const lightweight = options?.lightweight === true;
   const clientBlock =
     asRecord(data.clientDetails) ??
     asRecord(data.client) ??
@@ -226,11 +260,15 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     asRecord(data.projectDetails) ??
     {};
 
-  const settings =
-    typeof data.projectSettings === "object" && data.projectSettings !== null
+  // Lightweight mode (dashboard list rendering) skips every field below that the dashboard
+  // never reads, so opening the dashboard doesn't pay for parsing every project's full
+  // cutlist/sales/checklist/image payload just to show a name and a status pill.
+  const settings = lightweight
+    ? ({} as Record<string, unknown>)
+    : typeof data.projectSettings === "object" && data.projectSettings !== null
       ? ({ ...(data.projectSettings as Record<string, unknown>) } as Record<string, unknown>)
       : ({} as Record<string, unknown>);
-  if (!Object.keys(settings).length && typeof data.projectSettingsJson === "string" && data.projectSettingsJson.trim()) {
+  if (!lightweight && !Object.keys(settings).length && typeof data.projectSettingsJson === "string" && data.projectSettingsJson.trim()) {
     try {
       const parsed = JSON.parse(data.projectSettingsJson);
       if (parsed && typeof parsed === "object") {
@@ -242,35 +280,48 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
   }
 
   let salesPayload: Record<string, unknown> | null = null;
-  const salesRaw = data.sales;
-  if (salesRaw && typeof salesRaw === "object") {
-    salesPayload = { ...(salesRaw as Record<string, unknown>) };
-  } else if (typeof salesRaw === "string" && salesRaw.trim()) {
-    try {
-      const parsed = JSON.parse(salesRaw);
-      if (parsed && typeof parsed === "object") {
-        salesPayload = { ...(parsed as Record<string, unknown>) };
+  if (!lightweight) {
+    const salesRaw = data.sales;
+    if (salesRaw && typeof salesRaw === "object") {
+      salesPayload = { ...(salesRaw as Record<string, unknown>) };
+    } else if (typeof salesRaw === "string" && salesRaw.trim()) {
+      try {
+        const parsed = JSON.parse(salesRaw);
+        if (parsed && typeof parsed === "object") {
+          salesPayload = { ...(parsed as Record<string, unknown>) };
+        }
+      } catch {
+        // ignore invalid legacy string payload
       }
-    } catch {
-      // ignore invalid legacy string payload
     }
-  }
-  if (!salesPayload && typeof data.salesJson === "string" && data.salesJson.trim()) {
-    try {
-      const parsed = JSON.parse(data.salesJson);
-      if (parsed && typeof parsed === "object") {
-        salesPayload = { ...(parsed as Record<string, unknown>) };
+    if (!salesPayload && typeof data.salesJson === "string" && data.salesJson.trim()) {
+      try {
+        const parsed = JSON.parse(data.salesJson);
+        if (parsed && typeof parsed === "object") {
+          salesPayload = { ...(parsed as Record<string, unknown>) };
+        }
+      } catch {
+        // ignore invalid legacy string payload
       }
-    } catch {
-      // ignore invalid legacy string payload
     }
-  }
-  if (salesPayload && !("sales" in settings)) {
-    settings.sales = salesPayload;
-  }
+    if (salesPayload && !("sales" in settings)) {
+      // quoteGrid/specificationsGrid/initialCutlist moved to their own subcollections (see
+      // fetchSalesGridData/saveSalesGridData and cutlistData's "initialMeasure" kind) — the
+      // heaviest fields in this blob, stripped here so they're never parsed/held in memory on a
+      // plain project open, lightweight or not. The project page fetches them itself, lazily.
+      // quoteGridLastClosedVersion is deliberately NOT included here — it stays embedded (small,
+      // not an ever-growing array, and tightly coupled to the Quote grid's own staleness-
+      // detection logic in a way that isn't worth the risk of extracting in this pass).
+      const trimmedSales = { ...salesPayload };
+      delete trimmedSales.quoteGrid;
+      delete trimmedSales.specificationsGrid;
+      delete trimmedSales.initialCutlist;
+      settings.sales = trimmedSales;
+    }
 
-  if (typeof data.productionTempEdit === "object" && data.productionTempEdit !== null && !("productionTempEdit" in settings)) {
-    settings.productionTempEdit = data.productionTempEdit as Record<string, unknown>;
+    if (typeof data.productionTempEdit === "object" && data.productionTempEdit !== null && !("productionTempEdit" in settings)) {
+      settings.productionTempEdit = data.productionTempEdit as Record<string, unknown>;
+    }
   }
 
   const customer = pickFirstString(data, ["customer", "clientName", "client", "client_name"]) ||
@@ -302,8 +353,11 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     "ownerName",
     "createdByDisplayName",
   ]);
-  const projectImageItems = normalizeProjectImageItems(data.projectImageItems);
-  const projectImages = Array.isArray(data.projectImages) ? data.projectImages.map(String).filter(Boolean) : [];
+  // Never parsed here anymore, lightweight or not — images/files moved to their own
+  // subcollection (see fetchProjectMediaData/saveProjectImagesData/saveProjectFilesData); the
+  // project page fetches and merges them into its own `project` state itself, lazily.
+  const projectImageItems: ProjectImageItem[] = [];
+  const projectImages: string[] = [];
   const notifySubscriptionOverridesRaw = asRecord(data.notifySubscriptionOverrides);
   const notifySubscriptionOverrides = notifySubscriptionOverridesRaw
     ? Object.fromEntries(
@@ -330,7 +384,12 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     deletedAt: toIsoString(data.deletedAtIso ?? data.deletedAt, ""),
     completedAtIso: toIsoString(data.completedAtIso ?? data.completedAt, "") || undefined,
     dueDate: String(data.dueDate ?? data.due ?? ""),
-    estimatedSheets: Number(data.estimatedSheets ?? rows.length ?? 0),
+    // Used to fall back to the parsed cutlist's row count when this wasn't already stored on the
+    // doc — cutlist rows are no longer parsed here at all (moved to their own subcollection, see
+    // fetchCutlistData/saveCutlistData), so this is now just the stored value, defaulting to 0.
+    // Nothing in the project page reads this field; a live "sheets used" number is recomputed
+    // from the cutlist itself and synced to a separate companyStats doc instead.
+    estimatedSheets: Number(data.estimatedSheets ?? 0),
     // No assignee stored → fall back to whoever created it, rather than the literal word
     // "Unassigned" — a project always has a real point of contact even before someone
     // deliberately assigns it to a specific staff member.
@@ -346,13 +405,19 @@ function normalizeProject(id: string, data: Record<string, unknown>): Project {
     clientEmail,
     clientAddress,
     region: String(data.region ?? ""),
-    projectFiles: Array.isArray(data.projectFiles) ? (data.projectFiles as Array<Record<string, unknown>>) : [],
+    // Never parsed here anymore either — see the projectImageItems/projectImages comment above.
+    projectFiles: [],
     projectImages: projectImages.length ? projectImages : projectImageItems.map((item) => item.url),
     projectImageItems,
     dashboardCompleteStatusId: String(data.dashboardCompleteStatusId ?? "").trim() || undefined,
     projectSettings: settings,
-    cutlist: parseCutlistContainer(data) ?? undefined,
-    checklists: normalizeProjectChecklists(data.checklists),
+    // Never parsed here anymore, lightweight or not — cutlist rows moved to their own
+    // subcollection; the project page fetches them itself, lazily, via useProjectCutlist.
+    cutlist: undefined,
+    // Never parsed here anymore, lightweight or not — checklists moved to their own
+    // subcollection (one doc per checklist); the project page fetches them itself, lazily, via
+    // useProjectChecklists.
+    checklists: [],
   };
 }
 
@@ -489,10 +554,10 @@ export async function resyncCompanyProjectTagUsage(companyId: string): Promise<v
   await syncCompanyProjectTagUsage(cid);
 }
 
-function normalizeJobProject(companyId: string, docSnap: QueryDocumentSnapshot): Project {
+function normalizeJobProject(companyId: string, docSnap: QueryDocumentSnapshot, lightweight?: boolean): Project {
   const data = (docSnap.data() ?? {}) as Record<string, unknown>;
   const projectId = String(data.id ?? docSnap.id);
-  const normalized = normalizeProject(projectId, data);
+  const normalized = normalizeProject(projectId, data, { lightweight });
   normalized.companyId = companyId;
   return normalized;
 }
@@ -654,18 +719,25 @@ async function fetchProjectsFromCompanyJobs(
   uid: string,
   includeDeleted = false,
   preferredCompanyIds?: string[],
+  lightweight?: boolean,
+  // Set by fetchProjectById, which already merges fetchCompanyIdsForUser's result into
+  // preferredCompanyIds itself before calling this — without this flag, that same 2-way
+  // Firestore membership lookup ran a second time here for no new information.
+  companyIdsAlreadyResolved?: boolean,
 ): Promise<Project[]> {
   if (!db || !uid) {
     return [];
   }
   const database = db;
 
-  const companyIds = Array.from(
-    new Set([
-      ...(await fetchCompanyIdsForUser(uid)),
-      ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
-    ]),
-  );
+  const companyIds = companyIdsAlreadyResolved
+    ? (preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)
+    : Array.from(
+        new Set([
+          ...(await fetchCompanyIdsForUser(uid)),
+          ...((preferredCompanyIds ?? []).map((v) => String(v || "").trim()).filter(Boolean)),
+        ]),
+      );
   if (!companyIds.length) {
     return [];
   }
@@ -689,7 +761,7 @@ async function fetchProjectsFromCompanyJobs(
           if (Boolean(data.isDeleted) !== Boolean(includeDeleted)) {
             continue;
           }
-          const normalized = applyCompanyStaffDisplayNameOverridesToProject(normalizeJobProject(companyId, item), displayNameOverridesByUid);
+          const normalized = applyCompanyStaffDisplayNameOverridesToProject(normalizeJobProject(companyId, item, lightweight), displayNameOverridesByUid);
           if (!canUserViewProject(normalized, uid, companyAccess)) {
             continue;
           }
@@ -776,13 +848,18 @@ async function fetchProjectsFromLegacyUserPaths(uid: string, includeDeleted = fa
   return all;
 }
 
-export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]): Promise<Project[]> {
+export async function fetchProjects(
+  uid?: string,
+  preferredCompanyIds?: string[],
+  options?: { lightweight?: boolean },
+): Promise<Project[]> {
   if (!db) {
     return mockProjects;
   }
   const database = db;
 
   const userId = String(uid ?? "").trim();
+  const lightweight = options?.lightweight === true;
 
   try {
     // Scoped to the user's own companies instead of reading the whole top-level `projects`
@@ -811,7 +888,7 @@ export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]
       );
       const topLevelDocs = snaps.flatMap((snap) => snap.docs);
       if (!topLevelDocs.length) return [];
-      const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>));
+      const rows = topLevelDocs.map((item) => normalizeProject(item.id, item.data() as Record<string, unknown>, { lightweight }));
       const companyDocCache = new Map<string, Record<string, unknown> | null>();
       const companyAccessCache = new Map<string, CompanyAccessInfo | null>();
       const filtered = await Promise.all(
@@ -855,7 +932,7 @@ export async function fetchProjects(uid?: string, preferredCompanyIds?: string[]
     // continue into company/jobs fallback
   }
 
-  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), false, preferredCompanyIds);
+  const nested = await fetchProjectsFromCompanyJobs(String(uid ?? ""), false, preferredCompanyIds, lightweight);
   if (nested.length > 0) {
     return nested;
   }
@@ -876,6 +953,7 @@ export async function fetchProjectById(
   if (!db) {
     return mockProjects.find((project) => project.id === projectId) ?? null;
   }
+  const database = db;
 
   const userId = String(uid ?? "").trim();
   const companyIds = Array.from(
@@ -885,27 +963,39 @@ export async function fetchProjectById(
     ]),
   );
 
-  // Prefer company-scoped jobs first (source of truth for web/desktop parity).
-  for (const companyId of companyIds) {
-    try {
-      const direct = await getDoc(doc(db, "companies", companyId, "jobs", projectId));
-      if (direct.exists()) {
-        const companyDoc = await fetchCompanyDoc(companyId);
-        const companyAccess = userId ? await fetchCompanyAccess(companyId, userId) : null;
-        const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
-          (companyDoc as Record<string, unknown> | null)?.staffDisplayNamesByUid,
-        );
-        const normalized = normalizeProject(projectId, direct.data() as Record<string, unknown>);
-        normalized.companyId = companyId;
-        const project = applyCompanyStaffDisplayNameOverridesToProject(normalized, displayNameOverridesByUid);
-        return canUserViewProject(project, userId, companyAccess) ? project : null;
+  // Prefer company-scoped jobs first (source of truth for web/desktop parity). Each candidate
+  // company is just a guess at where this project lives — checked concurrently instead of one at
+  // a time, so a user who belongs to several companies doesn't pay N sequential round trips to
+  // find the one company that actually has this project.
+  const directHits = await Promise.all(
+    companyIds.map(async (companyId) => {
+      try {
+        const direct = await getDoc(doc(database, "companies", companyId, "jobs", projectId));
+        return direct.exists() ? { companyId, data: direct.data() as Record<string, unknown> } : null;
+      } catch {
+        return null;
       }
-    } catch {
-      // continue
-    }
+    }),
+  );
+  const directHit = directHits.find((hit): hit is { companyId: string; data: Record<string, unknown> } => hit !== null);
+  if (directHit) {
+    const [companyDoc, companyAccess] = await Promise.all([
+      fetchCompanyDoc(directHit.companyId),
+      userId ? fetchCompanyAccess(directHit.companyId, userId) : Promise.resolve(null),
+    ]);
+    const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
+      (companyDoc as Record<string, unknown> | null)?.staffDisplayNamesByUid,
+    );
+    const normalized = normalizeProject(projectId, directHit.data);
+    normalized.companyId = directHit.companyId;
+    const project = applyCompanyStaffDisplayNameOverridesToProject(normalized, displayNameOverridesByUid);
+    return canUserViewProject(project, userId, companyAccess) ? project : null;
   }
 
-  const nested = await fetchProjectsFromCompanyJobs(userId, false, companyIds);
+  // companyIds is already the fully-resolved set (preferredCompanyIds ∪ fetchCompanyIdsForUser),
+  // computed above — tell fetchProjectsFromCompanyJobs not to re-resolve it via a second,
+  // redundant fetchCompanyIdsForUser call.
+  const nested = await fetchProjectsFromCompanyJobs(userId, false, companyIds, undefined, true);
   const nestedHit = nested.find((project) => project.id === projectId) ?? null;
   if (nestedHit) {
     return nestedHit;
@@ -913,7 +1003,7 @@ export async function fetchProjectById(
 
   // Fallback to legacy top-level only if not found in company jobs.
   try {
-    const ref = doc(db, "projects", projectId);
+    const ref = doc(database, "projects", projectId);
     const snap = await getDoc(ref);
     if (snap.exists()) {
       const normalized = normalizeProject(snap.id, snap.data() as Record<string, unknown>);
@@ -921,8 +1011,10 @@ export async function fetchProjectById(
       if (!companyId) {
         return canUserViewProject(normalized, userId, null) ? normalized : null;
       }
-      const companyDoc = await fetchCompanyDoc(companyId);
-      const companyAccess = userId ? await fetchCompanyAccess(companyId, userId) : null;
+      const [companyDoc, companyAccess] = await Promise.all([
+        fetchCompanyDoc(companyId),
+        userId ? fetchCompanyAccess(companyId, userId) : Promise.resolve(null),
+      ]);
       const displayNameOverridesByUid = normalizeCompanyStaffDisplayNameOverrides(
         (companyDoc as Record<string, unknown> | null)?.staffDisplayNamesByUid,
       );
@@ -994,19 +1086,22 @@ export async function fetchDeletedProjects(uid?: string, preferredCompanyIds?: s
   return Array.from(merged.values()).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
-export async function fetchQuotes(): Promise<SalesQuote[]> {
+// Scoped to one project — this used to be an unfiltered scan of the entire app-wide `quotes`
+// collection on every single project open, only to immediately filter the result down to this
+// one project's items client-side (see the project page's own load effect).
+export async function fetchQuotes(projectId: string): Promise<SalesQuote[]> {
   if (!db) {
-    return mockQuotes;
+    return mockQuotes.filter((quote) => quote.projectId === projectId);
   }
 
   try {
-    const snap = await getDocs(collection(db, "quotes"));
+    const snap = await getDocs(query(collection(db, "quotes"), where("projectId", "==", projectId)));
     if (snap.empty) {
-      return hasFirebaseConfig ? [] : mockQuotes;
+      return hasFirebaseConfig ? [] : mockQuotes.filter((quote) => quote.projectId === projectId);
     }
     return snap.docs.map((item) => normalizeQuote(item.id, item.data() as Record<string, unknown>));
   } catch {
-    return hasFirebaseConfig ? [] : mockQuotes;
+    return hasFirebaseConfig ? [] : mockQuotes.filter((quote) => quote.projectId === projectId);
   }
 }
 
@@ -1891,6 +1986,267 @@ export async function deleteGridVersion(project: Project, kind: GridVersionKind,
     return true;
   } catch (error) {
     console.warn(`[deleteGridVersion] ${kind}/${versionId} write failed:`, error);
+    return false;
+  }
+}
+
+// Cutlist rows — same reasoning and pattern as the grid-version subcollections above, applied to
+// the project's own cutlist (previously the top-level `cutlist`/`cutlistJson` fields on the job
+// doc, re-serialized in full on every single row edit). "production" is the real Production
+// Cutlist; "initialMeasure" is reserved for the Initial Measure cutlist (currently still embedded
+// in `sales.initialCutlist`, migrated separately later). Read side falls back to the legacy
+// embedded field when this subcollection doc doesn't exist yet (project not touched since this
+// shipped) — callers are expected to self-heal via saveCutlistData once they've read that legacy
+// data, rather than this module doing it implicitly.
+type CutlistDataKind = "production" | "initialMeasure";
+
+export async function fetchCutlistData(project: Project, kind: CutlistDataKind): Promise<{ rows: unknown[] } | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const snap = await getDoc(doc(ref, "cutlistData", kind));
+    if (!snap.exists()) return null;
+    const data = snap.data() as Record<string, unknown>;
+    return { rows: Array.isArray(data.rows) ? data.rows : [] };
+  } catch (error) {
+    console.warn(`[fetchCutlistData] ${kind} read failed:`, error);
+    return null;
+  }
+}
+
+// Writes the subcollection doc AND clears the legacy embedded field on the parent job doc in one
+// atomic batch — never two independent awaited calls, since a partial failure between them would
+// silently lose data (subcollection written but legacy field still present, or vice versa).
+export async function saveCutlistData(project: Project, kind: CutlistDataKind, rows: unknown[]): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(ref, "cutlistData", kind), {
+      rows: JSON.parse(JSON.stringify(rows)),
+      updatedAtIso: new Date().toISOString(),
+    });
+    if (kind === "production") {
+      batch.update(ref, { cutlist: deleteField(), cutlistJson: deleteField(), updatedAtIso: new Date().toISOString() });
+    } else {
+      // initialMeasure's legacy source is nested inside the sales blob (sales.initialCutlist),
+      // not a top-level field — dot-path delete clears it from the live `sales`/
+      // `projectSettings.sales` object copies; the `salesJson`/`projectSettingsJson` string
+      // mirrors are left as inert, unread dead weight (extractSalesPayloadFromProject/
+      // extractLegacySalesFieldFromRawDoc both prefer the live object fields over those strings).
+      batch.update(ref, {
+        "sales.initialCutlist": deleteField(),
+        "projectSettings.sales.initialCutlist": deleteField(),
+        updatedAtIso: new Date().toISOString(),
+      });
+    }
+    await batch.commit();
+    return true;
+  } catch (error) {
+    console.warn(`[saveCutlistData] ${kind} write failed:`, error);
+    return false;
+  }
+}
+
+// Sales — live Quote grid and Specifications grid, one document per kind (same one-doc-per-kind
+// shape as cutlistData's "production"/"initialMeasure" — each is always read/written as a single
+// whole SpecsGrid, never addressed cell-by-cell via Firestore). This is the single heaviest
+// payload that used to ride along inside the project doc's `sales` object (a rich spreadsheet
+// document with per-cell formatting), 4x-mirrored on every save by persistSalesPatch — moving it
+// here is what actually fixes that. `quoteGridLastClosedVersion` deliberately stays embedded (see
+// normalizeProject's own comment) — not handled here.
+type SalesGridKind = "quote" | "specifications";
+const SALES_GRID_LEGACY_KEY: Record<SalesGridKind, string> = {
+  quote: "quoteGrid",
+  specifications: "specificationsGrid",
+};
+
+export async function fetchSalesGridData(project: Project, kind: SalesGridKind): Promise<{ grid: SpecsGrid } | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const snap = await getDoc(doc(ref, "salesGrids", kind));
+    if (!snap.exists()) return null;
+    const grid = normalizeSpecsGrid((snap.data() as Record<string, unknown>).grid);
+    return grid ? { grid } : null;
+  } catch (error) {
+    console.warn(`[fetchSalesGridData] ${kind} read failed:`, error);
+    return null;
+  }
+}
+
+// Writes the subcollection doc AND clears the legacy nested field (both the live `sales`/
+// `projectSettings.sales` object copies — the `salesJson`/`projectSettingsJson` string mirrors
+// are left as inert, unread dead weight, same reasoning as saveCutlistData's initialMeasure
+// branch) in one atomic batch.
+export async function saveSalesGridData(project: Project, kind: SalesGridKind, grid: SpecsGrid): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(ref, "salesGrids", kind), {
+      grid: JSON.parse(JSON.stringify(grid)),
+      updatedAtIso: new Date().toISOString(),
+    });
+    const legacyKey = SALES_GRID_LEGACY_KEY[kind];
+    batch.update(ref, {
+      [`sales.${legacyKey}`]: deleteField(),
+      [`projectSettings.sales.${legacyKey}`]: deleteField(),
+      updatedAtIso: new Date().toISOString(),
+    });
+    await batch.commit();
+    return true;
+  } catch (error) {
+    console.warn(`[saveSalesGridData] ${kind} write failed:`, error);
+    return false;
+  }
+}
+
+// Checklists — one document PER checklist (unlike cutlistData's one-doc-per-kind, since a
+// project's checklists are naturally independent records, not one array that's always read/
+// written as a whole). This is what actually fixes the write-amplification problem: toggling one
+// checkbox now writes exactly the one checklist it belongs to, not every checklist on the
+// project. Returns null when the subcollection is empty, which is ambiguous on its own (a
+// project can genuinely have zero checklists, or simply not be migrated yet) — the caller
+// resolves that by also checking the legacy `checklists` field on the job doc itself.
+export async function fetchProjectChecklistsData(project: Project): Promise<ProjectChecklist[] | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const snap = await getDocs(collection(ref, "checklists"));
+    if (snap.empty) return null;
+    return normalizeProjectChecklists(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+  } catch (error) {
+    console.warn("[fetchProjectChecklistsData] read failed:", error);
+    return null;
+  }
+}
+
+export async function saveProjectChecklist(project: Project, checklist: ProjectChecklist): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await setDoc(
+      doc(ref, "checklists", checklist.id),
+      JSON.parse(
+        JSON.stringify({
+          name: checklist.name,
+          items: checklist.items,
+          ...(checklist.addedAt ? { addedAt: checklist.addedAt } : {}),
+        }),
+      ),
+    );
+    return true;
+  } catch (error) {
+    console.warn("[saveProjectChecklist] write failed:", error);
+    return false;
+  }
+}
+
+export async function deleteProjectChecklist(project: Project, checklistId: string): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    await deleteDoc(doc(ref, "checklists", checklistId));
+    return true;
+  } catch (error) {
+    console.warn("[deleteProjectChecklist] write failed:", error);
+    return false;
+  }
+}
+
+// Migrate-on-read: writes every legacy checklist as its own subcollection doc AND clears the
+// legacy embedded field in one atomic batch — same reasoning as saveCutlistData.
+export async function migrateLegacyProjectChecklists(project: Project, checklists: ProjectChecklist[]): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    const batch = writeBatch(db);
+    for (const checklist of checklists) {
+      batch.set(
+        doc(ref, "checklists", checklist.id),
+        JSON.parse(
+          JSON.stringify({
+            name: checklist.name,
+            items: checklist.items,
+            ...(checklist.addedAt ? { addedAt: checklist.addedAt } : {}),
+          }),
+        ),
+      );
+    }
+    batch.update(ref, { checklists: deleteField(), updatedAtIso: new Date().toISOString() });
+    await batch.commit();
+    return true;
+  } catch (error) {
+    console.warn("[migrateLegacyProjectChecklists] write failed:", error);
+    return false;
+  }
+}
+
+// Images/files — one doc per kind (images vs files), same reasoning as cutlistData/salesGrids:
+// both are always read/written as one whole array (image upload/delete/annotation-edit and file
+// upload/delete all already rewrite the entire relevant array today, capped at 10 images/10MB
+// total files — bounded enough that doc-per-item wasn't worth the extra complexity here, unlike
+// checklists). Moved out of the job doc's own `projectImages`/`projectImageItems`/`projectFiles`
+// fields so opening a project doesn't download this — capped or not — on every single load.
+export type ProjectMediaKind = "images" | "files";
+
+export async function fetchProjectMediaData(project: Project, kind: ProjectMediaKind): Promise<Record<string, unknown> | null> {
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return null;
+  try {
+    const snap = await getDoc(doc(ref, "projectMedia", kind));
+    if (!snap.exists()) return null;
+    return snap.data() as Record<string, unknown>;
+  } catch (error) {
+    console.warn(`[fetchProjectMediaData] ${kind} read failed:`, error);
+    return null;
+  }
+}
+
+export async function saveProjectImagesData(
+  project: Project,
+  projectImages: string[],
+  projectImageItems: ProjectImageItem[],
+): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    const batch = writeBatch(db);
+    batch.set(
+      doc(ref, "projectMedia", "images"),
+      JSON.parse(JSON.stringify({ projectImages, projectImageItems, updatedAtIso: new Date().toISOString() })),
+    );
+    batch.update(ref, { projectImages: deleteField(), projectImageItems: deleteField(), updatedAtIso: new Date().toISOString() });
+    await batch.commit();
+    return true;
+  } catch (error) {
+    console.warn("[saveProjectImagesData] write failed:", error);
+    return false;
+  }
+}
+
+export async function saveProjectFilesData(project: Project, projectFiles: unknown[]): Promise<boolean> {
+  if (!db) return false;
+  const ref = await resolveProjectDocRef(project);
+  if (!ref) return false;
+  try {
+    const batch = writeBatch(db);
+    batch.set(
+      doc(ref, "projectMedia", "files"),
+      JSON.parse(JSON.stringify({ projectFiles, updatedAtIso: new Date().toISOString() })),
+    );
+    batch.update(ref, { projectFiles: deleteField(), updatedAtIso: new Date().toISOString() });
+    await batch.commit();
+    return true;
+  } catch (error) {
+    console.warn("[saveProjectFilesData] write failed:", error);
     return false;
   }
 }

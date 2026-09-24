@@ -1381,7 +1381,7 @@ export default function CompanySettingsPage() {
       addCandidate("cmp_mykm_91647c");
 
       try {
-        const projects = await fetchProjects(user.uid);
+        const projects = await fetchProjects(user.uid, undefined, { lightweight: true });
         for (const project of projects) {
           addCandidate(project.companyId);
         }
@@ -1935,7 +1935,7 @@ export default function CompanySettingsPage() {
     }
     setPreparingStaffRemovalUid(uid);
     try {
-      const projects = await fetchProjects(toStr(user?.uid), [activeCompanyId]);
+      const projects = await fetchProjects(toStr(user?.uid), [activeCompanyId], { lightweight: true });
       const activeProjectCount = projects.filter((project) => {
         if (String(project.companyId || "").trim() !== activeCompanyId) return false;
         if (String(project.assignedToUid || "").trim() !== uid) return false;

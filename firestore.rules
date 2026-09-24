@@ -208,6 +208,29 @@ service cloud.firestore {
         match /productComparisons/{comparisonId} {
           allow read, write: if isCompanyMember(companyId);
         }
+        // Cutlist rows — same reasoning again: moved out of the job doc's own `cutlist`/
+        // `cutlistJson` fields so opening a project no longer downloads the full cutlist, and a
+        // single row edit no longer re-serializes every row on the project. "production"/
+        // "initialMeasure" docs; same access level as the parent job doc.
+        match /cutlistData/{kind} {
+          allow read, write: if isCompanyMember(companyId);
+        }
+        // Checklists — one doc per checklist, moved out of the job doc's own `checklists` array
+        // so toggling one checkbox no longer rewrites every checklist on the project.
+        match /checklists/{checklistId} {
+          allow read, write: if isCompanyMember(companyId);
+        }
+        // Sales — live Quote grid / Specifications grid, one doc per kind. Moved out of the job
+        // doc's own `sales.quoteGrid`/`sales.specificationsGrid` fields — the heaviest payload
+        // that used to be 4x-mirrored into the doc on every autosave.
+        match /salesGrids/{kind} {
+          allow read, write: if isCompanyMember(companyId);
+        }
+        // Images/files — one doc per kind, moved out of the job doc's own `projectImages`/
+        // `projectImageItems`/`projectFiles` fields.
+        match /projectMedia/{kind} {
+          allow read, write: if isCompanyMember(companyId);
+        }
       }
 
       // Invites: used by Staff & Permissions "Add Staff" and Join Company invite flow
@@ -231,6 +254,18 @@ service cloud.firestore {
         allow read, write: if signedIn();
       }
       match /productComparisons/{comparisonId} {
+        allow read, write: if signedIn();
+      }
+      match /cutlistData/{kind} {
+        allow read, write: if signedIn();
+      }
+      match /checklists/{checklistId} {
+        allow read, write: if signedIn();
+      }
+      match /salesGrids/{kind} {
+        allow read, write: if signedIn();
+      }
+      match /projectMedia/{kind} {
         allow read, write: if signedIn();
       }
     }

@@ -229,7 +229,7 @@ export default function UserSettingsPage() {
 
       if (user?.uid) {
         try {
-          const projects = await fetchProjects(user.uid);
+          const projects = await fetchProjects(user.uid, undefined, { lightweight: true });
           for (const project of projects) {
             const cid = String(project.companyId || "").trim();
             if (cid) candidateIds.add(cid);

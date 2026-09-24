@@ -509,17 +509,26 @@ export async function fetchCompanyAccess(companyId: string, uid: string): Promis
 
   const cid = String(companyId).trim();
   const userId = String(uid).trim();
-  const accountAccess = await fetchUserAccountAccess(userId);
+
+  // Independent of each other — the account-level access override doesn't depend on which
+  // company is being checked, and the company membership doc doesn't depend on the account
+  // override — so both run concurrently instead of the account lookup blocking the membership
+  // doc read (this cut a real round trip off every single fetchCompanyAccess call).
+  const [accountAccess, direct] = await Promise.all([
+    fetchUserAccountAccess(userId),
+    (async () => {
+      try {
+        return await getDoc(doc(db, "companies", cid, "memberships", userId));
+      } catch {
+        return null;
+      }
+    })(),
+  ]);
 
   // Primary path used by desktop: companies/{companyId}/memberships/{uid}
-  try {
-    const direct = await getDoc(doc(db, "companies", cid, "memberships", userId));
-    if (direct.exists()) {
-      const data = (direct.data() ?? {}) as Record<string, unknown>;
-      return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
-    }
-  } catch {
-    // continue fallbacks
+  if (direct?.exists()) {
+    const data = (direct.data() ?? {}) as Record<string, unknown>;
+    return mergeAccessWithUserAccount(await resolveMembershipToAccess(cid, userId, data), accountAccess);
   }
 
   // The two fallbacks that used to live here (a collectionGroup("memberships") query filtered on

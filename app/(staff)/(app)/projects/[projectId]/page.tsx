@@ -54,6 +54,12 @@ import {
   saveProductComparison,
   syncCompanyClientProfileFromProject,
   softDeleteProject,
+  saveCutlistData,
+  saveProjectChecklist,
+  deleteProjectChecklist,
+  saveSalesGridData,
+  saveProjectImagesData,
+  saveProjectFilesData,
   updateGridVersionGrid,
   updateProductComparison,
   updateProjectPatch,
@@ -63,7 +69,11 @@ import {
 import type { CompanyMemberOption } from "@/lib/firestore-data";
 import { bumpCompanyStatCounter, bumpCompanyStatLeaderboard } from "@/lib/company-stats";
 import { getProductionUnlockRemainingSeconds, projectTabAccess } from "@/lib/permissions";
-import { fetchCompanyAccess, type CompanyAccessInfo } from "@/lib/membership";
+import { useCompanyAccess } from "@/lib/use-company-access";
+import { useProjectCutlistRaw } from "@/lib/use-project-cutlist";
+import { useProjectChecklists } from "@/lib/use-project-checklists";
+import { useProjectSalesGrid } from "@/lib/use-project-sales-grid";
+import { useProjectMedia } from "@/lib/use-project-media";
 import { normalizeRoles } from "@/lib/company-roles";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
@@ -5798,6 +5808,7 @@ export default function ProjectDetailsPage() {
   // there is no separate extras list to keep in sync with this grid's own groups.
   const quoteGridHydratedForProjectIdRef = useRef<string | null>(null);
   const [quoteGrid, setQuoteGrid] = useState<SpecsGrid | null>(null);
+  const projectMediaHydratedForProjectIdRef = useRef<string | null>(null);
   // Quote grid's version history — same subcollection-based approach as specsSheetVersions above.
   const quoteGridVersionsHydratedForProjectIdRef = useRef<string | null>(null);
   const [quoteGridVersions, setQuoteGridVersions] = useState<SpecsGridVersion[]>([]);
@@ -6415,9 +6426,12 @@ export default function ProjectDetailsPage() {
   });
   const [companyMembers, setCompanyMembers] = useState<CompanyMemberOption[]>([]);
   const [staffIconColorByUid, setStaffIconColorByUid] = useState<Record<string, string>>({});
-  const [companyAccess, setCompanyAccess] = useState<CompanyAccessInfo | null>(null);
+  // Scoped to the project's OWN company, not necessarily the user's "active" one — a user can
+  // open a project belonging to a different company than whichever is currently active in the
+  // app shell. Shares use-company-access's module-level cache, so navigating between projects (or
+  // back to this same one) within the same company no longer re-pays this round trip every time.
+  const companyAccess = useCompanyAccess(project ? project.companyId : null);
   const [companyDoc, setCompanyDoc] = useState<Record<string, unknown> | null>(null);
-  const [companyAccessLoaded, setCompanyAccessLoaded] = useState(false);
   const [companyDocLoaded, setCompanyDocLoaded] = useState(false);
   useEffect(() => {
     const measure = () => {
@@ -7464,8 +7478,8 @@ export default function ProjectDetailsPage() {
   // project name immediately instead of flashing a generic "Project" label.
   const openNameFromSearchParams = useMemo(() => String(searchParams.get("openName") || "").trim(), [searchParams]);
 
-  const effectiveRole = companyAccess?.role ?? user?.role ?? "staff";
-  const effectivePermissions = companyAccess?.permissionKeys ?? user?.permissions ?? [];
+  const effectiveRole = (companyAccess.status === "ready" ? companyAccess.role : undefined) ?? user?.role ?? "staff";
+  const effectivePermissions = (companyAccess.status === "ready" ? companyAccess.permissionKeys : undefined) ?? user?.permissions ?? [];
   const normalizedEffectivePermissions = useMemo(
     () => effectivePermissions.map((permission) => String(permission || "").trim().toLowerCase()).filter(Boolean),
     [effectivePermissions],
@@ -7486,7 +7500,7 @@ export default function ProjectDetailsPage() {
     if (effectiveRole === "owner" || effectiveRole === "admin") return true;
     const ids = group.editableByRoleIds;
     if (!ids || ids.length === 0) return true;
-    const myRoleId = companyAccess?.roleId;
+    const myRoleId = companyAccess.status === "ready" ? companyAccess.roleId : undefined;
     return Boolean(myRoleId && ids.includes(myRoleId));
   };
   const hasDirectProductionEditPermission =
@@ -7522,7 +7536,7 @@ export default function ProjectDetailsPage() {
     productionAccess.view &&
     !hasDirectProductionEditPermission &&
     productionUnlockRemainingSeconds <= 0;
-  const productionUnlockUiReady = companyAccessLoaded && companyDocLoaded;
+  const productionUnlockUiReady = companyAccess.status !== "loading" && companyDocLoaded;
   const currentProjectSettingsForTempAccess = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
   const currentProjectPermissionMapForTempAccess =
     (currentProjectSettingsForTempAccess.projectPermissionsByUid as Record<string, unknown> | undefined) ??
@@ -7881,6 +7895,13 @@ export default function ProjectDetailsPage() {
     cutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(cutlistRows);
   }, [cutlistRows]);
 
+  // Deliberately NOT tab-gated — initialCutlistRows already feeds unconditional, ungated pricing
+  // memos (e.g. displayedSalesQuoteGrandTotal) that are relied on outside the Sales tab too, so
+  // gating the fetch itself risked showing stale/zero totals elsewhere. Still gets the CPU-parse
+  // and (once each project is next saved) network-byte savings from no longer being embedded in
+  // the main project fetch — just not full lazy-loading, unlike the Production cutlist.
+  const initialCutlistState = useProjectCutlistRaw(project, "initialMeasure", true);
+
   useEffect(() => {
     const projectId = String(project?.id || "").trim();
     if (!projectId) {
@@ -7891,11 +7912,10 @@ export default function ProjectDetailsPage() {
       setInitialCutlistRows([]);
       return;
     }
-    const rawCutlist = (salesPayload as Record<string, unknown>).initialCutlist;
-    const rawRows =
-      rawCutlist && typeof rawCutlist === "object" && Array.isArray((rawCutlist as Record<string, unknown>).rows)
-        ? ((rawCutlist as Record<string, unknown>).rows as unknown[])
-        : [];
+    if (initialCutlistState.status !== "ready") {
+      return;
+    }
+    const rawRows = initialCutlistState.rawRows;
     const mapped = rawRows
       .filter((row) => row && typeof row === "object")
       .map((row, idx) => {
@@ -7977,7 +7997,7 @@ export default function ProjectDetailsPage() {
     }
     initialCutlistHydratedProjectIdRef.current = projectId;
     setInitialCutlistRows(mapped);
-  }, [project, salesPayload]);
+  }, [project, initialCutlistState.status, initialCutlistState.rawRows]);
   const boardBaseLabelFromRow = (row: ProductionBoardRow) => {
     const colour = String(row.colour || "").trim();
     const thicknessRaw = String(row.thickness || "").trim();
@@ -8616,6 +8636,23 @@ export default function ProjectDetailsPage() {
     productionNav === "overview" || productionNav === "cnc" || isProductionPrintModalOpen;
   const shouldComputeNesting =
     productionNav === "overview" || productionNav === "nesting" || isProductionPrintModalOpen;
+
+  // Every Production sub-tab (Cutlist List, Nesting, CNC, Order/Hardware) reads the same
+  // cutlistRows state, so this only needs to be gated on the Production tab itself being open —
+  // same "|| isProductionPrintModalOpen" belt-and-suspenders as shouldComputeCnc/shouldComputeNesting above.
+  const productionCutlistState = useProjectCutlistRaw(
+    project,
+    "production",
+    resolvedTab === "production" || isProductionPrintModalOpen,
+  );
+  const isOnSalesTab = resolvedTab === "sales" && salesAccess.view;
+  const isOnQuoteGridPage = isOnSalesTab && salesNav === "quote";
+  const isOnSpecsSheetPage = isOnSalesTab && salesNav === "specifications";
+  // Fetched as soon as the Sales tab is open (any sub-nav), not just narrowly on "quote" —
+  // liveQuoteGrid below feeds a project-wide running total shown regardless of which sales
+  // sub-nav is active, so it can't wait for the user to specifically open the Quote editor.
+  const quoteGridState = useProjectSalesGrid(project, "quote", isOnSalesTab);
+  const specsGridState = useProjectSalesGrid(project, "specifications", isOnSpecsSheetPage);
 
   const formatUnlockTimer = (seconds: number) => {
     const s = Math.max(0, Math.floor(seconds));
@@ -11890,10 +11927,11 @@ export default function ProjectDetailsPage() {
   // in the fullscreen editor, since the totals/discount math below is a project-wide running total,
   // not something that should change just because someone happens to be looking at an old Quote
   // version in the editor elsewhere.
-  const liveQuoteGrid = useMemo(
-    () => normalizeSpecsGrid((salesPayload as Record<string, unknown>).quoteGrid),
-    [salesPayload],
-  );
+  // Reads the plain quoteGrid state (hydrated by the effect below as soon as the Sales tab opens,
+  // regardless of sub-nav, and never cleared again for the rest of this page session) rather than
+  // quoteGridState.grid directly — the hook itself resets to null whenever the Sales tab isn't
+  // open, but this running total is deliberately meant to survive navigating away from Sales.
+  const liveQuoteGrid = quoteGrid;
   const liveQuoteGridExtras = useMemo(
     () => (liveQuoteGrid ? getExpandedRowGroups(liveQuoteGrid) : []),
     [liveQuoteGrid],
@@ -12750,7 +12788,8 @@ export default function ProjectDetailsPage() {
     openProjectLiveView("sales", { salesNav: nextKey as SalesNav });
   };
 
-  const projectChecklists = project?.checklists ?? [];
+  const checklistsState = useProjectChecklists(project, isProjectManagementModalOpen);
+  const projectChecklists = checklistsState.checklists;
 
   useEffect(() => {
     if (!isProjectManagementModalOpen) return;
@@ -12759,13 +12798,8 @@ export default function ProjectDetailsPage() {
     void fetchChecklistTemplates(uid).then(setProjectManagementChecklistTemplates);
   }, [isProjectManagementModalOpen, user?.uid]);
 
-  const persistProjectChecklists = async (next: ProjectChecklist[]) => {
-    if (!project) return;
-    setProject((current) => (current ? { ...current, checklists: next } : current));
-    await updateProjectPatch(project, { checklists: next });
-  };
-
   const addProjectChecklistFromTemplate = (template: ChecklistTemplate) => {
+    if (!project) return;
     const suffix = () => `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const nextChecklist: ProjectChecklist = {
       id: `checklist_${suffix()}`,
@@ -12773,21 +12807,32 @@ export default function ProjectDetailsPage() {
       items: template.items.map((item) => ({ id: `item_${suffix()}`, text: item.text, checked: false })),
       addedAt: new Date().toISOString(),
     };
-    void persistProjectChecklists([...projectChecklists, nextChecklist]);
+    checklistsState.setChecklistsOptimistic([...projectChecklists, nextChecklist]);
+    void saveProjectChecklist(project, nextChecklist);
     setIsAddChecklistMenuOpen(false);
   };
 
   const toggleProjectChecklistItemChecked = (checklistId: string, itemId: string) => {
-    const next = projectChecklists.map((cl) =>
-      cl.id === checklistId
-        ? { ...cl, items: cl.items.map((it) => (it.id === itemId ? { ...it, checked: !it.checked } : it)) }
-        : cl,
-    );
-    void persistProjectChecklists(next);
+    if (!project) return;
+    let toggledChecklist: ProjectChecklist | null = null;
+    const next = projectChecklists.map((cl) => {
+      if (cl.id !== checklistId) return cl;
+      const updated = { ...cl, items: cl.items.map((it) => (it.id === itemId ? { ...it, checked: !it.checked } : it)) };
+      toggledChecklist = updated;
+      return updated;
+    });
+    checklistsState.setChecklistsOptimistic(next);
+    // Only the one checklist that actually changed needs to be written — a checkbox toggle no
+    // longer rewrites every checklist on the project.
+    if (toggledChecklist) {
+      void saveProjectChecklist(project, toggledChecklist);
+    }
   };
 
   const removeProjectChecklist = (checklistId: string) => {
-    void persistProjectChecklists(projectChecklists.filter((cl) => cl.id !== checklistId));
+    if (!project) return;
+    checklistsState.setChecklistsOptimistic(projectChecklists.filter((cl) => cl.id !== checklistId));
+    void deleteProjectChecklist(project, checklistId);
   };
 
   useEffect(() => {
@@ -13252,7 +13297,7 @@ export default function ProjectDetailsPage() {
               () => withTimeout(fetchProjectById(projectId, user?.uid, preferredCompanyIds), 15000, "Project load timed out"),
               { attempts: 2, delayMs: 350, shouldRetryResult: (result) => result === null },
             ),
-            retryAsync(() => withTimeout(fetchQuotes(), 15000, "Quotes load timed out"), { attempts: 2, delayMs: 350 }).catch(
+            retryAsync(() => withTimeout(fetchQuotes(projectId), 15000, "Quotes load timed out"), { attempts: 2, delayMs: 350 }).catch(
               () => [] as Awaited<ReturnType<typeof fetchQuotes>>,
             ),
           ]);
@@ -13296,37 +13341,6 @@ export default function ProjectDetailsPage() {
     projectRef.current = project;
   }, [project]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadAccess = async () => {
-      if (!project?.companyId || !user?.uid) {
-        if (!cancelled) {
-          setCompanyAccess(null);
-          setCompanyAccessLoaded(true);
-        }
-        return;
-      }
-      if (!cancelled) setCompanyAccessLoaded(false);
-      try {
-        const access = await withTimeout(
-          retryAsync(() => fetchCompanyAccess(project.companyId, user.uid!), { attempts: 2, delayMs: 350 }),
-          15000,
-          "Company access load timed out",
-        );
-        if (cancelled) return;
-        setCompanyAccess(access);
-      } catch {
-        if (cancelled) return;
-        setCompanyAccess(null);
-      } finally {
-        if (!cancelled) setCompanyAccessLoaded(true);
-      }
-    };
-    void loadAccess();
-    return () => {
-      cancelled = true;
-    };
-  }, [project?.companyId, user?.uid]);
 
   useEffect(() => {
     if (!project) return;
@@ -13459,6 +13473,39 @@ export default function ProjectDetailsPage() {
       window.removeEventListener(USER_COLOR_UPDATED_EVENT, onUserColorUpdated as EventListener);
     };
   }, [project?.companyId]);
+
+  // Images/files are always-mounted page sections (not behind a tab click), so this simply fires
+  // as soon as the project resolves instead of blocking the "project loaded" state on it — the
+  // gallery/files list populate a moment after the rest of the page, rather than every project
+  // open paying to download (capped, but still real) image/file metadata up front. Merges the
+  // result into `project` state once, below, so every existing project.projectImageItems/
+  // .projectImages/.projectFiles read site keeps working unchanged.
+  const projectMediaState = useProjectMedia(project);
+  useEffect(() => {
+    if (!project?.id) {
+      projectMediaHydratedForProjectIdRef.current = null;
+      return;
+    }
+    if (projectMediaHydratedForProjectIdRef.current === project.id) return;
+    if (projectMediaState.status !== "ready") return;
+    projectMediaHydratedForProjectIdRef.current = project.id;
+    setProject((prev) =>
+      prev
+        ? {
+            ...prev,
+            projectImages: projectMediaState.projectImages,
+            projectImageItems: projectMediaState.projectImageItems,
+            projectFiles: projectMediaState.projectFiles as Project["projectFiles"],
+          }
+        : prev,
+    );
+  }, [
+    project?.id,
+    projectMediaState.status,
+    projectMediaState.projectImages,
+    projectMediaState.projectImageItems,
+    projectMediaState.projectFiles,
+  ]);
 
   useEffect(() => {
     const loadImages = async () => {
@@ -13790,7 +13837,7 @@ export default function ProjectDetailsPage() {
     if (!project) return false;
     syncProjectImageItemsInState(nextItems);
     const nextUrls = nextItems.map((item) => String(item.url || "").trim()).filter(Boolean);
-    const ok = await updateProjectPatch(project, { projectImages: nextUrls, projectImageItems: nextItems });
+    const ok = await saveProjectImagesData(project, nextUrls, nextItems);
     return ok;
   };
 
@@ -14045,7 +14092,7 @@ export default function ProjectDetailsPage() {
         ...uploaded.filter(Boolean).map((url) => ({ url, name: "", annotations: [] as ProjectImageAnnotation[] })),
       ].slice(0, 10);
       const nextUrls = next.map((item) => item.url).filter(Boolean);
-      const ok = await updateProjectPatch(project, { projectImages: nextUrls, projectImageItems: next });
+      const ok = await saveProjectImagesData(project, nextUrls, next);
       if (!ok) {
         setLockMessage("Could not save uploaded image references.");
         return;
@@ -14174,8 +14221,9 @@ export default function ProjectDetailsPage() {
       );
 
       const nextFiles = [...existing, ...uploaded.filter(Boolean) as ProjectFileEntry[]];
-      const ok = await updateProjectPatch(project, {
-        projectFiles: nextFiles.map((row) => ({
+      const ok = await saveProjectFilesData(
+        project,
+        nextFiles.map((row) => ({
           id: row.id,
           name: row.name,
           path: row.path,
@@ -14184,7 +14232,7 @@ export default function ProjectDetailsPage() {
           contentType: row.contentType,
           uploadedAtIso: row.uploadedAtIso,
         })),
-      });
+      );
       if (!ok) {
         setLockMessage("Could not save uploaded files.");
         return;
@@ -14363,7 +14411,7 @@ export default function ProjectDetailsPage() {
 
       const nextItems = existingItems.filter((_, i) => i !== removeIdx);
       const nextRefs = nextItems.map((item) => item.url).filter(Boolean);
-      const ok = await updateProjectPatch(project, { projectImages: nextRefs, projectImageItems: nextItems });
+      const ok = await saveProjectImagesData(project, nextRefs, nextItems);
       if (!ok) {
         setLockMessage("Could not delete selected image.");
         return;
@@ -14451,8 +14499,9 @@ export default function ProjectDetailsPage() {
       }
 
       const nextFiles = existing.filter((row) => !matchesSelected(row));
-      const ok = await updateProjectPatch(project, {
-        projectFiles: nextFiles.map((row) => ({
+      const ok = await saveProjectFilesData(
+        project,
+        nextFiles.map((row) => ({
           id: row.id,
           name: row.name,
           path: row.path,
@@ -14461,7 +14510,7 @@ export default function ProjectDetailsPage() {
           contentType: row.contentType,
           uploadedAtIso: row.uploadedAtIso,
         })),
-      });
+      );
       if (!ok) {
         setLockMessage("Could not delete selected file.");
         return;
@@ -15144,9 +15193,12 @@ export default function ProjectDetailsPage() {
         setCutlistRows([]);
         return;
       }
-      const projectRecord = project as unknown as Record<string, unknown>;
-      const cutlistRecord = (projectRecord.cutlist ?? null) as Record<string, unknown> | null;
-      const directRowsRaw = Array.isArray(cutlistRecord?.rows) ? (cutlistRecord?.rows as unknown[]) : [];
+      if (productionCutlistState.status !== "ready") {
+        // Still loading (or the Production tab isn't open yet) — leave whatever rows are
+        // already displayed alone rather than clearing them out from under the user.
+        return;
+      }
+      const directRowsRaw = productionCutlistState.rawRows;
       if (directRowsRaw.length) {
         const mapped = directRowsRaw.map((row, idx) => {
           const item = (row ?? {}) as Record<string, unknown>;
@@ -15300,7 +15352,7 @@ export default function ProjectDetailsPage() {
       );
     };
     void loadCutlist();
-  }, [project, user?.uid]);
+  }, [project, user?.uid, productionCutlistState.status, productionCutlistState.rawRows]);
 
   useEffect(() => {
     if (!cutlistUiStateStorageKey) {
@@ -17812,33 +17864,21 @@ export default function ProjectDetailsPage() {
   const persistCutlistContainer = async (nextRows: CutlistRow[]) => {
     if (!project) return false;
     const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
-    const currentCutlist =
-      project.cutlist && typeof project.cutlist === "object"
-        ? ({ ...(project.cutlist as Record<string, unknown>) } as Record<string, unknown>)
-        : ({} as Record<string, unknown>);
-    const nextCutlist = {
-      ...currentCutlist,
-      rows,
-    };
+    // The rows as they stood before THIS save — used below purely as the diff base for the
+    // changelog/company-stats deltas, sourced from the cutlist hook's last-known rows now that
+    // this data lives in its own subcollection instead of on `project.cutlist`.
+    const prevRawRows = productionCutlistState.rawRows;
     pendingCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
     isPersistingCutlistRowsRef.current = true;
     try {
-      const ok = await updateProjectPatch(project, { cutlist: nextCutlist });
+      const ok = await saveCutlistData(project, "production", rows);
       if (ok) {
-        setProject((prevProject) =>
-          prevProject
-            ? {
-                ...prevProject,
-                cutlist: nextCutlist,
-              }
-            : prevProject,
-        );
-        // Diffs against the LAST PERSISTED rows (currentCutlist.rows), not any local React state —
-        // this same function backs both the Production and Initial cutlists, so it's the one spot
-        // both funnel through. Capped to the core identity/dimension fields (not every one of a
-        // CutlistRow's ~50 fields). Each changed/added/removed row gets its OWN changelog entry —
-        // even a bulk delete of several rows in one save logs one line per row, not one bundled
-        // "N changes" line, so the history reads as a real list of individual events.
+        productionCutlistState.setRawRowsOptimistic(rows);
+        // Diffs against the LAST PERSISTED rows (prevRawRows), not any local React state. Capped
+        // to the core identity/dimension fields (not every one of a CutlistRow's ~50 fields).
+        // Each changed/added/removed row gets its OWN changelog entry — even a bulk delete of
+        // several rows in one save logs one line per row, not one bundled "N changes" line, so
+        // the history reads as a real list of individual events.
         const cutlistFieldLabels: Record<string, string> = {
           Board: "Board",
           Height: "Height",
@@ -17847,7 +17887,7 @@ export default function ProjectDetailsPage() {
           Quantity: "Quantity",
           partType: "Part Type",
         };
-        const prevRows = Array.isArray(currentCutlist.rows) ? (currentCutlist.rows as Array<Record<string, unknown>>) : [];
+        const prevRows = Array.isArray(prevRawRows) ? (prevRawRows as Array<Record<string, unknown>>) : [];
         const prevByKey = new Map(prevRows.map((r) => [String(r.__cutlist_key ?? ""), r]));
         const nextByKey = new Map(rows.map((r) => [String((r as Record<string, unknown>).__cutlist_key ?? ""), r as Record<string, unknown>]));
         for (const [key, nextRow] of nextByKey) {
@@ -17913,32 +17953,11 @@ export default function ProjectDetailsPage() {
     const run = async (): Promise<boolean> => {
       if (!project) return false;
       const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
-      const nextSales = {
-        ...salesPayload,
-        initialCutlist: { rows },
-      } as Record<string, unknown>;
-      const optimisticProjectSettings = {
-        ...((project.projectSettings ?? {}) as Record<string, unknown>),
-        sales: nextSales,
-      };
       pendingInitialCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
       isPersistingInitialCutlistRowsRef.current = true;
-      setProject((prevProject) =>
-        prevProject
-          ? {
-              ...prevProject,
-              sales: nextSales as never,
-              salesJson: JSON.stringify(nextSales),
-              projectSettings: {
-                ...(prevProject.projectSettings ?? {}),
-                sales: nextSales,
-              },
-              projectSettingsJson: JSON.stringify(optimisticProjectSettings),
-            }
-          : prevProject,
-      );
+      initialCutlistState.setRawRowsOptimistic(rows);
       try {
-        const ok = await persistSalesPatch(nextSales);
+        const ok = await saveCutlistData(project, "initialMeasure", rows);
         if (!ok) {
           pendingInitialCutlistRowsJsonRef.current = "";
           setLockMessage("Could not save Initial Measure changes.");
@@ -25577,32 +25596,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     }
   };
   useEffect(() => {
-    const isOnSpecsPage = resolvedTab === "sales" && salesAccess.view && salesNav === "specifications";
-    if (!isOnSpecsPage) return;
+    if (!isOnSpecsSheetPage) return;
     // Already hydrated (or cloned) this exact project's sheet once this session — a later re-run of
-    // this effect (triggered by `salesPayload` recomputing for some unrelated reason) must NOT
+    // this effect (triggered by specsGridState recomputing for some unrelated reason) must NOT
     // re-sync from Firestore-backed data again, or it would clobber live, still-unsaved local edits
     // with whatever Firestore last had before the debounced save landed.
     if (specsSheetHydratedForProjectIdRef.current === (project?.id ?? null)) return;
-    const existing = normalizeSpecsGrid((salesPayload as Record<string, unknown>).specificationsGrid);
+    if (specsGridState.status !== "ready") return;
+    const existing = specsGridState.grid;
     if (existing) {
       specsSheetHydratedForProjectIdRef.current = project?.id ?? null;
       setSpecsSheetGrid(existing);
       return;
     }
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
-    if (!template) return;
+    if (!template || !project) return;
     specsSheetHydratedForProjectIdRef.current = project?.id ?? null;
     const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
     setSpecsSheetGrid(resolved);
-    void persistSalesPatch({ ...salesPayload, specificationsGrid: resolved }).then((ok) => {
+    specsGridState.setGridOptimistic(resolved);
+    void saveSalesGridData(project, "specifications", resolved).then((ok) => {
       if (!ok) {
         console.error("Specs sheet initial clone failed to save");
         setSpecsSheetSaveError("initial-clone-save-failed");
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedTab, salesAccess.view, salesNav, salesPayload, companyDoc, effectiveQuoteTemplateReplacements, project?.id]);
+  }, [isOnSpecsSheetPage, specsGridState.status, specsGridState.grid, companyDoc, effectiveQuoteTemplateReplacements, project?.id]);
   const specsSheetSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onSpecsSheetChange = (data: SpecsGrid) => {
     if (specsSheetSaveTimeoutRef.current) clearTimeout(specsSheetSaveTimeoutRef.current);
@@ -25627,12 +25647,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return;
     }
     setSpecsSheetGrid(data);
-    // persistSalesPatch re-writes the entire sales object (rooms, quote extras, every quote
-    // snapshot) on every call, not just this one field — the same "large combined payload, written
-    // too often" pattern that exhausted Firestore's write queue for the company template. A longer
-    // debounce here keeps writes infrequent regardless of how continuously someone edits the sheet.
+    specsGridState.setGridOptimistic(data);
+    // A longer debounce keeps writes infrequent regardless of how continuously someone edits the
+    // sheet — this grid can be a genuinely large document (rich per-cell formatting).
     specsSheetSaveTimeoutRef.current = setTimeout(() => {
-      void persistSalesPatch({ ...salesPayload, specificationsGrid: data }).then((ok) => {
+      if (!project) return;
+      void saveSalesGridData(project, "specifications", data).then((ok) => {
         if (!ok) {
           console.error("Specs sheet save failed");
           setSpecsSheetSaveError("save-failed");
@@ -26109,13 +26129,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // to force a brand new clone from whatever the company template currently is, on demand.
   const resetSpecsSheetToTemplate = async () => {
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
-    if (!template) return;
+    if (!template || !project) return;
     if (specsSheetSaveTimeoutRef.current) clearTimeout(specsSheetSaveTimeoutRef.current);
     const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
     setSpecsSheetGrid(resolved);
+    specsGridState.setGridOptimistic(resolved);
     setSpecsSheetEditorKey((prev) => prev + 1);
     setIsSpecsSheetResetConfirmOpen(false);
-    const ok = await persistSalesPatch({ ...salesPayload, specificationsGrid: resolved });
+    const ok = await saveSalesGridData(project, "specifications", resolved);
     if (!ok) {
       console.error("Specs sheet reset failed to save");
       setSpecsSheetSaveError("reset-save-failed");
@@ -26289,26 +26310,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     onSpecsSheetChange(setRowGroupHidden(displayedSpecsSheetGrid, groupId, hidden));
   };
   // ===== Quote Grid — clone-on-first-visit + live editing. Mirrors the Specs sheet's hydration
-  // effect immediately above, including the same "hydrate once per project" guard (specsSheetHydratedForProjectIdRef's
-  // own comment explains why: salesPayload recomputing for an unrelated reason must never re-sync
-  // from Firestore mid-debounce, or a still-unsaved local edit gets clobbered).
+  // effect immediately above, including the same "hydrate once per project" guard
+  // (quoteGridHydratedForProjectIdRef) — a later re-run (quoteGridState recomputing for an
+  // unrelated reason) must NOT re-sync from Firestore-backed data again, or it would clobber
+  // live, still-unsaved local edits with whatever Firestore last had before the debounced save
+  // landed. Unlike the Specs sheet, this one is fetched for the whole Sales tab (see
+  // quoteGridState's own declaration comment), not narrowly the Quote sub-nav.
   useEffect(() => {
-    const isOnQuoteGridPage = resolvedTab === "sales" && salesAccess.view && salesNav === "quote";
-    if (!isOnQuoteGridPage) return;
-    // Must wait for the real project doc, not just check project?.id loosely — on a hard refresh
-    // this effect can otherwise fire while project is still unset and salesPayload is a loading
-    // stub (quoteGrid undefined), which looks identical to "this project genuinely has no quote
-    // yet." That mistakenly took the brand-new-clone branch below, reseeding every group's hidden
-    // flag from the template's defaultIncluded and PERSISTING it — clobbering whatever visibility
-    // was actually saved, before the real salesPayload.quoteGrid had even loaded to compare against.
     if (!project) return;
     if (quoteGridHydratedForProjectIdRef.current === (project?.id ?? null)) return;
-    const existing = normalizeSpecsGrid((salesPayload as Record<string, unknown>).quoteGrid);
+    if (quoteGridState.status !== "ready") return;
+    const existing = quoteGridState.grid;
     if (existing) {
+      // Reflects real found data as soon as it's fetched (quoteGridState is fetched for the whole
+      // Sales tab, not narrowly "quote" — liveQuoteGrid's running total needs it regardless of
+      // sub-nav), independent of which sales sub-nav is currently open.
       quoteGridHydratedForProjectIdRef.current = project?.id ?? null;
       setQuoteGrid(existing);
       return;
     }
+    // Confirmed no quote grid exists yet — but only actually CREATE one (clone from the company
+    // template and persist it) once the user is specifically looking at the Quote editor, not
+    // just because they opened some other Sales sub-nav first.
+    if (!isOnQuoteGridPage) return;
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.quoteGridTemplate);
     if (!template) return;
     quoteGridHydratedForProjectIdRef.current = project?.id ?? null;
@@ -26323,14 +26347,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       groups: resolved.groups.map((g) => ({ ...g, hidden: !g.defaultIncluded })),
     };
     setQuoteGrid(seeded);
-    void persistSalesPatch({ ...salesPayload, quoteGrid: seeded }).then((ok) => {
+    quoteGridState.setGridOptimistic(seeded);
+    void saveSalesGridData(project, "quote", seeded).then((ok) => {
       if (!ok) {
         console.error("Quote grid initial clone failed to save");
         setQuoteGridSaveError("initial-clone-save-failed");
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedTab, salesAccess.view, salesNav, salesPayload, companyDoc, effectiveQuoteTemplateReplacements, project?.id]);
+  }, [isOnQuoteGridPage, quoteGridState.status, quoteGridState.grid, companyDoc, effectiveQuoteTemplateReplacements, project?.id]);
 
   // Manual version history for the Quote grid — one small document per saved version in a
   // Firestore subcollection (same approach as Specs' own specificationsVersions above), fetched
@@ -26420,8 +26445,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return;
     }
     setQuoteGrid(data);
+    quoteGridState.setGridOptimistic(data);
     quoteGridSaveTimeoutRef.current = setTimeout(() => {
-      void persistSalesPatch({ ...salesPayload, quoteGrid: data }).then((ok) => {
+      if (!project) return;
+      void saveSalesGridData(project, "quote", data).then((ok) => {
         if (!ok) {
           console.error("Quote grid save failed");
           setQuoteGridSaveError("save-failed");
@@ -26433,7 +26460,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   };
   const resetQuoteGridToTemplate = async () => {
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.quoteGridTemplate);
-    if (!template) return;
+    if (!template || !project) return;
     if (quoteGridSaveTimeoutRef.current) clearTimeout(quoteGridSaveTimeoutRef.current);
     const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
     // Same defaultIncluded seeding as the initial clone above — every group, not just priced ones.
@@ -26442,11 +26469,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       groups: resolved.groups.map((g) => ({ ...g, hidden: !g.defaultIncluded })),
     };
     setQuoteGrid(seeded);
+    quoteGridState.setGridOptimistic(seeded);
     setActiveQuoteGridVersionId("");
     setQuoteGridVersionEditBuffer(null);
     setQuoteGridEditorKey((prev) => prev + 1);
     setIsQuoteGridResetConfirmOpen(false);
-    const ok = await persistSalesPatch({ ...salesPayload, quoteGrid: seeded });
+    const ok = await saveSalesGridData(project, "quote", seeded);
     if (!ok) {
       console.error("Quote grid reset failed to save");
       setQuoteGridSaveError("reset-save-failed");
@@ -26592,7 +26620,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return;
     }
     setQuoteGridVersions((prev) => [...prev, saved]);
-    const ok = await persistSalesPatch({ ...salesPayload, quoteGrid: refreshedGrid, quoteGridLastClosedVersion: null });
+    // Two separate writes now (quoteGrid lives in its own subcollection doc,
+    // quoteGridLastClosedVersion stays embedded) — grid-write-first, so a failure here still
+    // leaves the version entry saved above and just re-shows "outdated" on retry rather than
+    // silently clearing the baseline against an unsaved grid.
+    const gridOk = await saveSalesGridData(project, "quote", refreshedGrid);
+    const ok = gridOk && (await persistSalesPatch({ ...salesPayload, quoteGridLastClosedVersion: null }));
     setIsSavingQuoteGridUpdate(false);
     if (!ok) {
       console.error("Quote grid outdated-update save failed");
@@ -26600,6 +26633,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return;
     }
     setQuoteGrid(refreshedGrid);
+    quoteGridState.setGridOptimistic(refreshedGrid);
     setQuoteGridSaveError("");
     setIsQuoteGridOutdated(false);
     returnToLiveQuoteGrid();

@@ -20,23 +20,36 @@ export interface CompanyAccessState {
   // as "no role"/"no permissions". Every page consuming this must gate its own access checks on
   // status === "ready" before trusting a denial (see hasPermissionKey/isOwnerOrAdmin below).
   role: string;
+  // The company's own custom role id (distinct from the coarse owner/admin/staff `role` above) —
+  // e.g. used to check a record's own `editableByRoleIds` list. Undefined when the company has no
+  // custom roles configured, same as CompanyAccessInfo.roleId upstream.
+  roleId?: string;
   permissionKeys: string[];
   error: unknown;
   retry: () => void;
 }
 
 interface CachedAccess {
+  uid: string;
   companyId: string;
   role: string;
+  roleId?: string;
   permissionKeys: string[];
 }
 
-// Success-only cache, keyed by uid — a transient failure or an in-flight "loading" state is never
-// cached, so it can never poison a later attempt or a different page's own use of this hook.
-// Survives client-side navigation between the pages that call this hook (that's the point — no
-// more re-paying the fetch on every page mount) but not a full reload, same as any other
-// module-level state. Invalidate explicitly (e.g. after a role/permission change is saved) via
+// Success-only cache — a transient failure or an in-flight "loading" state is never cached, so it
+// can never poison a later attempt or a different page's own use of this hook. Survives
+// client-side navigation between the pages that call this hook (that's the point — no more
+// re-paying the fetch on every page mount) but not a full reload, same as any other module-level
+// state. Invalidate explicitly (e.g. after a role/permission change is saved) via
 // invalidateCompanyAccessCache — never assumed to expire on its own.
+//
+// Keyed by uid alone for the default "active company" mode (unchanged from before company-scoped
+// mode existed), or by `${uid}::${companyId}` when a caller passes an explicit companyId (see
+// useCompanyAccess below) — a project can belong to a company other than the user's currently
+// "active" one, so scoped lookups must not share a cache entry with the active-company one, and a
+// user viewing projects from two different companies in the same session must not have the second
+// one silently reuse the first's cached role.
 const accessCache = new Map<string, CachedAccess>();
 
 export function invalidateCompanyAccessCache(params?: { uid?: string; companyId?: string }): void {
@@ -44,13 +57,13 @@ export function invalidateCompanyAccessCache(params?: { uid?: string; companyId?
     accessCache.clear();
     return;
   }
-  for (const [uid, cached] of accessCache) {
-    if (params.uid && uid === params.uid) {
-      accessCache.delete(uid);
+  for (const [key, cached] of accessCache) {
+    if (params.uid && cached.uid === params.uid) {
+      accessCache.delete(key);
       continue;
     }
     if (params.companyId && cached.companyId === params.companyId) {
-      accessCache.delete(uid);
+      accessCache.delete(key);
     }
   }
 }
@@ -85,12 +98,23 @@ export function hasPermissionKey(permissionKeys: string[] | undefined, key: stri
 // user has no role/permissions" — that's exactly what turned transient cold-start slowness into a
 // permanent, reload-persistent "you do not have permission" across the app. status === "error"
 // is a distinct, retryable outcome a page must render differently from a real denial.
-export function useCompanyAccess(): CompanyAccessState {
+//
+// Pass an explicit companyId to resolve access for THAT company instead of the user's "active"
+// one — e.g. the project page, whose open project may belong to a company other than whichever
+// one is currently active in the app shell. Distinguishing "no arg" (auto-resolve mode, the
+// original six pages) from "arg passed but not known yet" (e.g. `project?.companyId` before the
+// project has loaded) matters: falling back to the active-company resolution in the latter case
+// would risk briefly showing role/permissions for the wrong company, so pass `null` (not leave the
+// argument out) while the real companyId isn't known yet.
+export function useCompanyAccess(...scopedCompanyIdArg: [string | null | undefined] | []): CompanyAccessState {
   const { user, membershipStatus, isDemoMode } = useAuth();
+  const hasScopedCompanyId = scopedCompanyIdArg.length > 0;
+  const scopedCompanyId = hasScopedCompanyId ? String(scopedCompanyIdArg[0] || "").trim() : "";
   const [state, setState] = useState<Omit<CompanyAccessState, "retry">>({
     status: "loading",
     companyId: "",
     role: "",
+    roleId: undefined,
     permissionKeys: [],
     error: null,
   });
@@ -100,12 +124,22 @@ export function useCompanyAccess(): CompanyAccessState {
     let cancelled = false;
 
     const run = async () => {
+      if (hasScopedCompanyId && !scopedCompanyId) {
+        // Scoped mode requested but the caller's companyId isn't known yet — stay loading rather
+        // than resolving (even transiently) against the wrong, "active" company.
+        if (!cancelled) {
+          setState((prev) => (prev.status === "loading" ? prev : { status: "loading", companyId: "", role: "", roleId: undefined, permissionKeys: [], error: null }));
+        }
+        return;
+      }
+
       if (isDemoMode) {
         if (!cancelled) {
           setState({
             status: "ready",
-            companyId: String(user?.companyId || ""),
+            companyId: scopedCompanyId || String(user?.companyId || ""),
             role: String(user?.role || "").trim().toLowerCase(),
+            roleId: undefined,
             permissionKeys: Array.isArray(user?.permissions) ? user.permissions : [],
             error: null,
           });
@@ -117,12 +151,13 @@ export function useCompanyAccess(): CompanyAccessState {
         // mounting in that case, but stay in "loading" defensively rather than ever reporting a
         // denial for a user we don't have.
         if (!cancelled) {
-          setState((prev) => (prev.status === "loading" ? prev : { status: "loading", companyId: "", role: "", permissionKeys: [], error: null }));
+          setState((prev) => (prev.status === "loading" ? prev : { status: "loading", companyId: "", role: "", roleId: undefined, permissionKeys: [], error: null }));
         }
         return;
       }
 
-      const cached = accessCache.get(user.uid);
+      const cacheKey = scopedCompanyId ? `${user.uid}::${scopedCompanyId}` : user.uid;
+      const cached = accessCache.get(cacheKey);
       if (cached && retryTick === 0) {
         if (!cancelled) {
           setState({ status: "ready", ...cached, error: null });
@@ -135,38 +170,44 @@ export function useCompanyAccess(): CompanyAccessState {
       }
 
       try {
-        const storedCompanyId =
-          typeof window !== "undefined"
-            ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
-            : "";
-        const directCompanyId = String(user.companyId || "").trim();
-        let companyId = storedCompanyId || directCompanyId;
+        let companyId = scopedCompanyId;
 
         if (!companyId) {
-          const membership = await retryAsync(
-            () => withTimeout(fetchPrimaryMembership(user.uid), ACCESS_LOAD_ATTEMPT_TIMEOUT_MS, "Membership lookup timed out"),
-            { attempts: ACCESS_LOAD_ATTEMPTS, delayMs: 250 },
-          );
-          companyId = String(membership?.companyId || "").trim();
-        }
+          const storedCompanyId =
+            typeof window !== "undefined"
+              ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
+              : "";
+          const directCompanyId = String(user.companyId || "").trim();
+          companyId = storedCompanyId || directCompanyId;
 
-        if (!companyId) {
-          if (cancelled) return;
-          // Genuinely no company to resolve — if auth-context itself is still degraded
-          // (membershipStatus "error"), we can't tell whether that's real or just fallout from
-          // the same underlying failure, so surface it as an error too rather than a denial.
-          if (membershipStatus === "error") {
-            setState({ status: "error", companyId: "", role: "", permissionKeys: [], error: new Error("Could not resolve a company for this account") });
-          } else {
-            const result: CachedAccess = {
-              companyId: "",
-              role: String(user.role || "").trim().toLowerCase(),
-              permissionKeys: Array.isArray(user.permissions) ? user.permissions : [],
-            };
-            accessCache.set(user.uid, result);
-            setState({ status: "ready", ...result, error: null });
+          if (!companyId) {
+            const membership = await retryAsync(
+              () => withTimeout(fetchPrimaryMembership(user.uid), ACCESS_LOAD_ATTEMPT_TIMEOUT_MS, "Membership lookup timed out"),
+              { attempts: ACCESS_LOAD_ATTEMPTS, delayMs: 250 },
+            );
+            companyId = String(membership?.companyId || "").trim();
           }
-          return;
+
+          if (!companyId) {
+            if (cancelled) return;
+            // Genuinely no company to resolve — if auth-context itself is still degraded
+            // (membershipStatus "error"), we can't tell whether that's real or just fallout from
+            // the same underlying failure, so surface it as an error too rather than a denial.
+            if (membershipStatus === "error") {
+              setState({ status: "error", companyId: "", role: "", roleId: undefined, permissionKeys: [], error: new Error("Could not resolve a company for this account") });
+            } else {
+              const result: CachedAccess = {
+                uid: user.uid,
+                companyId: "",
+                role: String(user.role || "").trim().toLowerCase(),
+                roleId: undefined,
+                permissionKeys: Array.isArray(user.permissions) ? user.permissions : [],
+              };
+              accessCache.set(cacheKey, result);
+              setState({ status: "ready", ...result, error: null });
+            }
+            return;
+          }
         }
 
         const access = await retryAsync(
@@ -175,15 +216,17 @@ export function useCompanyAccess(): CompanyAccessState {
         );
         if (cancelled) return;
         const result: CachedAccess = {
+          uid: user.uid,
           companyId,
           role: String(access?.role || user.role || "").trim().toLowerCase(),
+          roleId: access?.roleId || undefined,
           permissionKeys: access?.permissionKeys ?? (Array.isArray(user.permissions) ? user.permissions : []),
         };
-        accessCache.set(user.uid, result);
+        accessCache.set(cacheKey, result);
         setState({ status: "ready", ...result, error: null });
       } catch (error) {
         if (cancelled) return;
-        setState({ status: "error", companyId: "", role: "", permissionKeys: [], error });
+        setState({ status: "error", companyId: "", role: "", roleId: undefined, permissionKeys: [], error });
       }
     };
 
@@ -191,14 +234,15 @@ export function useCompanyAccess(): CompanyAccessState {
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, user?.companyId, user?.role, user?.permissions, membershipStatus, isDemoMode, retryTick]);
+  }, [user?.uid, user?.companyId, user?.role, user?.permissions, membershipStatus, isDemoMode, retryTick, hasScopedCompanyId, scopedCompanyId]);
 
   const retry = useCallback(() => {
     if (user?.uid) {
-      accessCache.delete(user.uid);
+      const cacheKey = scopedCompanyId ? `${user.uid}::${scopedCompanyId}` : user.uid;
+      accessCache.delete(cacheKey);
     }
     setRetryTick((tick) => tick + 1);
-  }, [user]);
+  }, [user, scopedCompanyId]);
 
   return { ...state, retry };
 }
