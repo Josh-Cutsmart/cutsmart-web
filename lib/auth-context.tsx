@@ -164,6 +164,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setMembershipStatus("loading");
+    // TEMPORARY diagnostic logging — remove once the mobile cold-start loading issue is confirmed
+    // fixed. Every catch block downstream of this normally discards its error entirely, which is
+    // exactly why nothing shows up in the debug log panel during a silent failure.
+    console.log("[CS-DEBUG] loadMembership: starting for uid=" + firebaseUser.uid);
     try {
       // Retries a bounded number of times before giving up — see MEMBERSHIP_LOAD_ATTEMPT_TIMEOUT_MS's
       // own comment for why this replaces a single Promise.race: a merely-slow (not broken)
@@ -205,7 +209,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
       );
       setMembershipStatus("ready");
-    } catch {
+      console.log(
+        "[CS-DEBUG] loadMembership: ready, companyId=" +
+          String(membership?.companyId || profile?.companyId || "(none)") +
+          " role=" + String(membership?.role ?? "staff") +
+          " permissionKeys=" + JSON.stringify(membership?.permissionKeys ?? []),
+      );
+    } catch (error) {
       if (!activeRef.current) return;
       // A genuine, repeated failure (not just one slow attempt — see the retry above) must never
       // be treated as "this account has no company/permissions" or "confirmed unverified." Build
@@ -214,6 +224,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // unverified") — and mark membershipStatus "error" so every consumer (dashboard, project
       // page, verification gate) can render a distinct "couldn't load your account — retry" state
       // instead of silently treating this as a real, final, empty-permissions user.
+      console.error(
+        "[CS-DEBUG] loadMembership: FAILED after retries — " +
+          (error instanceof Error ? error.name + ": " + error.message : String(error)),
+      );
       setUser({
         ...fromFirebaseUser(firebaseUser, "staff", undefined, undefined, undefined, undefined, undefined),
         permissions: [],

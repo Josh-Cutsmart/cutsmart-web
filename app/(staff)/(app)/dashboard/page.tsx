@@ -778,10 +778,14 @@ export default function DashboardPage() {
   // re-fires on its own with a correct value.
   const hasAutoRetriedMembershipRef = useRef(false);
   useEffect(() => {
+    // TEMPORARY diagnostic logging — remove once the mobile cold-start loading issue is confirmed
+    // fixed.
+    console.log("[CS-DEBUG] dashboard: membershipStatus=" + membershipStatus + " companyId=" + String(user?.companyId || "(none)"));
     if (membershipStatus !== "error" || hasAutoRetriedMembershipRef.current) return;
     hasAutoRetriedMembershipRef.current = true;
+    console.log("[CS-DEBUG] dashboard: auto-retrying membership load");
     retryMembershipLoad();
-  }, [membershipStatus, retryMembershipLoad]);
+  }, [membershipStatus, retryMembershipLoad, user?.companyId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -796,6 +800,12 @@ export default function DashboardPage() {
             ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
             : "";
         const preferredCompanyIds = [storedCompanyId, String(user?.companyId || "").trim()].filter(Boolean);
+        console.log(
+          "[CS-DEBUG] dashboard load(): starting — uid=" + String(user?.uid || "(none)") +
+            " storedCompanyId=" + String(storedCompanyId || "(none)") +
+            " user.companyId=" + String(user?.companyId || "(none)") +
+            " preferredCompanyIds=" + JSON.stringify(preferredCompanyIds),
+        );
         const items = await withTimeout(
           retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), {
             attempts: 2,
@@ -815,6 +825,7 @@ export default function DashboardPage() {
           "Projects load timed out",
         );
         if (cancelled) return;
+        console.log("[CS-DEBUG] dashboard load(): fetchProjects returned " + items.length + " project(s)");
         setAllProjects(items);
         const fallbackCompanyId = String(items[0]?.companyId || "").trim();
         // Used below purely for the SEPARATE company-doc/members/status-rows fetch (stat cards,
@@ -852,9 +863,14 @@ export default function DashboardPage() {
               "Company data load timed out",
             )
           : null;
+        console.log("[CS-DEBUG] dashboard load(): companyId for stats/staff fetch=" + String(companyId || "(none)"));
         const [userColorMap, companyBundle] = await Promise.all([userColorMapPromise, companyDataPromise]);
         if (cancelled) return;
         setCreatorColorByUid(userColorMap);
+        console.log(
+          "[CS-DEBUG] dashboard load(): companyBundle=" +
+            (companyBundle ? "resolved, members=" + companyBundle[1].length : "null/skipped"),
+        );
         if (companyId && companyBundle) {
           const [companyDoc, members] = companyBundle;
           setStatusRows(normalizeStatuses((companyDoc as Record<string, unknown> | null)?.projectStatuses));
@@ -871,7 +887,11 @@ export default function DashboardPage() {
           setCompanyMembers([]);
           setRoleRows([]);
         }
-      } catch {
+      } catch (error) {
+        console.error(
+          "[CS-DEBUG] dashboard load(): FAILED — " +
+            (error instanceof Error ? error.name + ": " + error.message : String(error)),
+        );
         if (cancelled) return;
         setAllProjects([]);
         setCreatorColorByUid({});
