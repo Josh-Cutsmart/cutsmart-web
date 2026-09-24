@@ -806,8 +806,24 @@ export default function DashboardPage() {
             " user.companyId=" + String(user?.companyId || "(none)") +
             " preferredCompanyIds=" + JSON.stringify(preferredCompanyIds),
         );
-        const items = await withTimeout(
-          retryAsync(() => fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }), {
+        // withTimeout must wrap EACH individual attempt, inside retryAsync — not wrap the whole
+        // retryAsync call from outside. A hung (never settling, not merely slow) Firestore call
+        // makes that difference the entire point: retryAsync only advances to the next attempt
+        // once the current one SETTLES, so an outer withTimeout can only ever kill the whole
+        // sequence after its one deadline, and retryAsync never gets a real second attempt at all
+        // — confirmed live: a real cold-mobile trace showed membership resolving correctly in
+        // 0.56s, then this call sitting completely silent for exactly 15.002s (the old outer
+        // timeout's bound to the millisecond) before failing, meaning the underlying call hung
+        // and no retry ever actually happened. lib/load-retry.ts's own comment on withTimeout
+        // documents exactly this failure mode.
+        const items = await retryAsync(
+          () =>
+            withTimeout(
+              fetchProjects(user?.uid, preferredCompanyIds, { lightweight: true }),
+              7000,
+              "Projects load timed out",
+            ),
+          {
             attempts: 2,
             delayMs: 350,
             // Retry a first-attempt empty result unconditionally now, not just when
@@ -820,9 +836,7 @@ export default function DashboardPage() {
               attempt === 1 &&
               Array.isArray(value) &&
               value.length === 0,
-          }),
-          15000,
-          "Projects load timed out",
+          },
         );
         if (cancelled) return;
         console.log("[CS-DEBUG] dashboard load(): fetchProjects returned " + items.length + " project(s)");
@@ -844,23 +858,26 @@ export default function DashboardPage() {
         // The user-color lookup and the company doc/members lookup are both derived from `items`
         // alone (not from each other's results), so they were an avoidable extra sequential round
         // trip — run them concurrently instead.
-        const userColorMapPromise = withTimeout(
-          retryAsync(() => fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId), { attempts: 2, delayMs: 250 }),
-          15000,
-          "User color lookup timed out",
+        // Same withTimeout-inside-retryAsync composition as the projects fetch above, and for the
+        // identical reason — see that call's own comment.
+        const userColorMapPromise = retryAsync(
+          () =>
+            withTimeout(
+              fetchUserColorMapByUids([...creatorUids, ...assignedUids], companyId),
+              7000,
+              "User color lookup timed out",
+            ),
+          { attempts: 2, delayMs: 250 },
         );
         const companyDataPromise = companyId
-          ? withTimeout(
-              retryAsync(
-                () =>
-                  Promise.all([
-                    fetchCompanyDoc(companyId),
-                    fetchCompanyMembers(companyId),
-                  ]),
-                { attempts: 2, delayMs: 250 },
-              ),
-              15000,
-              "Company data load timed out",
+          ? retryAsync(
+              () =>
+                withTimeout(
+                  Promise.all([fetchCompanyDoc(companyId), fetchCompanyMembers(companyId)]),
+                  7000,
+                  "Company data load timed out",
+                ),
+              { attempts: 2, delayMs: 250 },
             )
           : null;
         console.log("[CS-DEBUG] dashboard load(): companyId for stats/staff fetch=" + String(companyId || "(none)"));

@@ -13386,10 +13386,15 @@ export default function ProjectDetailsPage() {
       }
       if (!cancelled) setCompanyDocLoaded(false);
       try {
-        const hit = await withTimeout(
-          retryAsync(() => fetchCompanyDoc(project.companyId), { attempts: 2, delayMs: 350 }),
-          15000,
-          "Company data load timed out",
+        // withTimeout must wrap EACH attempt, inside retryAsync — not the whole retryAsync call
+        // from outside. A HUNG (never settling) Firestore call otherwise never gets a real second
+        // attempt at all, since retryAsync only advances once the current attempt settles; the
+        // outer timeout can only kill the whole sequence once, after its one deadline. Confirmed
+        // live via a cold-mobile trace on the dashboard's own identical bug (lib/load-retry.ts's
+        // withTimeout comment documents this exact failure mode).
+        const hit = await retryAsync(
+          () => withTimeout(fetchCompanyDoc(project.companyId), 7000, "Company data load timed out"),
+          { attempts: 2, delayMs: 350 },
         );
         if (cancelled) return;
         setCompanyDoc(hit);
@@ -13414,10 +13419,10 @@ export default function ProjectDetailsPage() {
         return;
       }
       try {
-        const members = await withTimeout(
-          retryAsync(() => fetchCompanyMembers(project.companyId), { attempts: 2, delayMs: 350 }),
-          15000,
-          "Company members load timed out",
+        // Same withTimeout-inside-retryAsync composition as loadCompanyDoc above, same reason.
+        const members = await retryAsync(
+          () => withTimeout(fetchCompanyMembers(project.companyId), 7000, "Company members load timed out"),
+          { attempts: 2, delayMs: 350 },
         );
         if (cancelled) return;
         setCompanyMembers(members);
