@@ -65,6 +65,36 @@ export default function RootLayout({
             `,
           }}
         />
+        {/* TEMPORARY mobile debugging aid — remove once done. Visit any page with ?debug=1 once
+            (the flag persists in localStorage across navigation/reload, since a PWA relaunch or
+            pull-to-reload won't keep query params) to get a floating on-screen console/network
+            panel (Eruda) with no computer needed. Visit with ?debug=0 to turn it back off. Loads
+            nothing at all for every other visitor — the CDN script tag is only ever created when
+            the flag is set. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function () {
+                try {
+                  var params = new URLSearchParams(window.location.search);
+                  if (params.get("debug") === "1") {
+                    localStorage.setItem("cutsmart_debug_console", "1");
+                  } else if (params.get("debug") === "0") {
+                    localStorage.removeItem("cutsmart_debug_console");
+                  }
+                  if (localStorage.getItem("cutsmart_debug_console") === "1") {
+                    var s = document.createElement("script");
+                    s.src = "https://cdn.jsdelivr.net/npm/eruda";
+                    s.onload = function () {
+                      if (window.eruda) window.eruda.init();
+                    };
+                    document.head.appendChild(s);
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
       </head>
       <body className="cs-app" suppressHydrationWarning>
         {/* No AuthProvider/AppTabsProvider/GlobalAppTabsBar here — this root layout wraps EVERY

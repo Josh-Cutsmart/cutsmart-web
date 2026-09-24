@@ -2402,53 +2402,43 @@ export async function fetchCompanyMembers(companyId: string): Promise<CompanyMem
 
     // Company membership displayName/email/mobile/color is the source of truth once set — only
     // fall back to the user's own profile doc for whichever fields a legacy membership row is
-    // still missing. This used to be one getDoc(users/{uid}) PER member, PLUS a second,
-    // completely redundant pass (fetchUserColorMapByUids) that re-fetched the SAME membership
-    // docs individually just to re-derive a color already sitting right here in `out` from the
-    // bulk membership read above, then re-fetched users/{uid} again as ITS OWN fallback — for a
-    // company with N staff that was up to ~3N individual concurrent Firestore reads on every
-    // single dashboard load. On a slow/cold connection, one stuck request among that many held up
-    // the whole staff list (and everything waiting on it) with nothing to show for the other
-    // ~3N-1 reads being pure duplicated work. A single batched "in" query (chunked to Firestore's
-    // 30-id cap) replaces all of it and produces the identical end result, since it derives values
-    // with the exact same priority order the per-member loop and fetchUserColorMapByUids both did.
-    const memberUids = out.map((member) => member.uid).filter(Boolean);
-    if (memberUids.length) {
-      const CHUNK_SIZE = 30;
-      const chunks: string[][] = [];
-      for (let i = 0; i < memberUids.length; i += CHUNK_SIZE) {
-        chunks.push(memberUids.slice(i, i + CHUNK_SIZE));
-      }
-      const profileSnaps = await Promise.all(
-        chunks.map((chunk) =>
-          getDocs(query(collection(firestore, "users"), where(documentId(), "in", chunk))).catch(() => null),
-        ),
-      );
-      const profileByUid = new Map<string, Record<string, unknown>>();
-      for (const chunkSnap of profileSnaps) {
-        if (!chunkSnap) continue;
-        for (const profileDoc of chunkSnap.docs) {
-          profileByUid.set(profileDoc.id, (profileDoc.data() ?? {}) as Record<string, unknown>);
+    // still missing. This CANNOT be batched into a single where(documentId(),"in",[...]) query
+    // the way it briefly was — firestore.rules only allows `users/{uid}` reads via `isSelf(uid)`,
+    // which Firestore can only prove safe for a single-document get of the CALLER's own doc, never
+    // for a multi-uid "in" query (it can't statically verify every id in that array is the
+    // caller's), so a batched query here gets permission-denied outright for any company with
+    // more than one staff member. Back to one getDoc per member — each one individually succeeds
+    // for the caller's own doc and permission-denies (caught, ignored) for every other member's,
+    // exactly as Firestore's rules require. What's still NOT redone here is the separate,
+    // genuinely redundant fetchUserColorMapByUids pass that used to run after this loop — it only
+    // ever re-derived a color already sitting right here in `out` from the bulk membership read
+    // above, or re-did this exact same users/{uid} fallback a second time.
+    await Promise.all(
+      out.map(async (member) => {
+        const uid = String(member.uid || "").trim();
+        if (!uid) return;
+        try {
+          const userSnap = await getDoc(doc(firestore, "users", uid));
+          if (!userSnap.exists()) return;
+          const userData = (userSnap.data() ?? {}) as Record<string, unknown>;
+          const profileDisplayName = String(userData.displayName ?? userData.name ?? "").trim();
+          const profileEmail = String(userData.email ?? "").trim();
+          const profileMobile = String(userData.mobile ?? userData.phone ?? "").trim();
+          const profileColor = String(
+            userData.userColor ?? userData.badgeColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
+          ).trim();
+          if (!displayNameOverridesByUid[uid] && !member.membershipDisplayName && profileDisplayName) {
+            member.displayName = profileDisplayName;
+          }
+          if (!member.email && profileEmail) member.email = profileEmail;
+          if (!member.mobile && profileMobile) member.mobile = profileMobile;
+          if (!member.userColor && profileColor) member.userColor = profileColor;
+          if (!member.badgeColor && profileColor) member.badgeColor = profileColor;
+        } catch {
+          // ignore per-user profile lookup errors (expected for every member who isn't the caller)
         }
-      }
-      for (const member of out) {
-        const userData = profileByUid.get(member.uid);
-        if (!userData) continue;
-        const profileDisplayName = String(userData.displayName ?? userData.name ?? "").trim();
-        const profileEmail = String(userData.email ?? "").trim();
-        const profileMobile = String(userData.mobile ?? userData.phone ?? "").trim();
-        const profileColor = String(
-          userData.userColor ?? userData.badgeColor ?? userData.avatarColor ?? userData.color ?? userData.colour ?? "",
-        ).trim();
-        if (!displayNameOverridesByUid[member.uid] && !member.membershipDisplayName && profileDisplayName) {
-          member.displayName = profileDisplayName;
-        }
-        if (!member.email && profileEmail) member.email = profileEmail;
-        if (!member.mobile && profileMobile) member.mobile = profileMobile;
-        if (!member.userColor && profileColor) member.userColor = profileColor;
-        if (!member.badgeColor && profileColor) member.badgeColor = profileColor;
-      }
-    }
+      }),
+    );
 
     out.sort((a, b) => a.displayName.localeCompare(b.displayName));
     return out;
