@@ -778,7 +778,17 @@ export function AppShell({
           if (pull.selected === "reload") {
             window.location.reload();
           } else if (pull.selected === "dashboard") {
-            router.push("/dashboard");
+            // router.push("/dashboard") while already ON /dashboard is a same-URL no-op in the
+            // App Router — no remount, no re-render tied to the route, so the dashboard's own
+            // client-side project-loading effect never re-runs and the list is left showing
+            // whatever it already had (stale, or still empty after a failed load). A full reload
+            // is the only thing that reliably forces that effect to run again from a cold state,
+            // same as the "Reload" zone immediately above.
+            if (pathname === "/dashboard") {
+              window.location.reload();
+            } else {
+              router.push("/dashboard");
+            }
           } else if (saveAndBackHandler) {
             void saveAndBackHandler();
           } else {
