@@ -7,7 +7,7 @@ import { auth, hasFirebaseConfig } from "@/lib/firebase";
 import { saveUserProfilePatchDetailed } from "@/lib/firestore-data";
 import { resolveCompanyIdForUid } from "@/lib/membership";
 import { useAuth } from "@/lib/auth-context";
-import { retryAsync } from "@/lib/load-retry";
+import { retryAsync, withTimeout } from "@/lib/load-retry";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const DEFAULT_REGISTER_USER_COLOR = "#2F6BFF";
@@ -236,10 +236,29 @@ export default function HomePage() {
           ? String(window.localStorage.getItem(ACTIVE_COMPANY_STORAGE_KEY) || "").trim()
           : "";
       try {
-        const companyId = await retryAsync(
-          () => resolveCompanyIdForUid(String(user.uid || "").trim(), preferredCompanyId ? [preferredCompanyId] : []),
-          { attempts: 2, delayMs: 350 },
-        );
+        // auth-context's own loadMembership already resolved (and bounded/retried) the exact
+        // same companyId by the time this effect can even start — the isLoading guard above
+        // guarantees it's settled one way or the other. Re-deriving it here via a second,
+        // completely independent resolveCompanyIdForUid call used to be pure duplicated work at
+        // best, and at worst — since that call had no timeout ANYWHERE in its chain, unlike
+        // loadMembership's own withTimeout-wrapped one — could hang this "Opening your
+        // workspace..." screen indefinitely on a cold/slow connection, or fail fast without ever
+        // writing ACTIVE_COMPANY_STORAGE_KEY, silently sending the dashboard on with no hint.
+        // Only fall back to resolveCompanyIdForUid when auth-context genuinely doesn't have an
+        // answer (e.g. membershipStatus === "error"), and even then, time-box it the same way
+        // loadMembership already is so it can never leave this screen stuck forever.
+        const resolvedCompanyId = String(user.companyId || "").trim();
+        const companyId =
+          resolvedCompanyId ||
+          (await retryAsync(
+            () =>
+              withTimeout(
+                resolveCompanyIdForUid(String(user.uid || "").trim(), preferredCompanyId ? [preferredCompanyId] : []),
+                6000,
+                "Company lookup timed out",
+              ),
+            { attempts: 2, delayMs: 350 },
+          ));
         if (cancelled) return;
         if (companyId) {
           if (typeof window !== "undefined") {
@@ -260,7 +279,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [isLoading, router, user?.uid]);
+  }, [isLoading, router, user?.uid, user?.companyId]);
 
   const shouldHoldLoginScreen =
     hasFirebaseConfig &&
