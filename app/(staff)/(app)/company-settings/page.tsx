@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Bell, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Download, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Upload, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Download, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Upload, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -15,13 +15,10 @@ import {
   removeTagsFromCompanyProjects,
   removeCompanyMemberDetailed,
   fetchUserColorMapByUids,
-  fetchUserNotifications,
   saveCompanyDocPatchDetailed,
   saveCompanyMemberDisplayName,
   saveCompanyMemberRole,
-  setAllUserNotificationsRead,
   type CompanyMemberOption,
-  type UserNotificationRow,
 } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
@@ -36,7 +33,7 @@ import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs
 
 type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
-  | "hardware" | "staff" | "notifications" | "integrations" | "backup";
+  | "hardware" | "staff" | "integrations" | "backup";
 
 type StatusRow = { name: string; color: string };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
@@ -298,7 +295,6 @@ const sections: Array<{ key: SettingsSection; label: string; icon: React.Compone
   { key: "materials", label: "Materials & Board Types", icon: Package2 },
   { key: "hardware", label: "Hardware", icon: HardHat },
   { key: "staff", label: "Staff & Permissions", icon: Users },
-  { key: "notifications", label: "Notifications", icon: Bell },
   { key: "integrations", label: "Integrations", icon: Link2 },
   { key: "backup", label: "Backup Data", icon: DatabaseBackup },
 ];
@@ -316,19 +312,6 @@ function toStr(v: unknown, fallback = "") {
 // answer, and the exact-match version of this check was failing those silently.
 function namesMatchForConfirmation(a: unknown, b: unknown): boolean {
   return toStr(a).toLowerCase() === toStr(b).toLowerCase();
-}
-
-function formatNotificationDateTime(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  const day = d.toLocaleDateString(undefined, { day: "2-digit" });
-  const month = d.toLocaleDateString(undefined, { month: "long" });
-  const year = d.toLocaleDateString(undefined, { year: "numeric" });
-  const time = d
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })
-    .replace(" ", "")
-    .toLowerCase();
-  return `${day} ${month} ${year}  |  ${time}`;
 }
 
 function isProtectedStarterRole(value: unknown): boolean {
@@ -1297,8 +1280,6 @@ export default function CompanySettingsPage() {
     quoteTemplateMarginMm: "10",
     quoteTemplateFooterPinBottom: false,
   });
-  const [notificationsRows, setNotificationsRows] = useState<UserNotificationRow[]>([]);
-  const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [isInvitingStaff, setIsInvitingStaff] = useState(false);
   const [savingStaffRoleUid, setSavingStaffRoleUid] = useState("");
   const [openStaffRoleUid, setOpenStaffRoleUid] = useState("");
@@ -1501,12 +1482,8 @@ export default function CompanySettingsPage() {
           quoteTemplateFooterPinBottom: Boolean(doc.quoteTemplateFooterPinBottom),
         });
         }
-        setNotificationsLoading(true);
-        const notifications = await retryAsync(() => fetchUserNotifications(user.uid), { attempts: 2, delayMs: 300 });
-        setNotificationsRows(notifications);
         setIsHydrated(true);
       } finally {
-        setNotificationsLoading(false);
         setIsLoading(false);
       }
     };
@@ -2450,22 +2427,6 @@ export default function CompanySettingsPage() {
     } catch {
       setSaveLabel("Save failed (board-edging-remove-failed)");
     }
-  };
-
-  const markAllNotifications = async (read: boolean) => {
-    if (!user?.uid) {
-      return;
-    }
-    setNotificationsLoading(true);
-    const ok = await setAllUserNotificationsRead(user.uid, read);
-    if (ok) {
-      const next = await fetchUserNotifications(user.uid);
-      setNotificationsRows(next);
-      setSaveLabel(read ? "Notifications marked read" : "Notifications marked unread");
-    } else {
-      setSaveLabel("Notification update failed");
-    }
-    setNotificationsLoading(false);
   };
 
   const save = async (mode: "manual" | "auto" = "manual") => {
@@ -6824,49 +6785,6 @@ export default function CompanySettingsPage() {
                     </button>
                   </div>
                 </Panel>
-              )}
-
-              {active === "notifications" && (
-                <div className="space-y-3">
-                  <Panel title="Notification Inbox">
-                    <div className="space-y-2 text-[12px]">
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void markAllNotifications(true)}
-                          disabled={notificationsLoading}
-                          className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 text-[11px] font-bold text-[var(--text-muted)] disabled:opacity-60"
-                        >
-                          Mark All Read
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void markAllNotifications(false)}
-                          disabled={notificationsLoading}
-                          className="h-7 rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-muted)] px-3 text-[11px] font-bold text-[var(--text-muted)] disabled:opacity-60"
-                        >
-                          Mark All Unread
-                        </button>
-                        <p className="text-[11px] text-[var(--text-muted)]">{notificationsLoading ? "Loading..." : `${notificationsRows.length} notifications`}</p>
-                      </div>
-                      <div className="max-h-[420px] space-y-2 overflow-auto rounded-[8px] border border-[var(--glass-border)] bg-[var(--panel-bg)] p-2">
-                        {notificationsRows.length === 0 && (
-                          <p className="text-[12px] text-[var(--text-muted)]">No notifications found.</p>
-                        )}
-                        {notificationsRows.map((row) => (
-                          <div key={row.id} className={`rounded-[8px] border px-2 py-2 ${row.read ? "border-[var(--glass-border)] bg-[var(--panel-bg)]" : "border-[var(--brand)] bg-[var(--brand-soft)]"}`}>
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="text-[12px] font-bold text-[var(--text-main)]">{row.title || "Notification"}</p>
-                              <span className="rounded-[999px] border border-[var(--glass-border)] bg-[var(--panel-bg)] px-2 py-[1px] text-[10px] font-bold uppercase tracking-[0.5px] text-[var(--text-muted)]">{row.type || "info"}</span>
-                            </div>
-                            <p className="mt-1 text-[12px] text-[var(--text-main)]">{row.message || "-"}</p>
-                            <p className="mt-1 text-[11px] text-[var(--text-muted)]">{formatNotificationDateTime(row.createdAtIso)}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </Panel>
-                </div>
               )}
 
               {active === "backup" && (

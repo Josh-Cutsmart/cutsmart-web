@@ -1,21 +1,6 @@
-Version: v0.3.7
+Version: v0.3.9
 
 whatsNew: [
-<u><b>Top Navigation (Mobile)</b></u>
-* Project tabs now only take up as much width as the project name needs, instead of always reserving extra space
-* The pull-down menu now takes over the top bar itself instead of sliding a separate bar over it
-* Pull-down menu options now only highlight with a small bubble around the icon, with the label appearing next to it, instead of lighting up the whole section
-
-<u><b>Production Cutlist (Mobile) — Board Settings</b></u>
-* Redesigned Board Settings: each row now shows a short summary (colour, thickness and finish, or "Board 1" etc. until named) on the left and Sheets / Edgetape counts on the right
-* Tapping a row opens a popup with every board field (Colour, Thickness, Finish, Edging, Grain, Lacquer, Sheet Size), laid out in the same banner style as CNC Cutlist
-* Grain and Lacquer are now toggle switches instead of tickboxes
-* Added a Sheets / Edgetape summary across the bottom of the popup
-* Fixed the popup not blurring the page behind it properly
-
-<u><b>Production Cutlist (Mobile)</b></u>
-* Fixed selecting the "Door" part type doing nothing — it now shows the same Doors/Drawers picker as desktop and adds the row
-
-<u><b>Reliability</b></u>
-* Fixed the app sometimes reloading unexpectedly when tapping or clicking around quickly
+<u><b>Leads (Mobile)</b></u>
+* Press and hold a lead card to pick it up and drag it into a different status column — no more text-selection highlight getting in the way, just a clean long-press pickup, the same fix already applied to the mobile tab bar
 ]

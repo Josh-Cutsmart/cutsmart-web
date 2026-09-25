@@ -3022,7 +3022,7 @@ export function AppShell({
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
               <div
-                className="text-[15px] leading-7 text-[var(--text-main)]"
+                className="notes-rich text-[15px] leading-7 text-[var(--text-main)]"
                 dangerouslySetInnerHTML={{
                   __html: updateNotesToDisplayHtml(updateNoticeText || "- No update notes provided."),
                 }}

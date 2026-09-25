@@ -882,6 +882,13 @@ export function GlobalAppTabsBar() {
 
   // Shared between the desktop anchored dropdown and the mobile full-screen panel — same rows,
   // same click behavior, just presented inside a differently shaped container.
+  // "app_version" notifications are created (app-shell.tsx) with the full changelog "whatsNew"
+  // body as their message — fine for the changelog page itself, but far too much to show in this
+  // small dropdown row. The version number is the only part of that notification worth showing
+  // here; it's parsed back out of the title (created as `New version ${version}`) rather than
+  // needing a schema change, so this also cleans up historical notifications already in Firestore.
+  const appVersionFromNotifTitle = (title: string) => String(title || "").replace(/^New version\s*/i, "").trim();
+
   function renderNotifRows() {
     if (notifRows.length === 0) {
       return (
@@ -890,37 +897,45 @@ export function GlobalAppTabsBar() {
         </p>
       );
     }
-    return notifRows.slice(0, 10).map((row) => (
-      <button
-        key={row.id}
-        type="button"
-        onMouseDown={handleAuxButtonMouseDown}
-        onClick={() => {
-          if (!user?.uid) return;
-          setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
-          void markUserNotificationRead(user.uid, row.id);
-          setIsNotifOpen(false);
-          if (row.projectId) {
-            router.push(`/projects/${row.projectId}`);
-          }
-        }}
-        className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
-        style={{
-          borderBottomColor: shellPalette.border,
-          backgroundColor: row.read ? "transparent" : "var(--brand-soft)",
-        }}
-      >
-        <p className="text-[12px] font-bold" style={{ color: shellPalette.text }}>
-          {row.title || "Notification"}
-        </p>
-        <p className="mt-[2px] truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
-          {row.message || ""}
-        </p>
-        <p className="mt-[2px] text-[10px]" style={{ color: shellPalette.textMuted }}>
-          {formatNotificationTime(row.createdAtIso)}
-        </p>
-      </button>
-    ));
+    return notifRows.slice(0, 10).map((row) => {
+      const isAppVersion = row.type === "app_version";
+      const appVersion = isAppVersion ? appVersionFromNotifTitle(row.title) : "";
+      return (
+        <button
+          key={row.id}
+          type="button"
+          onMouseDown={handleAuxButtonMouseDown}
+          onClick={() => {
+            if (!user?.uid) return;
+            setNotifRows((prev) => prev.map((item) => (item.id === row.id ? { ...item, read: true } : item)));
+            void markUserNotificationRead(user.uid, row.id);
+            setIsNotifOpen(false);
+            if (isAppVersion) {
+              router.push(appVersion ? `/changelog?version=${encodeURIComponent(appVersion)}` : "/changelog");
+            } else if (row.projectId) {
+              router.push(`/projects/${row.projectId}`);
+            }
+          }}
+          className="block w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-[var(--panel-muted)]"
+          style={{
+            borderBottomColor: shellPalette.border,
+            backgroundColor: row.read ? "transparent" : "var(--brand-soft)",
+          }}
+        >
+          <p className="text-[12px] font-bold" style={{ color: shellPalette.text }}>
+            {isAppVersion ? `New App Version ${appVersion}` : row.title || "Notification"}
+          </p>
+          {isAppVersion ? null : (
+            <p className="mt-[2px] truncate text-[11px]" style={{ color: shellPalette.textMuted }}>
+              {row.message || ""}
+            </p>
+          )}
+          <p className="mt-[2px] text-[10px]" style={{ color: shellPalette.textMuted }}>
+            {formatNotificationTime(row.createdAtIso)}
+          </p>
+        </button>
+      );
+    });
   }
 
   return (
@@ -1196,18 +1211,6 @@ export function GlobalAppTabsBar() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
-              <button
-                type="button"
-                onMouseDown={handleAuxButtonMouseDown}
-                onClick={() => {
-                  setIsNotifOpen(false);
-                  router.push("/company-settings?section=notifications");
-                }}
-                className="shrink-0 border-t px-3 py-2 text-center text-[11px] font-bold transition-colors hover:opacity-80"
-                style={{ borderTopColor: shellPalette.border, color: "var(--brand)" }}
-              >
-                View all
-              </button>
             </div>,
             document.body,
           )
@@ -1270,17 +1273,6 @@ export function GlobalAppTabsBar() {
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">{renderNotifRows()}</div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsNotifOpen(false);
-                    router.push("/company-settings?section=notifications");
-                  }}
-                  className="shrink-0 border-t px-4 py-3 text-center text-[12px] font-bold transition-colors hover:opacity-80"
-                  style={{ borderTopColor: shellPalette.border, color: "var(--brand)" }}
-                >
-                  View all
-                </button>
               </div>
             </div>,
             document.body,

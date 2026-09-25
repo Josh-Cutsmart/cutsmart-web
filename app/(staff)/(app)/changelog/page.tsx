@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, ChevronLeft, Search, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -170,6 +170,10 @@ export default function ChangelogPage() {
   const PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
   const { user } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Set once entries load, so a `?version=` link (e.g. clicking an "app_version" notification)
+  // opens straight to that version's entry — see the effect below, right after entries populate.
+  const hasAppliedVersionParamRef = useRef(false);
   const { setReduceMainTopPadding } = useAppTabs();
   // This page's own sticky header used a negative top margin on its ancestor to cancel <main>'s
   // default top padding, which reproducibly froze the header at its unshifted (i.e. under the
@@ -327,6 +331,31 @@ export default function ChangelogPage() {
       cancelled = true;
     };
   }, [user?.uid, entriesPerPage]);
+
+  // A `?version=` link (e.g. clicking an "app_version" notification in the top bar) opens straight
+  // to that entry — applied once, right after entries first load, since that's the earliest point
+  // there's anything to open. Desktop scrolls to it in the sidebar layout (openVersionFromSidebar);
+  // mobile has no inline content to scroll to (see the compact card list further down), so it opens
+  // the same glass popup a tap would, just with no capture origin to FLIP from (a plain fade-in —
+  // useGlassModalPopOrigin already supports a null origin for exactly this).
+  useEffect(() => {
+    if (hasAppliedVersionParamRef.current || entries.length === 0) return;
+    hasAppliedVersionParamRef.current = true;
+    const versionParam = String(searchParams.get("version") || "").trim();
+    if (!versionParam) return;
+    if (isCompactChangelogViewport) {
+      const normalizedTarget = normalizeVersionToken(versionParam);
+      const match = entries.find((entry) => normalizeVersionToken(entry.version) === normalizedTarget);
+      if (match) {
+        setOpenMobileVersionKey(`${match.version}_${match.capturedAtIso}`);
+        setMobileVersionPopupOrigin(null);
+        setIsMobileVersionPopupOpen(true);
+      }
+    } else {
+      openVersionFromSidebar(versionParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
 
   useEffect(() => {
     if (!showDevReports || !isDevUser) return;
@@ -1088,7 +1117,7 @@ export default function ChangelogPage() {
                             </div>
                             <div className="px-4 py-4">
                               <div
-                                className="text-[15px] leading-7"
+                                className="notes-rich text-[15px] leading-7"
                                 style={{ color: "var(--text-main)" }}
                                 dangerouslySetInnerHTML={{
                                   __html: updateNotesToDisplayHtml(entry.whatsNew || "- No update notes provided."),
@@ -1233,7 +1262,7 @@ export default function ChangelogPage() {
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                   <div
-                    className="text-[15px] leading-7"
+                    className="notes-rich text-[15px] leading-7"
                     style={{ color: "var(--text-main)" }}
                     dangerouslySetInnerHTML={{
                       __html: updateNotesToDisplayHtml(openMobileVersionEntry.whatsNew || "- No update notes provided."),

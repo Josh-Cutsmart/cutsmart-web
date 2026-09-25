@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
@@ -928,6 +928,29 @@ export default function LeadsPage() {
     boardCheckRef.current?.();
   }, [leadsViewMode]);
   const leadBoardDragGhost = useDragGhost();
+  // Touch-driven pick-up-and-drag for lead cards — native HTML5 draggable/dragstart/dragover never
+  // fire from a touch gesture, so the mouse-only drag system above is silently inert on phones.
+  // This drives the SAME ghost/status-change plumbing from touch events instead, gated behind a
+  // genuine long-press (not a quick tap, which still opens the lead's detail) so tapping a card
+  // keeps working and the column's own horizontal snap-scroll / vertical card-list scroll keep
+  // working for anything that isn't a deliberate pick-up.
+  const LEAD_CARD_LONG_PRESS_MS = 450;
+  const LEAD_CARD_MOVE_CANCEL_PX = 10;
+  const leadCardTouchRef = useRef<{
+    leadId: string;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    longPressTimer: ReturnType<typeof setTimeout> | null;
+    dragging: boolean;
+    eligible: boolean;
+    targetColumn: string;
+  } | null>(null);
+  // Set right when a touch-drag commits — checked (and cleared) at the top of the card's own
+  // onClick so the synthetic click some browsers still fire right after that touchend doesn't ALSO
+  // open the lead's detail modal right after dropping it into a new column.
+  const suppressNextLeadCardClickRef = useRef("");
   const [listOrder, setListOrder] = useState<"status" | "az" | "za" | "newest" | "oldest">("newest");
   const [isLoading, setIsLoading] = useState(true);
   const [companyName, setCompanyName] = useState("");
@@ -2079,6 +2102,100 @@ export default function LeadsPage() {
     void onSelectLeadStatus(lead, statusName);
   };
 
+  const onLeadCardTouchStart = (lead: CompanyLeadRow, event: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    if (leadCardTouchRef.current?.longPressTimer) {
+      clearTimeout(leadCardTouchRef.current.longPressTimer);
+    }
+    const state: NonNullable<typeof leadCardTouchRef.current> = {
+      leadId: lead.id,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastX: touch.clientX,
+      lastY: touch.clientY,
+      longPressTimer: null,
+      dragging: false,
+      eligible: true,
+      targetColumn: "",
+    };
+    state.longPressTimer = setTimeout(() => {
+      const current = leadCardTouchRef.current;
+      if (!current || current.leadId !== lead.id || !current.eligible || current.dragging) return;
+      current.dragging = true;
+      setDraggingLeadId(lead.id);
+      const displayName =
+        buildLeadClientNameParts(getLeadDynamicFields(lead), mergedFieldLayout).fullName ||
+        lead.name || lead.email || lead.phone || "Untitled Lead";
+      const color = String(leadStatusPillStyle(lead.status || "New").backgroundColor || "");
+      leadBoardDragGhost.spawn({ clientX: current.lastX, clientY: current.lastY }, `lead-board-name-${lead.id}`, { label: displayName, color });
+      if (typeof document !== "undefined") document.body.style.touchAction = "none";
+    }, LEAD_CARD_LONG_PRESS_MS);
+    leadCardTouchRef.current = state;
+  };
+
+  const onLeadCardTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const state = leadCardTouchRef.current;
+    if (!state) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    if (!state.dragging) {
+      // Moved before the long-press fired — this is a scroll (horizontal column snap-scroll or
+      // vertical card-list scroll), not a pick-up. Cancel the timer and leave the touch alone (no
+      // preventDefault) so those keep working exactly as if this handler weren't here.
+      const dx = Math.abs(touch.clientX - state.startX);
+      const dy = Math.abs(touch.clientY - state.startY);
+      if (dx > LEAD_CARD_MOVE_CANCEL_PX || dy > LEAD_CARD_MOVE_CANCEL_PX) {
+        state.eligible = false;
+        if (state.longPressTimer) {
+          clearTimeout(state.longPressTimer);
+          state.longPressTimer = null;
+        }
+      }
+      return;
+    }
+    event.preventDefault();
+    // Drives the ghost's transform by hand — useDragGhost's own tracking only ever runs off a
+    // native `dragover` listener, which touch never dispatches. Same translate+rotate "swing" math
+    // as that listener, so a touch drag looks identical to a mouse one.
+    const ghost = leadBoardDragGhost.ghostRef.current?.getEl();
+    if (ghost) {
+      const dx = touch.clientX - state.lastX;
+      const rotation = Math.max(-18, Math.min(18, dx * 1.6));
+      ghost.style.transition = "none";
+      ghost.style.transform = `translate(${touch.clientX}px, ${touch.clientY}px) translate(-50%, 6px) rotate(${rotation}deg)`;
+    }
+    state.lastX = touch.clientX;
+    state.lastY = touch.clientY;
+    const target = document.elementFromPoint(touch.clientX, touch.clientY);
+    const columnEl = target?.closest<HTMLElement>("[data-board-column]");
+    const columnName = columnEl?.getAttribute("data-column-name") || "";
+    state.targetColumn = columnName;
+    setDragOverStatusColumn((prev) => (prev === columnName ? prev : columnName));
+  };
+
+  const endLeadCardTouchDrag = (commit: boolean) => {
+    const state = leadCardTouchRef.current;
+    leadCardTouchRef.current = null;
+    if (typeof document !== "undefined") document.body.style.touchAction = "";
+    if (!state) return;
+    if (state.longPressTimer) clearTimeout(state.longPressTimer);
+    if (!state.dragging) return;
+    setDraggingLeadId("");
+    setDragOverStatusColumn("");
+    leadBoardDragGhost.end();
+    suppressNextLeadCardClickRef.current = state.leadId;
+    if (commit && state.targetColumn) {
+      const lead = getLeadById(state.leadId);
+      if (lead && String(lead.status || "").trim().toLowerCase() !== state.targetColumn.trim().toLowerCase()) {
+        void onSelectLeadStatus(lead, state.targetColumn);
+      }
+    }
+  };
+
+  const onLeadCardTouchEnd = () => endLeadCardTouchDrag(true);
+  const onLeadCardTouchCancel = () => endLeadCardTouchDrag(false);
+
   const handleCreateProjectFromLead = async (lead: CompanyLeadRow) => {
     if (typeof window === "undefined") return;
     const fullLead = (await loadLeadDetail(lead.id)) ?? getLeadById(lead.id) ?? lead;
@@ -3011,7 +3128,18 @@ export default function LeadsPage() {
         draggable={draggable}
         onDragStart={draggable ? (e) => onLeadBoardCardDragStart(e, lead) : undefined}
         onDragEnd={draggable ? onLeadBoardCardDragEnd : undefined}
+        onTouchStart={draggable ? (e) => onLeadCardTouchStart(lead, e) : undefined}
+        onTouchMove={draggable ? onLeadCardTouchMove : undefined}
+        onTouchEnd={draggable ? onLeadCardTouchEnd : undefined}
+        onTouchCancel={draggable ? onLeadCardTouchCancel : undefined}
         onClick={(e) => {
+          // Set the instant a touch-drag commits (see endLeadCardTouchDrag) — the synthetic click
+          // some browsers still fire right after that touchend would otherwise ALSO open this
+          // lead's detail modal right after dropping it into a new column.
+          if (suppressNextLeadCardClickRef.current === lead.id) {
+            suppressNextLeadCardClickRef.current = "";
+            return;
+          }
           setLeadDetailModalOrigin(captureGlassModalOrigin(e));
           setSelectedLeadId(lead.id);
         }}
@@ -3031,6 +3159,13 @@ export default function LeadsPage() {
           WebkitBackdropFilter: "blur(20px) saturate(180%)",
           boxShadow: "var(--shadow-glass)",
           opacity: draggable && draggingLeadId === lead.id ? 0.4 : 1,
+          // Long-press on mobile is how you pick a card up to drag it — without these, the
+          // browser's own default long-press UI (text-selection callout, tap-color flash) fires
+          // first and visually fights with/masks the pick-up. Same fix as the mobile tab-bar drag.
+          WebkitTouchCallout: draggable ? "none" : undefined,
+          WebkitUserSelect: draggable ? "none" : undefined,
+          userSelect: draggable ? "none" : undefined,
+          WebkitTapHighlightColor: draggable ? "transparent" : undefined,
         }}
       >
         <button
@@ -3568,6 +3703,7 @@ export default function LeadsPage() {
                         key={column.name}
                         {...dragHandlers}
                         data-board-column="true"
+                        data-column-name={column.name}
                         className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
                         style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
                       >
@@ -3611,6 +3747,7 @@ export default function LeadsPage() {
                       key={column.name}
                       {...dragHandlers}
                       data-board-column="true"
+                      data-column-name={column.name}
                       className="h-full w-[85vw] max-w-[320px] shrink-0 snap-center sm:w-[300px] sm:max-w-none sm:snap-align-none"
                       style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
                     >
