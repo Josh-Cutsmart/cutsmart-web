@@ -99,10 +99,20 @@
   box-sizing: border-box;
 }
 
+/* Stops the browser's own native rubber-band/bounce scroll on the page as a whole — without this,
+ * pulling down at the top of the page (the exact gesture app-shell.tsx's own pull-to-reveal menu
+ * listens for) could ALSO trigger the OS/browser's native overscroll bounce at the same time,
+ * visibly dragging the page content down as its own separate motion underneath the pulldown menu
+ * instead of the page staying completely still while only the menu itself responds. */
+html {
+  overscroll-behavior-y: none;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
   overflow-x: hidden;
+  overscroll-behavior-y: none;
   background:
     radial-gradient(1600px circle at 10% 25%, var(--bg-wash-1), transparent 65%),
     radial-gradient(1400px circle at 95% 15%, var(--bg-wash-2), transparent 60%),
@@ -435,40 +445,6 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
   to {
     opacity: 1;
-  }
-}
-
-/* The pulldown menu's (app-shell.tsx) traveling zone-select pill — a shrink → travel small →
- * expand sequence: full icon size at the departure point (0%), shrinks to a small droplet just
- * after leaving it (30%), travels most of the way there still small (70%), then expands back to
- * full size landing on the arrival icon (100%). All four --pull-p0.. --pull-p3 rects are set
- * inline by JS right before this is (re)triggered, since the departure/arrival positions are
- * measured live and vary with screen width — see triggerPullBubbleTravel in app-shell.tsx.
- */
-@keyframes pull-bubble-travel {
-  0% {
-    left: var(--pull-p0-left);
-    top: var(--pull-p0-top);
-    width: var(--pull-p0-width);
-    height: var(--pull-p0-height);
-  }
-  30% {
-    left: var(--pull-p1-left);
-    top: var(--pull-p1-top);
-    width: var(--pull-p1-width);
-    height: var(--pull-p1-height);
-  }
-  70% {
-    left: var(--pull-p2-left);
-    top: var(--pull-p2-top);
-    width: var(--pull-p2-width);
-    height: var(--pull-p2-height);
-  }
-  100% {
-    left: var(--pull-p3-left);
-    top: var(--pull-p3-top);
-    width: var(--pull-p3-width);
-    height: var(--pull-p3-height);
   }
 }
 

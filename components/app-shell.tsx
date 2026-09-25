@@ -611,20 +611,17 @@ export function AppShell({
   // this: the tab bar's own content should be gone and the pulldown icons fully in place almost the
   // instant you start pulling, not gradually over a long drag.
   const PULL_FADE_DISTANCE_PX = 22;
-  // A single shared pill that lives at whichever zone is currently selected — not three pills, one
-  // per zone. Switching zones animates this ONE element's left/top/width/height (the
-  // pull-bubble-travel keyframes, globals.css) through a shrink → travel small → expand sequence:
-  // full icon size at the departure point, shrinks down to a small droplet just after leaving it,
-  // travels most of the way there small, then expands back to full size landing on the arrival
-  // icon. That shrink-while-traveling (rather than staying full-size, or stretching into one big
-  // capsule spanning both icons) is what reads as an actual drop of liquid pulling free and
-  // landing, not a rigid shape sliding or stretching between two points.
+  // A single shared circle that lives at whichever zone is currently selected — not three, one per
+  // zone. Switching zones just slides this ONE element's left/top from the departing icon's
+  // position to the arriving one's via a plain CSS transition — constant size throughout, no
+  // shrink/stretch/liquid effect. A visible, deliberate slide (not an instant teleport), kept
+  // simple on purpose.
   const pullActivePillRef = useRef<HTMLDivElement | null>(null);
   const pullPrevSelectedRef = useRef<PullZone>("dashboard");
-  const PULL_TRAVEL_DURATION_MS = 190;
-  // Guards syncPullPillVertical (called every touchmove tick to keep the pill glued to its icon as
-  // the bar keeps growing taller) from fighting an in-flight travel animation — while one's
-  // playing, the keyframes own left/top/width/height; the sync resumes once it's landed.
+  const PULL_TRAVEL_DURATION_MS = 220;
+  // Guards syncPullPillVertical (called every touchmove tick to keep the circle glued to its icon
+  // as the bar keeps growing taller) from fighting an in-flight slide — while one's playing, the
+  // transition owns left/top; the sync resumes once it's landed.
   const pullTravelInFlightRef = useRef(false);
   const pullZoneRefByKey: Record<PullZone, React.RefObject<HTMLDivElement | null>> = {
     reload: pullReloadZoneRef,
@@ -662,18 +659,19 @@ export function AppShell({
     const pill = pullActivePillRef.current;
     const rect = pullIconRectRelativeToContainer(zone);
     if (!pill || !rect) return;
-    pill.style.animation = "none";
+    pill.style.transition = "none";
     setPillRect(pill, rect);
     Object.assign(pill.style, pullPillColorFor(armed));
   };
-  // Keeps the pill glued to the SELECTED zone's icon as the bar's own height grows over the course
-  // of the drag — without this, the icon (re-centered by the growing bar's flex layout) would
-  // drift away from the pill, which only otherwise moves when triggerPullBubbleTravel fires.
+  // Keeps the circle glued to the SELECTED zone's icon as the bar's own height grows over the
+  // course of the drag — without this, the icon (re-centered by the growing bar's flex layout)
+  // would drift away from the circle, which only otherwise moves when triggerPullBubbleTravel fires.
   const syncPullPillVertical = (selected: PullZone) => {
     if (pullTravelInFlightRef.current) return;
     const pill = pullActivePillRef.current;
     const rect = pullIconRectRelativeToContainer(selected);
     if (!pill || !rect) return;
+    pill.style.transition = "none";
     setPillRect(pill, rect);
   };
   const triggerPullBubbleTravel = (fromZone: PullZone, toZone: PullZone, armed: boolean) => {
@@ -681,41 +679,18 @@ export function AppShell({
     const fromRect = pullIconRectRelativeToContainer(fromZone);
     const toRect = pullIconRectRelativeToContainer(toZone);
     if (!pill || !fromRect || !toRect) return;
-    const fromCenterX = fromRect.left + fromRect.width / 2;
-    const toCenterX = toRect.left + toRect.width / 2;
-    const centerY = fromRect.top + fromRect.height / 2;
-    // A small droplet, noticeably smaller than the icon itself ("make it go smaller where it
-    // pulls off") — shrinks to this size right after leaving, travels most of the way there at
-    // this size, then expands back out to the full icon size landing on the destination.
-    const dropSize = Math.min(fromRect.height, toRect.height) * 0.5;
-    const lerpX = (t: number) => fromCenterX + (toCenterX - fromCenterX) * t;
-    const shrunkNearFrom = { left: lerpX(0.16) - dropSize / 2, top: centerY - dropSize / 2, width: dropSize, height: dropSize };
-    const shrunkNearTo = { left: lerpX(0.8) - dropSize / 2, top: centerY - dropSize / 2, width: dropSize, height: dropSize };
-    const setVars = (prefix: string, rect: { left: number; top: number; width: number; height: number }) => {
-      pill.style.setProperty(`--pull-${prefix}-left`, `${rect.left}px`);
-      pill.style.setProperty(`--pull-${prefix}-top`, `${rect.top}px`);
-      pill.style.setProperty(`--pull-${prefix}-width`, `${rect.width}px`);
-      pill.style.setProperty(`--pull-${prefix}-height`, `${rect.height}px`);
-    };
-    setVars("p0", fromRect);
-    setVars("p1", shrunkNearFrom);
-    setVars("p2", shrunkNearTo);
-    setVars("p3", toRect);
+    // Snap to the departure point with no transition first (in case it wasn't already there — e.g.
+    // this is the very first slide of the gesture)...
+    pill.style.transition = "none";
+    setPillRect(pill, fromRect);
     Object.assign(pill.style, pullPillColorFor(armed));
-    // Restart the keyframe animation even if one from a previous zone change is still mid-flight —
-    // just reassigning `animation` doesn't restart it if the value is unchanged, so it's cleared
-    // and the layout is forced to flush (reading offsetWidth) before reapplying it.
-    pullTravelInFlightRef.current = true;
-    pill.style.animation = "none";
     void pill.offsetWidth;
-    pill.style.animation = `pull-bubble-travel ${PULL_TRAVEL_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards`;
+    // ...then, next frame, let a plain CSS transition carry it to the arrival point.
+    pullTravelInFlightRef.current = true;
+    pill.style.transition = `left ${PULL_TRAVEL_DURATION_MS}ms ease, top ${PULL_TRAVEL_DURATION_MS}ms ease`;
+    setPillRect(pill, toRect);
     window.setTimeout(() => {
       pullTravelInFlightRef.current = false;
-      const el = pullActivePillRef.current;
-      if (el === pill) {
-        el.style.animation = "none";
-        setPillRect(el, toRect);
-      }
     }, PULL_TRAVEL_DURATION_MS);
   };
   const applyPullZoneStyles = (selected: PullZone, armed: boolean) => {
@@ -2896,10 +2871,10 @@ export function AppShell({
             backgroundColor: "transparent",
           }}
         >
-          {/* One shared pill (not one per zone) that lives under whichever zone is selected — see
-              applyPullZoneStyles/triggerPullBubbleTravel and the pull-bubble-travel keyframes in
-              globals.css. Sized/colored entirely via direct style writes, so its resting state
-              here is just a zero-size placeholder that gets positioned before it's ever visible. */}
+          {/* One shared circle (not one per zone) that lives under whichever zone is selected —
+              see applyPullZoneStyles/triggerPullBubbleTravel, which slide it via a plain CSS
+              transition. Sized/colored entirely via direct style writes, so its resting state here
+              is just a zero-size placeholder that gets positioned before it's ever visible. */}
           <div
             ref={pullActivePillRef}
             aria-hidden="true"

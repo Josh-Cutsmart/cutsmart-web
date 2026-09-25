@@ -6296,6 +6296,9 @@ export default function ProjectDetailsPage() {
   const salesItemsDragGhost = useDragGhost();
   const [notifyBellWobbleKey, setNotifyBellWobbleKey] = useState(0);
   const projectNameHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const [isEditingProjectName, setIsEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const projectNameInputRef = useRef<HTMLInputElement | null>(null);
   // Row 1 (project name/tags + notifications/delete/status) is itself sticky and sticks
   // immediately — the tab bar below it needs to know its actual rendered height (it varies: tags
   // wrap, the add-tag input toggles) to sit its own `top` flush underneath, so this measures it
@@ -16246,6 +16249,21 @@ export default function ProjectDetailsPage() {
     if (Object.keys(patch).length > 0) {
       await saveGeneralDetailsPatch(patch);
     }
+  };
+
+  const startEditingProjectName = () => {
+    if (!project || !generalAccess.edit) return;
+    setProjectNameDraft(project.name);
+    setIsEditingProjectName(true);
+  };
+  // Enter blurs the input (see its own onKeyDown), which is what actually triggers this via
+  // onBlur — matches "on Enter press OR click off" without needing two separate save paths.
+  const commitProjectNameEdit = async () => {
+    setIsEditingProjectName(false);
+    if (!project) return;
+    const trimmed = projectNameDraft.trim();
+    if (!trimmed || trimmed === project.name) return;
+    await saveGeneralDetailsPatch({ name: trimmed });
   };
 
   const commitNotesDetails = async () => {
@@ -46391,7 +46409,52 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     </span>
                   </button>
                 ) : null}
-                <h1 ref={projectNameHeadingRef} className="text-[32px] font-medium leading-none md:text-[42px]" style={{ color: projectPalette.text }}>{project.name}</h1>
+                <div className="group relative inline-flex items-center gap-1.5">
+                  {isEditingProjectName ? (
+                    <input
+                      ref={projectNameInputRef}
+                      autoFocus
+                      value={projectNameDraft}
+                      onChange={(e) => setProjectNameDraft(e.target.value)}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onBlur={() => void commitProjectNameEdit()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          e.currentTarget.blur();
+                        } else if (e.key === "Escape") {
+                          setIsEditingProjectName(false);
+                        }
+                      }}
+                      size={Math.max(4, projectNameDraft.length + 1)}
+                      className="border-0 border-b bg-transparent p-0 text-[32px] font-medium leading-none outline-none md:text-[42px]"
+                      style={{ color: projectPalette.text, borderBottomColor: "var(--brand-strong)" }}
+                    />
+                  ) : (
+                    <h1
+                      ref={projectNameHeadingRef}
+                      onClick={isCompactProjectViewport && generalAccess.edit ? startEditingProjectName : undefined}
+                      className="text-[32px] font-medium leading-none md:text-[42px]"
+                      style={{ color: projectPalette.text, cursor: isCompactProjectViewport && generalAccess.edit ? "text" : undefined }}
+                    >
+                      {project.name}
+                    </h1>
+                  )}
+                  {/* Desktop-only hover-reveal pencil — mobile has no hover, so there the name
+                      itself is the tap target instead (see the <h1>'s own onClick above). */}
+                  {!isCompactProjectViewport && generalAccess.edit && !isEditingProjectName ? (
+                    <button
+                      type="button"
+                      onClick={startEditingProjectName}
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] opacity-0 transition-opacity hover:bg-[var(--panel-muted)] group-hover:opacity-100"
+                      style={{ color: "var(--text-muted)" }}
+                      title="Edit project name"
+                      aria-label="Edit project name"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                  ) : null}
+                </div>
                   {projectTags.map((tag) => {
                     const isArmed = pendingDeleteTag === tag;
                     const isHovered = hoveredDeleteTag === tag;
