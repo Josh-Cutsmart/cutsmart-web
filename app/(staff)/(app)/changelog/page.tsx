@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronLeft, Search, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, Copy, Pencil, Search, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchAppChangelogHistory,
   fetchAppReports,
   setAppReportCompleted,
   submitAppReport,
+  syncAppChangelogHistory,
   type AppReportKind,
   type AppReportRow,
 } from "@/lib/firestore-data";
@@ -25,6 +26,72 @@ import { useAppTabs } from "@/lib/app-tabs-context";
 type ReportDeviceType = "desktop" | "tablet" | "mobile";
 const HEADER_HEIGHT = 56;
 const DESKTOP_TAB_BAR_HEIGHT = 48;
+
+// Click-to-insert HTML tag helpers shown next to the dev-only version editor's raw textarea —
+// wraps the current selection (or inserts at the cursor if nothing's selected) with the tag pair.
+// Kept in lockstep with the tags lib/update-notes-utils.ts's updateNotesToDisplayHtml understands.
+type ChangelogTagHelper = { label: string; open: string; close: string };
+const CHANGELOG_TAG_HELPERS: ChangelogTagHelper[] = [
+  { label: "Bold", open: "<b>", close: "</b>" },
+  { label: "Underline", open: "<u>", close: "</u>" },
+  { label: "Italic", open: "<i>", close: "</i>" },
+  { label: "Bulleted list", open: "<ul>\n<li>", close: "</li>\n</ul>" },
+  { label: "List item", open: "<li>", close: "</li>" },
+  { label: "Line break", open: "<br />", close: "" },
+];
+
+// Mirrors the textarea's box (same font/padding/wrapping) with the text up to `caretIndex`, then
+// reads back where that text actually lands — accounts for wrapped lines, which a plain
+// newline-count wouldn't. Used so a helper-button click can tell whether the caret it just placed
+// is already inside the visible scrolled region before touching scrollTop.
+function measureTextareaCaretTop(textarea: HTMLTextAreaElement, caretIndex: number): { top: number; lineHeight: number } {
+  const style = window.getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  const copiedProps = [
+    "box-sizing",
+    "width",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "letter-spacing",
+    "line-height",
+    "text-transform",
+    "word-spacing",
+    "tab-size",
+  ];
+  for (const prop of copiedProps) {
+    mirror.style.setProperty(prop, style.getPropertyValue(prop));
+  }
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordWrap = "break-word";
+  mirror.style.top = "0px";
+  mirror.style.left = "-9999px";
+  mirror.style.height = "auto";
+  mirror.style.overflow = "hidden";
+
+  mirror.appendChild(document.createTextNode(textarea.value.slice(0, caretIndex)));
+  const marker = document.createElement("span");
+  marker.textContent = "​";
+  mirror.appendChild(marker);
+
+  document.body.appendChild(mirror);
+  const top = marker.offsetTop;
+  const parsedLineHeight = Number.parseFloat(style.lineHeight);
+  const lineHeight = Number.isFinite(parsedLineHeight) ? parsedLineHeight : marker.offsetHeight || 16;
+  document.body.removeChild(mirror);
+  return { top, lineHeight };
+}
 
 function detectDeviceType(): ReportDeviceType {
   if (typeof window === "undefined") return "desktop";
@@ -271,6 +338,94 @@ export default function ChangelogPage() {
   const mobileVersionPopupPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderMobileVersionPopup = useGlassModalPopOrigin(isMobileVersionPopupOpen, mobileVersionPopupOrigin, mobileVersionPopupPanelRef);
 
+  // Dev-only (isDevUser, below) raw-HTML editor for one version's whatsNew content — same
+  // grow-from-the-clicked-button pop as the other glass modals on this page.
+  const [editingVersionEntry, setEditingVersionEntry] = useState<UpdateChangelogEntry | null>(null);
+  const [editingVersionDraft, setEditingVersionDraft] = useState("");
+  const [isSavingVersionEdit, setIsSavingVersionEdit] = useState(false);
+  const [editVersionModalOrigin, setEditVersionModalOrigin] = useState<GlassModalOrigin>(null);
+  const editVersionModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const editVersionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const shouldRenderEditVersionModal = useGlassModalPopOrigin(Boolean(editingVersionEntry), editVersionModalOrigin, editVersionModalPanelRef);
+
+  const startEditingVersionEntry = (entry: UpdateChangelogEntry, e: ReactMouseEvent<HTMLButtonElement>) => {
+    setEditVersionModalOrigin(captureGlassModalOrigin(e));
+    setEditingVersionDraft(entry.whatsNew);
+    setEditingVersionEntry(entry);
+  };
+
+  const closeEditVersionModal = () => setEditingVersionEntry(null);
+
+  // Brief "Copied" feedback on whichever helper's copy button was just clicked, by its label.
+  const [copiedHelperLabel, setCopiedHelperLabel] = useState("");
+
+  const copyHelperSnippet = async (helper: ChangelogTagHelper) => {
+    const text = `${helper.open}${helper.close}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedHelperLabel(helper.label);
+      window.setTimeout(() => {
+        setCopiedHelperLabel((current) => (current === helper.label ? "" : current));
+      }, 1200);
+    } catch {
+      // Clipboard access can fail (permissions, non-secure context) — the raw HTML is still
+      // visible and selectable in the row itself as a manual-copy fallback.
+    }
+  };
+
+  // Wraps the current textarea selection with a tag pair (or inserts at the cursor if nothing's
+  // selected), then restores focus with the cursor placed right after the inserted opening tag.
+  // Deliberately does NOT let that refocus/reselect scroll the textarea on its own (focus() would,
+  // by default, jump it to wherever the browser thinks the caret "should" be) — it only nudges
+  // scrollTop when the caret actually landed outside the region the user was already looking at.
+  const insertVersionSnippet = (open: string, close: string) => {
+    const textarea = editVersionTextareaRef.current;
+    if (!textarea) {
+      setEditingVersionDraft((prev) => `${prev}${open}${close}`);
+      return;
+    }
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? textarea.value.length;
+    const value = textarea.value;
+    const selected = value.slice(start, end);
+    const nextValue = `${value.slice(0, start)}${open}${selected}${close}${value.slice(end)}`;
+    const cursor = start + open.length + selected.length;
+    const scrollTopBeforeInsert = textarea.scrollTop;
+    setEditingVersionDraft(nextValue);
+    window.setTimeout(() => {
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(cursor, cursor);
+
+      const { top: caretTop, lineHeight } = measureTextareaCaretTop(textarea, cursor);
+      const viewTop = scrollTopBeforeInsert;
+      const viewBottom = scrollTopBeforeInsert + textarea.clientHeight;
+      if (caretTop < viewTop) {
+        textarea.scrollTop = Math.max(0, caretTop - lineHeight);
+      } else if (caretTop + lineHeight > viewBottom) {
+        textarea.scrollTop = caretTop + lineHeight * 2 - textarea.clientHeight;
+      } else {
+        textarea.scrollTop = scrollTopBeforeInsert;
+      }
+    }, 0);
+  };
+
+  const submitVersionEdit = async () => {
+    if (!editingVersionEntry) return;
+    setIsSavingVersionEdit(true);
+    const target = editingVersionEntry;
+    const nextWhatsNew = editingVersionDraft;
+    const ok = await syncAppChangelogHistory([
+      { version: target.version, whatsNew: nextWhatsNew, capturedAtIso: target.capturedAtIso },
+    ]);
+    if (ok) {
+      setEntries((prev) =>
+        prev.map((row) => (row.version === target.version ? { ...row, whatsNew: nextWhatsNew } : row)),
+      );
+      setEditingVersionEntry(null);
+    }
+    setIsSavingVersionEdit(false);
+  };
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const uid = String(user?.uid || "").trim();
@@ -502,7 +657,7 @@ export default function ChangelogPage() {
     if (!Number.isFinite(time)) return "";
     return new Intl.DateTimeFormat("en-GB", {
       day: "2-digit",
-      month: "long",
+      month: "short",
       year: "numeric",
     }).format(new Date(time));
   };
@@ -1108,16 +1263,33 @@ export default function ChangelogPage() {
                             }}
                           >
                             <div
-                              className="flex h-[50px] shrink-0 items-center justify-between border-b px-3"
+                              className="group flex h-[50px] shrink-0 items-center justify-between border-b px-3"
                               style={{ borderColor: "var(--glass-border)" }}
                             >
-                              <p className="text-[20px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                                {entry.version || "Unknown Version"}
-                              </p>
+                              <div className="flex min-w-0 items-center gap-2">
+                                <p className="text-[20px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                                  {entry.version || "Unknown Version"}
+                                </p>
+                                {isDevUser ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => startEditingVersionEntry(entry, e)}
+                                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] opacity-0 transition-opacity hover:bg-[var(--panel-muted)] group-hover:opacity-100"
+                                    style={{ color: "var(--text-muted)" }}
+                                    title="Edit this version's changelog text"
+                                    aria-label="Edit this version's changelog text"
+                                  >
+                                    <Pencil size={14} />
+                                  </button>
+                                ) : null}
+                              </div>
+                              <span className="shrink-0 text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                                {formatUpdateDate(entry.capturedAtIso)}
+                              </span>
                             </div>
                             <div className="px-4 py-4">
                               <div
-                                className="notes-rich text-[15px] leading-7"
+                                className="notes-rich text-[13px] leading-5"
                                 style={{ color: "var(--text-main)" }}
                                 dangerouslySetInnerHTML={{
                                   __html: updateNotesToDisplayHtml(entry.whatsNew || "- No update notes provided."),
@@ -1262,12 +1434,112 @@ export default function ChangelogPage() {
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                   <div
-                    className="notes-rich text-[15px] leading-7"
+                    className="notes-rich text-[13px] leading-5"
                     style={{ color: "var(--text-main)" }}
                     dangerouslySetInnerHTML={{
                       __html: updateNotesToDisplayHtml(openMobileVersionEntry.whatsNew || "- No update notes provided."),
                     }}
                   />
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )}
+
+          {shouldRenderEditVersionModal && editingVersionEntry && typeof document !== "undefined" && createPortal(
+            <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
+              <button
+                type="button"
+                aria-label="Close version editor backdrop"
+                onClick={closeEditVersionModal}
+                className="glass-modal-backdrop absolute inset-0"
+              />
+              <div
+                ref={editVersionModalPanelRef}
+                className="glass-modal-panel relative flex w-[94vw] max-w-[1200px] flex-col overflow-hidden"
+                style={{ height: "92svh" }}
+              >
+                <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
+                  <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    Edit {editingVersionEntry.version || "Unknown Version"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={closeEditVersionModal}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border hover:brightness-95"
+                    style={{
+                      borderColor: "var(--danger-glass-border)",
+                      backgroundColor: "var(--danger-glass-bg)",
+                      backdropFilter: "blur(10px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                      color: "#FFFFFF",
+                    }}
+                    title="Close"
+                  >
+                    <X size={16} strokeWidth={2.4} />
+                  </button>
+                </div>
+                <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[1fr_260px]">
+                  <textarea
+                    ref={editVersionTextareaRef}
+                    value={editingVersionDraft}
+                    onChange={(e) => setEditingVersionDraft(e.target.value)}
+                    disabled={isSavingVersionEdit}
+                    autoFocus
+                    spellCheck={false}
+                    className="min-h-0 w-full resize-none rounded-[14px] border p-3 font-mono text-[13px] leading-6 outline-none disabled:opacity-60"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                  />
+                  <div
+                    className="overflow-y-auto rounded-[14px] border p-3"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", boxShadow: "var(--shadow-sm)" }}
+                  >
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>HTML Helpers</p>
+                    <div className="mt-3 space-y-1.5">
+                      {CHANGELOG_TAG_HELPERS.map((helper) => (
+                        <div
+                          key={helper.label}
+                          className="flex items-stretch gap-1 rounded-[8px] border"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => insertVersionSnippet(helper.open, helper.close)}
+                            disabled={isSavingVersionEdit}
+                            title={`Insert ${helper.label.toLowerCase()} at cursor / around selection`}
+                            className="min-w-0 flex-1 px-3 py-2 text-left transition hover:brightness-95 disabled:opacity-60"
+                          >
+                            <p className="text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>{helper.label}</p>
+                            <p className="mt-0.5 truncate font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+                              {helper.open}
+                              {helper.close}
+                            </p>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void copyHelperSnippet(helper)}
+                            title={`Copy ${helper.label.toLowerCase()} HTML`}
+                            aria-label={`Copy ${helper.label.toLowerCase()} HTML`}
+                            className="mr-1 inline-flex w-7 shrink-0 items-center justify-center self-center rounded-[6px] transition hover:bg-[var(--glass-border)]"
+                            style={{ color: copiedHelperLabel === helper.label ? "var(--success-strong)" : "var(--text-muted)" }}
+                          >
+                            {copiedHelperLabel === helper.label ? <Check size={13} /> : <Copy size={13} />}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="shrink-0 border-t px-4 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                  <button
+                    type="button"
+                    onClick={() => void submitVersionEdit()}
+                    disabled={isSavingVersionEdit}
+                    className="h-10 w-full rounded-[10px] border text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-60"
+                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                  >
+                    {isSavingVersionEdit ? "Saving..." : "Submit"}
+                  </button>
                 </div>
               </div>
             </div>,

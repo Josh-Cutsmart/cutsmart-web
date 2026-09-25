@@ -35,18 +35,21 @@ export function updateNotesToDisplayHtml(value: string): string {
     [/&lt;\/ol&gt;/gi, "</ol>"],
     [/&lt;li&gt;/gi, "<li>"],
     [/&lt;\/li&gt;/gi, "</li>"],
+    // <p> for paragraph breaks, same as every other supported tag pair above.
+    [/&lt;p&gt;/gi, "<p>"],
+    [/&lt;\/p&gt;/gi, "</p>"],
   ];
   let html = escaped;
   for (const [pattern, replacement] of tagMap) {
     html = html.replace(pattern, replacement);
   }
-  // A newline used purely to indent/format the SOURCE text between <ul>/<ol>/<li> tags shouldn't
-  // ALSO become a visible line break in the rendered output — <li> is already a block element with
-  // its own line break, so a newline right after one of these tags added a redundant blank line on
-  // top of that, which is what made lists render far more spaced out than the small
+  // A newline used purely to indent/format the SOURCE text between block tags shouldn't ALSO
+  // become a visible line break in the rendered output — these are already block elements with
+  // their own line break, so a newline right after one of these tags added a redundant blank line
+  // on top of that, which is what made lists render far more spaced out than the small
   // `.notes-rich li` margin alone would suggest. Only newlines between actual prose/bullet text
-  // (never adjacent to a list tag) still become <br /> below.
-  html = html.replace(/(<\/?(?:ul|ol|li)>)[ \t]*\n[ \t]*/gi, "$1");
+  // (never adjacent to one of these tags) still become <br /> below.
+  html = html.replace(/(<\/?(?:ul|ol|li|p)>)[ \t]*\n[ \t]*/gi, "$1");
   return html.replace(/\n/g, "<br />");
 }
 

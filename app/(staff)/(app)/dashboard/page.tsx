@@ -1172,13 +1172,17 @@ export default function DashboardPage() {
   }, []);
 
   const filtered = useMemo(() => {
+    // Board view has no Active/Completed filter pills of its own (its columns already separate
+    // complete from active by status) — quickFilter only applies in list view, otherwise
+    // switching views could silently hide an entire column with no visible way to bring it back.
+    const applyQuickFilter = dashboardViewMode !== "board";
     let rows = allProjects.filter((project) => {
       const statusLabel = String(project.statusLabel || "New");
 
-      if (quickFilter === "active" && isCompletedStatus(statusLabel)) {
+      if (applyQuickFilter && quickFilter === "active" && isCompletedStatus(statusLabel)) {
         return false;
       }
-      if (quickFilter === "completed" && !isCompletedStatus(statusLabel)) {
+      if (applyQuickFilter && quickFilter === "completed" && !isCompletedStatus(statusLabel)) {
         return false;
       }
 
@@ -1196,7 +1200,7 @@ export default function DashboardPage() {
     const openRows = rows.filter((r) => !isCompletedStatus(r.statusLabel));
     const completeRows = rows.filter((r) => isCompletedStatus(r.statusLabel));
     return [...openRows, ...completeRows];
-  }, [allProjects, quickFilter, search]);
+  }, [allProjects, dashboardViewMode, quickFilter, search]);
   const showProjectsLoadingState = isLoading && filtered.length === 0;
 
   // Reset how many rows are revealed whenever the filtered result set changes
@@ -2303,14 +2307,14 @@ export default function DashboardPage() {
                 <div className="peer relative order-1 w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:static sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
                   <Search
                     size={14}
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                    className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2"
                     style={{ color: dashboardPalette.textMuted }}
                   />
                   <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search"
-                    className="h-9 w-full rounded-[10px] border pl-8 pr-3 text-[12px] font-semibold outline-none transition focus:border-[var(--brand)]"
+                    className="h-9 w-full rounded-[10px] border pl-9 pr-3 text-[12px] font-semibold outline-none transition focus:border-[var(--brand)]"
                     style={{
                       borderColor: dashboardPalette.border,
                       backgroundColor: dashboardPalette.panelBg,
@@ -2318,7 +2322,10 @@ export default function DashboardPage() {
                     }}
                   />
                 </div>
-                {/* Desktop — the three filter pills, always visible next to the search bar. */}
+                {/* Desktop — the three filter pills, next to the search bar. Not shown in board
+                    (column) view — its columns already separate complete from active by status,
+                    so the filter has nothing meaningful left to do there. */}
+                {dashboardViewMode !== "board" && (
                 <div className="order-2 hidden flex-initial gap-1.5 sm:flex">
                   {QUICK_FILTER_OPTIONS.map((option) => (
                     <button
@@ -2337,6 +2344,7 @@ export default function DashboardPage() {
                     </button>
                   ))}
                 </div>
+                )}
                 {/* Mobile — the pills collapse into a single icon that opens a glass dropdown
                     with the same three options, since there isn't room otherwise. Fades/slides
                     out of the way (same as it did as a button row) while the search bar is

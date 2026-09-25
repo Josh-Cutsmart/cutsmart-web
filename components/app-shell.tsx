@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
@@ -109,13 +109,15 @@ function normalizeGapAllowancesSettings(raw: unknown): GapAllowancesSettings {
 
 const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/clients", label: "Clients", icon: Users },
   { href: "/leads", label: "Leads", icon: Inbox },
-  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
-  { href: "/changelog", label: "Changelog", icon: Search },
+  { href: "/clients", label: "Clients", icon: Users },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
+  // Last on purpose — rendered with a divider above it (see visibleTopNav.map below) to set it
+  // apart from the rest of the main tabs above it.
+  { href: "/changelog", label: "Changelog", icon: Search },
 ];
 
 function hasPermissionKey(permissionKeys: string[] | undefined, key: string): boolean {
@@ -2084,21 +2086,6 @@ export function AppShell({
     }, 280);
   };
 
-  // Cache the nav list's own resting box height only while the bottom section is
-  // actually at rest (closed), as the baseline for the slack-vs-push calculation
-  // below — its live height changes once the bottom section starts pushing it.
-  const navBoxRestHeightRef = useRef<number | null>(null);
-  useLayoutEffect(() => {
-    if (isUserSettingsPanelOpen) return;
-    if (navListRef.current) navBoxRestHeightRef.current = navListRef.current.clientHeight;
-  }, [isUserSettingsPanelOpen]);
-
-  // Natural (unconstrained) height of the nav links themselves, independent of
-  // how tall the scrollable box around them currently is.
-  const [navContentHeight, setNavContentHeight] = useState<number | null>(null);
-  useLayoutEffect(() => {
-    if (navListRef.current) setNavContentHeight(navListRef.current.scrollHeight);
-  }, [visibleTopNav]);
 
   // Both the rest content (User Settings button + avatar row) and the panel content
   // are always mounted (grid-stacked, crossfaded via opacity) so their natural
@@ -2493,21 +2480,11 @@ export function AppShell({
         hoverBg: "#F7F8FC",
       };
 
-  // While opening, the settings section first grows into whatever blank slack
-  // exists below the last nav tab (tabs stay put, it just covers empty space).
-  // Only once it would grow far enough to actually cover a tab does the nav list
-  // get pushed up for real — and even then, a clearance gap is kept so the tabs
-  // never sit flush against the settings section.
-  const USER_SETTINGS_CLEARANCE_PX = 20;
-  const bottomSectionTargetHeight = (isUserSettingsPanelOpen ? panelContentHeight : restContentHeight) ?? restContentHeight ?? 0;
-  const bottomSectionRestHeight = restContentHeight ?? 0;
-  const bottomSectionExcess = Math.max(0, bottomSectionTargetHeight - bottomSectionRestHeight);
-  const navSlack =
-    navBoxRestHeightRef.current != null && navContentHeight != null
-      ? Math.max(0, navBoxRestHeightRef.current - navContentHeight)
-      : 0;
-  const navSlackBeforeClearance = Math.max(0, navSlack - USER_SETTINGS_CLEARANCE_PX);
-  const navListMarginBottom = bottomSectionRestHeight + Math.max(0, bottomSectionExcess - navSlackBeforeClearance);
+  // Fixed at the CLOSED (rest) height always, regardless of how tall the settings panel grows
+  // when open — the nav list never gets pushed up or scrolls to make room for it; the white bar
+  // just overlays on top of whichever tabs it grows tall enough to cover, the same way it already
+  // visually stacks above the nav list via z-index.
+  const navListMarginBottom = restContentHeight ?? 0;
 
   // The small (rest) row and the full panel are grid-stacked in the same box, so
   // exactly one of them is shown at a time via a simple opacity crossfade — the
@@ -2598,21 +2575,24 @@ export function AppShell({
                 {visibleTopNav.map((item) => {
                   const active = pathname?.startsWith(item.href);
                   const Icon = item.icon;
+                  const isChangelog = item.href === "/changelog";
                   return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={cn(
-                        "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-semibold transition",
-                        active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
-                      )}
-                      style={{
-                        color: active ? "var(--brand)" : shellPalette.textMuted,
-                      }}
-                    >
-                      <Icon size={22} />
-                      {item.label}
-                    </Link>
+                    <Fragment key={item.href}>
+                      {isChangelog && <div className="my-2 h-px" style={{ backgroundColor: shellPalette.border }} />}
+                      <Link
+                        href={item.href}
+                        className={cn(
+                          "flex items-center gap-3 rounded-[12px] px-4 py-3.5 text-[17px] font-semibold transition",
+                          active ? "bg-[var(--brand-soft)]" : "hover:bg-[var(--panel-muted)]",
+                        )}
+                        style={{
+                          color: active ? "var(--brand)" : shellPalette.textMuted,
+                        }}
+                      >
+                        <Icon size={22} />
+                        {item.label}
+                      </Link>
+                    </Fragment>
                   );
                 })}
               </div>
@@ -2750,24 +2730,27 @@ export function AppShell({
             {visibleTopNav.map((item) => {
               const active = pathname?.startsWith(item.href);
               const Icon = item.icon;
+              const isChangelog = item.href === "/changelog";
               return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  ref={(el) => {
-                    navLinkRefs.current[item.href] = el;
-                  }}
-                  className={cn(
-                    "relative z-[1] flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition-colors",
-                    !active && "hover:bg-[var(--panel-muted)]",
-                  )}
-                  style={{
-                    color: active ? "var(--brand)" : shellPalette.textMuted,
-                  }}
-                >
-                  <Icon size={17} />
-                  {item.label}
-                </Link>
+                <Fragment key={item.href}>
+                  {isChangelog && <div className="my-2 h-px" style={{ backgroundColor: shellPalette.border }} />}
+                  <Link
+                    href={item.href}
+                    ref={(el) => {
+                      navLinkRefs.current[item.href] = el;
+                    }}
+                    className={cn(
+                      "relative z-[1] flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition-colors",
+                      !active && "hover:bg-[var(--panel-muted)]",
+                    )}
+                    style={{
+                      color: active ? "var(--brand)" : shellPalette.textMuted,
+                    }}
+                  >
+                    <Icon size={17} />
+                    {item.label}
+                  </Link>
+                </Fragment>
               );
             })}
           </div>
@@ -2790,7 +2773,7 @@ export function AppShell({
             <div className="grid items-start">
               <div
                 ref={bottomRestContentRef}
-                className="space-y-0.5 border-t pb-3 pt-3"
+                className="border-t pb-3 pt-3"
                 style={{
                   gridArea: "1 / 1",
                   borderColor: shellPalette.border,
@@ -3022,7 +3005,7 @@ export function AppShell({
             </div>
             <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
               <div
-                className="notes-rich text-[15px] leading-7 text-[var(--text-main)]"
+                className="notes-rich text-[13px] leading-5 text-[var(--text-main)]"
                 dangerouslySetInnerHTML={{
                   __html: updateNotesToDisplayHtml(updateNoticeText || "- No update notes provided."),
                 }}

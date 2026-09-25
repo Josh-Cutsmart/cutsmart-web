@@ -191,6 +191,10 @@ body.new-project-open .project-image-nav-arrow {
   margin: 2px 0;
 }
 
+.notes-rich p {
+  margin: 4px 0;
+}
+
 .notes-rich .notes-paragraph-line {
   margin-left: 28px;
 }
