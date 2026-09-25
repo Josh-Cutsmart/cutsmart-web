@@ -1,41 +1,21 @@
-Version: v0.3.6
+Version: v0.3.7
 
 whatsNew: [
-<u><b>Dashboard (Mobile)</b></u>
-* Fixed the pull-down menu appearing mid-scroll — it now only shows up once you're already at the very top of the page
-* Fixed the sidebar's page behind it doing its own separate bounce-back scroll while the sidebar swipes open
-* Fixed dragging into the sidebar also scrolling the page up/down as its own separate motion
-* Fixed the sidebar and page occasionally drifting apart mid-swipe instead of moving together at the same speed
+<u><b>Top Navigation (Mobile)</b></u>
+* Project tabs now only take up as much width as the project name needs, instead of always reserving extra space
+* The pull-down menu now takes over the top bar itself instead of sliding a separate bar over it
+* Pull-down menu options now only highlight with a small bubble around the icon, with the label appearing next to it, instead of lighting up the whole section
 
-<u><b>Reliability</b></u>
-* Fixed the dashboard sometimes getting stuck on "Checking access" and then wrongly showing "you do not have permission"
-* Fixed some pages loading slowly until the whole app was reloaded
-* Fixed opening a project sometimes showing "Project not found" for a project that does exist
-* Fixed a phantom "verify your email" prompt flashing for already-verified accounts, which could also send a real verification email
-* Company Dashboard and Company Settings now support the same company-wide "full access" permission that Clients and Leads already had
-* Added a proper "couldn't load — tap to retry" state instead of getting stuck or showing a misleading error
+<u><b>Production Cutlist (Mobile) — Board Settings</b></u>
+* Redesigned Board Settings: each row now shows a short summary (colour, thickness and finish, or "Board 1" etc. until named) on the left and Sheets / Edgetape counts on the right
+* Tapping a row opens a popup with every board field (Colour, Thickness, Finish, Edging, Grain, Lacquer, Sheet Size), laid out in the same banner style as CNC Cutlist
+* Grain and Lacquer are now toggle switches instead of tickboxes
+* Added a Sheets / Edgetape summary across the bottom of the popup
+* Fixed the popup not blurring the page behind it properly
 
 <u><b>Production Cutlist (Mobile)</b></u>
-* Cutlist List redesigned to match CNC Cutlist: full-width part-type bars tinted with each part type's own colour, grouped by part type instead of board type, every group starts collapsed and slides open/shut when tapped
-* Row list now shows Board, Part Name, Size and Quantity with proper column headers and spacing, matching CNC's layout
-* Tapping a row opens a bigger detail popup laid out the same way as CNC's, tinted with the part type's colour (kept see-through, not solid)
-* Popup fields are now tap-to-edit — tapping a field brings up the keyboard and the popup shifts up so the field stays in view
-* Popup now shows every field, including ones with nothing entered yet, instead of hiding empty ones
-* Cabinetry rows: fixed the popup's Clashing field showing the wrong editor — it now correctly shows the Bottom / Top-Bottom picker, and Fixed Shelf / Adjustable Shelf now edit directly instead of opening the wrong editor
-* Added Cabinet Type (Base/Wall + Full Top) and Fixed/Adjustable Shelf to the popup — previously only editable when first entering the row
-* Grain moved into the same row as Quantity and Clashing, for every part type
-* Cabinet Type now sits below the Shelves fields, above Information
-* Sub parts are no longer offered on mobile
-* Cutlist Entry rows now slide open and closed instead of snapping, and no longer shift position relative to the part-type buttons above them
-* Cutlist Entry rows: removed the border around each row and un-capitalised the part-type titles
-* Fixed text contrast throughout so labels and values stay readable on both light and dark part-type colours
-* Added spacing between each part-type section in the list
+* Fixed selecting the "Door" part type doing nothing — it now shows the same Doors/Drawers picker as desktop and adds the row
 
-<u><b>Initial Measure Cutlist (Mobile) — Sales</b></u>
-* Built a full mobile layout: header, a swipeable Rooms strip (replacing the squeezed sidebar), Cutlist Entry, and Cutlist List
-* Cutlist List and popup match Production Cutlist's new design, including live editing, part-type colour theming, and the same contrast fixes
-
-<u><b>CNC Cutlist (Mobile)</b></u>
-* Popup field headers are no longer in all-caps
-* Fixed an inconsistent bold weight on the Quantity value so it matches the other fields
+<u><b>Reliability</b></u>
+* Fixed the app sometimes reloading unexpectedly when tapping or clicking around quickly
 ]

@@ -87,30 +87,16 @@ export default function RootLayout({
                     localStorage.removeItem("cutsmart_debug_console");
                   }
 
-                  // In-app activation for when there's no address bar to type ?debug=1 into (this
-                  // app runs standalone/PWA on mobile, which hides the URL entirely) — 5 taps
-                  // anywhere on screen within 3 seconds toggles the flag and reloads once, so
-                  // capturing starts from the very top of the next page load either way, same as
-                  // visiting with ?debug=1 directly. Registered unconditionally (before the
-                  // early-return below) so it works to turn the panel OFF again too, and so a
-                  // first-time user can discover it with nothing set up yet.
-                  var tapCount = 0;
-                  var tapResetTimer = null;
-                  document.addEventListener("click", function () {
-                    tapCount += 1;
-                    if (tapResetTimer) clearTimeout(tapResetTimer);
-                    tapResetTimer = setTimeout(function () { tapCount = 0; }, 3000);
-                    if (tapCount >= 5) {
-                      tapCount = 0;
-                      if (localStorage.getItem("cutsmart_debug_console") === "1") {
-                        localStorage.removeItem("cutsmart_debug_console");
-                      } else {
-                        localStorage.setItem("cutsmart_debug_console", "1");
-                      }
-                      window.location.reload();
-                    }
-                  }, true);
-
+                  // NOTE: this used to also support in-app activation via 5 taps anywhere on
+                  // screen within 3 seconds (for when there's no address bar to type ?debug=1
+                  // into, since this app runs standalone/PWA on mobile). Removed — it was a
+                  // global unconditional document-level click counter, so ordinary fast
+                  // clicking/tapping around the app (opening cutlists, hitting textboxes back to
+                  // back, etc.) could rack up 5 clicks within 3 seconds by pure coincidence and
+                  // trigger an unwanted window.location.reload(), which is exactly the "flashes
+                  // off and reloads" bug reported in production. ?debug=1/?debug=0 (above) is the
+                  // only activation path now; reach it via a bookmarked/shared link rather than
+                  // typing into the PWA's own (hidden) address bar.
                   if (localStorage.getItem("cutsmart_debug_console") !== "1") return;
 
                   var logs = [];

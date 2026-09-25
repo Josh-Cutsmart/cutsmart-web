@@ -878,7 +878,7 @@ export function GlobalAppTabsBar() {
                   className={
                     isDesktopViewport
                       ? "group relative inline-flex h-9 min-w-[90px] max-w-[220px] flex-1 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
-                      : "group relative inline-flex h-9 min-w-[140px] max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
+                      : "group relative inline-flex h-9 max-w-[320px] shrink-0 items-center gap-1.5 rounded-[10px] px-3 transition-colors"
                   }
                   onDrop={(event) => handleGroupDrop(group.groupKey, event)}
                   style={{

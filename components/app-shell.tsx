@@ -583,22 +583,44 @@ export function AppShell({
   const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
   const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
   const pullSaveBackZoneRef = useRef<HTMLDivElement | null>(null);
+  // The tab bar this banner fades into (global-app-tabs-bar.tsx, found by its own data-attribute
+  // since that component lives outside this tree — see that file's own mainPushRef for the same
+  // cross-component query pattern in reverse). Resolved once per gesture in onMainTouchStart, not
+  // re-queried every touchmove tick.
+  const pullTopBarElRef = useRef<HTMLElement | null>(null);
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
-  const PULL_ACTION_MAX_PX = 100;
+  // The banner's own visual height now caps at the tab bar's real height (h-12) instead of growing
+  // past it — see the banner JSX's own comment — so it reads as "the tab bar itself becoming the
+  // menu" rather than a taller strip sliding down over it. Arming (below) still tracks the raw,
+  // uncapped drag distance against PULL_ACTION_THRESHOLD_PX, same as before — only the VISUAL cap
+  // changed, not how far you actually have to pull to trigger the action.
+  const PULL_BANNER_HEIGHT_PX = 48;
   const applyPullZoneStyles = (selected: PullZone, armed: boolean) => {
     const zones: Array<[PullZone, HTMLDivElement | null]> = [
       ["reload", pullReloadZoneRef.current],
       ["dashboard", pullDashboardZoneRef.current],
       ["saveBack", pullSaveBackZoneRef.current],
     ];
-    const activeStyle = armed
+    // Targets only the small icon "bubble" inside each zone (data-pull-bubble) — the zone itself
+    // (flex-1, one third of the bar's width) never gets a background of its own anymore. The label
+    // (data-pull-label) is hidden (icon-only) except on the selected zone, where it fades/widens in.
+    const activeBubbleStyle = armed
       ? { backgroundImage: "var(--brand-gradient)", backgroundColor: "", color: "#FFFFFF" }
       : { backgroundImage: "none", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" };
-    const inactiveStyle = { backgroundImage: "none", backgroundColor: "transparent", color: "var(--text-muted)" };
+    const inactiveBubbleStyle = { backgroundImage: "none", backgroundColor: "transparent", color: "var(--text-muted)" };
     for (const [zone, el] of zones) {
-      if (el) Object.assign(el.style, zone === selected ? activeStyle : inactiveStyle);
+      if (!el) continue;
+      const isSelected = zone === selected;
+      const bubble = el.querySelector<HTMLElement>("[data-pull-bubble]");
+      const label = el.querySelector<HTMLElement>("[data-pull-label]");
+      if (bubble) Object.assign(bubble.style, isSelected ? activeBubbleStyle : inactiveBubbleStyle);
+      if (label) {
+        label.style.opacity = isSelected ? "1" : "0";
+        label.style.maxWidth = isSelected ? "90px" : "0px";
+        label.style.marginLeft = isSelected ? "8px" : "0px";
+      }
     }
   };
   // Previously also pushed the top tab bar (`top`) and the page content (`margin-top`) down by
@@ -617,6 +639,12 @@ export function AppShell({
     if (banner) {
       banner.style.transition = animate ? `height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
       banner.style.height = "0px";
+    }
+    const topBarEl = pullTopBarElRef.current;
+    if (topBarEl) {
+      topBarEl.style.transition = animate ? `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
+      topBarEl.style.opacity = "1";
+      topBarEl.style.pointerEvents = "";
     }
     applyPullZoneStyles("dashboard", false);
   };
@@ -665,6 +693,8 @@ export function AppShell({
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0 && !hasScrolledAncestor;
     if (alreadyAtTop && mobileTopBarEnabled) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
+      pullTopBarElRef.current =
+        typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar="true"]') : null;
     } else {
       pullDashboardRef.current = null;
     }
@@ -734,9 +764,12 @@ export function AppShell({
     // 1:1 with the finger (no damping) up to a fixed max height — the banner is the only thing
     // that moves at all now (see its own comment), so there's nothing for a 1:1 rate to feel out
     // of step with; the cap just keeps the reveal from growing indefinitely as the finger keeps
-    // dragging past it.
-    const pulled = Math.min(dy, PULL_ACTION_MAX_PX);
-    pull.armed = pulled >= PULL_ACTION_THRESHOLD_PX;
+    // dragging past it. Arming is checked against the RAW, uncapped drag distance (dy), not this
+    // capped value — the visual cap only stops the banner's own height at the tab bar's real
+    // height (see PULL_BANNER_HEIGHT_PX's own comment), it must not also make the threshold
+    // unreachable now that the cap (48) sits below the threshold (70).
+    const pulled = Math.min(dy, PULL_BANNER_HEIGHT_PX);
+    pull.armed = dy >= PULL_ACTION_THRESHOLD_PX;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
     pull.selected = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
@@ -744,6 +777,15 @@ export function AppShell({
     if (banner) {
       banner.style.transition = "none";
       banner.style.height = `${pulled}px`;
+    }
+    // The tab bar fades out exactly as fast as the banner fills its place, so at pulled===
+    // PULL_BANNER_HEIGHT_PX the tab bar is fully gone and the banner (now the same height) has
+    // fully taken over the same strip — reads as one bar changing content, not two stacked bars.
+    const topBarEl = pullTopBarElRef.current;
+    if (topBarEl) {
+      topBarEl.style.transition = "none";
+      topBarEl.style.opacity = String(Math.max(0, 1 - pulled / PULL_BANNER_HEIGHT_PX));
+      topBarEl.style.pointerEvents = "none";
     }
     applyPullZoneStyles(pull.selected, pull.armed);
   };
@@ -2696,7 +2738,15 @@ export function AppShell({
           it should visually read as sliding out from above/in front of the tab bar as it grows,
           not emerging from underneath it. A solid background (not just the individual zones',
           which are transparent at rest) is what keeps the page from showing through underneath
-          while it's mid-grow. */}
+          while it's mid-grow.
+          The banner's own height now caps at PULL_BANNER_HEIGHT_PX (48px, the tab bar's own h-12)
+          instead of growing taller than it, and the tab bar itself (queried by data-app-top-bar,
+          see onMainTouchStart/onMainTouchMove) fades its opacity to 0 in lockstep as this banner
+          fills that same 48px strip — together they read as the SAME bar swapping its content, not
+          a second bar sliding down over the first. Each zone below no longer colors its own
+          background (that was "the whole section highlights"); only the small icon "bubble"
+          (data-pull-bubble) does, and its text label (data-pull-label) stays width/opacity-0
+          (icon-only) except on the selected zone, where applyPullZoneStyles reveals it. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
@@ -2704,29 +2754,53 @@ export function AppShell({
           className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
           style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)", backgroundColor: "var(--panel-bg)" }}
         >
-          <div
-            ref={pullReloadZoneRef}
-            className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
-            style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-          >
-            <RefreshCw size={16} />
-            Reload
+          <div ref={pullReloadZoneRef} className="flex flex-1 items-center justify-center">
+            <div
+              data-pull-bubble="true"
+              className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
+              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
+            >
+              <RefreshCw size={16} className="shrink-0" />
+              <span
+                data-pull-label="true"
+                className="overflow-hidden whitespace-nowrap transition-all"
+                style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
+              >
+                Reload
+              </span>
+            </div>
           </div>
-          <div
-            ref={pullDashboardZoneRef}
-            className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
-            style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
-          >
-            <LayoutDashboard size={16} />
-            Dashboard
+          <div ref={pullDashboardZoneRef} className="flex flex-1 items-center justify-center">
+            <div
+              data-pull-bubble="true"
+              className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
+              style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
+            >
+              <LayoutDashboard size={16} className="shrink-0" />
+              <span
+                data-pull-label="true"
+                className="overflow-hidden whitespace-nowrap transition-all"
+                style={{ opacity: 1, maxWidth: 90, marginLeft: 8, transitionDuration: "150ms" }}
+              >
+                Dashboard
+              </span>
+            </div>
           </div>
-          <div
-            ref={pullSaveBackZoneRef}
-            className="flex flex-1 items-center justify-center gap-2 text-[13px] font-bold"
-            style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-          >
-            <Save size={16} />
-            Save & Back
+          <div ref={pullSaveBackZoneRef} className="flex flex-1 items-center justify-center">
+            <div
+              data-pull-bubble="true"
+              className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
+              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
+            >
+              <Save size={16} className="shrink-0" />
+              <span
+                data-pull-label="true"
+                className="overflow-hidden whitespace-nowrap transition-all"
+                style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
+              >
+                Save & Back
+              </span>
+            </div>
           </div>
         </div>
       )}

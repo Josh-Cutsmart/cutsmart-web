@@ -1643,11 +1643,16 @@ function QuoteExtraToggleSwitch({
   checked,
   onChange,
   disabled,
+  size = "default",
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  // "large" matches the h-9 control height used by the board popup's dropdowns/inputs — the
+  // default stays untouched everywhere else (e.g. the Sales Room "included" toggle).
+  size?: "default" | "large";
 }) {
+  const isLarge = size === "large";
   return (
     <button
       type="button"
@@ -1655,15 +1660,15 @@ function QuoteExtraToggleSwitch({
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50"
+      className={`relative inline-flex shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 ${isLarge ? "h-9 w-16" : "h-5 w-9"}`}
       style={{
         borderColor: checked ? "var(--brand-strong)" : "var(--glass-border)",
         backgroundColor: checked ? "var(--brand-strong)" : "var(--panel-muted)",
       }}
     >
       <span
-        className="inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform"
-        style={{ transform: checked ? "translateX(18px)" : "translateX(2px)" }}
+        className={`inline-block rounded-full bg-white shadow transition-transform ${isLarge ? "h-7 w-7" : "h-3.5 w-3.5"}`}
+        style={{ transform: checked ? (isLarge ? "translateX(32px)" : "translateX(18px)") : (isLarge ? "translateX(4px)" : "translateX(2px)") }}
       />
     </button>
   );
@@ -37627,6 +37632,147 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 })()}
               </div>
             </div>
+            {/* Mobile-only copy of the desktop "Doors or Drawers?" picker below (same
+                state/refs/handlers) — previously only rendered inside the desktop return, so
+                tapping a Door part-type button on mobile flipped doorDrawerPickerPartType open
+                but drew nothing, and the handler's own early `return` meant no row ever got
+                added. Safe to duplicate: it's a self-contained createPortal(..., document.body)
+                block with its own fixed positioning anchored to the tapped button's origin, and
+                the mobile/desktop returns never render at the same time. */}
+            {shouldRenderDoorDrawerPickerModal && typeof document !== "undefined"
+              ? createPortal(
+                  (() => {
+                    const closeDoorDrawerPicker = () => {
+                      setDoorDrawerPickerPartType("");
+                      setDoorDrawerPickerMainRowId("");
+                      setDoorDrawerPickerSuggestedMode("");
+                    };
+                    const confirmDrawerCount = () => {
+                      const count = Number.parseInt(drawerBankCountDraft, 10) || 1;
+                      if (doorDrawerPickerMainRowId) {
+                        addCabinetDrawerBankSubPartDraftRow(doorDrawerPickerMainRowId, doorDrawerPickerPartType, count);
+                      } else {
+                        addDrawerFrontsDraftRow(doorDrawerPickerPartType, count);
+                      }
+                      closeDoorDrawerPicker();
+                    };
+                    // Anchored dropdown-style popover instead of a centered modal: pins
+                    // to the left edge of the tapped part-type button and drops down
+                    // below it, opening OVER the row beneath rather than the whole screen.
+                    const panelWidth = 220;
+                    const anchor = doorDrawerPickerOrigin;
+                    const viewportW = typeof window !== "undefined" ? window.innerWidth : panelWidth + 24;
+                    const panelLeft = anchor ? Math.min(Math.max(anchor.left, 12), viewportW - panelWidth - 12) : 12;
+                    const panelTop = anchor ? anchor.top + anchor.height + 10 : 12;
+                    return (
+                      <div className="fixed inset-0" style={{ zIndex: 2147483647 }}>
+                        <button
+                          type="button"
+                          aria-label="Close doors or drawers picker"
+                          onClick={closeDoorDrawerPicker}
+                          className="absolute inset-0"
+                          style={{ background: "transparent" }}
+                        />
+                        <div
+                          ref={doorDrawerPickerPanelRef}
+                          className="glass-modal-panel absolute flex max-h-[60vh] flex-col overflow-hidden"
+                          style={{
+                            left: panelLeft,
+                            top: panelTop,
+                            width: panelWidth,
+                            maxWidth: "calc(100vw - 24px)",
+                            zIndex: 2147483647,
+                          }}
+                        >
+                          <div className="glass-scroll min-h-0 flex-1 overflow-auto px-4 py-3">
+                            {doorDrawerPickerStep === "drawerCount" ? (
+                              <div className="space-y-2">
+                                <div className="mx-auto flex w-fit items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDrawerBankCountDraft(String(Math.max(1, (Number.parseInt(drawerBankCountDraft, 10) || 0) - 1)))
+                                    }
+                                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border text-[14px] font-bold text-white hover:brightness-95"
+                                    style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+                                    title="Decrease"
+                                  >
+                                    −
+                                  </button>
+                                  <input
+                                    autoFocus
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    value={drawerBankCountDraft}
+                                    onChange={(e) => setDrawerBankCountDraft(numericOnlyText(e.target.value))}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") confirmDrawerCount();
+                                    }}
+                                    className="h-9 w-16 rounded-[8px] border bg-transparent text-center text-[13px] font-bold"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setDrawerBankCountDraft(String((Number.parseInt(drawerBankCountDraft, 10) || 0) + 1))}
+                                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border text-[14px] font-bold text-white hover:brightness-95"
+                                    style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+                                    title="Increase"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={confirmDrawerCount}
+                                  disabled={(Number.parseInt(drawerBankCountDraft, 10) || 0) < 1}
+                                  className="inline-flex h-9 w-full items-center justify-center rounded-[8px] border text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                                >
+                                  Add {drawerBankCountDraft || ""} Drawer{drawerBankCountDraft === "1" ? "" : "s"}
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (doorDrawerPickerMainRowId) {
+                                      addSubPartDraftRow(doorDrawerPickerMainRowId, doorDrawerPickerPartType);
+                                    } else {
+                                      addDraftRowForPartType(doorDrawerPickerPartType);
+                                    }
+                                    closeDoorDrawerPicker();
+                                  }}
+                                  className="inline-flex h-9 w-full items-center justify-center rounded-[8px] border text-[12px] font-bold hover:brightness-95"
+                                  style={
+                                    doorDrawerPickerSuggestedMode === "door"
+                                      ? { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                                      : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }
+                                  }
+                                >
+                                  Doors
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDrawerBankCountDraft("3");
+                                    setDoorDrawerPickerStep("drawerCount");
+                                  }}
+                                  className="inline-flex h-9 w-full items-center justify-center rounded-[8px] border text-[12px] font-bold hover:brightness-95"
+                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                >
+                                  Drawers
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })(),
+                  document.body,
+                )
+              : null}
           </div>
         </ProtectedRoute>
       );
@@ -50118,7 +50264,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   backgroundColor: projectPalette.panelMuted,
                                 }}
                               >
-                                <p className="min-w-0 truncate text-[12px] font-bold tracking-[0.7px]" style={{ color: "#000000" }}>
+                                <p className="min-w-0 truncate text-[12px] font-medium tracking-[0.7px]" style={{ color: "var(--text-main)" }}>
                                   {row.colour
                                     ? [row.colour, row.thickness ? `${row.thickness} mm` : "", row.finish].filter(Boolean).join(" ")
                                     : `Board ${rowIndex + 1}`}
@@ -50342,18 +50488,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     );
                                   })()}
                               </div>
-                              <input
-                                disabled={productionReadOnly}
-                                type="checkbox"
-                                checked={row.grain}
-                                onChange={(e) => void onBoardFieldCommit(row.id, { grain: e.target.checked })}
-                              />
-                              <input
-                                disabled={productionReadOnly}
-                                type="checkbox"
-                                checked={row.lacquer}
-                                onChange={(e) => void onBoardFieldCommit(row.id, { lacquer: e.target.checked })}
-                              />
+                              <div className="flex justify-center">
+                                <QuoteExtraToggleSwitch
+                                  disabled={productionReadOnly}
+                                  checked={row.grain}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
+                                />
+                              </div>
+                              <div className="flex justify-center">
+                                <QuoteExtraToggleSwitch
+                                  disabled={productionReadOnly}
+                                  checked={row.lacquer}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
+                                />
+                              </div>
                               <GlassSelectDropdown
                                 fullWidth
                                 noTruncate
@@ -50428,6 +50576,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   const rowIndex = productionForm.boardTypes.findIndex((r) => r.id === boardRowDetailId);
                   const row = productionForm.boardTypes[rowIndex];
                   if (!row) return null;
+                  const requiredSheets = requiredSheetCountByBoardRowId[row.id] ?? 0;
+                  const requiredEdgetape = requiredEdgetapeByBoardRowId[row.id] ?? row.edgetape;
                   const closeBoardRowDetail = () => setIsBoardRowDetailOpen(false);
                   // Same flat colours as the CNC Cutlist mobile popup (shouldRenderCncMobileRowDetail) —
                   // no per-item theming, just the default glass panel with black text and a light grey banner bar.
@@ -50688,22 +50838,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <p className={detailLabel} style={{ color: "#000000" }}>Sheet Size</p>
                             </div>
                             <div className="grid grid-cols-3 gap-4 px-3 pt-1.5">
-                              <label className="flex h-9 items-center justify-center rounded-[8px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
-                                <input
+                              <div className="flex h-9 items-center justify-center">
+                                <QuoteExtraToggleSwitch
+                                  size="large"
                                   disabled={productionReadOnly}
-                                  type="checkbox"
                                   checked={row.grain}
-                                  onChange={(e) => void onBoardFieldCommit(row.id, { grain: e.target.checked })}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { grain: checked })}
                                 />
-                              </label>
-                              <label className="flex h-9 items-center justify-center rounded-[8px] border" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}>
-                                <input
+                              </div>
+                              <div className="flex h-9 items-center justify-center">
+                                <QuoteExtraToggleSwitch
+                                  size="large"
                                   disabled={productionReadOnly}
-                                  type="checkbox"
                                   checked={row.lacquer}
-                                  onChange={(e) => void onBoardFieldCommit(row.id, { lacquer: e.target.checked })}
+                                  onChange={(checked) => void onBoardFieldCommit(row.id, { lacquer: checked })}
                                 />
-                              </label>
+                              </div>
                               <GlassSelectDropdown
                                 fullWidth
                                 noTruncate
@@ -50714,6 +50864,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 className="h-9 rounded-[8px] border px-2 text-[12px]"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
                               />
+                            </div>
+                          </div>
+                          <div className="grid shrink-0 grid-cols-2 gap-[5px] px-[5px] pb-[5px]">
+                            <div className="flex flex-col items-center">
+                              <p className="pb-1.5 pt-3 text-[12px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>Sheets</p>
+                              <div
+                                className="flex w-full flex-1 items-center justify-center rounded-[15px] py-3 text-white"
+                                style={{ backgroundImage: "var(--success-gradient)" }}
+                              >
+                                <p className="text-[18px] font-medium leading-none" style={{ color: "#FFFFFF" }}>{requiredSheets}</p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-center">
+                              <p className="pb-1.5 pt-3 text-[12px] font-bold uppercase tracking-[0.6px]" style={{ color: "#000000" }}>Edgetape</p>
+                              <div
+                                className="flex w-full flex-1 items-center justify-center rounded-[15px] py-3 text-white"
+                                style={{ backgroundImage: "var(--brand-gradient)" }}
+                              >
+                                <p className="text-[18px] font-medium leading-none" style={{ color: "#FFFFFF" }}>{requiredEdgetape}</p>
+                              </div>
                             </div>
                           </div>
                         </div>
