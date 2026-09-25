@@ -1,6 +1,44 @@
-Version: v0.3.9
+Version: v0.4.0
 
 whatsNew: [
-<u><b>Leads (Mobile)</b></u>
-* Press and hold a lead card to pick it up and drag it into a different status column — no more text-selection highlight getting in the way, just a clean long-press pickup, the same fix already applied to the mobile tab bar
+<u><b>Top Navigation (Mobile)</b></u>
+<ul>
+<li>Tap and hold a project tab to <b>pick it up</b> and drag it into a new position — no more highlight flash, just a clean long-press pickup</li>
+<li>Pulldown menu improvements:
+  <ul>
+  <li>The tab bar itself now <b>fades into the menu</b> and back, instead of a second bar sliding down over it</li>
+  <li>Can now be pulled taller, with bigger icons</li>
+  <li>The selected option only activates once it's been pulled <u>all the way out</u>, not partway through the drag</li>
+  <li>Fixed the page occasionally bouncing on its own, separately from the menu</li>
+  </ul>
+</li>
+</ul>
+
+<u><b>Project Details</b></u>
+<ul>
+<li>The project name can now be renamed directly from the project page:
+  <ul>
+  <li><b>Desktop:</b> hover the name to reveal a pencil, click it to edit</li>
+  <li><b>Mobile:</b> tap the name directly to edit</li>
+  </ul>
+</li>
+<li>Saves on <b>Enter</b> or clicking/tapping away, and updates everywhere the name is shown</li>
+</ul>
+
+<u><b>Leads</b></u>
+<ul>
+<li>Converting a lead into a project now builds the suggested project name from the <b>"Client Name"</b> and <b>"Client Last Name"</b> fields mapped in Customise, combined in that order — more reliable than guessing a surname from a single name field</li>
+<li><u>Mobile:</u> press and hold a lead card to pick it up and drag it into a different status column
+  <ul>
+  <li>No more text-selection highlight getting in the way — just a clean long-press pickup</li>
+  <li>Same fix already applied to the mobile tab bar</li>
+  </ul>
+</li>
+</ul>
+
+<u><b>Notifications</b></u>
+<ul>
+<li>Removed the old Notifications section from Company Settings</li>
+<li><b>"New App Version"</b> notifications are now a single clean line, and clicking one jumps straight to that version here in the Changelog</li>
+</ul>
 ]
