@@ -946,7 +946,12 @@ export function GlobalAppTabsBar() {
           className="pointer-events-none absolute inset-x-0 bottom-0 h-px"
           style={{ backgroundColor: "var(--glass-border)" }}
         />
-        <div ref={appTabsMenuRef} className="relative flex h-full items-center gap-1.5">
+        {/* data-app-top-bar-content, separate from the outer bar's own data-app-top-bar — the
+            pulldown gesture (app-shell.tsx) fades THIS (hamburger/tabs/bell) out while leaving
+            the outer bar's own background/blur/border fully visible and growing its height, so
+            the persistent bar surface never disappears — only its content swaps out for the
+            pulldown menu's own icons, which fade in on top of the same bar. */}
+        <div ref={appTabsMenuRef} data-app-top-bar-content="true" className="relative flex h-full items-center gap-1.5">
           {/* Mobile-only — this bar is now the ONLY sticky header on phones (the separate
               hamburger/logo header app-shell.tsx used to render below it was removed), so the
               menu button that used to live there is folded in here instead, at the same leading

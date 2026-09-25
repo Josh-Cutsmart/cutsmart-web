@@ -438,24 +438,37 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
-/* The pulldown menu's (app-shell.tsx) traveling zone-select pill — stretches into a capsule
- * spanning both the departing and arriving icon (45%), then contracts back down onto just the
- * arriving one (100%). left/width/--pull-* custom properties are all set inline by JS right
- * before this is (re)triggered, since the departure/arrival positions are measured live and vary
- * with screen width — see triggerPullBubbleTravel in app-shell.tsx.
+/* The pulldown menu's (app-shell.tsx) traveling zone-select pill — a shrink → travel small →
+ * expand sequence: full icon size at the departure point (0%), shrinks to a small droplet just
+ * after leaving it (30%), travels most of the way there still small (70%), then expands back to
+ * full size landing on the arrival icon (100%). All four --pull-p0.. --pull-p3 rects are set
+ * inline by JS right before this is (re)triggered, since the departure/arrival positions are
+ * measured live and vary with screen width — see triggerPullBubbleTravel in app-shell.tsx.
  */
 @keyframes pull-bubble-travel {
   0% {
-    left: var(--pull-from-left);
-    width: var(--pull-from-width);
+    left: var(--pull-p0-left);
+    top: var(--pull-p0-top);
+    width: var(--pull-p0-width);
+    height: var(--pull-p0-height);
   }
-  45% {
-    left: var(--pull-stretch-left);
-    width: var(--pull-stretch-width);
+  30% {
+    left: var(--pull-p1-left);
+    top: var(--pull-p1-top);
+    width: var(--pull-p1-width);
+    height: var(--pull-p1-height);
+  }
+  70% {
+    left: var(--pull-p2-left);
+    top: var(--pull-p2-top);
+    width: var(--pull-p2-width);
+    height: var(--pull-p2-height);
   }
   100% {
-    left: var(--pull-to-left);
-    width: var(--pull-to-width);
+    left: var(--pull-p3-left);
+    top: var(--pull-p3-top);
+    width: var(--pull-p3-width);
+    height: var(--pull-p3-height);
   }
 }
 

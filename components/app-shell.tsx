@@ -583,37 +583,49 @@ export function AppShell({
   const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
   const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
   const pullSaveBackZoneRef = useRef<HTMLDivElement | null>(null);
-  // The tab bar this banner crossfades with (global-app-tabs-bar.tsx, found by its own data-
-  // attribute since that component lives outside this tree — see that file's own mainPushRef for
-  // the same cross-component query pattern in reverse). Resolved once per gesture in
-  // onMainTouchStart, not re-queried every touchmove tick.
+  // The real tab bar (global-app-tabs-bar.tsx) is now the ONE persistent bar surface — its
+  // background/blur/border never fade and never disappear, only its CONTENT does (see
+  // data-app-top-bar-content, separate from the outer data-app-top-bar div). This banner has no
+  // background of its own anymore; it just holds the pulldown menu's icons, which fade IN over the
+  // exact same surface as the tab bar's own content fades OUT — one bar, swapping what's drawn on
+  // it, rather than two bars with two different backgrounds crossfading into each other. Both refs
+  // resolved once per gesture in onMainTouchStart, not re-queried every touchmove tick.
   const pullTopBarElRef = useRef<HTMLElement | null>(null);
+  const pullTopBarContentElRef = useRef<HTMLElement | null>(null);
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
-  // The banner sits at a FIXED height matching the tab bar's own (h-12) at all times — it never
-  // grows/shrinks. Pulling down only ever changes its OPACITY (0 at rest, up to 1 fully pulled),
-  // with the real tab bar's opacity doing the exact inverse over the same distance — see the
-  // banner JSX's own comment for why a height animation reads as "a second bar sliding down" no
-  // matter how well its fade is synced, while two things crossfading inside the one unmoving box
-  // reads as the SAME bar changing its own content.
-  const PULL_BANNER_HEIGHT_PX = 48;
-  // How far the finger has to travel for the tab-bar/menu crossfade to go 0 → 1 — deliberately
-  // SHORT. The bubble-travel animation below is a fixed-duration CSS animation triggered whenever
-  // the selected zone changes (driven by horizontal finger position, not vertical drag distance),
-  // so it doesn't need a long drag to "have room to play out" — it plays the same either way. What
-  // DOES need to be short is this: the tab bar should be gone and the pulldown menu fully in place
-  // almost the instant you start pulling, not gradually over a long drag — "the pulldown menu
-  // takes over" rather than the tabs lingering while a new bar creeps in underneath.
+  // The bar's resting height (matches the tab bar's own h-12) and how tall it can grow if you keep
+  // pulling past that — "it should be able to stretch higher, not stop at the tab bar's own
+  // height." Both the real tab bar's outer div AND this banner are set to the SAME live height
+  // every touchmove tick (see onMainTouchMove) so they stay perfectly overlaid as one surface
+  // while it grows, instead of just this banner growing underneath/behind a still-48px tab bar.
+  const PULL_BANNER_MIN_HEIGHT_PX = 48;
+  const PULL_BANNER_MAX_HEIGHT_PX = 108;
+  const PULL_HEIGHT_GROW_DISTANCE_PX = 160;
+  // How far the finger has to travel for the tab-bar-content/pulldown-icons crossfade to go 0 → 1
+  // — deliberately SHORT, independent of the (longer) height-grow distance above. The bubble-travel
+  // animation is a fixed-duration CSS animation triggered whenever the selected zone changes
+  // (driven by horizontal finger position, not vertical drag distance), so it doesn't need a long
+  // drag to "have room to play out" — it plays the same either way. What DOES need to be short is
+  // this: the tab bar's own content should be gone and the pulldown icons fully in place almost the
+  // instant you start pulling, not gradually over a long drag.
   const PULL_FADE_DISTANCE_PX = 22;
   // A single shared pill that lives at whichever zone is currently selected — not three pills, one
-  // per zone. Switching zones animates this ONE element's left/width via the pull-bubble-travel
-  // keyframes (globals.css): it stretches into a capsule spanning BOTH the departing and arriving
-  // icon, then contracts back down onto just the arriving one — the same two-phase "stretch off
-  // one, land on the next" motion Chrome's own pull-menu uses, not a flat slide or a plain crossfade.
+  // per zone. Switching zones animates this ONE element's left/top/width/height (the
+  // pull-bubble-travel keyframes, globals.css) through a shrink → travel small → expand sequence:
+  // full icon size at the departure point, shrinks down to a small droplet just after leaving it,
+  // travels most of the way there small, then expands back to full size landing on the arrival
+  // icon. That shrink-while-traveling (rather than staying full-size, or stretching into one big
+  // capsule spanning both icons) is what reads as an actual drop of liquid pulling free and
+  // landing, not a rigid shape sliding or stretching between two points.
   const pullActivePillRef = useRef<HTMLDivElement | null>(null);
   const pullPrevSelectedRef = useRef<PullZone>("dashboard");
-  const PULL_TRAVEL_DURATION_MS = 300;
+  const PULL_TRAVEL_DURATION_MS = 190;
+  // Guards syncPullPillVertical (called every touchmove tick to keep the pill glued to its icon as
+  // the bar keeps growing taller) from fighting an in-flight travel animation — while one's
+  // playing, the keyframes own left/top/width/height; the sync resumes once it's landed.
+  const pullTravelInFlightRef = useRef(false);
   const pullZoneRefByKey: Record<PullZone, React.RefObject<HTMLDivElement | null>> = {
     reload: pullReloadZoneRef,
     dashboard: pullDashboardZoneRef,
@@ -637,48 +649,72 @@ export function AppShell({
     const iconRect = icon.getBoundingClientRect();
     return { left: iconRect.left - containerRect.left, top: iconRect.top - containerRect.top, width: iconRect.width, height: iconRect.height };
   };
+  const setPillRect = (
+    pill: HTMLDivElement,
+    rect: { left: number; top: number; width: number; height: number },
+  ) => {
+    pill.style.left = `${rect.left}px`;
+    pill.style.top = `${rect.top}px`;
+    pill.style.width = `${rect.width}px`;
+    pill.style.height = `${rect.height}px`;
+  };
   const snapPullPillToZone = (zone: PullZone, armed: boolean) => {
     const pill = pullActivePillRef.current;
     const rect = pullIconRectRelativeToContainer(zone);
     if (!pill || !rect) return;
     pill.style.animation = "none";
-    pill.style.left = `${rect.left}px`;
-    pill.style.top = `${rect.top}px`;
-    pill.style.width = `${rect.width}px`;
-    pill.style.height = `${rect.height}px`;
+    setPillRect(pill, rect);
     Object.assign(pill.style, pullPillColorFor(armed));
+  };
+  // Keeps the pill glued to the SELECTED zone's icon as the bar's own height grows over the course
+  // of the drag — without this, the icon (re-centered by the growing bar's flex layout) would
+  // drift away from the pill, which only otherwise moves when triggerPullBubbleTravel fires.
+  const syncPullPillVertical = (selected: PullZone) => {
+    if (pullTravelInFlightRef.current) return;
+    const pill = pullActivePillRef.current;
+    const rect = pullIconRectRelativeToContainer(selected);
+    if (!pill || !rect) return;
+    setPillRect(pill, rect);
   };
   const triggerPullBubbleTravel = (fromZone: PullZone, toZone: PullZone, armed: boolean) => {
     const pill = pullActivePillRef.current;
     const fromRect = pullIconRectRelativeToContainer(fromZone);
     const toRect = pullIconRectRelativeToContainer(toZone);
     if (!pill || !fromRect || !toRect) return;
-    const stretchLeft = Math.min(fromRect.left, toRect.left);
-    const stretchWidth = Math.abs(toRect.left - fromRect.left) + toRect.width;
-    // All three zones sit in the same row, so top/height don't actually change between them — set
-    // directly (not animated) rather than adding two more keyframe properties for values that are
-    // always constant in practice.
-    pill.style.top = `${toRect.top}px`;
-    pill.style.height = `${toRect.height}px`;
-    pill.style.setProperty("--pull-from-left", `${fromRect.left}px`);
-    pill.style.setProperty("--pull-from-width", `${fromRect.width}px`);
-    pill.style.setProperty("--pull-stretch-left", `${stretchLeft}px`);
-    pill.style.setProperty("--pull-stretch-width", `${stretchWidth}px`);
-    pill.style.setProperty("--pull-to-left", `${toRect.left}px`);
-    pill.style.setProperty("--pull-to-width", `${toRect.width}px`);
+    const fromCenterX = fromRect.left + fromRect.width / 2;
+    const toCenterX = toRect.left + toRect.width / 2;
+    const centerY = fromRect.top + fromRect.height / 2;
+    // A small droplet, noticeably smaller than the icon itself ("make it go smaller where it
+    // pulls off") — shrinks to this size right after leaving, travels most of the way there at
+    // this size, then expands back out to the full icon size landing on the destination.
+    const dropSize = Math.min(fromRect.height, toRect.height) * 0.5;
+    const lerpX = (t: number) => fromCenterX + (toCenterX - fromCenterX) * t;
+    const shrunkNearFrom = { left: lerpX(0.16) - dropSize / 2, top: centerY - dropSize / 2, width: dropSize, height: dropSize };
+    const shrunkNearTo = { left: lerpX(0.8) - dropSize / 2, top: centerY - dropSize / 2, width: dropSize, height: dropSize };
+    const setVars = (prefix: string, rect: { left: number; top: number; width: number; height: number }) => {
+      pill.style.setProperty(`--pull-${prefix}-left`, `${rect.left}px`);
+      pill.style.setProperty(`--pull-${prefix}-top`, `${rect.top}px`);
+      pill.style.setProperty(`--pull-${prefix}-width`, `${rect.width}px`);
+      pill.style.setProperty(`--pull-${prefix}-height`, `${rect.height}px`);
+    };
+    setVars("p0", fromRect);
+    setVars("p1", shrunkNearFrom);
+    setVars("p2", shrunkNearTo);
+    setVars("p3", toRect);
     Object.assign(pill.style, pullPillColorFor(armed));
     // Restart the keyframe animation even if one from a previous zone change is still mid-flight —
     // just reassigning `animation` doesn't restart it if the value is unchanged, so it's cleared
     // and the layout is forced to flush (reading offsetWidth) before reapplying it.
+    pullTravelInFlightRef.current = true;
     pill.style.animation = "none";
     void pill.offsetWidth;
-    pill.style.animation = `pull-bubble-travel ${PULL_TRAVEL_DURATION_MS}ms cubic-bezier(0.3, 0, 0.2, 1) forwards`;
+    pill.style.animation = `pull-bubble-travel ${PULL_TRAVEL_DURATION_MS}ms cubic-bezier(0.4, 0, 0.2, 1) forwards`;
     window.setTimeout(() => {
+      pullTravelInFlightRef.current = false;
       const el = pullActivePillRef.current;
       if (el === pill) {
         el.style.animation = "none";
-        el.style.left = `${toRect.left}px`;
-        el.style.width = `${toRect.width}px`;
+        setPillRect(el, toRect);
       }
     }, PULL_TRAVEL_DURATION_MS);
   };
@@ -710,29 +746,35 @@ export function AppShell({
     }
   };
   // Previously pushed the top tab bar (`top`) and the page content (`margin-top`) down by the same
-  // pixel amount every touchmove tick, so the whole page read as sliding down to reveal a banner
-  // growing in height underneath. On-device, those independent style writes on different elements
-  // kept visibly drifting out of sync with each other — a real, repeated regression no amount of
-  // same-tick/same-reflow-category writes fully closed. A later attempt kept the growing-height
-  // banner but faded the tab bar underneath it in sync — but a box that GROWS still reads as a new
-  // thing arriving, however well its fade is timed. The tab bar and the page underneath now never
-  // move OR resize at all: the banner sits fixed at the tab bar's own height the whole time (see
-  // PULL_BANNER_HEIGHT_PX), and pulling down only crossfades the banner's opacity up from 0 against
-  // the tab bar's opacity going down from 1 — the one unmoving 48px strip just swaps its own
-  // content, instead of anything sliding, growing, or overlapping.
+  // pixel amount every touchmove tick, so the whole page read as sliding down to reveal a SEPARATE
+  // banner growing in height underneath — a box that GROWS while everything else stays still reads
+  // as a new thing arriving, however well any fade layered on top of it is timed. The tab bar is
+  // now the ONE persistent bar: its own outer div (data-app-top-bar) never fades and is what
+  // actually grows taller as you pull, while only its inner CONTENT (data-app-top-bar-content —
+  // hamburger/tabs/bell) fades out. This banner has no background of its own; it mirrors the SAME
+  // live height every tick (see onMainTouchMove) so its icons sit inside that same growing surface,
+  // and only ITS opacity (the icons fading in) moves. One bar, changing both its size and its
+  // content, never two things sliding/growing past each other.
   const PULL_BANNER_RESET_DURATION_MS = 200;
   const resetPullBanner = (animate: boolean) => {
+    const transition = animate ? `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease, height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
     const banner = pullBannerRef.current;
     if (banner) {
-      banner.style.transition = animate ? `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
+      banner.style.transition = transition;
       banner.style.opacity = "0";
+      banner.style.height = `${PULL_BANNER_MIN_HEIGHT_PX}px`;
       banner.style.pointerEvents = "none";
     }
     const topBarEl = pullTopBarElRef.current;
     if (topBarEl) {
-      topBarEl.style.transition = animate ? `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
-      topBarEl.style.opacity = "1";
-      topBarEl.style.pointerEvents = "";
+      topBarEl.style.transition = animate ? `height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
+      topBarEl.style.height = "";
+    }
+    const topBarContentEl = pullTopBarContentElRef.current;
+    if (topBarContentEl) {
+      topBarContentEl.style.transition = animate ? `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
+      topBarContentEl.style.opacity = "1";
+      topBarContentEl.style.pointerEvents = "";
     }
     applyPullZoneStyles("dashboard", false);
   };
@@ -783,6 +825,8 @@ export function AppShell({
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
       pullTopBarElRef.current =
         typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar="true"]') : null;
+      pullTopBarContentElRef.current =
+        typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar-content="true"]') : null;
       pullPrevSelectedRef.current = "dashboard";
       snapPullPillToZone("dashboard", false);
     } else {
@@ -851,33 +895,42 @@ export function AppShell({
     }
     pull.active = true;
     event.preventDefault();
-    // 1:1 with the finger (no damping) up to a fixed cap — nothing actually moves/resizes at all
-    // now (see the banner's own comment), so this is purely a crossfade progress value, 0..1 over
-    // PULL_FADE_DISTANCE_PX of drag (a longer, separate distance from the banner's fixed CSS
-    // height — see that constant's own comment for why). Arming is checked against the RAW,
-    // uncapped drag distance (dy), not this capped value.
-    const pulled = Math.min(dy, PULL_FADE_DISTANCE_PX);
-    const fadeProgress = Math.max(0, Math.min(1, pulled / PULL_FADE_DISTANCE_PX));
+    // Two independent progress values over the SAME raw drag distance (dy), on purpose different
+    // lengths: fadeProgress (content crossfade) completes in a short PULL_FADE_DISTANCE_PX so the
+    // tab bar's own content is gone and the pulldown icons are in almost instantly; heightProgress
+    // (how much taller the shared bar surface has grown) keeps responding over a much longer
+    // PULL_HEIGHT_GROW_DISTANCE_PX, so continuing to pull keeps visibly doing something. Arming is
+    // checked against the RAW, uncapped drag distance, independent of both.
+    const fadeProgress = Math.max(0, Math.min(1, dy / PULL_FADE_DISTANCE_PX));
+    const heightProgress = Math.max(0, Math.min(1, dy / PULL_HEIGHT_GROW_DISTANCE_PX));
+    const barHeight = PULL_BANNER_MIN_HEIGHT_PX + (PULL_BANNER_MAX_HEIGHT_PX - PULL_BANNER_MIN_HEIGHT_PX) * heightProgress;
     pull.armed = dy >= PULL_ACTION_THRESHOLD_PX;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
     pull.selected = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
-    // Both elements sit at the SAME fixed position/height the whole time (see PULL_BANNER_HEIGHT_PX's
-    // own comment) — only their opacity moves, in exact lockstep and in opposite directions, so it
-    // reads as one bar's content crossfading rather than a second bar sliding/growing into place.
+    // The tab bar's own outer div is the ONE persistent surface (see resetPullBanner's own
+    // comment) — it grows taller here, in lockstep with this banner mirroring the exact same
+    // height, so the pulldown icons always sit inside whatever that surface's current bounds are.
     const banner = pullBannerRef.current;
     if (banner) {
       banner.style.transition = "none";
+      banner.style.height = `${barHeight}px`;
       banner.style.opacity = String(fadeProgress);
       banner.style.pointerEvents = fadeProgress > 0 ? "auto" : "none";
     }
     const topBarEl = pullTopBarElRef.current;
     if (topBarEl) {
       topBarEl.style.transition = "none";
-      topBarEl.style.opacity = String(1 - fadeProgress);
-      topBarEl.style.pointerEvents = "none";
+      topBarEl.style.height = `${barHeight}px`;
+    }
+    const topBarContentEl = pullTopBarContentElRef.current;
+    if (topBarContentEl) {
+      topBarContentEl.style.transition = "none";
+      topBarContentEl.style.opacity = String(1 - fadeProgress);
+      topBarContentEl.style.pointerEvents = "none";
     }
     applyPullZoneStyles(pull.selected, pull.armed);
+    syncPullPillVertical(pull.selected);
   };
   const onMainTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
@@ -2822,28 +2875,25 @@ export function AppShell({
           here, it stacks normally against the tab bar. Shown on every mobile page regardless of
           chromeHidden (fullscreen views included) — only the "Mobile Top Nav Bar" preference turns
           the gesture off.
-          Pinned at the true top (top-0) at a FIXED height matching the tab bar's own h-12
-          (PULL_BANNER_HEIGHT_PX) — it never grows, shrinks, or moves, at rest or mid-pull. Sits
-          above the tab bar (z-[150] against its z-[95]) in the exact same position/size, invisible
-          (opacity 0, pointer-events none) at rest. Pulling down crossfades this banner's opacity up
-          from 0 while the real tab bar (queried by data-app-top-bar, see onMainTouchStart/
-          onMainTouchMove) fades its own opacity down from 1, over a SHORT distance (see
-          PULL_FADE_DISTANCE_PX) so the switch reads as near-instant — nothing ever slides, grows,
-          or overlaps as two separate boxes; it reads as the ONE physical bar changing its own
-          content, because nothing about its box ever changes, only what's drawn inside it. A solid
-          background is what keeps the page from showing through once this banner is opaque. */}
+          Pinned at the true top (top-0), starting at the tab bar's own resting height
+          (PULL_BANNER_MIN_HEIGHT_PX) and growing in lockstep with it as you keep pulling (see
+          PULL_BANNER_MAX_HEIGHT_PX) — "it should be able to stretch higher, not stop at the tab
+          bar's normal height." Sits above the tab bar (z-[150] against its z-[95]) in the exact
+          same position/width, invisible (opacity 0, pointer-events none) at rest. Has NO background
+          of its own — the tab bar's own outer div is the one persistent bar surface (see
+          resetPullBanner's own comment); this only ever holds the pulldown icons, which fade IN as
+          the tab bar's own CONTENT (not its background) fades OUT, over a short PULL_FADE_DISTANCE_PX
+          so the switch reads as near-instant. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
           aria-hidden="true"
-          className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
+          className="fixed left-0 right-0 top-0 z-[150] flex"
           style={{
-            height: PULL_BANNER_HEIGHT_PX,
+            height: PULL_BANNER_MIN_HEIGHT_PX,
             opacity: 0,
             pointerEvents: "none",
-            borderColor: "var(--glass-border)",
-            boxShadow: "var(--shadow-glass)",
-            backgroundColor: "var(--panel-bg)",
+            backgroundColor: "transparent",
           }}
         >
           {/* One shared pill (not one per zone) that lives under whichever zone is selected — see
@@ -2857,8 +2907,8 @@ export function AppShell({
             style={{ left: 0, top: 0, width: 0, height: 0, backgroundColor: "transparent" }}
           />
           <div ref={pullReloadZoneRef} className="relative flex flex-1 flex-col items-center justify-center gap-1">
-            <div data-pull-icon="true" className="flex h-9 w-9 items-center justify-center" style={{ color: "var(--text-muted)" }}>
-              <RefreshCw size={16} className="shrink-0" />
+            <div data-pull-icon="true" className="flex h-11 w-11 items-center justify-center" style={{ color: "var(--text-muted)" }}>
+              <RefreshCw size={22} className="shrink-0" />
             </div>
             <span
               data-pull-label="true"
@@ -2869,8 +2919,8 @@ export function AppShell({
             </span>
           </div>
           <div ref={pullDashboardZoneRef} className="relative flex flex-1 flex-col items-center justify-center gap-1">
-            <div data-pull-icon="true" className="flex h-9 w-9 items-center justify-center" style={{ color: "var(--brand-strong)" }}>
-              <LayoutDashboard size={16} className="shrink-0" />
+            <div data-pull-icon="true" className="flex h-11 w-11 items-center justify-center" style={{ color: "var(--brand-strong)" }}>
+              <LayoutDashboard size={22} className="shrink-0" />
             </div>
             <span
               data-pull-label="true"
@@ -2881,8 +2931,8 @@ export function AppShell({
             </span>
           </div>
           <div ref={pullSaveBackZoneRef} className="relative flex flex-1 flex-col items-center justify-center gap-1">
-            <div data-pull-icon="true" className="flex h-9 w-9 items-center justify-center" style={{ color: "var(--text-muted)" }}>
-              <Save size={16} className="shrink-0" />
+            <div data-pull-icon="true" className="flex h-11 w-11 items-center justify-center" style={{ color: "var(--text-muted)" }}>
+              <Save size={22} className="shrink-0" />
             </div>
             <span
               data-pull-label="true"
