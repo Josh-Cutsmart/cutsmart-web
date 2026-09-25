@@ -436,13 +436,16 @@ function buildLeadAddress(fields: LeadDynamicField[]) {
   return Array.from(new Set(parts)).join(", ");
 }
 
-function suggestProjectName(clientName: string) {
-  const parts = String(clientName || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return "";
-  return parts[parts.length - 1] || parts[0] || "";
+// Project name = whichever field is mapped to "Client Name" + whichever field is mapped to
+// "Client Last Name" (the "Use For" column in the lead field Customise settings), combined in
+// that order — e.g. a form with separate first/last name fields mapped to these two targets
+// produces "John Smith" as the new project's name, rather than guessing at a surname from a
+// single full-name field.
+function buildLeadProjectName(clientName: string, clientLastName: string) {
+  return [clientName, clientLastName]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
 }
 
 function splitClientName(fullName: string) {
@@ -551,7 +554,7 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
     buildLeadClientNameParts(fields, fieldLayout);
   const notesField = findMappedField("projectNotes");
   return {
-    projectName: suggestProjectName(clientName),
+    projectName: buildLeadProjectName(clientName, clientLastName),
     clientFirstName,
     clientLastName,
     clientName,

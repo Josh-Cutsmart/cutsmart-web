@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Bell, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, Bell, Building2, ChevronDown, CircleDollarSign, CircleHelp, ClipboardList, DatabaseBackup, Download, Gauge, GripVertical, HardHat, Layers3, Link2, Package2, Plus, RotateCcw, Settings, Upload, Users, Wrench, X } from "lucide-react";
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
@@ -1168,6 +1168,11 @@ export default function CompanySettingsPage() {
   const [isHydrated, setIsHydrated] = useState(false);
   const blurAutoSaveTimerRef = useRef<number | null>(null);
   const logoFileInputRef = useRef<HTMLInputElement | null>(null);
+  // Temporary — lets a template be moved from one company to another by hand (download the JSON
+  // from company A's builder, upload it into company B's). Remove once there's a real cross-
+  // company template transfer flow.
+  const specsTemplateFileInputRef = useRef<HTMLInputElement | null>(null);
+  const quoteTemplateFileInputRef = useRef<HTMLInputElement | null>(null);
   const hasPendingBlurSaveRef = useRef(false);
   const saveQueuedWhileBusyRef = useRef(false);
   const skipFirstDirtyEffectRef = useRef(true);
@@ -2936,6 +2941,75 @@ export default function CompanySettingsPage() {
           setQuoteTemplateSaveError("");
         }
       });
+    }
+  };
+
+  // Temporary — moves a template between companies by hand: download it as JSON from one
+  // company's builder, upload that same file into another company's. Same Blob/anchor pattern as
+  // downloadBackupSnapshot above, just scoped to one grid instead of the whole settings document.
+  const downloadSpecsTemplate = () => {
+    try {
+      const blob = new Blob([JSON.stringify(specsTemplateGrid ?? createEmptyGrid(), null, 2)], { type: "application/json" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cutsmart-specs-template-${activeCompanyId || "company"}.json`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setSpecsTemplateSaveError("download-failed");
+    }
+  };
+  const downloadQuoteTemplate = () => {
+    try {
+      const blob = new Blob([JSON.stringify(quoteGridTemplate ?? createEmptyGrid(), null, 2)], { type: "application/json" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cutsmart-quote-template-${activeCompanyId || "company"}.json`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setQuoteTemplateSaveError("download-failed");
+    }
+  };
+  // Validated via the same normalizeSpecsGrid used to load a template from Firestore, so a
+  // malformed/unrelated JSON file can't get saved as a broken template — it just reports an error
+  // and leaves the current template untouched.
+  const uploadSpecsTemplateFile = async (file: File | null) => {
+    if (!file || !canEditCompanySettings || !activeCompanyId) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const normalized = normalizeSpecsGrid(parsed);
+      if (!normalized) {
+        setSpecsTemplateSaveError("invalid-template-file");
+        return;
+      }
+      if (specsTemplateSaveTimeoutRef.current) clearTimeout(specsTemplateSaveTimeoutRef.current);
+      setSpecsTemplateGrid(normalized);
+      setSpecsTemplateEditorKey((prev) => prev + 1);
+      const result = await saveCompanyDocPatchDetailed(activeCompanyId, { specsTemplateGrid: normalized });
+      setSpecsTemplateSaveError(result.ok ? "" : result.error || "unknown-save-error");
+    } catch {
+      setSpecsTemplateSaveError("invalid-template-file");
+    }
+  };
+  const uploadQuoteTemplateFile = async (file: File | null) => {
+    if (!file || !canEditCompanySettings || !activeCompanyId) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const normalized = normalizeSpecsGrid(parsed);
+      if (!normalized) {
+        setQuoteTemplateSaveError("invalid-template-file");
+        return;
+      }
+      if (quoteTemplateSaveTimeoutRef.current) clearTimeout(quoteTemplateSaveTimeoutRef.current);
+      setQuoteGridTemplate(normalized);
+      setQuoteTemplateEditorKey((prev) => prev + 1);
+      const result = await saveCompanyDocPatchDetailed(activeCompanyId, { quoteGridTemplate: normalized });
+      setQuoteTemplateSaveError(result.ok ? "" : result.error || "unknown-save-error");
+    } catch {
+      setQuoteTemplateSaveError("invalid-template-file");
     }
   };
 
@@ -5412,11 +5486,48 @@ export default function CompanySettingsPage() {
                           </div>
                           {specsTemplateSaveError ? (
                             <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
-                              Save failed ({specsTemplateSaveError}) — your last edit may not have saved
+                              {specsTemplateSaveError === "invalid-template-file"
+                                ? "That file isn't a valid template"
+                                : specsTemplateSaveError === "download-failed"
+                                  ? "Download failed"
+                                  : `Save failed (${specsTemplateSaveError}) — your last edit may not have saved`}
                             </span>
                           ) : null}
                         </div>
                         <div className="inline-flex items-center gap-2">
+                          {/* Temporary — see specsTemplateFileInputRef's own comment: lets this
+                              template be downloaded from one company and uploaded into another. */}
+                          <input
+                            ref={specsTemplateFileInputRef}
+                            type="file"
+                            accept="application/json"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] ?? null;
+                              void uploadSpecsTemplateFile(file);
+                              if (specsTemplateFileInputRef.current) specsTemplateFileInputRef.current.value = "";
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={downloadSpecsTemplate}
+                            title="Download this template as a JSON file"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          >
+                            <Download size={14} />
+                            Download
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => specsTemplateFileInputRef.current?.click()}
+                            title="Upload a template JSON file exported from another company"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          >
+                            <Upload size={14} />
+                            Upload
+                          </button>
                           <button
                             type="button"
                             onClick={() => setIsSpecsTemplateResetConfirmOpen(true)}
@@ -5518,11 +5629,48 @@ export default function CompanySettingsPage() {
                           </div>
                           {quoteTemplateSaveError ? (
                             <span className="rounded-[8px] border px-2 py-1 text-[11px] font-bold" style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}>
-                              Save failed ({quoteTemplateSaveError}) — your last edit may not have saved
+                              {quoteTemplateSaveError === "invalid-template-file"
+                                ? "That file isn't a valid template"
+                                : quoteTemplateSaveError === "download-failed"
+                                  ? "Download failed"
+                                  : `Save failed (${quoteTemplateSaveError}) — your last edit may not have saved`}
                             </span>
                           ) : null}
                         </div>
                         <div className="inline-flex items-center gap-2">
+                          {/* Temporary — see quoteTemplateFileInputRef's own comment: lets this
+                              template be downloaded from one company and uploaded into another. */}
+                          <input
+                            ref={quoteTemplateFileInputRef}
+                            type="file"
+                            accept="application/json"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] ?? null;
+                              void uploadQuoteTemplateFile(file);
+                              if (quoteTemplateFileInputRef.current) quoteTemplateFileInputRef.current.value = "";
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={downloadQuoteTemplate}
+                            title="Download this template as a JSON file"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          >
+                            <Download size={14} />
+                            Download
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => quoteTemplateFileInputRef.current?.click()}
+                            title="Upload a template JSON file exported from another company"
+                            className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                          >
+                            <Upload size={14} />
+                            Upload
+                          </button>
                           <button
                             type="button"
                             onClick={() => setIsQuoteTemplateResetConfirmOpen(true)}

@@ -594,7 +594,6 @@ export function AppShell({
   const pullTopBarContentElRef = useRef<HTMLElement | null>(null);
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
-  const PULL_ACTION_THRESHOLD_PX = 70;
   // The bar's resting height (matches the tab bar's own h-12) and how tall it can grow if you keep
   // pulling past that — "it should be able to stretch higher, not stop at the tab bar's own
   // height." Both the real tab bar's outer div AND this banner are set to the SAME live height
@@ -602,6 +601,10 @@ export function AppShell({
   // while it grows, instead of just this banner growing underneath/behind a still-48px tab bar.
   const PULL_BANNER_MIN_HEIGHT_PX = 48;
   const PULL_BANNER_MAX_HEIGHT_PX = 108;
+  // Also doubles as the arming distance — a zone only "arms" (will fire on release) once the bar
+  // has been pulled all the way out to its current full height, not at some shorter, separate
+  // threshold partway through the grow. Releasing before the bar is fully stretched out never
+  // fires anything, no matter which zone the finger was over.
   const PULL_HEIGHT_GROW_DISTANCE_PX = 160;
   // How far the finger has to travel for the tab-bar-content/pulldown-icons crossfade to go 0 → 1
   // — deliberately SHORT, independent of the (longer) height-grow distance above. The bubble-travel
@@ -874,12 +877,13 @@ export function AppShell({
     // lengths: fadeProgress (content crossfade) completes in a short PULL_FADE_DISTANCE_PX so the
     // tab bar's own content is gone and the pulldown icons are in almost instantly; heightProgress
     // (how much taller the shared bar surface has grown) keeps responding over a much longer
-    // PULL_HEIGHT_GROW_DISTANCE_PX, so continuing to pull keeps visibly doing something. Arming is
-    // checked against the RAW, uncapped drag distance, independent of both.
+    // PULL_HEIGHT_GROW_DISTANCE_PX, so continuing to pull keeps visibly doing something.
     const fadeProgress = Math.max(0, Math.min(1, dy / PULL_FADE_DISTANCE_PX));
     const heightProgress = Math.max(0, Math.min(1, dy / PULL_HEIGHT_GROW_DISTANCE_PX));
     const barHeight = PULL_BANNER_MIN_HEIGHT_PX + (PULL_BANNER_MAX_HEIGHT_PX - PULL_BANNER_MIN_HEIGHT_PX) * heightProgress;
-    pull.armed = dy >= PULL_ACTION_THRESHOLD_PX;
+    // Armed only once the bar has been pulled all the way out to its current full height — not at
+    // some earlier, shorter distance — so a zone only "activates" when the menu is fully revealed.
+    pull.armed = heightProgress >= 1;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
     pull.selected = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
