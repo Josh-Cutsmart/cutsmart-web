@@ -75,6 +75,13 @@ export interface Project {
   projectImages?: string[];
   projectImageItems?: ProjectImageItem[];
   dashboardCompleteStatusId?: string;
+  // Plain sub-stage name (matches a company's projectStatuses[].subStages[].name for the status
+  // this project CURRENTLY has), used only by the Dashboard board's sub-column drill-down — not a
+  // stable id, and never meaningful outside the context of the project's current statusLabel.
+  // Reset by updateProjectStatus() whenever the real status changes — to the destination status's
+  // sub-stage marked "Default" in Company Settings, or "" (lands in the sub-board's "Other"
+  // column) if it has none marked.
+  dashboardSubStageId?: string;
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
   checklists?: ProjectChecklist[];

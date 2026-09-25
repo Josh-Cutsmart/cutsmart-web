@@ -35,7 +35,8 @@ type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
   | "hardware" | "staff" | "integrations" | "backup";
 
-type StatusRow = { name: string; color: string };
+type SubStageRow = { name: string; color: string; isDefault?: boolean };
+type StatusRow = { name: string; color: string; subStages?: SubStageRow[] };
 type SheetSizeRow = { h: string; w: string; isDefault: boolean };
 type BoardEdgingMemoryRow = { value: string; count: string };
 type BoardColourMemoryRow = { value: string; count: string; edgings: BoardEdgingMemoryRow[] };
@@ -454,6 +455,26 @@ function FieldGroupHeading({ children, first = false }: { children: React.ReactN
   );
 }
 
+function normalizeSubStages(raw: unknown): SubStageRow[] {
+  if (!Array.isArray(raw)) return [];
+  const rows = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return { name: toStr(row.name), color: toStr(row.color, "#64748B"), isDefault: Boolean(row.isDefault) };
+    })
+    .filter((row) => row.name);
+  // Defensive: only one default per status, ever — if stale/bad data somehow has more than one,
+  // keep just the first and clear the rest rather than letting an ambiguous state through.
+  let sawDefault = false;
+  return rows.map((row) => {
+    if (!row.isDefault) return row;
+    if (sawDefault) return { ...row, isDefault: false };
+    sawDefault = true;
+    return row;
+  });
+}
+
 function normalizeStatuses(raw: unknown): StatusRow[] {
   if (!Array.isArray(raw)) {
     return [
@@ -466,7 +487,7 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const row = item as Record<string, unknown>;
-      return { name: toStr(row.name), color: toStr(row.color, "#64748B") };
+      return { name: toStr(row.name), color: toStr(row.color, "#64748B"), subStages: normalizeSubStages(row.subStages) };
     })
     .filter((row) => row.name);
   return out.length ? out : [{ name: "New", color: "#3060D0" }];
@@ -1208,6 +1229,7 @@ export default function CompanySettingsPage() {
   const [quoteTemplateEditorKey, setQuoteTemplateEditorKey] = useState(0);
   const [quoteGridTemplate, setQuoteGridTemplate] = useState<SpecsGrid | null>(null);
   const quoteTemplateSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [statusSubStagesExpanded, setStatusSubStagesExpanded] = useState<Record<number, boolean>>({});
   const [itemCategoryExpanded, setItemCategoryExpanded] = useState<Record<number, boolean>>({});
   const [itemCategoryDragIndex, setItemCategoryDragIndex] = useState<number | null>(null);
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
@@ -2046,6 +2068,50 @@ export default function CompanySettingsPage() {
     setItemCategoryExpanded((prev) => ({ ...prev, [index]: !prev[index] }));
   };
 
+  const toggleStatusSubStagesExpanded = (index: number) => {
+    setStatusSubStagesExpanded((prev) => ({ ...prev, [index]: !prev[index] }));
+  };
+
+  const addStatusSubStage = (index: number) => {
+    setStatuses((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, subStages: [...(row.subStages ?? []), { name: "", color: "#64748B" }] } : row)),
+    );
+    setStatusSubStagesExpanded((prev) => ({ ...prev, [index]: true }));
+  };
+
+  const updateStatusSubStage = (statusIndex: number, subIndex: number, patch: Partial<SubStageRow>) => {
+    setStatuses((prev) =>
+      prev.map((row, i) => {
+        if (i !== statusIndex) return row;
+        const nextSubStages = (row.subStages ?? []).map((sub, j) => (j === subIndex ? { ...sub, ...patch } : sub));
+        return { ...row, subStages: nextSubStages };
+      }),
+    );
+  };
+
+  const removeStatusSubStage = (statusIndex: number, subIndex: number) => {
+    setStatuses((prev) =>
+      prev.map((row, i) => {
+        if (i !== statusIndex) return row;
+        return { ...row, subStages: (row.subStages ?? []).filter((_, j) => j !== subIndex) };
+      }),
+    );
+  };
+
+  // Exclusive within one status's own sub-stages: ticking one un-ticks every other; ticking the
+  // already-ticked one un-ticks it (no default set — the sub-board then falls back to "Other" for
+  // newly-arriving cards). Never touches other statuses' sub-stages.
+  const setDefaultStatusSubStage = (statusIndex: number, subIndex: number) => {
+    setStatuses((prev) =>
+      prev.map((row, i) => {
+        if (i !== statusIndex) return row;
+        const wasDefault = Boolean((row.subStages ?? [])[subIndex]?.isDefault);
+        const nextSubStages = (row.subStages ?? []).map((sub, j) => ({ ...sub, isDefault: j === subIndex ? !wasDefault : false }));
+        return { ...row, subStages: nextSubStages };
+      }),
+    );
+  };
+
   const ensureDollarFormat = (value: string) => {
     const cleaned = String(value || "").replace(/[^0-9.-]/g, "");
     const n = Number(cleaned);
@@ -2472,6 +2538,9 @@ export default function CompanySettingsPage() {
         id: toStr(row.name, `status_${idx + 1}`).toLowerCase().replace(/\s+/g, "_"),
         name: toStr(row.name),
         color: toStr(row.color, "#64748B"),
+        subStages: (row.subStages ?? [])
+          .map((sub) => ({ name: toStr(sub.name), color: toStr(sub.color, "#64748B"), isDefault: Boolean(sub.isDefault) }))
+          .filter((sub) => sub.name),
       })),
       leadStatuses: leadStatuses.map((row, idx) => ({
         id: toStr(row.name, `lead_status_${idx + 1}`).toLowerCase().replace(/\s+/g, "_"),
@@ -4927,83 +4996,149 @@ export default function CompanySettingsPage() {
                   </Panel>
                   <Panel title="Project Statuses">
                     <div className="space-y-1.5">
-                      <div className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                      <div className="grid grid-cols-[30px_30px_1fr_46px_30px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                         <p></p>
                         <p>Del</p>
                         <p>Status Name</p>
                         <p className="text-center">Color</p>
+                        <p></p>
                       </div>
                       {statuses.map((row, idx) => (
-                        <div
-                          key={`project_status_${idx}`}
-                          className="grid grid-cols-[30px_30px_1fr_46px] items-center gap-2 rounded-[8px] transition-colors"
-                          style={{
-                            backgroundColor:
-                              statusDragIndex === idx
-                                ? "var(--brand-soft)"
-                                : statusDragOverIndex === idx
-                                  ? "var(--panel-muted)"
-                                  : "transparent",
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragEnter={(e) => {
-                            e.preventDefault();
-                            if (statusDragIndex == null || statusDragIndex === idx) return;
-                            setStatuses((prev) => moveRowTo(prev, statusDragIndex, idx));
-                            setStatusDragIndex(idx);
-                            setStatusDragOverIndex(idx);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setStatusDragIndex(null);
-                            setStatusDragOverIndex(null);
-                            triggerAutosaveAfterRowDrop();
-                          }}
-                        >
-                          <button
-                            type="button"
-                            draggable
-                            onDragStart={(e) => {
+                        <div key={`project_status_${idx}`}>
+                          <div
+                            className="grid grid-cols-[30px_30px_1fr_46px_30px] items-center gap-2 rounded-[8px] transition-colors"
+                            style={{
+                              backgroundColor:
+                                statusDragIndex === idx
+                                  ? "var(--brand-soft)"
+                                  : statusDragOverIndex === idx
+                                    ? "var(--panel-muted)"
+                                    : "transparent",
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDragEnter={(e) => {
+                              e.preventDefault();
+                              if (statusDragIndex == null || statusDragIndex === idx) return;
+                              setStatuses((prev) => moveRowTo(prev, statusDragIndex, idx));
                               setStatusDragIndex(idx);
                               setStatusDragOverIndex(idx);
-                              e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData("text/plain", `${idx}`);
                             }}
-                            onDragEnd={() => {
+                            onDrop={(e) => {
+                              e.preventDefault();
                               setStatusDragIndex(null);
                               setStatusDragOverIndex(null);
+                              triggerAutosaveAfterRowDrop();
                             }}
-                            className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
-                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
-                            title="Drag to reorder"
                           >
-                            <GripVertical size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))}
-                            className={dangerIconButtonClass}
-                            style={dangerIconButtonStyle}
-                          >
-                            <X size={15} strokeWidth={2.8} />
-                          </button>
-                          <input
-                            value={row.name}
-                            onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
-                            className={fieldInputClass}
-                          />
-                          <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#64748B"}>
-                            <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
+                            <button
+                              type="button"
+                              draggable
+                              onDragStart={(e) => {
+                                setStatusDragIndex(idx);
+                                setStatusDragOverIndex(idx);
+                                e.dataTransfer.effectAllowed = "move";
+                                e.dataTransfer.setData("text/plain", `${idx}`);
+                              }}
+                              onDragEnd={() => {
+                                setStatusDragIndex(null);
+                                setStatusDragOverIndex(null);
+                              }}
+                              className="inline-flex h-8 w-8 cursor-grab items-center justify-center rounded-[8px] border active:cursor-grabbing"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                              title="Drag to reorder"
+                            >
+                              <GripVertical size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setStatuses((prev) => prev.filter((_, i) => i !== idx))}
+                              className={dangerIconButtonClass}
+                              style={dangerIconButtonStyle}
+                            >
+                              <X size={15} strokeWidth={2.8} />
+                            </button>
                             <input
-                              type="color"
-                              value={row.color || "#64748B"}
-                              onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
-                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                              value={row.name}
+                              onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))}
+                              className={fieldInputClass}
                             />
-                          </label>
+                            <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#64748B"}>
+                              <span className="block h-full w-full" style={{ backgroundColor: row.color || "#64748B" }} />
+                              <input
+                                type="color"
+                                value={row.color || "#64748B"}
+                                onChange={(e) => setStatuses((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
+                                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => toggleStatusSubStagesExpanded(idx)}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                              title={statusSubStagesExpanded[idx] ? "Collapse sub-stages" : "Expand sub-stages"}
+                            >
+                              <ChevronDown
+                                size={14}
+                                style={{ transform: statusSubStagesExpanded[idx] ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}
+                              />
+                            </button>
+                          </div>
+                          {statusSubStagesExpanded[idx] && (
+                            <div className="ml-8 space-y-1.5 border-l py-1.5 pl-3" style={{ borderColor: "var(--glass-border)" }}>
+                              <p className="px-1 text-[9px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                                Sub-stages (optional — click this status&apos;s column header on the Dashboard board to drill in)
+                              </p>
+                              {(row.subStages ?? []).map((sub, subIdx) => (
+                                <div key={`project_status_${idx}_sub_${subIdx}`} className="grid grid-cols-[30px_1fr_46px_64px] items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => removeStatusSubStage(idx, subIdx)}
+                                    className={dangerIconButtonClass}
+                                    style={dangerIconButtonStyle}
+                                  >
+                                    <X size={15} strokeWidth={2.8} />
+                                  </button>
+                                  <input
+                                    value={sub.name}
+                                    onChange={(e) => updateStatusSubStage(idx, subIdx, { name: e.target.value })}
+                                    placeholder="Sub-stage name"
+                                    className={fieldInputClass}
+                                  />
+                                  <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={sub.color || "#64748B"}>
+                                    <span className="block h-full w-full" style={{ backgroundColor: sub.color || "#64748B" }} />
+                                    <input
+                                      type="color"
+                                      value={sub.color || "#64748B"}
+                                      onChange={(e) => updateStatusSubStage(idx, subIdx, { color: e.target.value })}
+                                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                    />
+                                  </label>
+                                  <label
+                                    className="flex cursor-pointer items-center gap-1"
+                                    title="Cards entering this status land here by default — only one sub-stage per status can be the default"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(sub.isDefault)}
+                                      onChange={() => setDefaultStatusSubStage(idx, subIdx)}
+                                      className="h-3.5 w-3.5 cursor-pointer"
+                                    />
+                                    <span className="text-[10px] font-bold" style={{ color: "var(--text-muted)" }}>Default</span>
+                                  </label>
+                                </div>
+                              ))}
+                              <button
+                                onClick={() => addStatusSubStage(idx)}
+                                className={`${secondaryButtonClass} mt-1`}
+                              >
+                                + Add Sub-Stage
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))}
                       <button

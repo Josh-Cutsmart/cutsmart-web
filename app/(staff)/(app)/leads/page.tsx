@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
+import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
@@ -905,6 +906,12 @@ export default function LeadsPage() {
     // rAF, not MutationObserver, for hidden tabs) — no reason to route through it.
     const observer = new MutationObserver(() => check());
     observer.observe(el, { childList: true, subtree: true });
+    // Left/Right arrow keys — see lib/board-arrow-key-scroll.ts (shared with the Dashboard
+    // board's own arrow-key handling, same [data-board-column] convention). Attached here, in
+    // this same callback ref, rather than a separate one/plain effect, for the identical reason
+    // the rest of this callback already is one: this board mounts behind its own loading gate, so
+    // only a callback ref (running exactly when `el` itself mounts/unmounts) reliably catches it.
+    const detachArrowKeyScroll = attachBoardArrowKeyScroll(el);
     boardStickyCleanupRef.current = () => {
       if (raf) window.cancelAnimationFrame(raf);
       window.removeEventListener("scroll", onScroll);
@@ -912,6 +919,7 @@ export default function LeadsPage() {
       mainEl?.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
       observer.disconnect();
+      detachArrowKeyScroll();
       getColumns().forEach((col) => { col.style.height = ""; });
       setCardListsScrollable(false);
       setPageScrollBlocked(false);

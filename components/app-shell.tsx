@@ -355,6 +355,39 @@ export function AppShell({
       setIsAutoVerifyModalOpen(true);
     }
   }, [membershipStatus, user?.uid, user?.verified]);
+  // App-wide: dragging (kanban cards, custom scrollbars, resize handles, click-drag-scrolling a
+  // panel, etc.) shouldn't ever leave a trail of accidentally-highlighted text behind it — a
+  // side effect of the browser's own default text-selection behavior kicking in on any mouse/touch
+  // move while the button is down, regardless of what's actually being dragged. Toggling a
+  // body-level class for the duration of each pointer-down-to-up gesture (see .no-drag-text-select
+  // in globals.css) disables selection app-wide for that gesture without permanently disabling it —
+  // normal click-and-drag text selection still works the instant no gesture is in progress. Skips
+  // gestures starting on an actual text-input control (input/textarea/contenteditable) so typing
+  // and deliberately selecting/copying text there is never affected. Mounted once here (AppShell
+  // wraps every staff page) rather than per-feature, so it covers the whole app, including any
+  // future drag interaction, without needing to be wired up again elsewhere.
+  useEffect(() => {
+    const isTextEditable = (target: EventTarget | null) => {
+      const node = target instanceof HTMLElement ? target : null;
+      return Boolean(node?.closest('input, textarea, [contenteditable="true"], [contenteditable=""]'));
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (isTextEditable(e.target)) return;
+      document.body.classList.add("no-drag-text-select");
+    };
+    const onPointerUp = () => {
+      document.body.classList.remove("no-drag-text-select");
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerUp, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerUp, true);
+      document.body.classList.remove("no-drag-text-select");
+    };
+  }, []);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");

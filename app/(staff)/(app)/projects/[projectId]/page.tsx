@@ -33765,6 +33765,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 data-horizontal-swipe-scroll="true"
                 className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
+                // A fresh mount always starts at native scrollLeft 0 (the first tab), regardless
+                // of what initialCutlistRoomFilter already is (e.g. restored from localStorage) —
+                // without this, the strip visually shows one room while the state (and the
+                // "Cutlist Entry" part-type buttons gated on it below) reflects another, including
+                // the buttons silently not rendering at all if state is still "Project Cutlist".
+                // Jump the strip to match state instead of the other way around, so a legitimately
+                // restored filter isn't discarded just because the scroll position reset.
+                ref={(el) => {
+                  if (!el) return;
+                  const index = compactInitialCutlistRoomTabs.findIndex((tab) => tab.filter === initialCutlistRoomFilter);
+                  if (index > 0) {
+                    el.scrollLeft = index * (el.clientWidth || 1);
+                  }
+                }}
                 onScroll={(e) => {
                   const container = e.currentTarget;
                   const pageWidth = container.clientWidth || 1;
@@ -35771,6 +35785,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 data-horizontal-swipe-scroll="true"
                 className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
+                // A fresh mount always starts at native scrollLeft 0 (the first tab), regardless
+                // of what cutlistRoomFilter already is (e.g. restored from localStorage) —
+                // without this, the strip visually shows one room while the state (and the
+                // "Cutlist Entry" part-type buttons gated on it below) reflects another, including
+                // the buttons silently not rendering at all if state is still "Project Cutlist".
+                // Jump the strip to match state instead of the other way around, so a legitimately
+                // restored filter isn't discarded just because the scroll position reset.
+                ref={(el) => {
+                  if (!el) return;
+                  const index = compactFullscreenCutlistRoomTabs.findIndex((tab) => tab.filter === cutlistRoomFilter);
+                  if (index > 0) {
+                    el.scrollLeft = index * (el.clientWidth || 1);
+                  }
+                }}
                 onScroll={(e) => {
                   const container = e.currentTarget;
                   const pageWidth = container.clientWidth || 1;

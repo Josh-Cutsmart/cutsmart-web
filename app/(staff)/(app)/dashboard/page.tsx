@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { Activity, CalendarDays, CheckCircle2, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
+import { Activity, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeftRight, ChevronsRightLeft, FolderKanban, Kanban, ListFilter, RefreshCw, Rows3, Search, Users2, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
+import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
@@ -26,7 +27,8 @@ import { retryAsync, withTimeout } from "@/lib/load-retry";
 import { captureGlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { hasPermissionKey, isOwnerOrAdmin, useCompanyAccess } from "@/lib/use-company-access";
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
-type StatusRow = { name: string; color: string };
+type SubStageRow = { name: string; color: string; isDefault?: boolean };
+type StatusRow = { name: string; color: string; subStages?: SubStageRow[] };
 type RoleRow = { id: string; name: string; color: string };
 
 const statCards = [
@@ -129,9 +131,22 @@ function normalizeStatuses(raw: unknown): StatusRow[] {
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const row = item as Record<string, unknown>;
+      const subStagesRaw = Array.isArray(row.subStages) ? row.subStages : [];
+      const subStages: SubStageRow[] = subStagesRaw
+        .filter((sub) => sub && typeof sub === "object")
+        .map((sub) => {
+          const subRow = sub as Record<string, unknown>;
+          return {
+            name: String(subRow.name ?? "").trim(),
+            color: String(subRow.color ?? "").trim() || "#64748B",
+            isDefault: Boolean(subRow.isDefault),
+          };
+        })
+        .filter((sub) => sub.name);
       return {
         name: String(row.name ?? "").trim(),
         color: String(row.color ?? "").trim() || "#64748B",
+        subStages,
       };
     })
     .filter((row) => row.name);
@@ -338,6 +353,7 @@ export default function DashboardPage() {
   const [isMobileQuickFilterOpen, setIsMobileQuickFilterOpen] = useState(false);
   const [mobileQuickFilterPos, setMobileQuickFilterPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [statusUpdatingProjectId, setStatusUpdatingProjectId] = useState("");
+  const [subStageUpdatingProjectId, setSubStageUpdatingProjectId] = useState("");
   // Board view — a drag-to-change-status kanban alternative to the default list, mirroring the
   // one on the Leads page (same shared drag-ghost helper, same interaction language). View mode
   // and per-column collapse state are remembered per-user (localStorage keyed by uid), so two
@@ -347,6 +363,58 @@ export default function DashboardPage() {
   const [dragOverProjectStatusColumn, setDragOverProjectStatusColumn] = useState("");
   const [collapsedProjectStatusColumns, setCollapsedProjectStatusColumns] = useState<Record<string, boolean>>({});
   const [boardPrefsHydrated, setBoardPrefsHydrated] = useState(false);
+  // Sub-column drill-down: clicking a main column's header (when it has configured sub-stages)
+  // swaps the board area in place to show that column's sub-stage columns — see subBoardColumns
+  // below. Not a modal — the back button in the toolbar (to the left of the search bar) returns.
+  // Remembered per-user (localStorage, same mechanism as dashboardViewMode/collapsedColumns below)
+  // so a refresh reopens the same sub-board instead of dropping back to the main board.
+  const [openSubBoardColumnName, setOpenSubBoardColumnName] = useState("");
+  const [draggingSubStageProjectId, setDraggingSubStageProjectId] = useState("");
+  const [dragOverSubStageColumn, setDragOverSubStageColumn] = useState("");
+  // Per-sub-column collapse state, mirroring collapsedProjectStatusColumns for the main board —
+  // keyed by `${parent main column name}::${sub-column name}` (not just the sub-column name alone)
+  // so two different main columns configured with an identically-named sub-stage (or either one's
+  // own "Other" bucket) don't collide in this one flat map.
+  const [collapsedSubStageColumns, setCollapsedSubStageColumns] = useState<Record<string, boolean>>({});
+  // Sub-board "shatter" effect: the clicked column splits into N vertical slices (portalled to
+  // <body>, so the board's own overflow-x-auto can't clip them mid-animation) — one per eventual
+  // sub-column (including "Other") — which fly out to each real sub-column's own on-screen box
+  // while recoloring from the origin column's color to that sub-column's own. Reversed on close.
+  // See onOpenSubBoardColumn/onCloseSubBoard and the effects below them.
+  const boardScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const subBoardZoomPieceRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // The sub-board's own columns — ONE element, continuously mounted from "opening" all the way
+  // through "revealed" (only actually unmounting once "closing" begins), serving three purposes
+  // across that span: (1) during "opening", invisible, laid out (grid-stacked with the main board,
+  // see the render below) purely so the "opening" effect can read its columns' real on-screen boxes
+  // via getBoundingClientRect; (2) during "landed", fading in on top of the main board as the
+  // shatter pieces fade out; (3) once "revealed", fully interactive and the container's sole normal
+  // content. It must be a single continuously-mounted node rather than separate measurement/reveal
+  // elements: a freshly-mounted element can't animate on the very same render it first appears in
+  // (no prior committed value to transition from), so splitting it in two reintroduces a one-frame
+  // start delay relative to the pieces' own fade — which used to let the still-fully-opaque main
+  // board peek through the still-mostly-opaque pieces right as opening finished. It also never
+  // switches `position` (grid-stacked, not absolute<->static) — that switch used to force a
+  // compositing-layer rebuild for every column's backdrop-filter blur, which read as the columns
+  // flashing away and back right when the animation settled.
+  const subBoardOverlayRef = useRef<HTMLDivElement | null>(null);
+  const [subBoardZoomOrigin, setSubBoardZoomOrigin] = useState<{ left: number; top: number; width: number; height: number; color: string } | null>(null);
+  const [subBoardZoomPhase, setSubBoardZoomPhase] = useState<"idle" | "opening" | "landed" | "revealed" | "closing">("idle");
+  // On close, the underlying board content swaps back to the main columns immediately (not only
+  // once the shrink animation finishes) so they're there, fading in, for the whole close — but the
+  // shrink animation itself needs each real sub-column's on-screen box from BEFORE that swap, so
+  // onCloseSubBoard measures them eagerly, ahead of the state change that triggers the swap.
+  const [subBoardZoomCloseStartRects, setSubBoardZoomCloseStartRects] = useState<Array<{ left: number; top: number; width: number; height: number }> | null>(
+    null,
+  );
+  // Starts true (main board fully visible at rest); onCloseSubBoard flips it false the instant the
+  // main columns remount, and the effect below flips it back true one paint later so the opacity
+  // change is a real transition, not an instant pop. This mount-then-flip pattern is still correct
+  // HERE specifically because the main board's wrapper genuinely, freshly (re)mounts at "closing"
+  // (it was fully unmounted throughout "revealed") — unlike its "landed" fade-out below, which is
+  // computed directly from phase on an already-mounted element instead, for the reason explained on
+  // subBoardOverlayRef above.
+  const [mainBoardFadeIn, setMainBoardFadeIn] = useState(true);
   // The stat cards above the board scroll away with the page like any normal content; the board
   // panel itself (search/filter row + columns) is `position: sticky`, so it scrolls up with the
   // page too until its own top edge reaches just below the fixed nav bar(s), then locks there —
@@ -610,6 +678,21 @@ export default function DashboardPage() {
   useLayoutEffect(() => {
     boardCheckRef.current?.();
   }, [dashboardViewMode]);
+  // Left/Right arrow keys on the board — see lib/board-arrow-key-scroll.ts for the actual
+  // algorithm (shared with the Leads page's own board, same column markup convention). Attached
+  // via a callback ref (merged onto boardScrollContainerRef below), NOT a plain useEffect keyed on
+  // dashboardViewMode — this board panel mounts behind its own loading gate (see boardStickyRef's
+  // own comment above: "can mount *after* dashboardViewMode has already settled to 'board'"), so
+  // an effect keyed only on that state value can fire while the real DOM node is still null and
+  // then never re-fire once it actually mounts, permanently missing the attachment. A callback ref
+  // runs exactly when this specific node mounts/unmounts, sidestepping that race entirely — the
+  // same reasoning boardStickyRef itself is built on.
+  const boardArrowKeyCleanupRef = useRef<(() => void) | null>(null);
+  const boardScrollContainerCallbackRef = useCallback((el: HTMLDivElement | null) => {
+    boardScrollContainerRef.current = el;
+    boardArrowKeyCleanupRef.current?.();
+    boardArrowKeyCleanupRef.current = el ? attachBoardArrowKeyScroll(el) : null;
+  }, []);
   const projectBoardDragGhost = useDragGhost();
   const [statusRows, setStatusRows] = useState<StatusRow[]>(normalizeStatuses(undefined));
   // `statusRows` starts out as a generic placeholder (see normalizeStatuses(undefined) above) —
@@ -656,10 +739,26 @@ export default function DashboardPage() {
     try {
       const raw = window.localStorage.getItem(dashboardBoardPrefsStorageKey(user.uid));
       if (raw) {
-        const parsed = JSON.parse(raw) as { viewMode?: unknown; collapsedColumns?: unknown };
+        const parsed = JSON.parse(raw) as {
+          viewMode?: unknown;
+          collapsedColumns?: unknown;
+          collapsedSubStageColumns?: unknown;
+          openSubBoardColumnName?: unknown;
+        };
         if (parsed.viewMode === "board" || parsed.viewMode === "list") setDashboardViewMode(parsed.viewMode);
         if (parsed.collapsedColumns && typeof parsed.collapsedColumns === "object") {
           setCollapsedProjectStatusColumns(parsed.collapsedColumns as Record<string, boolean>);
+        }
+        if (parsed.collapsedSubStageColumns && typeof parsed.collapsedSubStageColumns === "object") {
+          setCollapsedSubStageColumns(parsed.collapsedSubStageColumns as Record<string, boolean>);
+        }
+        // Restore straight into "revealed" — fully open, no shatter animation to replay (there's no
+        // real click event here to capture an origin rect from). onCloseSubBoard already falls back
+        // to an instant close (no animation) when subBoardZoomOrigin is null, which is exactly this
+        // state until the user closes and reopens it normally.
+        if (typeof parsed.openSubBoardColumnName === "string" && parsed.openSubBoardColumnName) {
+          setOpenSubBoardColumnName(parsed.openSubBoardColumnName);
+          setSubBoardZoomPhase("revealed");
         }
       }
     } catch {
@@ -673,9 +772,14 @@ export default function DashboardPage() {
     if (typeof window === "undefined" || !user?.uid || !boardPrefsHydrated) return;
     window.localStorage.setItem(
       dashboardBoardPrefsStorageKey(user.uid),
-      JSON.stringify({ viewMode: dashboardViewMode, collapsedColumns: collapsedProjectStatusColumns }),
+      JSON.stringify({
+        viewMode: dashboardViewMode,
+        collapsedColumns: collapsedProjectStatusColumns,
+        collapsedSubStageColumns,
+        openSubBoardColumnName,
+      }),
     );
-  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns]);
+  }, [user?.uid, boardPrefsHydrated, dashboardViewMode, collapsedProjectStatusColumns, collapsedSubStageColumns, openSubBoardColumnName]);
   const isDarkMode = themeMode === "dark";
   const dashboardPalette = isDarkMode
     ? {
@@ -1039,24 +1143,96 @@ export default function DashboardPage() {
   const onSelectProjectStatus = async (project: Project, nextStatus: string) => {
     if (!nextStatus || statusUpdatingProjectId || !canEditProjectFromDashboard(project)) return;
     const previousStatus = project.statusLabel;
+    const previousSubStageId = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "");
+    // A card entering a column with sub-stages lands in whichever one is marked "Default" in
+    // Company Settings — not "Other" — so it's immediately triaged; a column with none marked
+    // default (or none configured at all) just clears to "".
+    const destinationStatusRow = statusRows.find((row) => row.name.trim().toLowerCase() === nextStatus.trim().toLowerCase());
+    const nextSubStageId = destinationStatusRow?.subStages?.find((sub) => sub.isDefault)?.name ?? "";
     setStatusUpdatingProjectId(project.id);
     // Optimistic: drop the card straight into its new column instead of waiting on the write to
     // resolve first — the round-trip is what made a drop feel like it "took a while" to land.
     setAllProjects((prev) =>
       prev.map((row) =>
-        row.id === project.id ? { ...row, statusLabel: nextStatus, updatedAt: new Date().toISOString() } : row,
+        row.id === project.id
+          ? ({ ...row, statusLabel: nextStatus, dashboardSubStageId: nextSubStageId, updatedAt: new Date().toISOString() } as Project)
+          : row,
       ),
     );
     setStatusMenuProjectId("");
     setStatusMenuPos(null);
-    const ok = await updateProjectStatus(project, nextStatus);
+    const ok = await updateProjectStatus(project, nextStatus, nextSubStageId);
     if (!ok) {
       // Persist failed — put it back where it actually is.
       setAllProjects((prev) =>
-        prev.map((row) => (row.id === project.id ? { ...row, statusLabel: previousStatus } : row)),
+        prev.map((row) =>
+          row.id === project.id ? ({ ...row, statusLabel: previousStatus, dashboardSubStageId: previousSubStageId } as Project) : row,
+        ),
       );
     }
     setStatusUpdatingProjectId("");
+  };
+
+  // Sibling of onSelectProjectStatus, same optimistic-before-write/revert-on-failure shape, but
+  // writes the independent dashboardSubStageId field via the generic updateProjectPatch helper
+  // instead — this NEVER touches statusLabel/status, so the card never moves on the main board.
+  // subStageName === "" is a valid target (the sub-board's own "Other" column).
+  const onSelectProjectSubStage = async (project: Project, subStageName: string) => {
+    if (subStageUpdatingProjectId || !canEditProjectFromDashboard(project)) return;
+    const previousSubStage = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "");
+    setSubStageUpdatingProjectId(project.id);
+    setAllProjects((prev) =>
+      prev.map((row) =>
+        row.id === project.id
+          ? ({ ...row, dashboardSubStageId: subStageName, updatedAt: new Date().toISOString() } as Project)
+          : row,
+      ),
+    );
+    const ok = await updateProjectPatch(project, { dashboardSubStageId: subStageName });
+    if (!ok) {
+      setAllProjects((prev) =>
+        prev.map((row) => (row.id === project.id ? ({ ...row, dashboardSubStageId: previousSubStage } as Project) : row)),
+      );
+    }
+    setSubStageUpdatingProjectId("");
+  };
+
+  // Captures the clicked column's exact on-screen box + color as the "shatter" animation's
+  // origin — the actual piece-splitting/measuring happens in the "opening" effect below (after
+  // subBoardColumns, which it needs to know each target sub-column's own color), once the real
+  // (invisible) sub-board content has mounted and laid out.
+  const onOpenSubBoardColumn = (column: { name: string; color: string }, e: ReactMouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setSubBoardZoomOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, color: column.color });
+    setSubBoardZoomPhase("opening");
+    setOpenSubBoardColumnName(column.name);
+  };
+
+  const onCloseSubBoard = () => {
+    if (!subBoardZoomOrigin) {
+      // No origin to animate from — reached when a sub-board was restored directly into "revealed"
+      // on page load (see the localStorage hydration effect below), never actually opened via a
+      // click this session. Just leave instantly, no shatter animation; also reset phase back to
+      // "idle" (not just the open column name), since main board's own render condition excludes
+      // "revealed" — leaving phase stuck there would blank out both boards until the next open.
+      setOpenSubBoardColumnName("");
+      setSubBoardZoomPhase("idle");
+      return;
+    }
+    // Measure the real sub-columns' current on-screen boxes NOW, while they're still the DOM the
+    // underlying board content shows — the render this triggers swaps that content back to the
+    // main columns in the same pass, so querying for them again inside an effect afterward would
+    // find the wrong (main-board) elements instead.
+    const container = boardScrollContainerRef.current;
+    const rects = container
+      ? Array.from(container.querySelectorAll<HTMLElement>("[data-board-column]")).map((el) => {
+          const r = el.getBoundingClientRect();
+          return { left: r.left, top: r.top, width: r.width, height: r.height };
+        })
+      : [];
+    setSubBoardZoomCloseStartRects(rects);
+    setMainBoardFadeIn(false);
+    setSubBoardZoomPhase("closing");
   };
 
   const statusMenuProject = useMemo(
@@ -1216,7 +1392,7 @@ export default function DashboardPage() {
   // one column per configured project status — unpaginated, since a kanban board is meant to show
   // everything at once rather than a page at a time.
   const dashboardStatusBoardColumns = useMemo(() => {
-    const columns = statusRows.map((row) => ({ name: row.name, color: row.color, projects: [] as Project[] }));
+    const columns = statusRows.map((row) => ({ name: row.name, color: row.color, subStages: row.subStages ?? [], projects: [] as Project[] }));
     const byKey = new Map(columns.map((col) => [col.name.trim().toLowerCase(), col]));
     const otherProjects: Project[] = [];
     for (const project of filtered) {
@@ -1226,6 +1402,175 @@ export default function DashboardPage() {
     }
     return { columns, otherProjects };
   }, [filtered, statusRows]);
+
+  // Sub-board: sub-stage columns for whichever main column is currently drilled into (empty when
+  // none is open). Sourced from that column's already search/quick-filter-scoped `projects` list,
+  // so the sub-board automatically inherits the main board's current search/filter. Each
+  // sub-column carries its own configured color. No catch-all "Other" bucket — a card whose stored
+  // dashboardSubStageId doesn't match any currently-configured sub-stage (not yet assigned, or its
+  // sub-stage was renamed/deleted since) simply doesn't appear in the sub-board; it's untouched and
+  // still fully visible on the main board under its real status, just not sorted into any of these
+  // sub-columns until it's (re-)assigned one.
+  const subBoardColumns = useMemo(() => {
+    if (!openSubBoardColumnName) {
+      return { columns: [] as Array<{ name: string; color: string; projects: Project[] }> };
+    }
+    const parent = dashboardStatusBoardColumns.columns.find((c) => c.name === openSubBoardColumnName);
+    if (!parent) {
+      return { columns: [] as Array<{ name: string; color: string; projects: Project[] }> };
+    }
+    const columns = parent.subStages.map((s) => ({ name: s.name, color: s.color, projects: [] as Project[] }));
+    const byKey = new Map(columns.map((c) => [c.name.trim().toLowerCase(), c]));
+    for (const project of parent.projects) {
+      const key = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "").trim().toLowerCase();
+      const col = key ? byKey.get(key) : undefined;
+      col?.projects.push(project);
+    }
+    return { columns };
+  }, [dashboardStatusBoardColumns, openSubBoardColumnName]);
+
+  const SUB_BOARD_ZOOM_MOVE_MS = 420;
+  const SUB_BOARD_ZOOM_FADE_MS = 150;
+  // Deliberately much shorter than SUB_BOARD_ZOOM_MOVE_MS: on close, the main board (the "parent
+  // folder") should already be fully visible well before the pieces finish their return trip, so
+  // the pieces read as flying INTO an already-solid destination, not appearing in lockstep with it.
+  const SUB_BOARD_MAIN_FADE_IN_MS = 180;
+  // Shared by both opening and closing moves. Includes `opacity` for closing's fade-away-as-it-
+  // shrinks — harmless for opening, which keeps opacity at a constant 1 throughout its own move (a
+  // transitioned property that never actually changes value doesn't animate).
+  const subBoardZoomMoveTransition = `left ${SUB_BOARD_ZOOM_MOVE_MS}ms cubic-bezier(0.22, 1, 0.36, 1), top ${SUB_BOARD_ZOOM_MOVE_MS}ms cubic-bezier(0.22, 1, 0.36, 1), width ${SUB_BOARD_ZOOM_MOVE_MS}ms cubic-bezier(0.22, 1, 0.36, 1), height ${SUB_BOARD_ZOOM_MOVE_MS}ms cubic-bezier(0.22, 1, 0.36, 1), background-color ${SUB_BOARD_ZOOM_MOVE_MS}ms ease, opacity ${SUB_BOARD_ZOOM_MOVE_MS}ms ease`;
+
+  // One target {name, color, projects} per eventual piece, in the SAME order the piece divs
+  // render (one per configured sub-stage) — shared by the opening and closing effects below, and
+  // by the pieces' own JSX so each one can show its target column's real header/cards while it
+  // animates, not just a blank color block.
+  const subBoardZoomTargetInfo = useMemo(
+    () => subBoardColumns.columns.map((c) => ({ name: c.name, color: c.color, projects: c.projects })),
+    [subBoardColumns],
+  );
+
+  // Phase "opening": split the origin column into N even vertical slices (N = subBoardZoomTargetInfo.length),
+  // snap each piece to its own slice at the origin color (instant), then animate every piece
+  // simultaneously to its real sub-column's actual on-screen box — measured now, while that real
+  // content is mounted+laid-out but still invisible — and that column's own color. The shatter.
+  useLayoutEffect(() => {
+    if (subBoardZoomPhase !== "opening") return;
+    const measureEl = subBoardOverlayRef.current;
+    const n = subBoardZoomTargetInfo.length;
+    const pieces = subBoardZoomPieceRefs.current.slice(0, n);
+    if (!measureEl || !subBoardZoomOrigin || n === 0 || pieces.length !== n || pieces.some((p) => !p)) {
+      setSubBoardZoomPhase("landed");
+      return;
+    }
+    const realColumnEls = Array.from(measureEl.querySelectorAll<HTMLElement>("[data-board-column]"));
+    if (realColumnEls.length !== n) {
+      setSubBoardZoomPhase("landed");
+      return;
+    }
+    const sliceWidth = subBoardZoomOrigin.width / n;
+    const originBg = hexToRgba(subBoardZoomOrigin.color, 0.85);
+    pieces.forEach((piece, i) => {
+      if (!piece) return;
+      piece.style.transition = "none";
+      piece.style.left = `${subBoardZoomOrigin.left + i * sliceWidth}px`;
+      piece.style.top = `${subBoardZoomOrigin.top}px`;
+      piece.style.width = `${sliceWidth}px`;
+      piece.style.height = `${subBoardZoomOrigin.height}px`;
+      piece.style.backgroundColor = originBg;
+      piece.style.opacity = "1";
+    });
+    void pieces[0]!.offsetWidth;
+    pieces.forEach((piece, i) => {
+      if (!piece) return;
+      const targetRect = realColumnEls[i].getBoundingClientRect();
+      piece.style.transition = subBoardZoomMoveTransition;
+      piece.style.left = `${targetRect.left}px`;
+      piece.style.top = `${targetRect.top}px`;
+      piece.style.width = `${targetRect.width}px`;
+      piece.style.height = `${targetRect.height}px`;
+      piece.style.backgroundColor = hexToRgba(subBoardZoomTargetInfo[i]?.color ?? subBoardZoomOrigin.color, 0.85);
+    });
+    const firstPiece = pieces[0];
+    const onDone = () => setSubBoardZoomPhase("landed");
+    firstPiece?.addEventListener("transitionend", onDone, { once: true });
+    return () => firstPiece?.removeEventListener("transitionend", onDone);
+  }, [subBoardZoomPhase, subBoardZoomOrigin, subBoardZoomTargetInfo, subBoardZoomMoveTransition]);
+
+  // Phase "landed": pieces now exactly overlay the real sub-board columns, which are fading in
+  // underneath them as the pieces fade out on top (see the render below — both are computed
+  // directly from phase on already-mounted elements, so they start in the same commit, no skew).
+  // "revealed" normally begins via the sub-board overlay's own onTransitionEnd once that fade-in
+  // has ACTUALLY finished — this timeout is only a backstop (a chunk of extra margin past the
+  // nominal fade duration) in case transitionend never fires (reduced-motion settings disabling
+  // the transition entirely, the element getting interrupted, etc.).
+  useEffect(() => {
+    if (subBoardZoomPhase !== "landed") return;
+    const timeout = window.setTimeout(() => setSubBoardZoomPhase("revealed"), SUB_BOARD_ZOOM_FADE_MS + 200);
+    return () => window.clearTimeout(timeout);
+  }, [subBoardZoomPhase, SUB_BOARD_ZOOM_FADE_MS]);
+
+  // Phase "closing": snap each piece to its real sub-column's box + color as measured eagerly by
+  // onCloseSubBoard (not re-queried here — by this point the underlying content has already
+  // swapped back to the main columns, so the sub-board's own elements are gone), then animate all
+  // pieces simultaneously back into the origin column's N even slices + its color — the exact
+  // reverse of opening. Once done, actually leave the sub-board.
+  useLayoutEffect(() => {
+    if (subBoardZoomPhase !== "closing") return;
+    const n = subBoardZoomTargetInfo.length;
+    const pieces = subBoardZoomPieceRefs.current.slice(0, n);
+    const startRects = subBoardZoomCloseStartRects;
+    if (!subBoardZoomOrigin || !startRects || n === 0 || pieces.length !== n || pieces.some((p) => !p) || startRects.length !== n) {
+      setOpenSubBoardColumnName("");
+      setSubBoardZoomPhase("idle");
+      setSubBoardZoomOrigin(null);
+      setSubBoardZoomCloseStartRects(null);
+      return;
+    }
+    const sliceWidth = subBoardZoomOrigin.width / n;
+    pieces.forEach((piece, i) => {
+      if (!piece) return;
+      const startRect = startRects[i];
+      piece.style.transition = "none";
+      piece.style.left = `${startRect.left}px`;
+      piece.style.top = `${startRect.top}px`;
+      piece.style.width = `${startRect.width}px`;
+      piece.style.height = `${startRect.height}px`;
+      piece.style.backgroundColor = hexToRgba(subBoardZoomTargetInfo[i]?.color ?? subBoardZoomOrigin.color, 0.85);
+      piece.style.opacity = "1";
+    });
+    void pieces[0]!.offsetWidth;
+    const originBg = hexToRgba(subBoardZoomOrigin.color, 0.85);
+    pieces.forEach((piece, i) => {
+      if (!piece) return;
+      piece.style.transition = subBoardZoomMoveTransition;
+      piece.style.left = `${subBoardZoomOrigin.left + i * sliceWidth}px`;
+      piece.style.top = `${subBoardZoomOrigin.top}px`;
+      piece.style.width = `${sliceWidth}px`;
+      piece.style.height = `${subBoardZoomOrigin.height}px`;
+      piece.style.backgroundColor = originBg;
+      // Fades away DURING the shrink back into the parent column, rather than staying solid the
+      // whole way and only disappearing once it arrives.
+      piece.style.opacity = "0";
+    });
+    const firstPiece = pieces[0];
+    const onDone = () => {
+      setOpenSubBoardColumnName("");
+      setSubBoardZoomPhase("idle");
+      setSubBoardZoomOrigin(null);
+      setSubBoardZoomCloseStartRects(null);
+    };
+    firstPiece?.addEventListener("transitionend", onDone, { once: true });
+    return () => firstPiece?.removeEventListener("transitionend", onDone);
+  }, [subBoardZoomPhase, subBoardZoomOrigin, subBoardZoomTargetInfo, subBoardZoomMoveTransition, subBoardZoomCloseStartRects]);
+
+  // One paint after "closing" begins (the main board's own first render at opacity 0 having
+  // already committed), flip to opacity 1 so the fade-in is a real transition, not a pop. This is
+  // still the mount-then-flip pattern (not a direct phase computation) because the main board's
+  // wrapper genuinely, freshly remounts at "closing" — it was fully unmounted throughout "revealed".
+  useEffect(() => {
+    if (subBoardZoomPhase !== "closing") return;
+    setMainBoardFadeIn(true);
+  }, [subBoardZoomPhase]);
 
   const onProjectBoardCardDragStart = (event: ReactDragEvent<HTMLDivElement>, project: Project) => {
     if (!canEditProjectFromDashboard(project)) {
@@ -1264,20 +1609,73 @@ export default function DashboardPage() {
     void onSelectProjectStatus(project, statusName);
   };
 
-  const renderProjectBoardCard = (project: Project, accentColor: string) => {
+  // Sub-board drag handlers — same shape as the main board's own trio above, reusing the SAME
+  // projectBoardDragGhost controller/layer (only one drag is ever in flight at a time). A distinct
+  // spawn id ("project-substage-board-name-") is required: the project's main-board card is still
+  // mounted underneath the sub-board modal (its status never changes when its sub-stage does), so
+  // reusing the main board's id would collide.
+  const onSubStageCardDragStart = (event: ReactDragEvent<HTMLDivElement>, project: Project) => {
+    if (!canEditProjectFromDashboard(project)) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData("text/plain", project.id);
+    event.dataTransfer.effectAllowed = "move";
+    setDraggingSubStageProjectId(project.id);
+    if (projectBoardDragGhost.transparentImageRef.current) {
+      event.dataTransfer.setDragImage(projectBoardDragGhost.transparentImageRef.current, 0, 0);
+    }
+    const color = String(projectStatusPillStyle(project.statusLabel || "New").backgroundColor || "");
+    projectBoardDragGhost.spawn(event, `project-substage-board-name-${project.id}`, { label: project.name, color });
+  };
+
+  const onSubStageCardDragEnd = () => {
+    setDraggingSubStageProjectId("");
+    setDragOverSubStageColumn("");
+    projectBoardDragGhost.end();
+  };
+
+  const onSubStageColumnDrop = (event: ReactDragEvent<HTMLElement>, subStageKey: string) => {
+    event.preventDefault();
+    setDragOverSubStageColumn("");
+    const projectId = event.dataTransfer.getData("text/plain") || draggingSubStageProjectId;
+    setDraggingSubStageProjectId("");
+    projectBoardDragGhost.end();
+    const project = allProjects.find((row) => row.id === projectId);
+    if (!project) return;
+    const nextSubStage = subStageKey;
+    const currentSubStage = String((project as unknown as Record<string, unknown>).dashboardSubStageId ?? "").trim().toLowerCase();
+    if (currentSubStage === nextSubStage.trim().toLowerCase()) return;
+    void onSelectProjectSubStage(project, nextSubStage);
+  };
+
+  const renderProjectBoardCard = (
+    project: Project,
+    accentColor: string,
+    cardOptions?: {
+      idPrefix?: string;
+      onCardDragStart?: (e: ReactDragEvent<HTMLDivElement>, project: Project) => void;
+      onCardDragEnd?: () => void;
+      isDragging?: boolean;
+    },
+  ) => {
     const canEdit = canEditProjectFromDashboard(project);
     const displayAssigned = assignedDisplayName(project);
     const cardBg = isDarkMode ? darkenHexColor(accentColor, 0.75) : lightenHexColor(accentColor, 0.82);
     const cardBorder = isDarkMode ? darkenHexColor(accentColor, 0.4) : lightenHexColor(accentColor, 0.5);
     const cardText = isDarkMode ? dashboardPalette.text : "#000000";
     const chipBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
+    const idPrefix = cardOptions?.idPrefix ?? "project-board-name-";
+    const handleDragStart = cardOptions?.onCardDragStart ?? onProjectBoardCardDragStart;
+    const handleDragEnd = cardOptions?.onCardDragEnd ?? onProjectBoardCardDragEnd;
+    const isDragging = cardOptions?.isDragging ?? draggingProjectId === project.id;
     return (
       <div
         key={project.id}
-        id={`project-board-name-${project.id}`}
+        id={`${idPrefix}${project.id}`}
         draggable={canEdit}
-        onDragStart={(e) => onProjectBoardCardDragStart(e, project)}
-        onDragEnd={onProjectBoardCardDragEnd}
+        onDragStart={(e) => handleDragStart(e, project)}
+        onDragEnd={handleDragEnd}
         onClick={(e) => onProjectRowActivate(project, e.currentTarget)}
         role="button"
         tabIndex={0}
@@ -1291,8 +1689,8 @@ export default function DashboardPage() {
         style={{
           borderColor: cardBorder,
           backgroundColor: cardBg,
-          opacity: draggingProjectId === project.id ? 0.4 : 1,
-          cursor: draggingProjectId === project.id ? "grabbing" : "pointer",
+          opacity: isDragging ? 0.4 : 1,
+          cursor: isDragging ? "grabbing" : "pointer",
         }}
       >
         <p className="truncate text-[12.5px] font-bold" style={{ color: cardText }}>{project.name}</p>
@@ -1328,6 +1726,372 @@ export default function DashboardPage() {
       </div>
     );
   };
+
+  // Shared expanded-column shell (glass background, header, card list, drag-handler wiring) —
+  // used by both the main board's regular (non-collapsed) status columns and every sub-board
+  // column (including its own droppable "Other" bucket). The main board's COLLAPSED-column case
+  // and its own grey "Other" bucket stay bespoke below (neither applies to the sub-board).
+  const renderBoardColumn = (options: {
+    columnKey: string;
+    color: string;
+    count: number;
+    projects: Project[];
+    isDragOver: boolean;
+    dragHandlers: {
+      onDragOver: (e: ReactDragEvent<HTMLElement>) => void;
+      onDragLeave: (e: ReactDragEvent<HTMLElement>) => void;
+      onDrop: (e: ReactDragEvent<HTMLElement>) => void;
+    };
+    renderCard: (project: Project) => React.ReactNode;
+    renderHeader: (badgeBg: string, badgeText: string) => React.ReactNode;
+    emptyLabel?: string;
+  }) => {
+    const glassColumnBg = hexToRgba(options.color, 0.85);
+    const glassColumnBorder = "rgba(255,255,255,0.3)";
+    const glassColumnSurface: React.CSSProperties = {
+      backgroundColor: glassColumnBg,
+      backdropFilter: "blur(20px) saturate(180%)",
+      WebkitBackdropFilter: "blur(20px) saturate(180%)",
+    };
+    const glassColumnShadow = options.isDragOver
+      ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
+      : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
+    const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
+    const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
+    return (
+      // See the main board's collapsed-column case for why the shadow and reveal height sit on
+      // this outer shell rather than on the column div below.
+      <div
+        key={options.columnKey}
+        {...options.dragHandlers}
+        data-board-column="true"
+        className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
+        style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
+      >
+        <div
+          className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
+          style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
+        >
+          {options.renderHeader(columnBadgeBg, columnBadgeText)}
+          {/* touchAction pan-y: this list only ever scrolls vertically — telling the browser that
+              explicitly means a touch that starts here but moves horizontally is handed to the
+              board's own horizontal scroller right away, instead of this column's native vertical
+              scroll capturing the whole gesture first (the classic nested-perpendicular-scroll
+              trap, worse the further a column's already been scrolled from its own edges). */}
+          <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none", touchAction: "pan-y" }}>
+            {options.projects.length === 0 ? (
+              <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>{options.emptyLabel ?? "No projects."}</p>
+            ) : (
+              options.projects.map((project) => options.renderCard(project))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Shared column-header row (name/left slot + count badge + collapse button) — used by both the
+  // main board's regular columns and every sub-board column (including its own "Other" bucket), so
+  // both get the exact same collapse affordance/styling from one place.
+  const renderColumnHeaderBar = (options: {
+    left: React.ReactNode;
+    count: number;
+    badgeBg: string;
+    badgeText: string;
+    onCollapse: () => void;
+    collapseTitle: string;
+  }) => (
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
+      {options.left}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <span
+          className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
+          style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
+        >
+          {options.count}
+        </span>
+        <button
+          type="button"
+          onClick={options.onCollapse}
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
+          style={{ color: options.badgeText, backgroundColor: options.badgeBg }}
+          title={options.collapseTitle}
+          aria-label={options.collapseTitle}
+        >
+          <ChevronsRightLeft size={13} />
+        </button>
+      </div>
+    </div>
+  );
+
+  // Shared collapsed-column shell — the narrow, vertical-text strip a column becomes once collapsed
+  // (via renderColumnHeaderBar's own collapse button above). Used by both the main board's regular
+  // columns and every sub-board column, so collapsing behaves identically in both places.
+  const renderCollapsedBoardColumn = (options: {
+    columnKey: string;
+    color: string;
+    count: number;
+    name: string;
+    isDragOver: boolean;
+    dragHandlers: {
+      onDragOver: (e: ReactDragEvent<HTMLElement>) => void;
+      onDragLeave: (e: ReactDragEvent<HTMLElement>) => void;
+      onDrop: (e: ReactDragEvent<HTMLElement>) => void;
+    };
+    onExpand: () => void;
+  }) => {
+    const glassColumnBorder = "rgba(255,255,255,0.3)";
+    const glassColumnSurface: React.CSSProperties = {
+      backgroundColor: hexToRgba(options.color, 0.85),
+      backdropFilter: "blur(20px) saturate(180%)",
+      WebkitBackdropFilter: "blur(20px) saturate(180%)",
+    };
+    const glassColumnShadow = options.isDragOver
+      ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
+      : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
+    const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
+    const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
+    return (
+      // Shadow AND the scroll-reveal height live on this outer shell (not the button below) — the
+      // shadow always renders around whatever size the outer currently is, so setting the height
+      // here (rather than clip-path-ing the button) keeps it continuously in sync with the reveal
+      // instead of needing to be a separate unclipped layer.
+      <div
+        key={options.columnKey}
+        {...options.dragHandlers}
+        data-board-column="true"
+        className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
+        style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
+      >
+        <button
+          type="button"
+          onClick={options.onExpand}
+          className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
+          style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
+          title={`Expand ${options.name}`}
+          aria-label={`Expand ${options.name}`}
+        >
+          <span
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+            style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
+          >
+            <ChevronsLeftRight size={13} />
+          </span>
+          <span
+            className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
+            style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
+          >
+            {options.count}
+          </span>
+          <span
+            className="shrink-0 whitespace-nowrap text-[14px] font-normal"
+            style={{ writingMode: "vertical-rl", color: "#000000", letterSpacing: "0.12em" }}
+          >
+            {options.name}
+          </span>
+        </button>
+      </div>
+    );
+  };
+
+  // Qualifies a sub-column's collapse-state key with its parent main column's name — see
+  // collapsedSubStageColumns' own declaration above for why (avoids collisions between two main
+  // columns that happen to share an identically-named sub-stage, or either one's own "Other").
+  const subStageCollapseKey = (subColKey: string) => `${openSubBoardColumnName}::${subColKey}`;
+
+  // The sub-board's own columns (configured sub-stages + trailing "Other") — used by
+  // subBoardOverlayRef's single continuously-mounted element (see its declaration above), which
+  // serves as an invisible measurement source during "opening" (so the shatter pieces have real
+  // on-screen boxes to fly to, while the main board stays the visible content underneath) and then
+  // as the real, interactive board once revealed. Each column can be collapsed via
+  // renderColumnHeaderBar's collapse button, exactly like the main board's own columns. No trailing
+  // "Other" bucket — only the sub-stages actually configured for this main column are shown.
+  const renderSubBoardColumnsContent = () => {
+    const columns = subBoardColumns.columns.map((subCol) => ({
+      key: subCol.name,
+      name: subCol.name,
+      color: subCol.color,
+      projects: subCol.projects,
+    }));
+    return (
+      <>
+        {columns.map((col) => {
+          const isDragOver = dragOverSubStageColumn === col.key;
+          const collapseKey = subStageCollapseKey(col.key);
+          const isCollapsed = Boolean(collapsedSubStageColumns[collapseKey]);
+          const dragHandlers = {
+            onDragOver: (e: ReactDragEvent<HTMLElement>) => {
+              e.preventDefault();
+              if (dragOverSubStageColumn !== col.key) setDragOverSubStageColumn(col.key);
+            },
+            onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+              setDragOverSubStageColumn((prev) => (prev === col.key ? "" : prev));
+            },
+            onDrop: (e: ReactDragEvent<HTMLElement>) => onSubStageColumnDrop(e, col.key),
+          };
+          if (isCollapsed) {
+            return renderCollapsedBoardColumn({
+              columnKey: col.key,
+              color: col.color,
+              count: col.projects.length,
+              name: col.name,
+              isDragOver,
+              dragHandlers,
+              onExpand: () => setCollapsedSubStageColumns((prev) => ({ ...prev, [collapseKey]: false })),
+            });
+          }
+          return renderBoardColumn({
+            columnKey: col.key,
+            color: col.color,
+            count: col.projects.length,
+            projects: col.projects,
+            isDragOver,
+            dragHandlers,
+            renderCard: (project) =>
+              renderProjectBoardCard(project, col.color, {
+                idPrefix: "project-substage-board-name-",
+                onCardDragStart: onSubStageCardDragStart,
+                onCardDragEnd: onSubStageCardDragEnd,
+                isDragging: draggingSubStageProjectId === project.id,
+              }),
+            renderHeader: (badgeBg, badgeText) =>
+              renderColumnHeaderBar({
+                left: <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{col.name}</p>,
+                count: col.projects.length,
+                badgeBg,
+                badgeText,
+                onCollapse: () => setCollapsedSubStageColumns((prev) => ({ ...prev, [collapseKey]: true })),
+                collapseTitle: `Collapse ${col.name}`,
+              }),
+          });
+        })}
+      </>
+    );
+  };
+
+  // The main board's own columns (loading/empty states, one per configured status, plus the
+  // trailing "Other" bucket) — factored out the same way as renderSubBoardColumnsContent so it can
+  // be rendered in the normal, interactive slot AND (non-interactively, fading out) as an overlay
+  // during the "landed" crossfade below.
+  const renderMainBoardColumnsContent = () => (
+    <>
+      {(showProjectsLoadingState || !statusRowsLoaded) && (
+        <div className="flex h-full w-full items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
+          Loading projects...
+          <div
+            className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
+            role="status"
+            aria-label="Loading"
+          />
+        </div>
+      )}
+      {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
+        <div className="flex flex-col items-center gap-3 px-4 py-10">
+          <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
+          <button
+            type="button"
+            onClick={openNewProjectModal}
+            className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
+          >
+            Create First Project
+          </button>
+        </div>
+      )}
+      {!showProjectsLoadingState && statusRowsLoaded && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
+        const isDragOver = dragOverProjectStatusColumn === column.name;
+        const isCollapsed = Boolean(collapsedProjectStatusColumns[column.name]);
+        const dragHandlers = {
+          onDragOver: (e: ReactDragEvent<HTMLElement>) => {
+            e.preventDefault();
+            if (dragOverProjectStatusColumn !== column.name) setDragOverProjectStatusColumn(column.name);
+          },
+          onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+            setDragOverProjectStatusColumn((prev) => (prev === column.name ? "" : prev));
+          },
+          onDrop: (e: ReactDragEvent<HTMLElement>) => onProjectBoardColumnDrop(e, column.name),
+        };
+        if (isCollapsed) {
+          return renderCollapsedBoardColumn({
+            columnKey: column.name,
+            color: column.color,
+            count: column.projects.length,
+            name: column.name,
+            isDragOver,
+            dragHandlers,
+            onExpand: () => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: false })),
+          });
+        }
+        return (
+          renderBoardColumn({
+            columnKey: column.name,
+            color: column.color,
+            count: column.projects.length,
+            projects: column.projects,
+            isDragOver,
+            dragHandlers,
+            renderCard: (project) => renderProjectBoardCard(project, column.color),
+            renderHeader: (badgeBg, badgeText) =>
+              renderColumnHeaderBar({
+                left:
+                  column.subStages.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={(e) => onOpenSubBoardColumn(column, e)}
+                      className="flex min-w-0 items-center gap-1 text-left hover:underline"
+                      title={`Open ${column.subStages.length} sub-stage${column.subStages.length === 1 ? "" : "s"}`}
+                    >
+                      <span className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</span>
+                      <ChevronRight size={13} className="shrink-0" style={{ color: "#000000" }} />
+                    </button>
+                  ) : (
+                    <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                  ),
+                count: column.projects.length,
+                badgeBg,
+                badgeText,
+                onCollapse: () => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: true })),
+                collapseTitle: `Collapse ${column.name}`,
+              }),
+          })
+        );
+      })}
+      {!showProjectsLoadingState && statusRowsLoaded && dashboardStatusBoardColumns.otherProjects.length > 0 && (
+        // See the column cases above for why the shadow and reveal height sit on this
+        // outer shell rather than on the column div below.
+        <div
+          data-board-column="true"
+          className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
+          style={{
+            borderRadius: 16,
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.25), var(--shadow-glass)",
+          }}
+        >
+          <div
+            className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border"
+            style={{
+              borderColor: "rgba(255,255,255,0.3)",
+              backgroundImage: "linear-gradient(135deg, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.06) 35%, rgba(255,255,255,0) 62%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(20px) saturate(180%)",
+              WebkitBackdropFilter: "blur(20px) saturate(180%)",
+            }}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
+              <p className="truncate text-[13px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
+              <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white" style={{ backgroundColor: dashboardPalette.textMuted }}>
+                {dashboardStatusBoardColumns.otherProjects.length}
+              </span>
+            </div>
+            <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none", touchAction: "pan-y" }}>
+              {dashboardStatusBoardColumns.otherProjects.map((project) => renderProjectBoardCard(project, "#64748B"))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 
   // Reveals exactly one more page-size batch when the user scrolls near the
   // bottom. If the current batch doesn't produce a scrollbar at all (nothing
@@ -2304,7 +3068,43 @@ export default function DashboardPage() {
             }}
           >
               <div className="relative flex flex-wrap items-center gap-2 pl-0 pr-[92px] sm:pl-[10px] sm:pr-0">
-                <div className="peer relative order-1 w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:static sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
+                {/* Sub-board back button — always mounted (not conditionally rendered), but
+                    collapsed to zero width (and a matching negative margin that cancels out the
+                    row's own gap-2) when hidden, so the search bar/toggle actually sit at their
+                    normal position instead of staying permanently shifted over. Animating width
+                    open reveals the button left-to-right (slides in) and pushes every sibling
+                    after it — including the search bar, and the icon inside it, which moves as
+                    one piece with the bar since it's positioned relative to the bar's own box. */}
+                <div
+                  className="shrink-0 overflow-hidden transition-[width,margin-right] duration-250 ease-out"
+                  style={{
+                    width: openSubBoardColumnName ? 36 : 0,
+                    marginRight: openSubBoardColumnName ? 8 : -8,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={onCloseSubBoard}
+                    aria-label={`Back to board${openSubBoardColumnName ? ` (leave ${openSubBoardColumnName})` : ""}`}
+                    aria-hidden={!openSubBoardColumnName}
+                    tabIndex={openSubBoardColumnName ? 0 : -1}
+                    title="Back"
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border"
+                    style={{
+                      borderColor: dashboardPalette.border,
+                      backgroundColor: dashboardPalette.panelBg,
+                      color: dashboardPalette.text,
+                    }}
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                </div>
+                {/* Deliberately `relative` at every breakpoint (no `sm:static` reset) — the
+                    Search icon below is absolutely positioned against THIS box specifically, so
+                    it has to stay this element's own containing block or it detaches and pins
+                    itself to the outer toolbar row instead, no longer tracking the bar as it
+                    shifts (e.g. when the sub-board back button pushes it over). */}
+                <div className="peer relative order-1 w-[92px] shrink-0 flex-none transition-[flex-grow,width] duration-200 focus-within:w-auto focus-within:flex-1 sm:order-none sm:w-auto sm:min-w-[260px] sm:max-w-[360px] sm:flex-none sm:focus-within:flex-none">
                   <Search
                     size={14}
                     className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2"
@@ -2647,185 +3447,76 @@ export default function DashboardPage() {
 
           {dashboardViewMode === "board" && (
           <div
+            ref={boardScrollContainerCallbackRef}
             data-horizontal-swipe-scroll="true"
-            className="glass-scroll flex snap-x snap-mandatory items-stretch gap-[10px] overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none lg:px-4"
-            style={{ flex: "1 1 auto", minHeight: 0 }}
+            className="glass-scroll hide-native-scrollbar grid snap-x snap-mandatory overflow-x-auto overflow-y-hidden px-[10px] pb-[10px] sm:snap-none lg:px-4"
+            style={{ flex: "1 1 auto", minHeight: 0, gridTemplateRows: "1fr" }}
           >
-            {(showProjectsLoadingState || !statusRowsLoaded) && (
-              <div className="flex h-full w-full items-center justify-center gap-2 text-[13px] font-semibold" style={{ color: dashboardPalette.textMuted }}>
-                Loading projects...
-                <div
-                  className="h-4 w-4 animate-spin rounded-full border-[2px] border-[var(--glass-border)] border-t-[var(--brand-strong)]"
-                  role="status"
-                  aria-label="Loading"
-                />
-              </div>
-            )}
-            {!showProjectsLoadingState && statusRowsLoaded && filtered.length === 0 && (
-              <div className="flex flex-col items-center gap-3 px-4 py-10">
-                <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
-                <button
-                  type="button"
-                  onClick={openNewProjectModal}
-                  className="rounded-[10px] bg-[image:var(--brand-gradient)] px-4 py-2 text-[12px] font-bold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
-                >
-                  Create First Project
-                </button>
-              </div>
-            )}
-            {!showProjectsLoadingState && statusRowsLoaded && filtered.length > 0 && dashboardStatusBoardColumns.columns.map((column) => {
-              const isDragOver = dragOverProjectStatusColumn === column.name;
-              const isCollapsed = Boolean(collapsedProjectStatusColumns[column.name]);
-              const dragHandlers = {
-                onDragOver: (e: ReactDragEvent<HTMLElement>) => {
-                  e.preventDefault();
-                  if (dragOverProjectStatusColumn !== column.name) setDragOverProjectStatusColumn(column.name);
-                },
-                onDragLeave: (e: ReactDragEvent<HTMLElement>) => {
-                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                  setDragOverProjectStatusColumn((prev) => (prev === column.name ? "" : prev));
-                },
-                onDrop: (e: ReactDragEvent<HTMLElement>) => onProjectBoardColumnDrop(e, column.name),
-              };
-              const glassColumnBg = hexToRgba(column.color, 0.85);
-              const glassColumnBorder = "rgba(255,255,255,0.3)";
-              const glassColumnSurface: React.CSSProperties = {
-                backgroundColor: glassColumnBg,
-                backdropFilter: "blur(20px) saturate(180%)",
-                WebkitBackdropFilter: "blur(20px) saturate(180%)",
-              };
-              const glassColumnShadow = isDragOver
-                ? "0 0 0 3px rgba(255,255,255,0.85), inset 0 1px 0 rgba(255,255,255,0.7)"
-                : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
-              const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
-              const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
-              if (isCollapsed) {
-                return (
-                  // Shadow AND the scroll-reveal height live on this outer shell (not the button
-                  // below) — the shadow always renders around whatever size the outer currently
-                  // is, so setting the height here (rather than clip-path-ing the button) keeps
-                  // it continuously in sync with the reveal instead of needing to be a separate
-                  // unclipped layer.
-                  <div
-                    key={column.name}
-                    {...dragHandlers}
-                    data-board-column="true"
-                    className="h-full w-[52px] shrink-0 snap-center sm:snap-align-none"
-                    style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: false }))}
-                      className="flex h-full w-full flex-col items-center gap-3 overflow-hidden rounded-[16px] border pb-3 pt-2.5 transition hover:brightness-105"
-                      style={{
-                        borderColor: glassColumnBorder,
-                        ...glassColumnSurface,
-                      }}
-                      title={`Expand ${column.name}`}
-                      aria-label={`Expand ${column.name}`}
-                    >
-                      <span
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
-                        style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                      >
-                        <ChevronsLeftRight size={13} />
-                      </span>
-                      <span
-                        className="inline-flex h-6 min-w-[24px] shrink-0 items-center justify-center rounded-full px-2 text-[10px] font-bold"
-                        style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                      >
-                        {column.projects.length}
-                      </span>
-                      <span
-                        className="shrink-0 whitespace-nowrap text-[14px] font-normal"
-                        style={{ writingMode: "vertical-rl", color: "#000000", letterSpacing: "0.12em" }}
-                      >
-                        {column.name}
-                      </span>
-                    </button>
-                  </div>
-                );
-              }
-              return (
-                // See the collapsed-button case above for why the shadow and reveal height sit
-                // on this outer shell rather than on the column div below.
-                <div
-                  key={column.name}
-                  {...dragHandlers}
-                  data-board-column="true"
-                  className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
-                  style={{ borderRadius: 16, boxShadow: glassColumnShadow }}
-                >
-                  <div
-                    className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border transition"
-                    style={{
-                      borderColor: glassColumnBorder,
-                      ...glassColumnSurface,
-                    }}
-                  >
-                    <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
-                      <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <span
-                          className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
-                          style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                        >
-                          {column.projects.length}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setCollapsedProjectStatusColumns((prev) => ({ ...prev, [column.name]: true }))}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded-full transition hover:brightness-95"
-                          style={{ color: columnBadgeText, backgroundColor: columnBadgeBg }}
-                          title={`Collapse ${column.name}`}
-                          aria-label={`Collapse ${column.name}`}
-                        >
-                          <ChevronsRightLeft size={13} />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
-                      {column.projects.length === 0 ? (
-                        <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>No projects.</p>
-                      ) : (
-                        column.projects.map((project) => renderProjectBoardCard(project, column.color))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            {!showProjectsLoadingState && statusRowsLoaded && dashboardStatusBoardColumns.otherProjects.length > 0 && (
-              // See the column cases above for why the shadow and reveal height sit on this
-              // outer shell rather than on the column div below.
+            {/* Main board vs. sub-board: both grid-stacked onto the SAME cell (gridArea: "1 / 1")
+                rather than one of them being position:absolute — grid items never change `position`
+                (both stay static/in-flow the whole time), so switching which one is "on top" or
+                fading in/out never forces the browser to rebuild a compositing layer. That rebuild
+                is exactly what caused a real, if brief, bug here: with the previous
+                absolute<->static toggle on the sub-board (switched the instant it became fully
+                interactive), every column's `backdrop-filter` blur had to tear down and rebuild its
+                compositing layer at that exact moment, which reliably renders as one flat/transparent
+                frame before recovering — i.e. the columns visibly flashing away and back right as
+                the opening animation settled. Grid items paint in DOM order by default (like flex
+                items), so main board (first) sits under sub board (second) with no explicit z-index
+                needed. Both inherit the container's own padding/height naturally, same as any other
+                grid item — no manual padding/height reconstruction required either. */}
+            {/* Main board: normal-flow whenever it's the primary content — idle, opening (visible,
+                unchanged, per the earlier "keep the parent column already there" fix), and closing
+                (mount-then-flip fade-in via mainBoardFadeIn, since it's a genuine fresh remount
+                there after being fully unmounted through "revealed"). Unmounts INSTANTLY (no fade)
+                the moment "landed" begins, rather than crossfading out underneath the sub-board —
+                confirmed live (logged in, watched the actual animation, not just reasoned from
+                source) that a main-board fade-out here doesn't read as a clean dissolve: it briefly
+                superimposes the main board's own column headers/cards over the sub-board's
+                completely different ones at full readable opacity (e.g. "In Production" bleeding
+                into "Dryfit" as one garbled label), which is what was being reported as a flash —
+                a legibility/content problem, not a compositing or timing bug. The sub-board's own
+                fade-in and the pieces' own fade-out (below) don't have this problem, because by
+                "landed" they show matching content (the pieces are already sitting exactly on top
+                of the real columns they preview), so THEIR crossfade stays kept. */}
+            {subBoardZoomPhase !== "landed" && subBoardZoomPhase !== "revealed" && (
               <div
-                data-board-column="true"
-                className="h-full w-[85vw] max-w-[300px] shrink-0 snap-center sm:w-[280px] sm:max-w-none sm:snap-align-none"
+                className="flex items-stretch gap-[10px]"
                 style={{
-                  borderRadius: 16,
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.25), var(--shadow-glass)",
+                  gridArea: "1 / 1",
+                  opacity: mainBoardFadeIn ? 1 : 0,
+                  transition: subBoardZoomPhase === "closing" ? `opacity ${SUB_BOARD_MAIN_FADE_IN_MS}ms ease` : undefined,
                 }}
               >
-                <div
-                  className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border"
-                  style={{
-                    borderColor: "rgba(255,255,255,0.3)",
-                    backgroundImage: "linear-gradient(135deg, rgba(255,255,255,0.3) 0%, rgba(255,255,255,0.06) 35%, rgba(255,255,255,0) 62%)",
-                    backgroundColor: "var(--glass-bg-strong)",
-                    backdropFilter: "blur(20px) saturate(180%)",
-                    WebkitBackdropFilter: "blur(20px) saturate(180%)",
-                  }}
-                >
-                  <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
-                    <p className="truncate text-[13px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
-                    <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white" style={{ backgroundColor: dashboardPalette.textMuted }}>
-                      {dashboardStatusBoardColumns.otherProjects.length}
-                    </span>
-                  </div>
-                  <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
-                    {dashboardStatusBoardColumns.otherProjects.map((project) => renderProjectBoardCard(project, "#64748B"))}
-                  </div>
-                </div>
+                {renderMainBoardColumnsContent()}
+              </div>
+            )}
+            {/* Sub-board: see subBoardOverlayRef's own declaration above for why this is ONE
+                element continuously mounted from "opening" through "revealed" (only unmounting once
+                "closing" begins, matching the pre-existing instant-swap-back-to-main-board-on-close
+                behavior). Invisible during "opening" (pure measurement — the "opening" effect reads
+                its columns' real on-screen boxes), fades in during "landed" (opacity computed
+                directly from phase on this same already-mounted node, matching the main board
+                above), fully interactive once "revealed". Advances phase to "revealed" itself via
+                onTransitionEnd once its fade-in has actually finished, rather than trusting a fixed
+                timer (see the "landed" phase effect above for the timeout backstop). */}
+            {openSubBoardColumnName && subBoardZoomPhase !== "closing" && (
+              <div
+                ref={subBoardOverlayRef}
+                aria-hidden={subBoardZoomPhase === "revealed" ? undefined : "true"}
+                className="flex items-stretch gap-[10px]"
+                style={{
+                  gridArea: "1 / 1",
+                  opacity: subBoardZoomPhase === "opening" ? 0 : 1,
+                  pointerEvents: subBoardZoomPhase === "revealed" ? "auto" : "none",
+                  transition: subBoardZoomPhase === "landed" ? `opacity ${SUB_BOARD_ZOOM_FADE_MS}ms ease` : undefined,
+                }}
+                onTransitionEnd={(e) => {
+                  if (e.target !== e.currentTarget || e.propertyName !== "opacity") return;
+                  setSubBoardZoomPhase((prev) => (prev === "landed" ? "revealed" : prev));
+                }}
+              >
+                {renderSubBoardColumnsContent()}
               </div>
             )}
           </div>
@@ -3136,10 +3827,109 @@ export default function DashboardPage() {
                 )}
 
             </div>
+            {/* Sub-board shatter pieces — see the phase effects above for the full sequence
+                (opening -> landed -> revealed, or closing -> idle). Portalled to <body> with a
+                high z-index so they reliably sit above the real content regardless of that
+                content's own position in the page's stacking order. */}
+            {(subBoardZoomPhase === "opening" || subBoardZoomPhase === "landed" || subBoardZoomPhase === "closing") &&
+              subBoardZoomOrigin &&
+              typeof document !== "undefined" &&
+              createPortal(
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none fixed inset-0"
+                  style={{
+                    zIndex: 500,
+                    // Stays mounted (and their own positions/colors untouched) through "landed" —
+                    // just fades the whole group out on top of the now-visible real content,
+                    // instead of instantly vanishing the moment they've arrived.
+                    opacity: subBoardZoomPhase === "landed" ? 0 : 1,
+                    transition: subBoardZoomPhase === "landed" ? `opacity ${SUB_BOARD_ZOOM_FADE_MS}ms ease` : undefined,
+                  }}
+                >
+                  {subBoardZoomTargetInfo.map((info, i) => {
+                    // Rendered at the origin column's own i-th slice from the very first paint —
+                    // not left unset until the layout effect below gets a chance to run — so
+                    // there's never a frame where a piece has no explicit position and falls back
+                    // to its CSS default (which reads as a flash at its "parked" flow position).
+                    // The effect still does its own identical instant-snap write on mount (a
+                    // harmless, redundant re-write of the same values) before animating away.
+                    const n = subBoardZoomTargetInfo.length;
+                    const sliceWidth = subBoardZoomOrigin.width / n;
+                    return (
+                      <div
+                        key={i}
+                        ref={(el) => {
+                          subBoardZoomPieceRefs.current[i] = el;
+                        }}
+                        className="absolute overflow-hidden rounded-[16px] border"
+                        style={{
+                          left: subBoardZoomOrigin.left + i * sliceWidth,
+                          top: subBoardZoomOrigin.top,
+                          width: sliceWidth,
+                          height: subBoardZoomOrigin.height,
+                          backgroundColor: hexToRgba(subBoardZoomOrigin.color, 0.85),
+                          opacity: 1,
+                          borderColor: "rgba(255,255,255,0.3)",
+                          backdropFilter: "blur(20px) saturate(180%)",
+                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)",
+                        }}
+                      >
+                        {/* The piece's target header/cards, already there at a FIXED natural width
+                            (not 100% of the piece's own animating width) — otherwise this content
+                            would squish down to illegible as the piece narrows, only snapping to
+                            readable size right at the very end (reads as "flashing in"). Clipped
+                            by the piece's own overflow-hidden above instead, so more of this
+                            already-full-size content comes into view as the piece grows over it.
+                            Non-interactive by inheritance (the portal wrapper is pointer-events-none). */}
+                        <div className="flex h-full flex-col" style={{ width: 280 }}>
+                          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
+                            <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{info.name}</p>
+                            <span
+                              className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
+                              style={{
+                                color: isDarkMode ? dashboardPalette.text : "#000000",
+                                backgroundColor: isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)",
+                              }}
+                            >
+                              {info.projects.length}
+                            </span>
+                          </div>
+                          <div className="flex-1 space-y-2.5 overflow-hidden p-2.5">
+                            {info.projects.slice(0, 6).map((project) =>
+                              renderProjectBoardCard(project, info.color, { idPrefix: "project-piece-preview-" }),
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>,
+                document.body,
+              )}
             {completedProjectsModal}
             {showCompletedProjectsModal && <GlassScrollbarThumb scrollRef={completedProjectsScrollRef} zIndexClassName="z-[8]" />}
             {staffModal}
             {showStaffModal && <GlassScrollbarThumb scrollRef={staffMembersScrollRef} zIndexClassName="z-[8]" />}
+            {/* Board view's own horizontal scroll needs a replacement scrollbar, not just a nicety:
+                the columns row's natural bottom edge (where its native scrollbar renders) is
+                viewport-relative in height, so it commonly sits below the fold until the page has
+                been scrolled all the way down to the sticky-docked position — until then the real
+                scrollbar is literally off-screen and undraggable. This one is pinned to the
+                viewport's own bottom edge instead (docking to the real edge once that's in view —
+                see GlassScrollbarThumb's own horizontal-mode comment), so the board stays
+                horizontally scrollable via drag at any page scroll position. Desktop-only
+                (trackClassName) — mobile already scrolls this same row via native touch swipe. */}
+            {dashboardViewMode === "board" && (
+              <GlassScrollbarThumb
+                scrollRef={boardScrollContainerRef}
+                orientation="horizontal"
+                zIndexClassName="z-[40]"
+                trackClassName="hidden lg:block"
+                viewportBottomInsetPx={0}
+              />
+            )}
             {openingProjectOverlay}
             <DragGhostLayer controller={projectBoardDragGhost} />
           </>

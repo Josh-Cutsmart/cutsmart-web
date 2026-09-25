@@ -410,6 +410,7 @@ function normalizeProject(id: string, data: Record<string, unknown>, options?: {
     projectImages: projectImages.length ? projectImages : projectImageItems.map((item) => item.url),
     projectImageItems,
     dashboardCompleteStatusId: String(data.dashboardCompleteStatusId ?? "").trim() || undefined,
+    dashboardSubStageId: String(data.dashboardSubStageId ?? "").trim() || undefined,
     projectSettings: settings,
     // Never parsed here anymore, lightweight or not — cutlist rows moved to their own
     // subcollection; the project page fetches them itself, lazily, via useProjectCutlist.
@@ -1450,7 +1451,7 @@ export async function debugProjectSources(uid?: string): Promise<ProjectSourceDi
   return out;
 }
 
-export async function updateProjectStatus(project: Project, newStatus: string): Promise<boolean> {
+export async function updateProjectStatus(project: Project, newStatus: string, nextSubStageId: string = ""): Promise<boolean> {
   if (!db || !project || !newStatus) {
     return false;
   }
@@ -1466,6 +1467,11 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
     statusLabel: newStatus,
     status: toProjectStatus(newStatus),
     updatedAt: nowIso,
+    // A real status change always resets the dashboard board's sub-stage drill-down field — it's
+    // only ever meaningful against the status the project is CURRENTLY in (see lib/types.ts). The
+    // caller (dashboard/page.tsx) computes this from the destination status's OWN configured
+    // sub-stages (its first one, if any) — this function stays agnostic of that config shape.
+    dashboardSubStageId: nextSubStageId,
   };
   (nextProjectSnapshot as unknown as Record<string, unknown>).completedAtIso = completedAtIso;
 
@@ -1478,6 +1484,7 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
         updatedAtIso: nowIso,
         completedAtIso,
         completedAt: completedStatus ? serverTimestamp() : null,
+        dashboardSubStageId: nextSubStageId,
       });
       if (normalizeClientEmail(project.clientEmail)) {
         await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {
@@ -1511,6 +1518,7 @@ export async function updateProjectStatus(project: Project, newStatus: string): 
       updatedAtIso: nowIso,
       completedAtIso,
       completedAt: completedStatus ? serverTimestamp() : null,
+      dashboardSubStageId: nextSubStageId,
     });
     if (normalizeClientEmail(project.clientEmail)) {
       await syncCompanyClientProfileFromProjectInternal(nextProjectSnapshot, {

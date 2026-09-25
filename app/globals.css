@@ -786,6 +786,17 @@ body[data-theme="dark"] .row-glow {
   display: none;
 }
 
+/* Toggled on <body> for the duration of any pointer-down-to-up gesture app-wide (see AppShell's
+   own pointerdown/pointerup listener) so dragging something — a kanban card, a custom scrollbar
+   thumb, a click-drag scroll — never leaves a trail of accidentally-highlighted text behind it as
+   a side effect of the browser's default text-selection behavior. Removed the instant the pointer
+   lifts, so ordinary click-and-drag text selection is unaffected outside of an active gesture. */
+.no-drag-text-select,
+.no-drag-text-select * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 /* "Ring" wobble for a bell icon on click — a quick swing that settles back to rest, like the
    clapper's still moving. Re-keying the wrapping element (not toggling a class) is what makes
    this replay on every click, including rapid repeat clicks. */
