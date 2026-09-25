@@ -1,44 +1,27 @@
-Version: v0.4.1
+Version: v0.4.2
 
 whatsNew: [
-<u><b>Top Navigation (Mobile)</b></u>
+<u><b>Sidebar</b></u>
 <ul>
-<li>Tap and hold a project tab to <b>pick it up</b> and drag it into a new position — no more highlight flash, just a clean long-press pickup</li>
-<li>Pulldown menu improvements:
-  <ul>
-  <li>The tab bar itself now <b>fades into the menu</b> and back, instead of a second bar sliding down over it</li>
-  <li>Can now be pulled taller, with bigger icons</li>
-  <li>The selected option only activates once it's been pulled <u>all the way out</u>, not partway through the drag</li>
-  <li>Fixed the page occasionally bouncing on its own, separately from the menu</li>
-  </ul>
-</li>
+<li>Main tabs reordered: <b>Dashboard, Leads, Recently Deleted, Clients, Calendar, Company Wrapped, Company Settings</b></li>
+<li><b>Changelog</b> moved to the bottom of that list, separated by a divider line</li>
 </ul>
 
-<u><b>Project Details</b></u>
+<u><b>Changelog</b></u>
 <ul>
-<li>The project name can now be renamed directly from the project page:
+<li>The dev-only version editor is back to a plain HTML textarea with a helpers panel, instead of the rich-text editor:
   <ul>
-  <li><b>Desktop:</b> hover the name to reveal a pencil, click it to edit</li>
-  <li><b>Mobile:</b> tap the name directly to edit</li>
+  <li>Each helper now shows its actual HTML tag next to the label, with a copy button to copy it straight to your clipboard</li>
+  <li>Clicking a helper no longer jumps the editor's scroll position — it only moves if the cursor it just placed is actually off-screen</li>
   </ul>
 </li>
-<li>Saves on <b>Enter</b> or clicking/tapping away, and updates everywhere the name is shown</li>
+<li>Version dates now use the shorter month format (e.g. <b>25 Sep 2026</b>), matching the rest of the app</li>
+<li>Each version's date is now shown on the right side of its own header bar</li>
 </ul>
 
-<u><b>Leads</b></u>
+<u><b>Dashboard</b></u>
 <ul>
-<li>Converting a lead into a project now builds the suggested project name from the <b>"Client Name"</b> and <b>"Client Last Name"</b> fields mapped in Customise, combined in that order — more reliable than guessing a surname from a single name field</li>
-<li><u>Mobile:</u> press and hold a lead card to pick it up and drag it into a different status column
-  <ul>
-  <li>No more text-selection highlight getting in the way — just a clean long-press pickup</li>
-  <li>Same fix already applied to the mobile tab bar</li>
-  </ul>
-</li>
-</ul>
-
-<u><b>Notifications</b></u>
-<ul>
-<li>Removed the old Notifications section from Company Settings</li>
-<li><b>"New App Version"</b> notifications are now a single clean line, and clicking one jumps straight to that version here in the Changelog</li>
+<li>Column (board) view no longer shows the All/Active/Completed filters on desktop — the columns already separate complete from active by status, so every column always shows everything</li>
+<li>Nudged the search icon over slightly in the search bar</li>
 </ul>
 ]
