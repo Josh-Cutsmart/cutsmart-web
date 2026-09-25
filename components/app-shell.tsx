@@ -598,55 +598,87 @@ export function AppShell({
   // matter how well its fade is synced, while two things crossfading inside the one unmoving box
   // reads as the SAME bar changing its own content.
   const PULL_BANNER_HEIGHT_PX = 48;
-  // How far the finger has to travel for the crossfade to go 0 → 1 — deliberately NOT the same
-  // number as the box height above (that's a CSS size, this is a drag distance; they used to be
-  // the same constant, which made the whole gesture complete in just 48px of pull and left no room
-  // to actually feel the bubble travel between zones as you drag). Longer than the 70px arming
-  // threshold on purpose, so releasing right at "armed" still shows the fade mid-travel rather than
-  // already finished.
-  const PULL_FADE_DISTANCE_PX = 140;
-  // The "drop of water" traveling between bubbles as the selected zone changes — see its own
-  // comment on the JSX (goo filter) for how this actually reads as liquid rather than just a
-  // circle sliding past. Rendered once, repositioned/re-triggered by triggerPullBubbleTravel.
-  const pullTravelDropRef = useRef<HTMLDivElement | null>(null);
+  // How far the finger has to travel for the tab-bar/menu crossfade to go 0 → 1 — deliberately
+  // SHORT. The bubble-travel animation below is a fixed-duration CSS animation triggered whenever
+  // the selected zone changes (driven by horizontal finger position, not vertical drag distance),
+  // so it doesn't need a long drag to "have room to play out" — it plays the same either way. What
+  // DOES need to be short is this: the tab bar should be gone and the pulldown menu fully in place
+  // almost the instant you start pulling, not gradually over a long drag — "the pulldown menu
+  // takes over" rather than the tabs lingering while a new bar creeps in underneath.
+  const PULL_FADE_DISTANCE_PX = 22;
+  // A single shared pill that lives at whichever zone is currently selected — not three pills, one
+  // per zone. Switching zones animates this ONE element's left/width via the pull-bubble-travel
+  // keyframes (globals.css): it stretches into a capsule spanning BOTH the departing and arriving
+  // icon, then contracts back down onto just the arriving one — the same two-phase "stretch off
+  // one, land on the next" motion Chrome's own pull-menu uses, not a flat slide or a plain crossfade.
+  const pullActivePillRef = useRef<HTMLDivElement | null>(null);
   const pullPrevSelectedRef = useRef<PullZone>("dashboard");
-  const PULL_TRAVEL_DURATION_MS = 320;
+  const PULL_TRAVEL_DURATION_MS = 300;
   const pullZoneRefByKey: Record<PullZone, React.RefObject<HTMLDivElement | null>> = {
     reload: pullReloadZoneRef,
     dashboard: pullDashboardZoneRef,
     saveBack: pullSaveBackZoneRef,
   };
+  const pullPillColorFor = (armed: boolean) =>
+    armed
+      ? { backgroundImage: "var(--brand-gradient)", backgroundColor: "" }
+      : { backgroundImage: "none", backgroundColor: "var(--panel-bg)" };
+  // Icon-relative-to-pill-container coordinates: getBoundingClientRect() is viewport-relative, but
+  // the pill's own left/top/width are relative to its own positioned ancestor (the banner itself)
+  // — subtracting the banner's own rect puts both in the same coordinate space. Includes `top`
+  // because the icon is no longer vertically centered in the banner on its own (the label now
+  // sits below it, in the same flex column, which shifts the icon's own center above the banner's
+  // true midpoint) — assuming banner-center for the pill would leave it floating below the icon.
+  const pullIconRectRelativeToContainer = (zone: PullZone) => {
+    const container = pullBannerRef.current;
+    const icon = pullZoneRefByKey[zone].current?.querySelector<HTMLElement>("[data-pull-icon]");
+    if (!container || !icon) return null;
+    const containerRect = container.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    return { left: iconRect.left - containerRect.left, top: iconRect.top - containerRect.top, width: iconRect.width, height: iconRect.height };
+  };
+  const snapPullPillToZone = (zone: PullZone, armed: boolean) => {
+    const pill = pullActivePillRef.current;
+    const rect = pullIconRectRelativeToContainer(zone);
+    if (!pill || !rect) return;
+    pill.style.animation = "none";
+    pill.style.left = `${rect.left}px`;
+    pill.style.top = `${rect.top}px`;
+    pill.style.width = `${rect.width}px`;
+    pill.style.height = `${rect.height}px`;
+    Object.assign(pill.style, pullPillColorFor(armed));
+  };
   const triggerPullBubbleTravel = (fromZone: PullZone, toZone: PullZone, armed: boolean) => {
-    const drop = pullTravelDropRef.current;
-    const fromBubble = pullZoneRefByKey[fromZone].current?.querySelector<HTMLElement>("[data-pull-bubble]");
-    const toBubble = pullZoneRefByKey[toZone].current?.querySelector<HTMLElement>("[data-pull-bubble]");
-    if (!drop || !fromBubble || !toBubble) return;
-    const dropSize = 30;
-    const fromRect = fromBubble.getBoundingClientRect();
-    const toRect = toBubble.getBoundingClientRect();
-    const fromCenterX = fromRect.left + fromRect.width / 2;
-    const toCenterX = toRect.left + toRect.width / 2;
-    const color = armed ? "var(--brand-strong)" : "var(--panel-bg)";
-    // Snap to the departure point with no transition first...
-    drop.style.transition = "none";
-    drop.style.opacity = "1";
-    drop.style.backgroundColor = color;
-    drop.style.border = armed ? "none" : "1px solid var(--brand-strong)";
-    drop.style.transform = `translate(${fromCenterX - dropSize / 2}px, -50%)`;
-    // ...then, next frame, animate it to the arrival point. The overshoot in this easing curve
-    // (dips past 0 on the way out, past 1 on the way in) is what sells "stretching then snapping"
-    // instead of a flat, mechanical slide.
-    requestAnimationFrame(() => {
-      const el = pullTravelDropRef.current;
-      if (!el) return;
-      el.style.transition = `transform ${PULL_TRAVEL_DURATION_MS}ms cubic-bezier(0.65, -0.4, 0.35, 1.4)`;
-      el.style.transform = `translate(${toCenterX - dropSize / 2}px, -50%)`;
-    });
+    const pill = pullActivePillRef.current;
+    const fromRect = pullIconRectRelativeToContainer(fromZone);
+    const toRect = pullIconRectRelativeToContainer(toZone);
+    if (!pill || !fromRect || !toRect) return;
+    const stretchLeft = Math.min(fromRect.left, toRect.left);
+    const stretchWidth = Math.abs(toRect.left - fromRect.left) + toRect.width;
+    // All three zones sit in the same row, so top/height don't actually change between them — set
+    // directly (not animated) rather than adding two more keyframe properties for values that are
+    // always constant in practice.
+    pill.style.top = `${toRect.top}px`;
+    pill.style.height = `${toRect.height}px`;
+    pill.style.setProperty("--pull-from-left", `${fromRect.left}px`);
+    pill.style.setProperty("--pull-from-width", `${fromRect.width}px`);
+    pill.style.setProperty("--pull-stretch-left", `${stretchLeft}px`);
+    pill.style.setProperty("--pull-stretch-width", `${stretchWidth}px`);
+    pill.style.setProperty("--pull-to-left", `${toRect.left}px`);
+    pill.style.setProperty("--pull-to-width", `${toRect.width}px`);
+    Object.assign(pill.style, pullPillColorFor(armed));
+    // Restart the keyframe animation even if one from a previous zone change is still mid-flight —
+    // just reassigning `animation` doesn't restart it if the value is unchanged, so it's cleared
+    // and the layout is forced to flush (reading offsetWidth) before reapplying it.
+    pill.style.animation = "none";
+    void pill.offsetWidth;
+    pill.style.animation = `pull-bubble-travel ${PULL_TRAVEL_DURATION_MS}ms cubic-bezier(0.3, 0, 0.2, 1) forwards`;
     window.setTimeout(() => {
-      const el = pullTravelDropRef.current;
-      if (el === drop) {
-        el.style.transition = "none";
-        el.style.opacity = "0";
+      const el = pullActivePillRef.current;
+      if (el === pill) {
+        el.style.animation = "none";
+        el.style.left = `${toRect.left}px`;
+        el.style.width = `${toRect.width}px`;
       }
     }, PULL_TRAVEL_DURATION_MS);
   };
@@ -656,28 +688,25 @@ export function AppShell({
       ["dashboard", pullDashboardZoneRef.current],
       ["saveBack", pullSaveBackZoneRef.current],
     ];
-    if (pullPrevSelectedRef.current !== selected) {
+    const zoneChanged = pullPrevSelectedRef.current !== selected;
+    if (zoneChanged) {
       triggerPullBubbleTravel(pullPrevSelectedRef.current, selected, armed);
       pullPrevSelectedRef.current = selected;
+    } else {
+      // Same zone, but armed/not-armed can still have flipped (finger held still while crossing
+      // the arm threshold) — the pill needs its color updated even without a travel animation.
+      Object.assign(pullActivePillRef.current?.style ?? {}, pullPillColorFor(armed));
     }
-    // Targets only the small icon "bubble" inside each zone (data-pull-bubble) — the zone itself
-    // (flex-1, one third of the bar's width) never gets a background of its own anymore. The label
-    // (data-pull-label) is hidden (icon-only) except on the selected zone, where it fades/widens in.
-    const activeBubbleStyle = armed
-      ? { backgroundImage: "var(--brand-gradient)", backgroundColor: "", color: "#FFFFFF" }
-      : { backgroundImage: "none", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" };
-    const inactiveBubbleStyle = { backgroundImage: "none", backgroundColor: "transparent", color: "var(--text-muted)" };
+    // The label (data-pull-label) is hidden (icon-only) except on the selected zone, where it
+    // fades in below the icon — it never affects the pill's own width (see PULL_FADE_DISTANCE_PX's
+    // own comment on why the pill stays icon-sized rather than trying to track the label).
     for (const [zone, el] of zones) {
       if (!el) continue;
       const isSelected = zone === selected;
-      const bubble = el.querySelector<HTMLElement>("[data-pull-bubble]");
+      const icon = el.querySelector<HTMLElement>("[data-pull-icon]");
       const label = el.querySelector<HTMLElement>("[data-pull-label]");
-      if (bubble) Object.assign(bubble.style, isSelected ? activeBubbleStyle : inactiveBubbleStyle);
-      if (label) {
-        label.style.opacity = isSelected ? "1" : "0";
-        label.style.maxWidth = isSelected ? "90px" : "0px";
-        label.style.marginLeft = isSelected ? "8px" : "0px";
-      }
+      if (icon) icon.style.color = isSelected ? (armed ? "#FFFFFF" : "var(--brand-strong)") : "var(--text-muted)";
+      if (label) label.style.opacity = isSelected ? "1" : "0";
     }
   };
   // Previously pushed the top tab bar (`top`) and the page content (`margin-top`) down by the same
@@ -754,6 +783,8 @@ export function AppShell({
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
       pullTopBarElRef.current =
         typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar="true"]') : null;
+      pullPrevSelectedRef.current = "dashboard";
+      snapPullPillToZone("dashboard", false);
     } else {
       pullDashboardRef.current = null;
     }
@@ -2796,15 +2827,11 @@ export function AppShell({
           above the tab bar (z-[150] against its z-[95]) in the exact same position/size, invisible
           (opacity 0, pointer-events none) at rest. Pulling down crossfades this banner's opacity up
           from 0 while the real tab bar (queried by data-app-top-bar, see onMainTouchStart/
-          onMainTouchMove) fades its own opacity down from 1 over the same distance — nothing ever
-          slides, grows, or overlaps as two separate boxes; it reads as the ONE physical bar
-          changing its own content, because nothing about its box ever changes, only what's drawn
-          inside it. A solid background (not just the individual zones', which are transparent at
-          rest) is what keeps the page from showing through once this banner is opaque. Each zone
-          below doesn't color its own background (that would be "the whole section highlights");
-          only the small icon "bubble" (data-pull-bubble) does, and its text label (data-pull-label)
-          stays width/opacity-0 (icon-only) except on the selected zone, where applyPullZoneStyles
-          reveals it. */}
+          onMainTouchMove) fades its own opacity down from 1, over a SHORT distance (see
+          PULL_FADE_DISTANCE_PX) so the switch reads as near-instant — nothing ever slides, grows,
+          or overlaps as two separate boxes; it reads as the ONE physical bar changing its own
+          content, because nothing about its box ever changes, only what's drawn inside it. A solid
+          background is what keeps the page from showing through once this banner is opaque. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
@@ -2819,83 +2846,51 @@ export function AppShell({
             backgroundColor: "var(--panel-bg)",
           }}
         >
-          {/* Goo ("gooey menu") filter — blurs everything inside its target, then sharpens the
-              alpha channel back to near-solid via an extreme-contrast matrix. Two blurred shapes
-              rendered close enough together visually fuse into one connected blob before the
-              sharpen pass splits them apart again once they're far enough apart — that's what
-              makes the traveling drop below look like it's stretching off one bubble and merging
-              into the next as it passes near each, rather than just a circle sliding past two
-              other circles. Has to be a real, rendered (not display:none) <svg> in the DOM for
-              Safari to actually apply a filter that references it — width/height 0 + absolute
-              positioning keeps it fully invisible without hiding it from the renderer. */}
-          <svg width="0" height="0" style={{ position: "absolute" }}>
-            <defs>
-              <filter id="pull-bubble-goo">
-                <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
-                <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -11" result="goo" />
-                <feBlend in="SourceGraphic" in2="goo" />
-              </filter>
-            </defs>
-          </svg>
-          <div className="relative flex w-full" style={{ filter: "url(#pull-bubble-goo)" }}>
-            {/* The traveling "drop" — invisible at rest, briefly shown by triggerPullBubbleTravel
-                whenever the selected zone changes, animated (via a live transform, not React
-                state — same direct-DOM-write approach as the rest of this gesture) from the
-                departing bubble's screen position to the arriving one's. */}
-            <div
-              ref={pullTravelDropRef}
-              aria-hidden="true"
-              className="pointer-events-none absolute left-0 top-1/2 h-[30px] w-[30px] rounded-full"
-              style={{ opacity: 0, transform: "translate(-100px, -50%)", backgroundColor: "var(--panel-bg)" }}
-            />
-            <div ref={pullReloadZoneRef} className="flex flex-1 items-center justify-center">
-              <div
-                data-pull-bubble="true"
-                className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
-                style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-              >
-                <RefreshCw size={16} className="shrink-0" />
-                <span
-                  data-pull-label="true"
-                  className="overflow-hidden whitespace-nowrap transition-all"
-                  style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
-                >
-                  Reload
-                </span>
-              </div>
+          {/* One shared pill (not one per zone) that lives under whichever zone is selected — see
+              applyPullZoneStyles/triggerPullBubbleTravel and the pull-bubble-travel keyframes in
+              globals.css. Sized/colored entirely via direct style writes, so its resting state
+              here is just a zero-size placeholder that gets positioned before it's ever visible. */}
+          <div
+            ref={pullActivePillRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute rounded-full"
+            style={{ left: 0, top: 0, width: 0, height: 0, backgroundColor: "transparent" }}
+          />
+          <div ref={pullReloadZoneRef} className="relative flex flex-1 flex-col items-center justify-center gap-1">
+            <div data-pull-icon="true" className="flex h-9 w-9 items-center justify-center" style={{ color: "var(--text-muted)" }}>
+              <RefreshCw size={16} className="shrink-0" />
             </div>
-            <div ref={pullDashboardZoneRef} className="flex flex-1 items-center justify-center">
-              <div
-                data-pull-bubble="true"
-                className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
-                style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
-              >
-                <LayoutDashboard size={16} className="shrink-0" />
-                <span
-                  data-pull-label="true"
-                  className="overflow-hidden whitespace-nowrap transition-all"
-                  style={{ opacity: 1, maxWidth: 90, marginLeft: 8, transitionDuration: "150ms" }}
-                >
-                  Dashboard
-                </span>
-              </div>
+            <span
+              data-pull-label="true"
+              className="text-[11px] font-bold transition-opacity"
+              style={{ opacity: 0, color: "var(--text-muted)", transitionDuration: "150ms" }}
+            >
+              Reload
+            </span>
+          </div>
+          <div ref={pullDashboardZoneRef} className="relative flex flex-1 flex-col items-center justify-center gap-1">
+            <div data-pull-icon="true" className="flex h-9 w-9 items-center justify-center" style={{ color: "var(--brand-strong)" }}>
+              <LayoutDashboard size={16} className="shrink-0" />
             </div>
-            <div ref={pullSaveBackZoneRef} className="flex flex-1 items-center justify-center">
-              <div
-                data-pull-bubble="true"
-                className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
-                style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-              >
-                <Save size={16} className="shrink-0" />
-                <span
-                  data-pull-label="true"
-                  className="overflow-hidden whitespace-nowrap transition-all"
-                  style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
-                >
-                  Save & Back
-                </span>
-              </div>
+            <span
+              data-pull-label="true"
+              className="text-[11px] font-bold transition-opacity"
+              style={{ opacity: 1, color: "var(--text-muted)", transitionDuration: "150ms" }}
+            >
+              Dashboard
+            </span>
+          </div>
+          <div ref={pullSaveBackZoneRef} className="relative flex flex-1 flex-col items-center justify-center gap-1">
+            <div data-pull-icon="true" className="flex h-9 w-9 items-center justify-center" style={{ color: "var(--text-muted)" }}>
+              <Save size={16} className="shrink-0" />
             </div>
+            <span
+              data-pull-label="true"
+              className="text-[11px] font-bold transition-opacity"
+              style={{ opacity: 0, color: "var(--text-muted)", transitionDuration: "150ms" }}
+            >
+              Save & Back
+            </span>
           </div>
         </div>
       )}

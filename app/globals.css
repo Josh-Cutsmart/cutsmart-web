@@ -438,6 +438,27 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
+/* The pulldown menu's (app-shell.tsx) traveling zone-select pill — stretches into a capsule
+ * spanning both the departing and arriving icon (45%), then contracts back down onto just the
+ * arriving one (100%). left/width/--pull-* custom properties are all set inline by JS right
+ * before this is (re)triggered, since the departure/arrival positions are measured live and vary
+ * with screen width — see triggerPullBubbleTravel in app-shell.tsx.
+ */
+@keyframes pull-bubble-travel {
+  0% {
+    left: var(--pull-from-left);
+    width: var(--pull-from-width);
+  }
+  45% {
+    left: var(--pull-stretch-left);
+    width: var(--pull-stretch-width);
+  }
+  100% {
+    left: var(--pull-to-left);
+    width: var(--pull-to-width);
+  }
+}
+
 /* Small "bubble" pop-in for transient confirmation pills (e.g. an "Added" badge) */
 @keyframes glass-bubble-pop-in {
   0% {
