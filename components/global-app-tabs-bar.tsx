@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
@@ -135,6 +135,27 @@ export function GlobalAppTabsBar() {
   const dragLayoutRef = useRef<Array<{ groupKey: string; left: number; width: number }>>([]);
   const customDragGhostRef = useRef<HTMLDivElement | null>(null);
   const dragGhostGrabOffsetXRef = useRef(0);
+  // Touch-driven reorder for mobile — native HTML5 draggable/dragstart/dragover never fire from a
+  // touch gesture, so desktop's drag system (above) is silently inert on phones; this is a parallel
+  // touch implementation that drives the SAME state (draggedGroupKey/dragInsertIndex/etc.) so both
+  // share the exact same "make room" shifting/ghost rendering already wired into each tab below.
+  // Gated to a genuine long-press (not a quick tap, and not a horizontal swipe-to-scroll) so tapping
+  // a tab still switches to it and dragging your finger to scroll the strip still works normally.
+  const MOBILE_TAB_LONG_PRESS_MS = 450;
+  const MOBILE_TAB_MOVE_CANCEL_PX = 10;
+  const mobileTabTouchRef = useRef<{
+    groupKey: string;
+    startX: number;
+    startY: number;
+    lastX: number;
+    longPressTimer: ReturnType<typeof setTimeout> | null;
+    dragging: boolean;
+    eligible: boolean;
+  } | null>(null);
+  // Set right when a touch-drag commits — checked (and cleared) at the top of the tab's own onClick
+  // so the synthetic click some browsers still fire right after a touchend doesn't ALSO switch to
+  // the tab that just got reordered under the finger.
+  const suppressNextTabClickRef = useRef("");
 
   const shellPalette = themeMode === "dark"
     ? {
@@ -605,6 +626,141 @@ export function GlobalAppTabsBar() {
     return remainingIndex >= dragInsertIndex ? draggedGroupWidth + 4 : 0;
   };
 
+  // Touch equivalent of handleGroupDragStart — same ghost-clone/dragLayoutRef setup, just sourced
+  // from a touch point instead of a native DragEvent (which never arrives on mobile at all).
+  const beginMobileTabDrag = (groupKey: string, touch: { clientX: number; clientY: number }) => {
+    const groupNode = groupNodeRefs.current[groupKey];
+    const groupRect = groupNode?.getBoundingClientRect();
+    if (!groupNode || !groupRect) return;
+    setDraggedGroupKey(groupKey);
+    setDragOverGroupKey(groupKey);
+    setDraggedGroupWidth(Math.round(groupRect.width));
+    dragLayoutRef.current = scrollableTabGroups
+      .map((group) => {
+        const node = groupNodeRefs.current[group.groupKey];
+        const rect = node?.getBoundingClientRect();
+        return rect ? { groupKey: group.groupKey, left: rect.left, width: rect.width } : null;
+      })
+      .filter(Boolean) as Array<{ groupKey: string; left: number; width: number }>;
+    setIsAppTabsMenuOpen("");
+    setAppTabsMenuPos(null);
+    // No requestAnimationFrame delay here (unlike the desktop path) — that delay exists only to
+    // let the browser's native drag-image snapshot capture the element before it collapses; touch
+    // dragging has no native drag image, and the clone below is taken synchronously from the still-
+    // uncollapsed DOM regardless of when the collapse state actually re-renders.
+    setCollapsedDraggedGroupKey(groupKey);
+    dragGhostGrabOffsetXRef.current = touch.clientX - groupRect.left;
+    const ghost = groupNode.cloneNode(true) as HTMLDivElement;
+    ghost.style.position = "fixed";
+    ghost.style.left = `${Math.round(groupRect.left)}px`;
+    ghost.style.top = `${Math.round(groupRect.top)}px`;
+    ghost.style.width = `${Math.round(groupRect.width)}px`;
+    ghost.style.height = `${Math.round(groupRect.height)}px`;
+    ghost.style.margin = "0";
+    ghost.style.pointerEvents = "none";
+    ghost.style.zIndex = "9999";
+    ghost.style.transform = "none";
+    ghost.style.opacity = "0.92";
+    document.body.appendChild(ghost);
+    customDragGhostRef.current = ghost;
+    if (typeof document !== "undefined") document.body.style.touchAction = "none";
+  };
+
+  const onTabTouchStart = (groupKey: string, event: ReactTouchEvent<HTMLButtonElement>) => {
+    if (isDesktopViewport) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    if (mobileTabTouchRef.current?.longPressTimer) {
+      clearTimeout(mobileTabTouchRef.current.longPressTimer);
+    }
+    const state: NonNullable<typeof mobileTabTouchRef.current> = {
+      groupKey,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastX: touch.clientX,
+      longPressTimer: null,
+      dragging: false,
+      eligible: true,
+    };
+    state.longPressTimer = setTimeout(() => {
+      const current = mobileTabTouchRef.current;
+      if (!current || current.groupKey !== groupKey || !current.eligible || current.dragging) return;
+      current.dragging = true;
+      beginMobileTabDrag(groupKey, { clientX: current.lastX, clientY: touch.clientY });
+    }, MOBILE_TAB_LONG_PRESS_MS);
+    mobileTabTouchRef.current = state;
+  };
+
+  const onTabTouchMove = (event: ReactTouchEvent<HTMLButtonElement>) => {
+    const state = mobileTabTouchRef.current;
+    if (!state) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    state.lastX = touch.clientX;
+    if (!state.dragging) {
+      // Moved before the long-press fired — this is a scroll/tap, not a pick-up. Cancel the timer
+      // and leave the touch alone (no preventDefault) so the strip's own horizontal touch-scroll
+      // keeps working exactly as if this handler weren't here.
+      const dx = Math.abs(touch.clientX - state.startX);
+      const dy = Math.abs(touch.clientY - state.startY);
+      if (dx > MOBILE_TAB_MOVE_CANCEL_PX || dy > MOBILE_TAB_MOVE_CANCEL_PX) {
+        state.eligible = false;
+        if (state.longPressTimer) {
+          clearTimeout(state.longPressTimer);
+          state.longPressTimer = null;
+        }
+      }
+      return;
+    }
+    event.preventDefault();
+    const ghost = customDragGhostRef.current;
+    if (ghost) {
+      ghost.style.left = `${touch.clientX - dragGhostGrabOffsetXRef.current}px`;
+    }
+    const remainingLayouts = dragLayoutRef.current.filter((item) => item.groupKey !== state.groupKey);
+    if (!remainingLayouts.length) {
+      setDragOverGroupKey("");
+      setDragInsertIndex(0);
+      return;
+    }
+    const clientX = touch.clientX - dragGhostGrabOffsetXRef.current + draggedGroupWidth / 2;
+    let nextInsertIndex = remainingLayouts.length;
+    for (let index = 0; index < remainingLayouts.length; index += 1) {
+      const layout = remainingLayouts[index];
+      const midpoint = layout.left + layout.width / 2;
+      if (clientX < midpoint) {
+        nextInsertIndex = index;
+        break;
+      }
+    }
+    setDragInsertIndex(nextInsertIndex);
+    const nextGroupKey = remainingLayouts[nextInsertIndex]?.groupKey || "";
+    setDragOverGroupKey(nextGroupKey || "");
+  };
+
+  const endMobileTabDrag = (commit: boolean) => {
+    const state = mobileTabTouchRef.current;
+    mobileTabTouchRef.current = null;
+    if (typeof document !== "undefined") document.body.style.touchAction = "";
+    if (!state) return;
+    if (state.longPressTimer) clearTimeout(state.longPressTimer);
+    if (!state.dragging) return;
+    if (commit && dragInsertIndex !== null) {
+      reorderGroupToIndex(state.groupKey, dragInsertIndex);
+    }
+    suppressNextTabClickRef.current = state.groupKey;
+    setDraggedGroupKey("");
+    setDragOverGroupKey("");
+    setDragInsertIndex(null);
+    setDraggedGroupWidth(0);
+    setCollapsedDraggedGroupKey("");
+    dragLayoutRef.current = [];
+    removeCustomDragGhost();
+  };
+
+  const onTabTouchEnd = () => endMobileTabDrag(true);
+  const onTabTouchCancel = () => endMobileTabDrag(false);
+
   const selectAppTab = (tab: AppWorkspaceTab, target?: EventTarget | null) => {
     blurTopTabTarget(target);
     pendingActiveAppTabKeyMemory = tab.key;
@@ -903,14 +1059,37 @@ export function GlobalAppTabsBar() {
                 >
                   <button
                     type="button"
-                    onClick={(event) => selectGroupPrimaryTab(group, event.currentTarget)}
+                    onClick={(event) => {
+                      // Set the instant a touch-drag reorder commits (see endMobileTabDrag) — the
+                      // synthetic click some browsers still fire right after that touchend would
+                      // otherwise ALSO switch to whichever tab the finger happened to release over.
+                      if (suppressNextTabClickRef.current === group.groupKey) {
+                        suppressNextTabClickRef.current = "";
+                        return;
+                      }
+                      selectGroupPrimaryTab(group, event.currentTarget);
+                    }}
                     onMouseDown={(event) => handleTopTabMouseDown(group.groupKey, event)}
-                    draggable
+                    draggable={isDesktopViewport}
                     onDragStart={(event) => handleGroupDragStart(group.groupKey, event)}
                     onDragEnd={handleGroupDragEnd}
                     onMouseUp={() => setPressedGroupKey("")}
+                    onTouchStart={(event) => onTabTouchStart(group.groupKey, event)}
+                    onTouchMove={onTabTouchMove}
+                    onTouchEnd={onTabTouchEnd}
+                    onTouchCancel={onTabTouchCancel}
                     className="min-w-0 flex-1 truncate text-left text-[12px] font-bold"
-                    style={{ color: isActiveTab ? shellPalette.text : shellPalette.textMuted, cursor: isPressed ? "grabbing" : "pointer" }}
+                    style={{
+                      color: isActiveTab ? shellPalette.text : shellPalette.textMuted,
+                      cursor: isPressed ? "grabbing" : "pointer",
+                      // Long-press on mobile is how you pick a tab up to reorder it — without these,
+                      // the browser's own default long-press UI (text-selection callout, tap-color
+                      // flash) fires first and visually fights with/masks the pick-up.
+                      WebkitTouchCallout: "none",
+                      WebkitUserSelect: "none",
+                      userSelect: "none",
+                      WebkitTapHighlightColor: "transparent",
+                    }}
                     title={formatSingleTabLabel(activeTab, group.groupLabel)}
                   >
                     {formatSingleTabLabel(activeTab, group.groupLabel)}

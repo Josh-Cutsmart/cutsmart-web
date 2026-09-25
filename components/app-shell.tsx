@@ -583,26 +583,83 @@ export function AppShell({
   const pullReloadZoneRef = useRef<HTMLDivElement | null>(null);
   const pullDashboardZoneRef = useRef<HTMLDivElement | null>(null);
   const pullSaveBackZoneRef = useRef<HTMLDivElement | null>(null);
-  // The tab bar this banner fades into (global-app-tabs-bar.tsx, found by its own data-attribute
-  // since that component lives outside this tree — see that file's own mainPushRef for the same
-  // cross-component query pattern in reverse). Resolved once per gesture in onMainTouchStart, not
-  // re-queried every touchmove tick.
+  // The tab bar this banner crossfades with (global-app-tabs-bar.tsx, found by its own data-
+  // attribute since that component lives outside this tree — see that file's own mainPushRef for
+  // the same cross-component query pattern in reverse). Resolved once per gesture in
+  // onMainTouchStart, not re-queried every touchmove tick.
   const pullTopBarElRef = useRef<HTMLElement | null>(null);
   type PullZone = "reload" | "dashboard" | "saveBack";
   const pullDashboardRef = useRef<{ startY: number; active: boolean; armed: boolean; selected: PullZone } | null>(null);
   const PULL_ACTION_THRESHOLD_PX = 70;
-  // The banner's own visual height now caps at the tab bar's real height (h-12) instead of growing
-  // past it — see the banner JSX's own comment — so it reads as "the tab bar itself becoming the
-  // menu" rather than a taller strip sliding down over it. Arming (below) still tracks the raw,
-  // uncapped drag distance against PULL_ACTION_THRESHOLD_PX, same as before — only the VISUAL cap
-  // changed, not how far you actually have to pull to trigger the action.
+  // The banner sits at a FIXED height matching the tab bar's own (h-12) at all times — it never
+  // grows/shrinks. Pulling down only ever changes its OPACITY (0 at rest, up to 1 fully pulled),
+  // with the real tab bar's opacity doing the exact inverse over the same distance — see the
+  // banner JSX's own comment for why a height animation reads as "a second bar sliding down" no
+  // matter how well its fade is synced, while two things crossfading inside the one unmoving box
+  // reads as the SAME bar changing its own content.
   const PULL_BANNER_HEIGHT_PX = 48;
+  // How far the finger has to travel for the crossfade to go 0 → 1 — deliberately NOT the same
+  // number as the box height above (that's a CSS size, this is a drag distance; they used to be
+  // the same constant, which made the whole gesture complete in just 48px of pull and left no room
+  // to actually feel the bubble travel between zones as you drag). Longer than the 70px arming
+  // threshold on purpose, so releasing right at "armed" still shows the fade mid-travel rather than
+  // already finished.
+  const PULL_FADE_DISTANCE_PX = 140;
+  // The "drop of water" traveling between bubbles as the selected zone changes — see its own
+  // comment on the JSX (goo filter) for how this actually reads as liquid rather than just a
+  // circle sliding past. Rendered once, repositioned/re-triggered by triggerPullBubbleTravel.
+  const pullTravelDropRef = useRef<HTMLDivElement | null>(null);
+  const pullPrevSelectedRef = useRef<PullZone>("dashboard");
+  const PULL_TRAVEL_DURATION_MS = 320;
+  const pullZoneRefByKey: Record<PullZone, React.RefObject<HTMLDivElement | null>> = {
+    reload: pullReloadZoneRef,
+    dashboard: pullDashboardZoneRef,
+    saveBack: pullSaveBackZoneRef,
+  };
+  const triggerPullBubbleTravel = (fromZone: PullZone, toZone: PullZone, armed: boolean) => {
+    const drop = pullTravelDropRef.current;
+    const fromBubble = pullZoneRefByKey[fromZone].current?.querySelector<HTMLElement>("[data-pull-bubble]");
+    const toBubble = pullZoneRefByKey[toZone].current?.querySelector<HTMLElement>("[data-pull-bubble]");
+    if (!drop || !fromBubble || !toBubble) return;
+    const dropSize = 30;
+    const fromRect = fromBubble.getBoundingClientRect();
+    const toRect = toBubble.getBoundingClientRect();
+    const fromCenterX = fromRect.left + fromRect.width / 2;
+    const toCenterX = toRect.left + toRect.width / 2;
+    const color = armed ? "var(--brand-strong)" : "var(--panel-bg)";
+    // Snap to the departure point with no transition first...
+    drop.style.transition = "none";
+    drop.style.opacity = "1";
+    drop.style.backgroundColor = color;
+    drop.style.border = armed ? "none" : "1px solid var(--brand-strong)";
+    drop.style.transform = `translate(${fromCenterX - dropSize / 2}px, -50%)`;
+    // ...then, next frame, animate it to the arrival point. The overshoot in this easing curve
+    // (dips past 0 on the way out, past 1 on the way in) is what sells "stretching then snapping"
+    // instead of a flat, mechanical slide.
+    requestAnimationFrame(() => {
+      const el = pullTravelDropRef.current;
+      if (!el) return;
+      el.style.transition = `transform ${PULL_TRAVEL_DURATION_MS}ms cubic-bezier(0.65, -0.4, 0.35, 1.4)`;
+      el.style.transform = `translate(${toCenterX - dropSize / 2}px, -50%)`;
+    });
+    window.setTimeout(() => {
+      const el = pullTravelDropRef.current;
+      if (el === drop) {
+        el.style.transition = "none";
+        el.style.opacity = "0";
+      }
+    }, PULL_TRAVEL_DURATION_MS);
+  };
   const applyPullZoneStyles = (selected: PullZone, armed: boolean) => {
     const zones: Array<[PullZone, HTMLDivElement | null]> = [
       ["reload", pullReloadZoneRef.current],
       ["dashboard", pullDashboardZoneRef.current],
       ["saveBack", pullSaveBackZoneRef.current],
     ];
+    if (pullPrevSelectedRef.current !== selected) {
+      triggerPullBubbleTravel(pullPrevSelectedRef.current, selected, armed);
+      pullPrevSelectedRef.current = selected;
+    }
     // Targets only the small icon "bubble" inside each zone (data-pull-bubble) — the zone itself
     // (flex-1, one third of the bar's width) never gets a background of its own anymore. The label
     // (data-pull-label) is hidden (icon-only) except on the selected zone, where it fades/widens in.
@@ -623,22 +680,24 @@ export function AppShell({
       }
     }
   };
-  // Previously also pushed the top tab bar (`top`) and the page content (`margin-top`) down by
-  // the same pixel amount every touchmove tick, so the whole page read as sliding down to reveal
-  // this banner. In practice, on-device, those two independent style writes on two different
-  // elements kept visibly drifting out of sync with each other and with the banner's own `height`
-  // growth despite being driven by the identical number every tick — a real, repeated regression
-  // no amount of same-tick/same-reflow-category writes fully closed. The banner now just overlays
-  // on top of the page instead: the tab bar and the page content underneath never move AT ALL (so
-  // they can never drift relative to each other), and this is the only thing that changes — it
-  // grows in height, positioned to start right below the tab bar's fixed 48px, covering the top of
-  // the page as it grows rather than pushing that page down.
+  // Previously pushed the top tab bar (`top`) and the page content (`margin-top`) down by the same
+  // pixel amount every touchmove tick, so the whole page read as sliding down to reveal a banner
+  // growing in height underneath. On-device, those independent style writes on different elements
+  // kept visibly drifting out of sync with each other — a real, repeated regression no amount of
+  // same-tick/same-reflow-category writes fully closed. A later attempt kept the growing-height
+  // banner but faded the tab bar underneath it in sync — but a box that GROWS still reads as a new
+  // thing arriving, however well its fade is timed. The tab bar and the page underneath now never
+  // move OR resize at all: the banner sits fixed at the tab bar's own height the whole time (see
+  // PULL_BANNER_HEIGHT_PX), and pulling down only crossfades the banner's opacity up from 0 against
+  // the tab bar's opacity going down from 1 — the one unmoving 48px strip just swaps its own
+  // content, instead of anything sliding, growing, or overlapping.
   const PULL_BANNER_RESET_DURATION_MS = 200;
   const resetPullBanner = (animate: boolean) => {
     const banner = pullBannerRef.current;
     if (banner) {
-      banner.style.transition = animate ? `height ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
-      banner.style.height = "0px";
+      banner.style.transition = animate ? `opacity ${PULL_BANNER_RESET_DURATION_MS}ms ease` : "none";
+      banner.style.opacity = "0";
+      banner.style.pointerEvents = "none";
     }
     const topBarEl = pullTopBarElRef.current;
     if (topBarEl) {
@@ -761,30 +820,30 @@ export function AppShell({
     }
     pull.active = true;
     event.preventDefault();
-    // 1:1 with the finger (no damping) up to a fixed max height — the banner is the only thing
-    // that moves at all now (see its own comment), so there's nothing for a 1:1 rate to feel out
-    // of step with; the cap just keeps the reveal from growing indefinitely as the finger keeps
-    // dragging past it. Arming is checked against the RAW, uncapped drag distance (dy), not this
-    // capped value — the visual cap only stops the banner's own height at the tab bar's real
-    // height (see PULL_BANNER_HEIGHT_PX's own comment), it must not also make the threshold
-    // unreachable now that the cap (48) sits below the threshold (70).
-    const pulled = Math.min(dy, PULL_BANNER_HEIGHT_PX);
+    // 1:1 with the finger (no damping) up to a fixed cap — nothing actually moves/resizes at all
+    // now (see the banner's own comment), so this is purely a crossfade progress value, 0..1 over
+    // PULL_FADE_DISTANCE_PX of drag (a longer, separate distance from the banner's fixed CSS
+    // height — see that constant's own comment for why). Arming is checked against the RAW,
+    // uncapped drag distance (dy), not this capped value.
+    const pulled = Math.min(dy, PULL_FADE_DISTANCE_PX);
+    const fadeProgress = Math.max(0, Math.min(1, pulled / PULL_FADE_DISTANCE_PX));
     pull.armed = dy >= PULL_ACTION_THRESHOLD_PX;
     // Three equal zones left-to-right: Reload / Dashboard / Save & Back.
     const fraction = touch.clientX / window.innerWidth;
     pull.selected = fraction < 1 / 3 ? "reload" : fraction < 2 / 3 ? "dashboard" : "saveBack";
+    // Both elements sit at the SAME fixed position/height the whole time (see PULL_BANNER_HEIGHT_PX's
+    // own comment) — only their opacity moves, in exact lockstep and in opposite directions, so it
+    // reads as one bar's content crossfading rather than a second bar sliding/growing into place.
     const banner = pullBannerRef.current;
     if (banner) {
       banner.style.transition = "none";
-      banner.style.height = `${pulled}px`;
+      banner.style.opacity = String(fadeProgress);
+      banner.style.pointerEvents = fadeProgress > 0 ? "auto" : "none";
     }
-    // The tab bar fades out exactly as fast as the banner fills its place, so at pulled===
-    // PULL_BANNER_HEIGHT_PX the tab bar is fully gone and the banner (now the same height) has
-    // fully taken over the same strip — reads as one bar changing content, not two stacked bars.
     const topBarEl = pullTopBarElRef.current;
     if (topBarEl) {
       topBarEl.style.transition = "none";
-      topBarEl.style.opacity = String(Math.max(0, 1 - pulled / PULL_BANNER_HEIGHT_PX));
+      topBarEl.style.opacity = String(1 - fadeProgress);
       topBarEl.style.pointerEvents = "none";
     }
     applyPullZoneStyles(pull.selected, pull.armed);
@@ -2732,74 +2791,110 @@ export function AppShell({
           here, it stacks normally against the tab bar. Shown on every mobile page regardless of
           chromeHidden (fullscreen views included) — only the "Mobile Top Nav Bar" preference turns
           the gesture off.
-          Starts at the true top (top-0), growing down OVER the tab bar (z-[150] against its
-          z-[95]) rather than pushing it down or starting below it — it no longer moves the tab bar
-          or the page at all (see their own comments), so this is the only thing that changes, and
-          it should visually read as sliding out from above/in front of the tab bar as it grows,
-          not emerging from underneath it. A solid background (not just the individual zones',
-          which are transparent at rest) is what keeps the page from showing through underneath
-          while it's mid-grow.
-          The banner's own height now caps at PULL_BANNER_HEIGHT_PX (48px, the tab bar's own h-12)
-          instead of growing taller than it, and the tab bar itself (queried by data-app-top-bar,
-          see onMainTouchStart/onMainTouchMove) fades its opacity to 0 in lockstep as this banner
-          fills that same 48px strip — together they read as the SAME bar swapping its content, not
-          a second bar sliding down over the first. Each zone below no longer colors its own
-          background (that was "the whole section highlights"); only the small icon "bubble"
-          (data-pull-bubble) does, and its text label (data-pull-label) stays width/opacity-0
-          (icon-only) except on the selected zone, where applyPullZoneStyles reveals it. */}
+          Pinned at the true top (top-0) at a FIXED height matching the tab bar's own h-12
+          (PULL_BANNER_HEIGHT_PX) — it never grows, shrinks, or moves, at rest or mid-pull. Sits
+          above the tab bar (z-[150] against its z-[95]) in the exact same position/size, invisible
+          (opacity 0, pointer-events none) at rest. Pulling down crossfades this banner's opacity up
+          from 0 while the real tab bar (queried by data-app-top-bar, see onMainTouchStart/
+          onMainTouchMove) fades its own opacity down from 1 over the same distance — nothing ever
+          slides, grows, or overlaps as two separate boxes; it reads as the ONE physical bar
+          changing its own content, because nothing about its box ever changes, only what's drawn
+          inside it. A solid background (not just the individual zones', which are transparent at
+          rest) is what keeps the page from showing through once this banner is opaque. Each zone
+          below doesn't color its own background (that would be "the whole section highlights");
+          only the small icon "bubble" (data-pull-bubble) does, and its text label (data-pull-label)
+          stays width/opacity-0 (icon-only) except on the selected zone, where applyPullZoneStyles
+          reveals it. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
           aria-hidden="true"
           className="fixed left-0 right-0 top-0 z-[150] flex overflow-hidden border-b"
-          style={{ height: 0, borderColor: "var(--glass-border)", boxShadow: "var(--shadow-glass)", backgroundColor: "var(--panel-bg)" }}
+          style={{
+            height: PULL_BANNER_HEIGHT_PX,
+            opacity: 0,
+            pointerEvents: "none",
+            borderColor: "var(--glass-border)",
+            boxShadow: "var(--shadow-glass)",
+            backgroundColor: "var(--panel-bg)",
+          }}
         >
-          <div ref={pullReloadZoneRef} className="flex flex-1 items-center justify-center">
+          {/* Goo ("gooey menu") filter — blurs everything inside its target, then sharpens the
+              alpha channel back to near-solid via an extreme-contrast matrix. Two blurred shapes
+              rendered close enough together visually fuse into one connected blob before the
+              sharpen pass splits them apart again once they're far enough apart — that's what
+              makes the traveling drop below look like it's stretching off one bubble and merging
+              into the next as it passes near each, rather than just a circle sliding past two
+              other circles. Has to be a real, rendered (not display:none) <svg> in the DOM for
+              Safari to actually apply a filter that references it — width/height 0 + absolute
+              positioning keeps it fully invisible without hiding it from the renderer. */}
+          <svg width="0" height="0" style={{ position: "absolute" }}>
+            <defs>
+              <filter id="pull-bubble-goo">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
+                <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -11" result="goo" />
+                <feBlend in="SourceGraphic" in2="goo" />
+              </filter>
+            </defs>
+          </svg>
+          <div className="relative flex w-full" style={{ filter: "url(#pull-bubble-goo)" }}>
+            {/* The traveling "drop" — invisible at rest, briefly shown by triggerPullBubbleTravel
+                whenever the selected zone changes, animated (via a live transform, not React
+                state — same direct-DOM-write approach as the rest of this gesture) from the
+                departing bubble's screen position to the arriving one's. */}
             <div
-              data-pull-bubble="true"
-              className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
-              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-            >
-              <RefreshCw size={16} className="shrink-0" />
-              <span
-                data-pull-label="true"
-                className="overflow-hidden whitespace-nowrap transition-all"
-                style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
+              ref={pullTravelDropRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute left-0 top-1/2 h-[30px] w-[30px] rounded-full"
+              style={{ opacity: 0, transform: "translate(-100px, -50%)", backgroundColor: "var(--panel-bg)" }}
+            />
+            <div ref={pullReloadZoneRef} className="flex flex-1 items-center justify-center">
+              <div
+                data-pull-bubble="true"
+                className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
+                style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
               >
-                Reload
-              </span>
+                <RefreshCw size={16} className="shrink-0" />
+                <span
+                  data-pull-label="true"
+                  className="overflow-hidden whitespace-nowrap transition-all"
+                  style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
+                >
+                  Reload
+                </span>
+              </div>
             </div>
-          </div>
-          <div ref={pullDashboardZoneRef} className="flex flex-1 items-center justify-center">
-            <div
-              data-pull-bubble="true"
-              className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
-              style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
-            >
-              <LayoutDashboard size={16} className="shrink-0" />
-              <span
-                data-pull-label="true"
-                className="overflow-hidden whitespace-nowrap transition-all"
-                style={{ opacity: 1, maxWidth: 90, marginLeft: 8, transitionDuration: "150ms" }}
+            <div ref={pullDashboardZoneRef} className="flex flex-1 items-center justify-center">
+              <div
+                data-pull-bubble="true"
+                className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
+                style={{ backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)" }}
               >
-                Dashboard
-              </span>
+                <LayoutDashboard size={16} className="shrink-0" />
+                <span
+                  data-pull-label="true"
+                  className="overflow-hidden whitespace-nowrap transition-all"
+                  style={{ opacity: 1, maxWidth: 90, marginLeft: 8, transitionDuration: "150ms" }}
+                >
+                  Dashboard
+                </span>
+              </div>
             </div>
-          </div>
-          <div ref={pullSaveBackZoneRef} className="flex flex-1 items-center justify-center">
-            <div
-              data-pull-bubble="true"
-              className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
-              style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
-            >
-              <Save size={16} className="shrink-0" />
-              <span
-                data-pull-label="true"
-                className="overflow-hidden whitespace-nowrap transition-all"
-                style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
+            <div ref={pullSaveBackZoneRef} className="flex flex-1 items-center justify-center">
+              <div
+                data-pull-bubble="true"
+                className="flex h-9 items-center rounded-full px-2.5 text-[13px] font-bold transition-colors"
+                style={{ backgroundColor: "transparent", color: "var(--text-muted)" }}
               >
-                Save & Back
-              </span>
+                <Save size={16} className="shrink-0" />
+                <span
+                  data-pull-label="true"
+                  className="overflow-hidden whitespace-nowrap transition-all"
+                  style={{ opacity: 0, maxWidth: 0, marginLeft: 0, transitionDuration: "150ms" }}
+                >
+                  Save & Back
+                </span>
+              </div>
             </div>
           </div>
         </div>
