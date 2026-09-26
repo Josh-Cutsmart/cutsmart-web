@@ -4,7 +4,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent a
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, ChevronLeft, LayoutDashboard, Menu, X } from "lucide-react";
-import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useAppTabs, type AppWorkspaceTab } from "@/lib/app-tabs-context";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
@@ -73,10 +72,6 @@ export function GlobalAppTabsBar() {
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isAppTabsMenuOpen, setIsAppTabsMenuOpen] = useState("");
   const [appTabsMenuPos, setAppTabsMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
-  const [closingAppTabKey, setClosingAppTabKey] = useState("");
-  const [closeTabModalOrigin, setCloseTabModalOrigin] = useState<GlassModalOrigin>(null);
-  const closeTabModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderCloseTabModal = useGlassModalPopOrigin(Boolean(closingAppTabKey), closeTabModalOrigin, closeTabModalPanelRef);
   const [notifRows, setNotifRows] = useState<UserNotificationRow[]>([]);
   const [notifPos, setNotifPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const notifBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -289,31 +284,6 @@ export function GlobalAppTabsBar() {
     () => groupedGlobalTabs.filter((group) => !group.isDashboard),
     [groupedGlobalTabs],
   );
-  const closingScopeKey = closingAppTabKey.startsWith(CLOSING_SCOPE_PREFIX)
-    ? closingAppTabKey.slice(CLOSING_SCOPE_PREFIX.length)
-    : "";
-  const closingItemLabel = useMemo(() => {
-    if (!closingAppTabKey) return "";
-    if (closingScopeKey) {
-      const group = groupedGlobalTabs.find((item) => item.groupKey === closingScopeKey);
-      return String(group?.groupLabel || "this tab").trim();
-    }
-    const tab = visibleGlobalAppTabs.find((item) => item.key === closingAppTabKey);
-    return String(tab?.label || "this sub-tab").trim();
-  }, [closingAppTabKey, closingScopeKey, groupedGlobalTabs, visibleGlobalAppTabs]);
-  // Closing a sub-tab that's the only one left in its group closes the whole
-  // main tab too (see confirmCloseAppTab's isClosingCurrentScope/scopedTabs.length
-  // check) — the dialog wording should match that, not just whether the click
-  // came from the group-level close button vs. a sub-tab's own close button.
-  const closingPlainTab = !closingScopeKey ? visibleGlobalAppTabs.find((tab) => tab.key === closingAppTabKey) : null;
-  const closingPlainTabSiblingCount = closingPlainTab
-    ? visibleGlobalAppTabs.filter((tab) => tab.scopeKey === closingPlainTab.scopeKey).length
-    : 0;
-  const closingWholeTab = Boolean(closingScopeKey) || closingPlainTabSiblingCount <= 1;
-  const closingDialogTitle = closingWholeTab ? "Close tab?" : "Close sub-tab?";
-  const closingDialogBody = closingWholeTab
-    ? `Save ${closingItemLabel || "this tab"} before closing it?`
-    : `Save ${closingItemLabel || "this sub-tab"} before closing it?`;
 
   useLayoutEffect(() => {
     const nextMode = readThemeMode();
@@ -800,15 +770,18 @@ export function GlobalAppTabsBar() {
     router.push(projectId ? `/projects/${projectId}?tab=general` : "/dashboard");
   };
 
-  const confirmCloseAppTab = (saveState: boolean) => {
-    const isClosingScope = closingAppTabKey.startsWith(CLOSING_SCOPE_PREFIX);
-    const closingScopeKey = isClosingScope ? closingAppTabKey.slice(CLOSING_SCOPE_PREFIX.length) : "";
+  // Closes a tab/tab-group immediately on its own X click — no confirm dialog, always saving first
+  // (matches what "Save & Close" used to do; the discard option this replaced was unreachable from
+  // this button anyway, since both paths that could fire from it already bypassed save/discard
+  // entirely below).
+  const closeAppTab = (tabKey: string) => {
+    const isClosingScope = tabKey.startsWith(CLOSING_SCOPE_PREFIX);
+    const closingScopeKey = isClosingScope ? tabKey.slice(CLOSING_SCOPE_PREFIX.length) : "";
     const closingTab = isClosingScope
       ? visibleGlobalAppTabs.find((tab) => tab.scopeKey === closingScopeKey && tab.key === displayActiveAppTabKey) ??
         visibleGlobalAppTabs.find((tab) => tab.scopeKey === closingScopeKey)
-      : visibleGlobalAppTabs.find((tab) => tab.key === closingAppTabKey);
+      : visibleGlobalAppTabs.find((tab) => tab.key === tabKey);
     if (!closingTab) {
-      setClosingAppTabKey("");
       setIsAppTabsMenuOpen("");
       setAppTabsMenuPos(null);
       return;
@@ -820,7 +793,6 @@ export function GlobalAppTabsBar() {
       suppressScope(closingTab.scopeKey);
       pendingActiveAppTabKeyMemory = "";
       setPendingActiveAppTabKey("");
-      setClosingAppTabKey("");
       setIsAppTabsMenuOpen("");
       setAppTabsMenuPos(null);
       const fallbackTab =
@@ -833,18 +805,12 @@ export function GlobalAppTabsBar() {
       return;
     }
     if (closingTab && isClosingCurrentScope) {
-      suppressTab(closingAppTabKey);
-      const action = actionsByKey[closingAppTabKey];
-      if (saveState) {
-        action?.onCloseSave?.();
-      } else {
-        action?.onCloseDiscard?.();
-      }
+      suppressTab(tabKey);
+      actionsByKey[tabKey]?.onCloseSave?.();
     } else {
-      closeTab(closingAppTabKey);
+      closeTab(tabKey);
     }
-    setClosingAppTabKey("");
-    if (!isClosingScope && closingAppTabKey === pendingActiveAppTabKey) {
+    if (!isClosingScope && tabKey === pendingActiveAppTabKey) {
       pendingActiveAppTabKeyMemory = "";
       setPendingActiveAppTabKey("");
     }
@@ -1117,9 +1083,8 @@ export function GlobalAppTabsBar() {
                   <button
                     type="button"
                     onMouseDown={handleAuxButtonMouseDown}
-                    onClick={(e) => {
-                      setCloseTabModalOrigin(captureGlassModalOrigin(e));
-                      setClosingAppTabKey(group.tabs.length > 1 ? `${CLOSING_SCOPE_PREFIX}${group.groupKey}` : activeTab.key);
+                    onClick={() => {
+                      closeAppTab(group.tabs.length > 1 ? `${CLOSING_SCOPE_PREFIX}${group.groupKey}` : activeTab.key);
                     }}
                     className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--panel-border)]"
                     style={{ color: shellPalette.textMuted }}
@@ -1278,52 +1243,6 @@ export function GlobalAppTabsBar() {
             document.body,
           )
         : null}
-      {shouldRenderCloseTabModal && (
-        <div className="fixed inset-0 z-[2600] flex items-center justify-center px-4">
-          <button
-            type="button"
-            aria-label="Close dialog backdrop"
-            onClick={() => setClosingAppTabKey("")}
-            className="glass-modal-backdrop absolute inset-0"
-          />
-          <div ref={closeTabModalPanelRef} className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
-            <div className="glass-modal-header px-5 py-4">
-              <h3 className="text-[15px] font-bold" style={{ color: "var(--text-main)" }}>{closingDialogTitle}</h3>
-            </div>
-            <div className="px-5 py-4">
-              <p className="text-[13px]" style={{ color: "var(--text-main)" }}>
-                {closingDialogBody}
-              </p>
-              <div className="mt-4 flex flex-wrap justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setClosingAppTabKey("")}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold hover:brightness-95"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => confirmCloseAppTab(false)}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
-                  style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
-                >
-                  Close Without Saving
-                </button>
-                <button
-                  type="button"
-                  onClick={() => confirmCloseAppTab(true)}
-                  className="inline-flex h-10 items-center justify-center rounded-[10px] border px-4 text-[12px] font-bold text-white hover:brightness-95"
-                  style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                >
-                  Save & Close
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

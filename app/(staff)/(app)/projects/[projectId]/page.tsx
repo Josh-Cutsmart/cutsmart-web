@@ -46953,14 +46953,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             createPortal(
               <div
                 data-status-menu="true"
-                className="fixed overflow-hidden rounded-[10px] border border-[#D7DEE8] bg-white shadow-[0_20px_44px_rgba(15,23,42,0.30),0_6px_14px_rgba(15,23,42,0.18)]"
+                className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
                 style={{
                   left: projectStatusMenuPos.left,
                   top: projectStatusMenuPos.top,
                   width: projectStatusMenuPos.width,
                   zIndex: 2147483647,
-                  borderColor: projectPalette.border,
-                  backgroundColor: projectPalette.panelBg,
+                  ...GLASS_DROPDOWN_MENU_STYLE,
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -46973,11 +46972,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       disabled={isSavingStatus}
                       onClick={() => void onChangeStatus(option)}
-                      className="block w-full border-b px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
+                      className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold text-white last:mb-0 disabled:opacity-55"
                       style={{
                         backgroundColor: rowColor,
                         filter: active ? "brightness(0.96)" : "brightness(1)",
-                        borderBottomColor: isDarkMode ? "#232323" : "#EEF2F7",
                       }}
                     >
                       {option}

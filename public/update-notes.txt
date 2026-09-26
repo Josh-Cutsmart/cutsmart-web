@@ -1,27 +1,41 @@
-Version: v0.4.2
+Version: v0.4.3
 
 whatsNew: [
-<u><b>Sidebar</b></u>
-<ul>
-<li>Main tabs reordered: <b>Dashboard, Leads, Recently Deleted, Clients, Calendar, Company Wrapped, Company Settings</b></li>
-<li><b>Changelog</b> moved to the bottom of that list, separated by a divider line</li>
-</ul>
-
-<u><b>Changelog</b></u>
-<ul>
-<li>The dev-only version editor is back to a plain HTML textarea with a helpers panel, instead of the rich-text editor:
-  <ul>
-  <li>Each helper now shows its actual HTML tag next to the label, with a copy button to copy it straight to your clipboard</li>
-  <li>Clicking a helper no longer jumps the editor's scroll position — it only moves if the cursor it just placed is actually off-screen</li>
-  </ul>
-</li>
-<li>Version dates now use the shorter month format (e.g. <b>25 Sep 2026</b>), matching the rest of the app</li>
-<li>Each version's date is now shown on the right side of its own header bar</li>
-</ul>
-
 <u><b>Dashboard</b></u>
 <ul>
-<li>Column (board) view no longer shows the All/Active/Completed filters on desktop — the columns already separate complete from active by status, so every column always shows everything</li>
-<li>Nudged the search icon over slightly in the search bar</li>
+<li>Sub-board columns (the per-status drill-down view) now have the same collapse/expand button in their header as the main board's columns</li>
+<li>Which sub-board you have open, and which columns are collapsed, is now remembered per user across a page refresh — no more reopening the sub-board or re-collapsing columns every time</li>
+<li>Fixed a bug where dragging a card into a sub-stage column and then refreshing the page could send it to a leftover "Other" column that wasn't part of the board — cards now correctly stay exactly where they were dropped, and that catch-all column has been removed entirely</li>
+<li>Added a floating horizontal scrollbar that stays pinned to the bottom of the screen, so board columns can be scrolled left/right at any scroll position — previously you had to scroll all the way down the page first to reach it</li>
+<li>Fixed a hairline visual overshoot in that scrollbar at certain zoom levels/screen scaling</li>
+</ul>
+
+<u><b>Dashboard & Leads</b></u>
+<ul>
+<li>Pressing the <b>Left</b>/<b>Right</b> arrow keys while hovering over a board now smoothly slides the view to fully reveal whichever column is half-cut-off at that edge, instead of the browser's old small, arbitrary scroll nudge
+  <ul>
+  <li>Works on the main Dashboard board, its sub-board columns, and the Leads board — including columns with no cards in them</li>
+  </ul>
+</li>
+</ul>
+
+<u><b>Mobile</b></u>
+<ul>
+<li>Fixed a regression on Dashboard and Leads where you could only scroll a board's columns left/right by dragging the column header — dragging anywhere else in the column (over cards or empty space) scrolls again</li>
+</ul>
+
+<u><b>Project Details</b></u>
+<ul>
+<li>The project status dropdown now looks and matches everywhere it appears — Dashboard's list view, Dashboard's board view, and the Project Details header bar all share the same frosted-glass style with rounded, colour-coded status options</li>
+</ul>
+
+<u><b>Top Tab Bar</b></u>
+<ul>
+<li>Closing a tab with its <b>X</b> button now saves and closes immediately — the extra <b>Cancel / Close Without Saving / Save & Close</b> confirmation popup has been removed for a faster, one-click close</li>
+</ul>
+
+<u><b>App-Wide</b></u>
+<ul>
+<li>Fixed the page accidentally highlighting/selecting text underneath your cursor while dragging to scroll or reorder something</li>
 </ul>
 ]

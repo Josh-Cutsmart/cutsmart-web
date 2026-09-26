@@ -460,6 +460,10 @@ export default function DashboardPage() {
     const setCardListsScrollable = (scrollable: boolean) => {
       el.querySelectorAll<HTMLElement>(".glass-scroll.flex-1").forEach((list) => {
         list.style.overflowY = scrollable ? "auto" : "hidden";
+        // Only claim the vertical axis (handing horizontal off to the board's own scroller) once
+        // this list is actually the vertical scroller — see the comment on this div in
+        // renderBoardColumn for why applying it unconditionally broke horizontal drag-scroll.
+        list.style.touchAction = scrollable ? "pan-y" : "auto";
       });
     };
     // Each column is two nested elements: an outer shell (marked `data-board-column`) that owns
@@ -1773,12 +1777,15 @@ export default function DashboardPage() {
           style={{ borderColor: glassColumnBorder, ...glassColumnSurface }}
         >
           {options.renderHeader(columnBadgeBg, columnBadgeText)}
-          {/* touchAction pan-y: this list only ever scrolls vertically — telling the browser that
-              explicitly means a touch that starts here but moves horizontally is handed to the
-              board's own horizontal scroller right away, instead of this column's native vertical
-              scroll capturing the whole gesture first (the classic nested-perpendicular-scroll
-              trap, worse the further a column's already been scrolled from its own edges). */}
-          <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none", touchAction: "pan-y" }}>
+          {/* touchAction: left to the browser default (not "pan-y") while this list is still
+              overflow-y-hidden (not yet the real vertical scroller, per setCardListsScrollable
+              below) — pinning it to pan-y here blocked horizontal drag-scroll everywhere in the
+              column body instead of handing it off, since there's no vertical overflow yet for
+              the browser to actually delegate around. setCardListsScrollable flips it to pan-y
+              only once this list becomes the genuine scroller, which is the one moment the
+              nested-perpendicular-scroll trap (this list swallowing a mostly-horizontal drag) can
+              actually happen. */}
+          <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
             {options.projects.length === 0 ? (
               <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>{options.emptyLabel ?? "No projects."}</p>
             ) : (
@@ -2084,7 +2091,7 @@ export default function DashboardPage() {
                 {dashboardStatusBoardColumns.otherProjects.length}
               </span>
             </div>
-            <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none", touchAction: "pan-y" }}>
+            <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
               {dashboardStatusBoardColumns.otherProjects.map((project) => renderProjectBoardCard(project, "#64748B"))}
             </div>
           </div>
@@ -3750,14 +3757,16 @@ export default function DashboardPage() {
                 createPortal(
                   <div
                     data-status-menu="true"
-                    className="fixed overflow-hidden rounded-[10px] border shadow-[var(--shadow-md)]"
+                    className="fixed overflow-hidden rounded-[10px] border p-1 shadow-[var(--shadow-md)]"
                     style={{
                       left: statusMenuPos.left,
                       top: statusMenuPos.top,
                       width: statusMenuPos.width,
                       zIndex: 2147483647,
-                      borderColor: dashboardPalette.border,
-                      backgroundColor: dashboardPalette.panelBg,
+                      borderColor: "var(--glass-border)",
+                      backgroundColor: "var(--glass-modal-bg)",
+                      backdropFilter: "blur(12px) saturate(220%)",
+                      WebkitBackdropFilter: "blur(12px) saturate(220%)",
                     }}
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -3771,11 +3780,10 @@ export default function DashboardPage() {
                           type="button"
                           disabled={statusUpdatingProjectId === statusMenuProject.id}
                           onClick={() => void onSelectProjectStatus(statusMenuProject, option)}
-                          className="block w-full border-b px-3 py-2 text-center text-[12px] font-semibold text-white disabled:opacity-55"
+                          className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold text-white last:mb-0 disabled:opacity-55"
                           style={{
                             backgroundColor: rowColor,
                             filter: active ? "brightness(0.96)" : "brightness(1)",
-                            borderBottomColor: isDarkMode ? "#232323" : "#EEF2F7",
                           }}
                         >
                           {option}
