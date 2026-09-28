@@ -79,3 +79,36 @@ export type ProductComparison = {
   savedAtIso: string;
   savedByName?: string;
 };
+
+// Sums quantity (not row count) grouped by partType — matches the "Parts" total already shown live
+// on both cutlist tabs elsewhere in this app, so a summary built from this stays consistent with
+// numbers staff already see. Rows with no partType are grouped under "Unassigned" rather than
+// dropped, so their quantity isn't silently missing from the total.
+export function summarizeCutlistRowsByPartType(rows: CutlistRow[]): Array<{ partType: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const partType = String(row.partType || "").trim() || "Unassigned";
+    const quantity = Number(row.quantity) || 0;
+    counts.set(partType, (counts.get(partType) ?? 0) + quantity);
+  }
+  return Array.from(counts.entries())
+    .map(([partType, count]) => ({ partType, count }))
+    .sort((a, b) => a.partType.localeCompare(b.partType));
+}
+
+// room+name, not `id` — a row's id is freshly generated per cutlist (Initial Measure and
+// Production are separate Firestore subcollections), so ids can never line up across the two.
+function cutlistRowMatchKey(row: CutlistRow): string {
+  return `${row.room.trim().toLowerCase()}::${row.name.trim().toLowerCase()}`;
+}
+
+// Initial Measure rows with no match (by room+name) in the Production cutlist — used for the
+// Production close-summary's "missing from Production" callout. Rows with a blank name are
+// excluded on both sides: there's nothing reliable to key an unnamed row on, so it can neither be
+// matched nor meaningfully reported as "missing."
+export function findMissingProductionRows(initialRows: CutlistRow[], productionRows: CutlistRow[]): CutlistRow[] {
+  const productionKeys = new Set(
+    productionRows.filter((row) => row.name.trim()).map(cutlistRowMatchKey),
+  );
+  return initialRows.filter((row) => row.name.trim() && !productionKeys.has(cutlistRowMatchKey(row)));
+}

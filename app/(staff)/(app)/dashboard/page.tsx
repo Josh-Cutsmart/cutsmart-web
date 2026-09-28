@@ -7,9 +7,11 @@ import { Activity, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Chevro
 import { useAuth } from "@/lib/auth-context";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
 import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
+import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import {
+  addProjectChange,
   fetchCompanyDoc,
   fetchCompanyMembers,
   fetchProjects,
@@ -115,7 +117,7 @@ function statusPillColors(status: string) {
   };
 
   const bg = defaults[key] ?? "#64748B";
-  return { backgroundColor: bg, color: "#FFFFFF" };
+  return { backgroundColor: bg, color: rowTextColorForFill(bg) };
 }
 
 function normalizeStatuses(raw: unknown): StatusRow[] {
@@ -228,14 +230,20 @@ function monthSortValue(monthKey: string): number {
   return year * 100 + month;
 }
 
+// White by default (the common case for typical mid/dark status & column colors) — only switches
+// to dark text once a color is genuinely too light for white to stay readable against it. 0.75 is
+// a deliberately high bar (vs. a more "balanced" ~0.5-0.6 contrast-ratio cutoff) so pastel/lighter
+// brand colors that would still read fine in white stay white, and only near-white/very pale
+// colors flip to dark.
+const LIGHT_FILL_LUMINANCE_THRESHOLD = 0.75;
 function rowTextColorForFill(fill: string): string {
   const clean = String(fill || "").trim().replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return "#111827";
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return "#FFFFFF";
   const r = Number.parseInt(clean.slice(0, 2), 16);
   const g = Number.parseInt(clean.slice(2, 4), 16);
   const b = Number.parseInt(clean.slice(4, 6), 16);
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.62 ? "#0F172A" : "#FFFFFF";
+  return luminance > LIGHT_FILL_LUMINANCE_THRESHOLD ? "#0F172A" : "#FFFFFF";
 }
 
 function normalizeRoleRows(raw: unknown): RoleRow[] {
@@ -435,243 +443,9 @@ export default function DashboardPage() {
   const dashboardViewModeRef = useRef(dashboardViewMode);
   dashboardViewModeRef.current = dashboardViewMode;
   const boardCheckRef = useRef<(() => void) | null>(null);
-  const boardStickyCleanupRef = useRef<(() => void) | null>(null);
-  const boardStickyRef = useCallback((el: HTMLDivElement | null) => {
-    boardStickyCleanupRef.current?.();
-    boardStickyCleanupRef.current = null;
-    boardCheckRef.current = null;
-    if (!el) return;
-    let raf = 0;
-    const mainEl = document.querySelector("main");
-    // The page-scroll-blocked backstop below (see setPageScrollBlocked) only has an un-stick path
-    // via the `wheel` event, which never fires for a touch-driven scroll — a coarse-pointer device
-    // that engages the block while mid-scroll inside a column would then have no way to ever
-    // un-block the page again (exactly "the page won't scroll back up"). Touch doesn't need the
-    // backstop anyway: `.glass-scroll` has no overscroll-behavior set, so native touch scroll-
-    // chaining already hands the gesture back to the page on its own once a column's card list
-    // hits its own scroll boundary, the same way any ordinary nested scrollable does. Computed
-    // once — pointer capability doesn't change over the component's lifetime.
-    const isCoarsePointer = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
-    // Each column's card list toggles overflow-y directly on the DOM (not via React state) for
-    // the same reason clip-path is written directly below: going through setState here would add
-    // a render cycle between "scroll crossed the lock threshold" and "the column can actually be
-    // scrolled", long enough to eat the rest of a trackpad gesture and leave the user stuck until
-    // they start a new one. A plain style write lands on the very next paint, same as clip-path.
-    const setCardListsScrollable = (scrollable: boolean) => {
-      el.querySelectorAll<HTMLElement>(".glass-scroll.flex-1").forEach((list) => {
-        list.style.overflowY = scrollable ? "auto" : "hidden";
-        // Only claim the vertical axis (handing horizontal off to the board's own scroller) once
-        // this list is actually the vertical scroller — see the comment on this div in
-        // renderBoardColumn for why applying it unconditionally broke horizontal drag-scroll.
-        list.style.touchAction = scrollable ? "pan-y" : "auto";
-      });
-    };
-    // Each column is two nested elements: an outer shell (marked `data-board-column`) that owns
-    // the box-shadow and layout sizing, and an inner element that owns the background/border/blur
-    // and `rounded-[16px] overflow-hidden`. The reveal below sets the OUTER's real `height`
-    // directly rather than clip-path-ing anything — that's what keeps the shadow (which always
-    // renders around whatever size the outer currently is) and the rounded bottom (the inner's
-    // own border-radius, which rounds correctly at any height) continuously in sync with how much
-    // of the column is actually revealed, instead of a clip-path boundary that doesn't line up
-    // with either. This is safe to do with a real `height` (unlike the row/panel itself) because
-    // a column's own height doesn't feed into the row's — the row's is fixed independently via
-    // flex, so shrinking a column here never changes the page's total scrollable height.
-    const getColumns = (): HTMLElement[] => Array.from(el.querySelectorAll<HTMLElement>("[data-board-column]"));
-    // Backs the wheel handler below — the EARLY_SCROLLABLE_PX buffer on setCardListsScrollable
-    // helps, but a discrete wheel tick still resolves its scroll target once, based on what the
-    // BROWSER already considers scrollable at that instant; it can't retroactively redirect a
-    // tick that already committed to scrolling the page. `isLocked` (the precise, unbuffered
-    // state — matching exactly when position:sticky has actually engaged) lets the wheel handler
-    // redirect scroll to a column manually, on every tick, without waiting on the browser to
-    // notice anything.
-    let isLocked = false;
-    // Tracks which element actually scrolls the page (mirrors the same check inside `check()`)
-    // so the wheel handler below can manually drive it — see the un-stick comment there.
-    let mainScrolls = false;
-    // Declared up here (rather than down by onWheel, where it's set) so `check()` can also read
-    // it for the page-scroll lock below — see `setPageScrollBlocked`.
-    let unsticking = false;
-    // Belt-and-suspenders backstop on top of the wheel redirect below: rather than rely solely on
-    // preventDefault() suppressing the browser's native scroll on every single wheel tick, this
-    // makes it structurally impossible for the page to scroll at all while locked — there's no
-    // event-level mechanism (native default action, scroll latching, or anything else) that can
-    // scroll a container that has nothing scrollable. Only lifted the instant we deliberately want
-    // the page to move (mid un-stick), and re-applied as soon as we're back to "should stay put."
-    let pageScrollBlocked = false;
-    const setPageScrollBlocked = (blocked: boolean) => {
-      if (pageScrollBlocked === blocked) return;
-      pageScrollBlocked = blocked;
-      const target = mainScrolls ? mainEl : document.documentElement;
-      if (target) target.style.overflowY = blocked ? "hidden" : "";
-    };
-    // Backs the natural-height cache inside `check()` — see the comment down there for why this
-    // isn't just remeasured every scroll frame.
-    let cachedFullHeight = 0;
-    let cachedFullHeightKey = "";
-    const check = () => {
-      raf = 0;
-      // Each column's card list has a fixed, viewport-relative height from the moment it
-      // renders — position:sticky only changes whether the panel tracks scroll or holds still,
-      // not its size — so if the card list were always overflow-y-auto, a swipe over an
-      // unlocked (not-yet-stuck) column would scroll the cards instead of the page. Keep it
-      // non-scrollable until the sticky panel has actually reached its stuck offset, so the
-      // gesture bubbles up to the page/main scroll and finishes bringing the board to the top.
-      if (dashboardViewModeRef.current !== "board") {
-        isLocked = false;
-        setCardListsScrollable(false);
-        setPageScrollBlocked(false);
-        getColumns().forEach((col) => { col.style.height = ""; });
-        cachedFullHeightKey = "";
-        return;
-      }
-      const stuckTop = Number.parseFloat(getComputedStyle(el).top) || 0;
-      // getBoundingClientRect() is always viewport-relative, but the sticky `top` offset is
-      // relative to whichever element is actually scrolling — on mobile that's `<main>` itself
-      // (already offset ~48px below the fixed tab bar), on desktop it's the document (offset 0).
-      // Comparing rect.top straight to the CSS top value only works for the latter, so add back
-      // the scrollport's own offset when main is the one doing the scrolling.
-      mainScrolls = Boolean(mainEl) && getComputedStyle(mainEl as HTMLElement).overflowY !== "visible";
-      const containerTop = mainScrolls ? (mainEl as HTMLElement).getBoundingClientRect().top : 0;
-      const rect = el.getBoundingClientRect();
-      // A discrete wheel/trackpad tick resolves its scroll target ONCE, based on what's
-      // scrollable at that instant — so if a card list only becomes overflow-y-auto exactly AT
-      // the pixel the panel finishes locking, the tick that lands the panel there still scrolls
-      // the page (the card list wasn't scrollable yet when the browser picked a target), and the
-      // user needs one more, separate tick before the column responds. Unlocking a few pixels
-      // EARLY (while the panel's own scroll-into-place is still finishing) means the card list is
-      // already scrollable by the time that happens, so the same continuous gesture carries
-      // straight through. EARLY_SCROLLABLE_PX is small on purpose: position:sticky itself still
-      // won't let the panel move past its stuck offset regardless, so this can't reintroduce the
-      // original bug (cards swallowing a swipe well before the panel has scrolled into place) —
-      // it only shaves the last few pixels of an already-almost-finished scroll.
-      const EARLY_SCROLLABLE_PX = 24;
-      isLocked = rect.top <= containerTop + stuckTop + 1;
-      const nearlyLocked = rect.top <= containerTop + stuckTop + EARLY_SCROLLABLE_PX;
-      setCardListsScrollable(nearlyLocked);
-      // Blocked on the same EARLY_SCROLLABLE_PX lead as the card lists go scrollable, not just
-      // once `isLocked` — so the page is already unable to scroll by the exact tick that finishes
-      // locking, and that tick's wheel event has nothing left to resolve to except the column.
-      setPageScrollBlocked(!isCoarsePointer && nearlyLocked && !unsticking);
-      const columns = getColumns();
-      const firstCol = columns[0];
-      if (!firstCol) return;
-      // The column's natural (fully-grown) height doesn't change from one scroll frame to the
-      // next — only how much of it is currently revealed does — so it's cached here instead of
-      // being remeasured on every single scroll-driven call. Remeasuring meant resetting height
-      // to "" and immediately reading getBoundingClientRect(), a write-then-read that forces a
-      // synchronous layout reflow; doing that (plus repainting every column's backdrop-filter
-      // blur) on every scroll frame for the whole lock-in transition is what showed up as
-      // stutter, especially visible right at the moving bottom edge, worse on mobile GPUs. The
-      // cache key covers the two things that actually DO change it: the column count (data
-      // load/filter swapping which columns exist) and the viewport size (resize/orientation).
-      const fullHeightCacheKey = `${columns.length}:${window.innerWidth}x${window.innerHeight}`;
-      if (fullHeightCacheKey !== cachedFullHeightKey) {
-        const prevHeight = firstCol.style.height;
-        firstCol.style.height = "";
-        cachedFullHeight = firstCol.getBoundingClientRect().height;
-        firstCol.style.height = prevHeight;
-        cachedFullHeightKey = fullHeightCacheKey;
-      }
-      const colRect = firstCol.getBoundingClientRect();
-      // BOTTOM_PAD gives the revealed edge breathing room from the viewport bottom — matching the
-      // wrapper's own pt-[10px] above the columns, the row's px-[10px]/pb-[10px], and the
-      // gap-[10px] between columns, so every side of a column has the same padding — instead of
-      // running flush to the screen edge. It stays in the formula even once locked — rect.top
-      // then holds steady at the sticky offset, so this settles just short of the column's true
-      // height rather than snapping straight to it, avoiding a jump at the handoff. Measured off
-      // each column's own rect (not the wrapper's) so this stays correct regardless of any
-      // padding between the wrapper and the columns — they're all the same size and position, so
-      // the first one stands in for all of them.
-      const BOTTOM_PAD = 10;
-      const grownHeight = Math.min(cachedFullHeight, Math.max(0, window.innerHeight - BOTTOM_PAD - colRect.top));
-      const nextHeight = grownHeight < cachedFullHeight - 0.5 ? `${grownHeight}px` : "";
-      columns.forEach((col) => {
-        if (col.style.height !== nextHeight) col.style.height = nextHeight;
-      });
-    };
-    boardCheckRef.current = check;
-    const onScroll = () => {
-      if (raf) return;
-      raf = window.requestAnimationFrame(check);
-    };
-    // For ordinary scrolling within a column, this does NOT intercept the wheel event at all —
-    // `setPageScrollBlocked` above already makes the page unable to scroll while locked, so a
-    // wheel/mouse notch's own native default action has nothing left to resolve to except the
-    // column underneath (the only remaining scrollable thing), and scrolls it with the browser's
-    // own native, smooth, momentum-preserving animation — the same feel as scrolling the page
-    // itself, which a hand-rolled JS scrollTop animation can only ever approximate. This only
-    // steps in for the one case native scrolling can't handle on its own: un-sticking the panel
-    // once a column has been scrolled all the way back to its own top.
-    //
-    // Once that scroll-up gesture starts un-sticking the panel (see below), `isLocked` flips false
-    // mid-gesture as soon as the panel moves off its stuck offset — but the browser still won't
-    // resume its own default scrolling for the REST of that gesture (it was prevented earlier in
-    // this same gesture, to redirect it into the column). Without this flag, the moment isLocked
-    // flips, onWheel's top guard would bail out and hand back to that browser default action,
-    // which visibly reads as the scroll suddenly stopping ("gets stuck") partway through un-
-    // sticking. Keeping this true — independent of isLocked — for the rest of the up-scroll keeps
-    // driving the page manually all the way through, instead of only for the first tick or two.
-    // (Declared up near `isLocked`/`mainScrolls` above, not here, so `check()` can read it too.)
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY === 0) return;
-      if (unsticking) {
-        if (e.deltaY > 0) {
-          unsticking = false;
-        } else {
-          setPageScrollBlocked(false);
-          const scroller = mainScrolls ? mainEl : null;
-          if (scroller) scroller.scrollTop += e.deltaY;
-          else window.scrollBy(0, e.deltaY);
-          e.preventDefault();
-          return;
-        }
-      }
-      if (!isLocked || e.deltaY >= 0) return;
-      const cardList = (e.target as HTMLElement | null)?.closest<HTMLElement>(".glass-scroll.flex-1");
-      if (!cardList || cardList.scrollTop > 0) return;
-      // Scroll the page/main back up manually too, rather than just releasing the event and
-      // hoping the browser's default action takes over — this same continuous gesture has
-      // already had preventDefault() called on it repeatedly (to redirect it into the column),
-      // and the browser doesn't reliably hand default scrolling back to the page for the REST
-      // of that gesture once reversed. Driving it ourselves, the same way we drive the column,
-      // is what actually un-sticks the panel within the same swipe instead of needing a new one.
-      unsticking = true;
-      setPageScrollBlocked(false);
-      const scroller = mainScrolls ? mainEl : null;
-      if (scroller) scroller.scrollTop += e.deltaY;
-      else window.scrollBy(0, e.deltaY);
-      e.preventDefault();
-    };
-    check();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    mainEl?.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", onWheel, { passive: false });
-    // Projects load asynchronously, so the very first `check()` call above can land before any
-    // column has actually rendered (still showing "Loading projects…") — `getColumns()` finds
-    // nothing yet, so nothing gets sized, and nothing else was going to call `check()` again once
-    // the columns actually mounted (the view-mode re-check effect below only reruns on
-    // dashboardViewMode, which by then has already settled). Watching `el` for child changes
-    // catches that moment generically — real data finishing load, a filter/search change
-    // swapping which columns exist, anything — without needing to name every state that could
-    // cause it. Calls `check()` directly rather than going through the rAF-throttled `onScroll`:
-    // that throttle exists to coalesce rapid-fire scroll events, but mutations here are
-    // infrequent, and a backgrounded tab can leave a pending rAF callback waiting on the browser
-    // (which pauses rAF, not MutationObserver, for hidden tabs) — no reason to route through it.
-    const observer = new MutationObserver(() => check());
-    observer.observe(el, { childList: true, subtree: true });
-    boardStickyCleanupRef.current = () => {
-      if (raf) window.cancelAnimationFrame(raf);
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      mainEl?.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onWheel);
-      observer.disconnect();
-      getColumns().forEach((col) => { col.style.height = ""; });
-      setCardListsScrollable(false);
-      setPageScrollBlocked(false);
-    };
-  }, []);
+  // See lib/board-sticky-scroll.ts for the mechanism (position:sticky natively pinning the panel
+  // + column-height-reveal), and why it no longer forces the page's own overflow to "hidden".
+  const boardStickyRef = useBoardStickyRef(dashboardViewModeRef, boardCheckRef, { bottomPadPx: 10 });
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
   // useLayoutEffect, not useEffect: dashboardViewMode starts as "list" and only flips to "board"
@@ -838,6 +612,45 @@ export default function DashboardPage() {
       window.removeEventListener("scroll", onScrollOrResize);
       window.removeEventListener("resize", onScrollOrResize);
     };
+  }, []);
+  // List view: if the table's own available width can't fit every column, drop the Tags column
+  // first to reclaim ~180px rather than letting Status (the right-most column) get pushed off
+  // screen. Measured via ResizeObserver on the table's own wrapper (a plain width:auto block, so
+  // its clientWidth reflects the actual available space, not the table's own min-width) rather
+  // than a fixed viewport breakpoint — the exact cutover point depends on the left sidebar's own
+  // current width, which is independently user-resizable (see AppShell) and can change without
+  // the window itself resizing.
+  //
+  // A callback ref, not a plain useEffect(() => ..., []) — the wrapper only exists in the DOM at
+  // all while dashboardViewMode === "list" (board is the default), so a mount-once effect can run
+  // with a still-null ref and never re-attach once the list view actually mounts later. This runs
+  // exactly when the element itself mounts/unmounts, whenever that happens to be.
+  // Project Name + Assigned + Created + Modified only — Tags and Status are handled separately
+  // below (Tags can be dropped entirely, Status's own width is content-based, not fixed).
+  const LIST_TABLE_BASE_WITHOUT_TAGS_OR_STATUS_PX = 220 + 130 + 150 + 150;
+  const LIST_TABLE_TAGS_COLUMN_WIDTH_PX = 180;
+  const [hideTagsColumnInList, setHideTagsColumnInList] = useState(false);
+  // Holds the CURRENT full-table minimum (base + Tags + whatever the Status column's own
+  // content-based width comes out to — see listStatusColumnWidthPx below), kept live via the effect
+  // further down. The ResizeObserver callback is only ever created once (empty deps, since it's a
+  // callback ref rather than a plain effect — see this block's own comment), so it reads this
+  // through a ref rather than closing over a value that could otherwise go stale the moment the
+  // Status column's own width changes (e.g. company status config loading in after first paint).
+  const listTableFullMinWidthRef = useRef(LIST_TABLE_BASE_WITHOUT_TAGS_OR_STATUS_PX + LIST_TABLE_TAGS_COLUMN_WIDTH_PX + 200);
+  const dashboardListTableWrapperElRef = useRef<HTMLDivElement | null>(null);
+  const dashboardListTableResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const dashboardListTableWrapperCallbackRef = useCallback((el: HTMLDivElement | null) => {
+    dashboardListTableResizeObserverRef.current?.disconnect();
+    dashboardListTableResizeObserverRef.current = null;
+    dashboardListTableWrapperElRef.current = el;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const update = () => {
+      setHideTagsColumnInList(el.clientWidth > 0 && el.clientWidth < listTableFullMinWidthRef.current);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    dashboardListTableResizeObserverRef.current = ro;
   }, []);
   const canAccessDashboard =
     access.status === "ready" &&
@@ -1061,11 +874,35 @@ export default function DashboardPage() {
     const options = statusRows.map((row) => row.name).filter(Boolean);
     return options.length ? options : ["New", "In Production", "On Hold", "Complete"];
   }, [statusRows]);
+  // List view's Status column/pill width — sized to whichever configured status name is actually
+  // the longest, plus 20px of padding on each side, instead of a flat 120/200px, so a company with
+  // short status names (e.g. "New", "Done") doesn't carry the same wide column a company with long
+  // ones needs. Same rough per-character estimate as the cutlist Room column's own sizing, not a
+  // real text measurement — this only needs to land in the right neighborhood. The column itself
+  // only keeps a small 20px of its own slack beyond the pill (the pill's own marginRight:10 plus a
+  // little left-side breathing room before text-right's own alignment kicks in) — not the original
+  // 80px, which was carrying far more empty column space than the pill itself ever needed.
+  const listStatusPillWidthPx = useMemo(() => {
+    const maxLen = statusOptions.reduce((max, name) => Math.max(max, String(name || "").trim().length), 0);
+    if (maxLen === 0) return 120;
+    return Math.ceil(maxLen * 7) + 40;
+  }, [statusOptions]);
+  const listStatusColumnWidthPx = listStatusPillWidthPx + 20;
+  const listTableFullMinWidthPx = LIST_TABLE_BASE_WITHOUT_TAGS_OR_STATUS_PX + LIST_TABLE_TAGS_COLUMN_WIDTH_PX + listStatusColumnWidthPx;
+  useEffect(() => {
+    listTableFullMinWidthRef.current = listTableFullMinWidthPx;
+    // Re-checks immediately against the wrapper's already-known width (rather than waiting on the
+    // next resize event, which won't fire on its own just because this threshold changed) — matters
+    // the first time real company statuses load in, which can shrink or grow this threshold well
+    // after the table's own wrapper size was last measured.
+    const el = dashboardListTableWrapperElRef.current;
+    if (el) setHideTagsColumnInList(el.clientWidth > 0 && el.clientWidth < listTableFullMinWidthPx);
+  }, [listTableFullMinWidthPx]);
 
   const projectStatusPillStyle = (statusLabel: string) => {
     const configured = statusColorByName.get(String(statusLabel || "").trim().toLowerCase());
     if (configured) {
-      return { backgroundColor: configured, color: "#FFFFFF" };
+      return { backgroundColor: configured, color: rowTextColorForFill(configured) };
     }
     return statusPillColors(statusLabel);
   };
@@ -1173,6 +1010,9 @@ export default function DashboardPage() {
           row.id === project.id ? ({ ...row, statusLabel: previousStatus, dashboardSubStageId: previousSubStageId } as Project) : row,
         ),
       );
+    } else if (previousStatus !== nextStatus) {
+      const actor = String(user?.displayName || user?.email || "Staff").trim() || "Staff";
+      void addProjectChange(project.id, actor, `Status changed: ${previousStatus || "(none)"} → ${nextStatus}`);
     }
     setStatusUpdatingProjectId("");
   };
@@ -1762,6 +1602,11 @@ export default function DashboardPage() {
       : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
     const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
     const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
+    // Unlike columnBadgeText (the count badge/collapse button — stays a fixed light/dark-mode
+    // color by design), the column's actual name text contrasts against its OWN configured color,
+    // same reasoning as the status pills this mirrors — main statuses and sub-stages share the
+    // exact same color picker.
+    const columnTitleTextColor = rowTextColorForFill(options.color);
     return (
       // See the main board's collapsed-column case for why the shadow and reveal height sit on
       // this outer shell rather than on the column div below.
@@ -1787,7 +1632,7 @@ export default function DashboardPage() {
               actually happen. */}
           <div className="glass-scroll board-column-scroll flex-1 space-y-2.5 overflow-y-hidden p-2.5" style={{ scrollbarWidth: "none" }}>
             {options.projects.length === 0 ? (
-              <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: "#000000" }}>{options.emptyLabel ?? "No projects."}</p>
+              <p className="px-1 py-6 text-center text-[11px] font-semibold" style={{ color: columnTitleTextColor }}>{options.emptyLabel ?? "No projects."}</p>
             ) : (
               options.projects.map((project) => options.renderCard(project))
             )}
@@ -1858,6 +1703,7 @@ export default function DashboardPage() {
       : "inset 0 1px 0 rgba(255,255,255,0.7), inset 0 30px 40px -32px rgba(255,255,255,0.35), var(--shadow-glass)";
     const columnBadgeBg = isDarkMode ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.55)";
     const columnBadgeText = isDarkMode ? dashboardPalette.text : "#000000";
+    const columnTitleTextColor = rowTextColorForFill(options.color);
     return (
       // Shadow AND the scroll-reveal height live on this outer shell (not the button below) — the
       // shadow always renders around whatever size the outer currently is, so setting the height
@@ -1892,7 +1738,7 @@ export default function DashboardPage() {
           </span>
           <span
             className="shrink-0 whitespace-nowrap text-[14px] font-normal"
-            style={{ writingMode: "vertical-rl", color: "#000000", letterSpacing: "0.12em" }}
+            style={{ writingMode: "vertical-rl", color: columnTitleTextColor, letterSpacing: "0.12em" }}
           >
             {options.name}
           </span>
@@ -1964,7 +1810,7 @@ export default function DashboardPage() {
               }),
             renderHeader: (badgeBg, badgeText) =>
               renderColumnHeaderBar({
-                left: <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{col.name}</p>,
+                left: <p className="truncate text-[15px] font-semibold" style={{ color: rowTextColorForFill(col.color) }}>{col.name}</p>,
                 count: col.projects.length,
                 badgeBg,
                 badgeText,
@@ -2048,12 +1894,13 @@ export default function DashboardPage() {
                       onClick={(e) => onOpenSubBoardColumn(column, e)}
                       className="flex min-w-0 items-center gap-1 text-left hover:underline"
                       title={`Open ${column.subStages.length} sub-stage${column.subStages.length === 1 ? "" : "s"}`}
+                      style={{ color: rowTextColorForFill(column.color) }}
                     >
-                      <span className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</span>
-                      <ChevronRight size={13} className="shrink-0" style={{ color: "#000000" }} />
+                      <span className="truncate text-[15px] font-semibold" style={{ color: rowTextColorForFill(column.color) }}>{column.name}</span>
+                      <ChevronRight size={13} className="shrink-0" style={{ color: rowTextColorForFill(column.color) }} />
                     </button>
                   ) : (
-                    <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                    <p className="truncate text-[15px] font-semibold" style={{ color: rowTextColorForFill(column.color) }}>{column.name}</p>
                   ),
                 count: column.projects.length,
                 badgeBg,
@@ -2086,7 +1933,7 @@ export default function DashboardPage() {
             }}
           >
             <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: dashboardPalette.border, backgroundColor: dashboardPalette.panelMuted }}>
-              <p className="truncate text-[13px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
+              <p className="truncate text-[15px] font-semibold" style={{ color: dashboardPalette.text }}>Other</p>
               <span className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white" style={{ backgroundColor: dashboardPalette.textMuted }}>
                 {dashboardStatusBoardColumns.otherProjects.length}
               </span>
@@ -3534,15 +3381,18 @@ export default function DashboardPage() {
           // backgrounds/borders/hover states, which span its full width) touches the sidebar on
           // the left and the true viewport edge on the right — unlike the board columns above,
           // which stay padded to match their own gap from the filter bar.
-          <div className="hidden lg:-mx-5 lg:block">
-                <table className="w-full min-w-[980px] table-fixed text-[12px]">
+          <div ref={dashboardListTableWrapperCallbackRef} className="hidden lg:-mx-5 lg:block">
+                <table
+                  className="w-full table-fixed text-[12px]"
+                  style={{ minWidth: hideTagsColumnInList ? listTableFullMinWidthPx - LIST_TABLE_TAGS_COLUMN_WIDTH_PX : listTableFullMinWidthPx }}
+                >
                   <colgroup>
                     <col style={{ width: "220px" }} />
-                    <col style={{ width: "180px" }} />
-                    <col style={{ width: "180px" }} />
-                    <col style={{ width: "220px" }} />
-                    <col style={{ width: "220px" }} />
-                    <col style={{ width: "200px" }} />
+                    {!hideTagsColumnInList && <col style={{ width: "180px" }} />}
+                    <col style={{ width: "130px" }} />
+                    <col style={{ width: "150px" }} />
+                    <col style={{ width: "150px" }} />
+                    <col style={{ width: `${listStatusColumnWidthPx}px` }} />
                   </colgroup>
                   <thead
                     ref={projectsTableHeadRef}
@@ -3565,12 +3415,14 @@ export default function DashboardPage() {
                       >
                         Project Name
                       </th>
-                      <th
-                        className="py-2 text-left text-[11px] font-bold"
-                        style={{ color: dashboardPalette.textMuted }}
-                      >
-                        Tags
-                      </th>
+                      {!hideTagsColumnInList && (
+                        <th
+                          className="py-2 text-left text-[11px] font-bold"
+                          style={{ color: dashboardPalette.textMuted }}
+                        >
+                          Tags
+                        </th>
+                      )}
                       <th
                         className="py-2 text-left text-[11px] font-bold"
                         style={{ color: dashboardPalette.textMuted }}
@@ -3590,10 +3442,10 @@ export default function DashboardPage() {
                         Modified
                       </th>
                       <th
-                        className="w-[200px] py-2 text-right text-[11px] font-bold"
-                        style={{ color: dashboardPalette.textMuted }}
+                        className="py-2 text-right text-[11px] font-bold"
+                        style={{ width: listStatusColumnWidthPx, color: dashboardPalette.textMuted }}
                       >
-                        <span className="inline-block w-[120px] text-center" style={{ marginRight: 10 }}>
+                        <span className="inline-block text-center" style={{ width: listStatusPillWidthPx, marginRight: 10 }}>
                           Status
                         </span>
                       </th>
@@ -3603,7 +3455,7 @@ export default function DashboardPage() {
 
                   {showProjectsLoadingState && (
                     <tr>
-                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={6}>
+                      <td className="py-3" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex min-h-[60vh] items-center justify-center gap-2">
                           Loading projects...
                           <div
@@ -3617,7 +3469,7 @@ export default function DashboardPage() {
                   )}
                   {!showProjectsLoadingState && filtered.length === 0 && (
                     <tr>
-                      <td className="py-10 text-center" style={{ backgroundColor: dashboardPalette.panelBg }} colSpan={6}>
+                      <td className="py-10 text-center" style={{ backgroundColor: dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex flex-col items-center gap-3">
                           <p className="text-[14px] font-bold" style={{ color: dashboardPalette.textSoft }}>No Projects Yet</p>
                           <button
@@ -3648,30 +3500,32 @@ export default function DashboardPage() {
                       onClick={(e) => onProjectRowActivate(project, e.currentTarget)}
                     >
                       <td className="py-[11px] pl-[10px] font-bold" style={{ color: dashboardPalette.text, backgroundColor: rowBg }}>{project.name}</td>
+                      {!hideTagsColumnInList && (
+                        <td className="py-[11px]" style={{ backgroundColor: rowBg }}>
+                          <div className="flex flex-wrap gap-1">
+                            {project.tags.slice(0, 2).map((tag) => (
+                              <span
+                                key={tag}
+                                className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
+                                style={{
+                                  borderColor: dashboardPalette.border,
+                                  backgroundColor: dashboardPalette.panelMuted,
+                                  color: dashboardPalette.textSoft,
+                                }}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                            {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
+                          </div>
+                        </td>
+                      )}
                       <td className="py-[11px]" style={{ backgroundColor: rowBg }}>
-                        <div className="flex flex-wrap gap-1">
-                          {project.tags.slice(0, 2).map((tag) => (
-                            <span
-                              key={tag}
-                              className="rounded-[8px] border px-2 py-[1px] text-[11px] font-bold"
-                              style={{
-                                borderColor: dashboardPalette.border,
-                                backgroundColor: dashboardPalette.panelMuted,
-                                color: dashboardPalette.textSoft,
-                              }}
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                          {project.tags.length > 2 && <span className="font-bold" style={{ color: dashboardPalette.textMuted }}>...</span>}
-                        </div>
-                      </td>
-                      <td className="py-[11px]" style={{ backgroundColor: rowBg }}>
-                        <div className="flex items-center gap-2 text-[12px]">
+                        <div className="flex min-w-0 items-center gap-2 text-[12px]">
                           {assignedDisplayName(project) ? (
                             <>
                               <span
-                                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
                                 style={{
                                   backgroundColor:
                                     creatorColorByUid[String(project.assignedToUid || "").trim()] || companyThemeColor,
@@ -3679,14 +3533,19 @@ export default function DashboardPage() {
                               >
                                 {initials(assignedDisplayName(project))}
                               </span>
-                              <span style={{ color: dashboardPalette.text }}>{assignedDisplayName(project)}</span>
+                              <span className="min-w-0 truncate" style={{ color: dashboardPalette.text }}>{assignedDisplayName(project)}</span>
                             </>
                           ) : null}
                         </div>
                       </td>
-                      <td className="py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.createdAt)}</td>
-                      <td className="py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.updatedAt)}</td>
-                      <td className="relative w-[200px] py-[11px] text-right" style={{ backgroundColor: rowBg }}>
+                      <td className="truncate py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.createdAt)}</td>
+                      <td className="truncate py-[11px] text-center text-[12px]" style={{ color: dashboardPalette.textSoft, backgroundColor: rowBg }}>{dashboardDate(project.updatedAt)}</td>
+                      {/* py-[6px] here, not the py-[11px] every other cell in this row uses — the
+                          status pill's own py-2 (below) adds exactly the 5px-per-side this cell's
+                          own padding gives up, so its total contribution to the row's height (and
+                          therefore the row's own overall height) stays exactly what it was before
+                          the pill grew taller: 11+3 before, 6+8 now, both 14px per side. */}
+                      <td className="relative py-[6px] text-right" style={{ width: listStatusColumnWidthPx, backgroundColor: rowBg }}>
                           <button
                             data-status-trigger="true"
                             type="button"
@@ -3720,8 +3579,8 @@ export default function DashboardPage() {
                               });
                               setStatusMenuProjectId(project.id);
                             }}
-                            className="inline-flex w-[120px] items-center justify-center rounded-[10px] px-3 py-[3px] text-[12px] font-bold"
-                            style={{ ...projectStatusPillStyle(project.statusLabel || "New"), marginRight: 10 }}
+                            className="inline-flex items-center justify-center rounded-[10px] px-3 py-2 text-[12px] font-bold"
+                            style={{ ...projectStatusPillStyle(project.statusLabel || "New"), width: listStatusPillWidthPx, marginRight: 10 }}
                             aria-disabled={statusUpdatingProjectId === project.id || !canEditProjectFromDashboard(project)}
                             aria-label="Project status"
                             title={canEditProjectFromDashboard(project) ? "Change project status" : "You can view this project but not change its status"}
@@ -3734,7 +3593,7 @@ export default function DashboardPage() {
                   })}
                   {!isLoading && visibleProjects.length < filtered.length && (
                     <tr>
-                      <td className="py-4 text-center" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={6}>
+                      <td className="py-4 text-center" style={{ color: dashboardPalette.textMuted, backgroundColor: dashboardPalette.panelBg }} colSpan={hideTagsColumnInList ? 5 : 6}>
                         <div className="flex items-center justify-center gap-2">
                           Loading more projects...
                           <div
@@ -3780,9 +3639,10 @@ export default function DashboardPage() {
                           type="button"
                           disabled={statusUpdatingProjectId === statusMenuProject.id}
                           onClick={() => void onSelectProjectStatus(statusMenuProject, option)}
-                          className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold text-white last:mb-0 disabled:opacity-55"
+                          className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55"
                           style={{
                             backgroundColor: rowColor,
+                            color: rowTextColorForFill(rowColor),
                             filter: active ? "brightness(0.96)" : "brightness(1)",
                           }}
                         >
@@ -3893,7 +3753,7 @@ export default function DashboardPage() {
                             Non-interactive by inheritance (the portal wrapper is pointer-events-none). */}
                         <div className="flex h-full flex-col" style={{ width: 280 }}>
                           <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5" style={{ borderColor: "rgba(0,0,0,0.15)" }}>
-                            <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{info.name}</p>
+                            <p className="truncate text-[15px] font-semibold" style={{ color: rowTextColorForFill(info.color) }}>{info.name}</p>
                             <span
                               className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
                               style={{

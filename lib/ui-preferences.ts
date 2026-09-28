@@ -11,12 +11,14 @@ export const MOBILE_TOP_BAR_STORAGE_KEY = "cutsmart_mobile_top_bar_enabled";
 export const MOBILE_TOP_BAR_UPDATED_EVENT = "cutsmart:mobile-top-bar-updated";
 export const DASHBOARD_STAT_CARDS_STORAGE_KEY = "cutsmart_dashboard_stat_cards_enabled";
 export const DASHBOARD_STAT_CARDS_UPDATED_EVENT = "cutsmart:dashboard-stat-cards-updated";
+export const SIDEBAR_RESIZE_LOCK_STORAGE_KEY = "cutsmart_sidebar_resize_locked";
+export const SIDEBAR_RESIZE_LOCK_UPDATED_EVENT = "cutsmart:sidebar-resize-lock-updated";
 
-// Absent key = existing behavior = enabled. Only an explicit "0" turns either off.
-function readBooleanPref(key: string): boolean {
-  if (typeof window === "undefined") return true;
+// Absent key = defaultEnabled. Only an explicit "0"/"1" (the opposite of defaultEnabled) overrides it.
+function readBooleanPref(key: string, defaultEnabled = true): boolean {
+  if (typeof window === "undefined") return defaultEnabled;
   const raw = window.localStorage.getItem(key);
-  return raw === null ? true : raw === "1";
+  return raw === null ? defaultEnabled : raw === "1";
 }
 
 function saveBooleanPref(key: string, event: string, enabled: boolean) {
@@ -39,4 +41,13 @@ export function readDashboardStatCardsEnabled(): boolean {
 
 export function saveDashboardStatCardsEnabled(enabled: boolean) {
   saveBooleanPref(DASHBOARD_STAT_CARDS_STORAGE_KEY, DASHBOARD_STAT_CARDS_UPDATED_EVENT, enabled);
+}
+
+// Defaults to off (unlocked/resizable) — only an explicit opt-in should freeze the sidebar's width.
+export function readSidebarResizeLockEnabled(): boolean {
+  return readBooleanPref(SIDEBAR_RESIZE_LOCK_STORAGE_KEY, false);
+}
+
+export function saveSidebarResizeLockEnabled(enabled: boolean) {
+  saveBooleanPref(SIDEBAR_RESIZE_LOCK_STORAGE_KEY, SIDEBAR_RESIZE_LOCK_UPDATED_EVENT, enabled);
 }

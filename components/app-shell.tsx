@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
@@ -8,9 +9,11 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import {
   CalendarDays,
   ChevronRight,
+  GripVertical,
   ImagePlus,
   Inbox,
   LayoutDashboard,
+  LogOut,
   PartyPopper,
   Plus,
   PlusCircle,
@@ -25,7 +28,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
-import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled } from "@/lib/ui-preferences";
+import { MOBILE_TOP_BAR_UPDATED_EVENT, readMobileTopBarEnabled, readSidebarResizeLockEnabled, SIDEBAR_RESIZE_LOCK_UPDATED_EVENT } from "@/lib/ui-preferences";
 // Side-effect only — registers the `beforeinstallprompt` listener as early as possible (this
 // component mounts on every staff page), since the browser only ever delivers that event once and
 // User Settings' own "Download App" button needs it captured long before someone visits that page.
@@ -49,7 +52,7 @@ import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { fetchCompanyAccess, fetchPrimaryMembership } from "@/lib/membership";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { applyThemeMode, readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
-import type { ProjectImageItem } from "@/lib/types";
+import type { LeadCustomFieldSnapshot, ProjectImageItem } from "@/lib/types";
 import { normalizeChangelogHistory, parseUpdateNotesText, updateNotesToDisplayHtml } from "@/lib/update-notes-utils";
 import {
   LEAD_PROJECT_CREATED_EVENT,
@@ -58,6 +61,7 @@ import {
 } from "@/lib/new-project-bridge";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
+import { useKeyboardInsetPx } from "@/lib/use-keyboard-inset";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import { SidebarUserSettingsPanel } from "@/components/sidebar-user-settings-panel";
 import { VerifyAccountModal } from "@/components/verify-account-modal";
@@ -67,6 +71,15 @@ const COMPANY_ACCESS_CACHE_KEY_PREFIX = "cutsmart_company_access_";
 const UPDATE_NOTICE_SEEN_STORAGE_KEY_PREFIX = "cutsmart_update_notice_seen_";
 const ZAPIER_LEADS_VISIBILITY_UPDATED_EVENT = "cutsmart:zapier-leads-visibility-updated";
 const COMPANY_ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
+const SIDEBAR_FULL_WIDTH_PX = 240;
+const SIDEBAR_ICON_ONLY_WIDTH_PX = 72;
+const SIDEBAR_WIDTH_STORAGE_KEY_PREFIX = "cutsmart_sidebar_width_";
+// Only ever two valid widths — full or icon-only, nothing in between — so any stored/dragged
+// value snaps to whichever of the two it's closest to.
+const SIDEBAR_WIDTH_MIDPOINT_PX = (SIDEBAR_FULL_WIDTH_PX + SIDEBAR_ICON_ONLY_WIDTH_PX) / 2;
+function snapSidebarWidth(value: number) {
+  return value >= SIDEBAR_WIDTH_MIDPOINT_PX ? SIDEBAR_FULL_WIDTH_PX : SIDEBAR_ICON_ONLY_WIDTH_PX;
+}
 
 type CompanyBrandingCache = {
   themeColor: string;
@@ -388,6 +401,14 @@ export function AppShell({
       document.body.classList.remove("no-drag-text-select");
     };
   }, []);
+  // Publishes the on-screen keyboard's current height as a CSS variable every .glass-modal-panel
+  // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
+  // screen — mounted once here (AppShell wraps every staff page) rather than per-modal, since
+  // every modal already shares that one class.
+  const keyboardInsetPx = useKeyboardInsetPx();
+  useEffect(() => {
+    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInsetPx}px`);
+  }, [keyboardInsetPx]);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");
@@ -407,6 +428,9 @@ export function AppShell({
   const [projectPhotoNameDraft, setProjectPhotoNameDraft] = useState("");
   const [sourceLeadId, setSourceLeadId] = useState("");
   const [sourceLeadCompanyId, setSourceLeadCompanyId] = useState("");
+  // Lead custom fields not already mapped into one of the fixed fields above — carried through so
+  // they're still visible on the project after conversion (see lib/new-project-bridge.ts).
+  const [prefilledLeadCustomFields, setPrefilledLeadCustomFields] = useState<LeadCustomFieldSnapshot[]>([]);
   const [hoveredPhotoId, setHoveredPhotoId] = useState("");
   const [previewPhotoId, setPreviewPhotoId] = useState("");
   const [previewAnim, setPreviewAnim] = useState<PreviewAnimState | null>(null);
@@ -434,6 +458,115 @@ export function AppShell({
   );
   const [isUserSettingsPanelOpen, setIsUserSettingsPanelOpen] = useState(false);
   const desktopAsideRef = useRef<HTMLElement | null>(null);
+  // Desktop sidebar collapse/resize — user-draggable between icon-only and its full width,
+  // persisted per user so it stays how they left it across refreshes/sessions. Published as the
+  // --sidebar-width-px CSS variable (see the effect below) rather than passed as a prop, since two
+  // OTHER components whose own layout depends on this width — this page's own content margin
+  // further down, and GlobalAppTabsBar's fixed top bar, a separate component entirely — need it
+  // too; a CSS variable reaches both without threading it through unrelated component trees.
+  const [sidebarWidthPx, setSidebarWidthPx] = useState(SIDEBAR_FULL_WIDTH_PX);
+  const [sidebarWidthHydrated, setSidebarWidthHydrated] = useState(false);
+  const sidebarResizeDragRef = useRef<{ startX: number; startWidth: number; moved: boolean } | null>(null);
+  // User Settings > "Lock Sidebar Resizing" — freezes the divider at whatever width it's
+  // currently at; the width itself is untouched here, only the drag/click handlers below stop
+  // responding to it.
+  const [isSidebarResizeLocked, setIsSidebarResizeLocked] = useState(false);
+  useEffect(() => {
+    setIsSidebarResizeLocked(readSidebarResizeLockEnabled());
+    if (typeof window === "undefined") return;
+    const onUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ enabled: boolean }>).detail;
+      setIsSidebarResizeLocked(Boolean(detail?.enabled));
+    };
+    window.addEventListener(SIDEBAR_RESIZE_LOCK_UPDATED_EVENT, onUpdated as EventListener);
+    return () => {
+      window.removeEventListener(SIDEBAR_RESIZE_LOCK_UPDATED_EVENT, onUpdated as EventListener);
+    };
+  }, []);
+  useEffect(() => {
+    const uid = String(user?.uid || "").trim();
+    if (!uid) return;
+    try {
+      const raw = window.localStorage.getItem(`${SIDEBAR_WIDTH_STORAGE_KEY_PREFIX}${uid}`);
+      const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+      if (Number.isFinite(parsed)) setSidebarWidthPx(snapSidebarWidth(parsed));
+    } catch {
+      // ignore — falls back to the default full width
+    }
+    setSidebarWidthHydrated(true);
+  }, [user?.uid]);
+  useEffect(() => {
+    if (!sidebarWidthHydrated) return;
+    const uid = String(user?.uid || "").trim();
+    if (!uid) return;
+    try {
+      window.localStorage.setItem(`${SIDEBAR_WIDTH_STORAGE_KEY_PREFIX}${uid}`, String(sidebarWidthPx));
+    } catch {
+      // ignore — nothing to persist to
+    }
+  }, [sidebarWidthHydrated, sidebarWidthPx, user?.uid]);
+  useEffect(() => {
+    document.documentElement.style.setProperty("--sidebar-width-px", `${sidebarWidthPx}px`);
+  }, [sidebarWidthPx]);
+  // Window-level pointermove/pointerup listeners registered once (not re-subscribed per drag) —
+  // same shape as glass-scrollbar-thumb.tsx's own drag handling, reading the live drag from a ref
+  // rather than closing over stale state from whichever render started the drag.
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const drag = sidebarResizeDragRef.current;
+      if (!drag) return;
+      const delta = e.clientX - drag.startX;
+      if (Math.abs(delta) > 3) drag.moved = true;
+      const raw = Math.max(SIDEBAR_ICON_ONLY_WIDTH_PX, Math.min(SIDEBAR_FULL_WIDTH_PX, drag.startWidth + delta));
+      setSidebarWidthPx(snapSidebarWidth(raw));
+    };
+    const onUp = () => {
+      const drag = sidebarResizeDragRef.current;
+      sidebarResizeDragRef.current = null;
+      // A genuine click (no drag movement) toggles the other way — quick one-click collapse/restore,
+      // alongside dragging past the midpoint for the same snap.
+      if (drag && !drag.moved) {
+        setSidebarWidthPx((current) =>
+          current <= SIDEBAR_ICON_ONLY_WIDTH_PX ? SIDEBAR_FULL_WIDTH_PX : SIDEBAR_ICON_ONLY_WIDTH_PX,
+        );
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+  const isSidebarIconOnly = sidebarWidthPx <= SIDEBAR_ICON_ONLY_WIDTH_PX + 8;
+  // Content (name text, nav labels, the bottom bar's own markup) lags behind isSidebarIconOnly
+  // on EXPAND only — collapsing narrows content immediately (nothing to wait for, and delaying it
+  // would leave wide content overflowing a shrinking box), but expanding widens content only once
+  // the aside's own width transition has ACTUALLY finished, so labels/the full user badge don't
+  // render into a still-narrow sidebar and flash oversized for a moment before it catches up.
+  // Driven by the real "transitionend" event on the aside rather than a setTimeout guessing at the
+  // same 200ms duration — a JS timer's clock starts when this effect runs (after React's commit),
+  // while the CSS transition's own clock starts when the browser next paints that style, which can
+  // lag the timer by a frame or two; that drift was enough for content to still flip a beat before
+  // the box actually finished widening. A fallback timer only covers transitionend never firing.
+  const [isSidebarIconOnlyContent, setIsSidebarIconOnlyContent] = useState(isSidebarIconOnly);
+  useEffect(() => {
+    if (isSidebarIconOnly) {
+      setIsSidebarIconOnlyContent(true);
+      return;
+    }
+    const asideEl = desktopAsideRef.current;
+    const showFullContent = () => setIsSidebarIconOnlyContent(false);
+    const onTransitionEnd = (e: TransitionEvent) => {
+      if (e.target === asideEl && e.propertyName === "width") showFullContent();
+    };
+    asideEl?.addEventListener("transitionend", onTransitionEnd);
+    const fallbackTimer = window.setTimeout(showFullContent, 260);
+    return () => {
+      asideEl?.removeEventListener("transitionend", onTransitionEnd);
+      window.clearTimeout(fallbackTimer);
+    };
+  }, [isSidebarIconOnly]);
   const bottomRestContentRef = useRef<HTMLDivElement | null>(null);
   const bottomPanelContentRef = useRef<HTMLDivElement | null>(null);
   const [restContentHeight, setRestContentHeight] = useState<number | null>(null);
@@ -1144,6 +1277,17 @@ export function AppShell({
       setProjectNotes(String(detail.projectNotes || "").trim());
       setSourceLeadId(String(detail.sourceLeadId || "").trim());
       setSourceLeadCompanyId(String(detail.sourceLeadCompanyId || "").trim());
+      setPrefilledLeadCustomFields(
+        Array.isArray(detail.leadCustomFields)
+          ? detail.leadCustomFields
+              .map((field) => ({
+                key: String(field?.key || "").trim(),
+                label: String(field?.label || "").trim(),
+                value: String(field?.value || "").trim(),
+              }))
+              .filter((field) => field.key && field.value)
+          : [],
+      );
       setPrefilledProjectImages(
         Array.isArray(detail.projectImageItems) && detail.projectImageItems.length > 0
           ? detail.projectImageItems
@@ -1894,6 +2038,7 @@ export function AppShell({
     setPrefilledProjectImages([]);
     setSourceLeadId("");
     setSourceLeadCompanyId("");
+    setPrefilledLeadCustomFields([]);
     setPreviewPhotoId("");
     setPreviewAnim(null);
     setPreviewBackdropOpacity(0);
@@ -2125,6 +2270,15 @@ export function AppShell({
   // heights can be measured continuously via ResizeObserver, independent of which
   // one is currently visible. The wrapper's own height animates between these two
   // measured values, which is what makes the nav list above it get pushed up.
+  //
+  // Depends on isSidebarIconOnlyContent (the badge/panel branch's own condition below), not just
+  // [] and not the immediate isSidebarIconOnly: these two refs' surrounding markup swaps identity
+  // whenever that branch swaps, so a stale effect run (or one that fires before the swap actually
+  // happens) finds both refs still null and bails out for good (empty deps never re-ran it),
+  // permanently leaving restContentHeight/panelContentHeight at their initial null and — since
+  // `?? undefined` then leaves the wrapper's own height unset entirely — the whole bottom section
+  // invisible. Re-running exactly when the branch flips means it always gets a fresh attempt right
+  // as the real elements mount.
   useLayoutEffect(() => {
     if (typeof ResizeObserver === "undefined") return;
     const restEl = bottomRestContentRef.current;
@@ -2142,7 +2296,7 @@ export function AppShell({
     setRestContentHeight(restEl.getBoundingClientRect().height);
     setPanelContentHeight(panelEl.getBoundingClientRect().height);
     return () => observer.disconnect();
-  }, []);
+  }, [isSidebarIconOnlyContent]);
 
   const openUserSettingsPanel = () => {
     setIsUserSettingsPanelOpen(true);
@@ -2376,6 +2530,10 @@ export function AppShell({
         // creator has opted in, so a project's stored overrides stay empty/absent for everyone
         // who hasn't touched this setting.
         ...(user?.notifyAsCreator && user?.uid ? { notifySubscriptionOverrides: { [user.uid]: true } } : {}),
+        // Lead custom fields not already captured by a fixed field above — see
+        // lib/new-project-bridge.ts and buildLeadProjectPrefill in leads/page.tsx. Absent (not an
+        // empty array) when this project wasn't created from a lead, or its lead had none.
+        ...(prefilledLeadCustomFields.length > 0 ? { leadCustomFields: prefilledLeadCustomFields } : {}),
       });
         try {
           const clientCreateResult = await fetch("/api/clients", {
@@ -2523,6 +2681,10 @@ export function AppShell({
   // exactly one of them is shown at a time via a simple opacity crossfade — the
   // small icon/name fade away on open, the panel (its own icon/name included)
   // fades in as part of the same reveal as the rest of its content.
+  // In icon-only mode the "panel" side of this crossfade renders a small Settings/Log out
+  // icon stack instead of the full-width-only SidebarUserSettingsPanel (see bottomPanelContentRef
+  // below) — but it's still the exact same grid-stacked crossfade + height-transition reveal,
+  // just with narrower content, so the open/close motion looks identical in both sidebar widths.
   const showBottomPanelContent = isUserSettingsPanelOpen;
   const showBottomRestContent = !isUserSettingsPanelOpen;
 
@@ -2698,12 +2860,13 @@ export function AppShell({
 
       <aside
         ref={desktopAsideRef}
-        className="z-[70] hidden w-[240px] flex-col overflow-hidden border-r lg:flex"
+        className="z-[70] hidden flex-col overflow-hidden border-r lg:flex"
         style={{
           position: "fixed",
           left: 0,
           top: 0,
           height: "100vh",
+          width: sidebarWidthPx,
           backgroundColor: "var(--glass-bg)",
           backdropFilter: "blur(24px) saturate(180%)",
           WebkitBackdropFilter: "blur(24px) saturate(180%)",
@@ -2711,32 +2874,108 @@ export function AppShell({
           boxShadow: "var(--shadow-glass)",
           color: shellPalette.text,
           display: effectiveHideSidebar ? "none" : undefined,
+          // Always transitions — there are only ever two valid widths (see snapSidebarWidth), so
+          // every change, drag or click, is a jump between them that should visibly slide rather
+          // than cut instantly.
+          transition: "width 200ms ease",
         }}
       >
-        <div className="border-b border-[var(--panel-border)]" style={{ borderColor: shellPalette.border }}>
-          {companyLogoPath ? (
-            <img
-              src={companyLogoPath}
-              alt={`${companyDisplayName} logo`}
-              className="block h-auto w-full"
-              onError={(e) => {
-                e.currentTarget.style.display = "none";
-              }}
+        {/* Portaled straight to <body> rather than rendered in place — this needs to reliably
+            paint in front of literally everything else on the page (the main content's own rows,
+            sticky headers, any of ITS OWN positioned/stacking-context elements), and a descendant
+            of the fixed sidebar can only ever be as far forward as the sidebar's OWN place in the
+            page's stacking order lets it, no matter how high its own z-index is set — a completely
+            separate top-level sibling of everything else, via a portal, has no such ceiling. */}
+        {!effectiveHideSidebar && typeof document !== "undefined" && createPortal(
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={isSidebarResizeLocked ? "Sidebar resizing is locked" : isSidebarIconOnly ? "Expand sidebar" : "Collapse sidebar"}
+            title={isSidebarResizeLocked ? "Sidebar resizing is locked — unlock it in User Settings" : isSidebarIconOnly ? "Expand sidebar" : "Collapse sidebar"}
+            onPointerDown={(e) => {
+              if (isSidebarResizeLocked) return;
+              e.preventDefault();
+              // preventDefault on pointerdown suppresses the compatibility mousedown event that
+              // would otherwise follow — which is exactly what the "click outside closes the user
+              // settings panel" listener (below, keyed off native mousedown) is listening for. Left
+              // open, isUserSettingsPanelOpen silently stayed true across the whole resize, so once
+              // the sidebar finished expanding and swapped back to the full-width branch, THAT
+              // branch — reading the same still-true isUserSettingsPanelOpen — showed the full
+              // SidebarUserSettingsPanel (with its own Settings-like fields and Log out button)
+              // instead of the plain badge: exactly the "Settings/Log out flash at the end of the
+              // slide" that was reported. Closing it explicitly here, before the drag can even
+              // start, means a resize never inherits whatever the popover's state happened to be.
+              closeUserSettingsPanel();
+              sidebarResizeDragRef.current = { startX: e.clientX, startWidth: sidebarWidthPx, moved: false };
+            }}
+            className={cn(
+              "group fixed top-0 hidden h-full w-[9px] -translate-x-1/2 items-center justify-center lg:flex",
+              isSidebarResizeLocked ? "cursor-default" : "cursor-col-resize",
+            )}
+            style={{ left: sidebarWidthPx, zIndex: 2147483647, transition: "left 200ms ease" }}
+          >
+            {/* bg-transparent as a CLASS, not an inline style — an inline backgroundColor would
+                permanently win over the group-hover:bg-[...] class below regardless of hover state
+                (inline style always beats a class for the same CSS property), which is exactly why
+                this line's color previously never actually changed on hover. Locked mode drops the
+                group-hover classes entirely — no point inviting a drag/hover affordance that no
+                longer does anything. */}
+            <div
+              className={cn(
+                "h-full w-px bg-transparent transition-[background-color,width] duration-150",
+                !isSidebarResizeLocked && "group-hover:w-[3px] group-hover:bg-[var(--brand)]",
+              )}
             />
-          ) : companyDisplayName ? (
-            <p className="truncate px-4 py-3 text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
-          ) : null}
-        </div>
+            {/* Dead center of the screen — top:50% against the divider's own fixed, always-100vh
+                height, not the scrollable page, so it stays anchored to the middle of the viewport
+                regardless of scroll position. This is both the drag handle (grab anywhere on it,
+                or anywhere along the thin divider line above) and a click-to-toggle shortcut for
+                the common "just collapse/expand it" case. Deliberately NOT pointer-events-none —
+                it's visually wider (20px) than the divider's own 9px hit strip it sits inside, so
+                without its own pointer events, hovering the parts of it that stick out either side
+                hit nothing at all (no group-hover), making the line's own hover state (and this
+                pill's own opacity) flicker off the moment the cursor was actually ON the button.
+                Pointer events bubble up to the parent's own onPointerDown regardless, so drag/click
+                still work identically from here as from the line itself. Not rendered at all while
+                locked — there's nothing to grab. */}
+            {!isSidebarResizeLocked && (
+              <div
+                className="absolute flex h-9 w-5 items-center justify-center rounded-full opacity-0 shadow-[var(--shadow-sm)] transition-opacity group-hover:opacity-100"
+                style={{ top: "50%", left: "50%", transform: "translate(-50%, -50%)", backgroundImage: "var(--brand-gradient)" }}
+              >
+                <GripVertical size={12} color="#ffffff" />
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
+        {!isSidebarIconOnlyContent && (
+          <div className="sidebar-label-fade-in border-b border-[var(--panel-border)]" style={{ borderColor: shellPalette.border }}>
+            {companyLogoPath ? (
+              <img
+                src={companyLogoPath}
+                alt={`${companyDisplayName} logo`}
+                className="block h-auto w-full"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            ) : companyDisplayName ? (
+              <p className="truncate px-4 py-3 text-[13px] font-semibold text-[var(--text-main)]" style={{ color: shellPalette.text }}>{companyDisplayName}</p>
+            ) : null}
+          </div>
+        )}
 
         <div className="relative flex min-h-0 h-full flex-1 flex-col px-3 pb-3 pt-3">
           {canCreateProject && (
             <button
               type="button"
               onClick={(e) => { setAssigneeUid(""); setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
+              title={isSidebarIconOnlyContent ? "New Project" : undefined}
               className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
             >
-              <PlusCircle size={16} />
-              New Project
+              <PlusCircle size={16} className="shrink-0" />
+              {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">New Project</span>}
             </button>
           )}
           <div
@@ -2772,86 +3011,180 @@ export function AppShell({
                     ref={(el) => {
                       navLinkRefs.current[item.href] = el;
                     }}
+                    title={isSidebarIconOnlyContent ? item.label : undefined}
                     className={cn(
-                      "relative z-[1] flex items-center gap-2.5 rounded-[10px] px-3 py-2.5 text-[13px] font-semibold transition-colors",
+                      "relative z-[1] flex items-center gap-2.5 rounded-[10px] py-2.5 text-[13px] font-semibold transition-colors",
+                      isSidebarIconOnlyContent ? "justify-center px-0" : "px-3",
                       !active && "hover:bg-[var(--panel-muted)]",
                     )}
                     style={{
                       color: active ? "var(--brand)" : shellPalette.textMuted,
                     }}
                   >
-                    <Icon size={17} />
-                    {item.label}
+                    <Icon size={17} className="shrink-0" />
+                    {!isSidebarIconOnlyContent && <span className="sidebar-label-fade-in min-w-0 truncate">{item.label}</span>}
                   </Link>
                 </Fragment>
               );
             })}
           </div>
 
-          {/* Bottom section: bottom-anchored overlay whose height animates between
-              the two measured content heights below. The nav list above always
-              reserves restContentHeight of space (its own marginBottom) so it never
-              compresses or scrolls differently — this section just slides its top
-              edge (the divider) further up, over the nav list, to reveal more. */}
+          {/* Bottom section: bottom-anchored overlay whose height animates between the measured
+              content heights below. The nav list above always reserves restContentHeight of
+              space (its own marginBottom) so it never compresses or scrolls differently — this
+              section just slides its top edge (the divider) further up, over the nav list, to
+              reveal more.
+              Full-width mode: the badge row and SidebarUserSettingsPanel are grid-stacked in the
+              same cell and crossfade via opacity — the panel REPLACES the badge row, so the open
+              height is just panelContentHeight.
+              Icon-only mode: the badge must stay put (not fade away or get covered) and the
+              Settings/Log out icons reveal ABOVE it — so instead of stacking in one grid cell,
+              they're two normal-flow children (icons first, badge last) inside an inner wrapper
+              that's itself pinned to THIS bar's own bottom edge, independent of the bar's own
+              animating height. The badge's position within that inner wrapper never moves;
+              growing/shrinking the outer overflow-hidden bar just reveals or clips more of the
+              icon stack sitting above it. Open height is restContentHeight + panelContentHeight
+              (badge height plus icon-stack height) instead of panelContentHeight alone. */}
           <div
             className="absolute inset-x-0 bottom-0 z-[5] overflow-hidden"
             style={{
-              height: (isUserSettingsPanelOpen ? panelContentHeight : restContentHeight) ?? undefined,
+              height:
+                (isSidebarIconOnlyContent
+                  ? isUserSettingsPanelOpen
+                    ? (restContentHeight ?? 0) + (panelContentHeight ?? 0)
+                    : restContentHeight
+                  : isUserSettingsPanelOpen
+                    ? panelContentHeight
+                    : restContentHeight) ?? undefined,
               backgroundColor: "var(--glass-bg-strong)",
               backdropFilter: "blur(24px) saturate(180%)",
               WebkitBackdropFilter: "blur(24px) saturate(180%)",
               transition: "height 320ms cubic-bezier(0.22, 1, 0.36, 1)",
             }}
           >
-            <div className="grid items-start">
-              <div
-                ref={bottomRestContentRef}
-                className="border-t pb-3 pt-3"
-                style={{
-                  gridArea: "1 / 1",
-                  borderColor: shellPalette.border,
-                  opacity: showBottomRestContent ? 1 : 0,
-                  pointerEvents: showBottomRestContent ? "auto" : "none",
-                  transition: "opacity 200ms ease",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={openUserSettingsPanel}
-                  className="flex w-full items-center gap-2 rounded-[10px] px-2 py-2 text-left transition hover:bg-[var(--panel-muted)]"
-                  aria-label="Open user settings"
+            {/* key="icon-only"/"full-width" on these two branches — without an explicit key,
+                React sees the same host tag ("div") at the same tree position on either side of
+                this ternary and reconciles them as ONE element it patches in place, rather than
+                unmounting one and mounting the other. Their CHILDREN are two more same-tag divs
+                whose ORDER IS REVERSED between branches (icon-only: Settings/Log out icons first,
+                badge second — full-width: badge first, SidebarUserSettingsPanel second), so that
+                same keyless patching then paired position 1 with position 1 and position 2 with
+                position 2 ACROSS branches — briefly carrying the icon-only Settings/Log out
+                buttons' DOM into what should already be the full-width badge's slot, which is
+                exactly what showed up as a flash of "Settings"/"Log out" at the top of the bar
+                right as the sidebar finished expanding. A key forces a clean unmount + fresh mount
+                on every branch swap instead. */}
+            {isSidebarIconOnlyContent ? (
+              <div key="icon-only" className="absolute inset-x-0 bottom-0">
+                <div
+                  ref={bottomPanelContentRef}
+                  className="flex flex-col items-center gap-5 pb-2 pt-3"
+                  style={{
+                    opacity: showBottomPanelContent ? 1 : 0,
+                    pointerEvents: showBottomPanelContent ? "auto" : "none",
+                    transition: "opacity 200ms ease",
+                  }}
                 >
-                  <div
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
-                    style={{ backgroundColor: userEmblemColor }}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeUserSettingsPanel();
+                      router.push("/user-settings");
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
+                    style={{ color: shellPalette.textMuted }}
+                    aria-label="Settings"
+                    title="Settings"
                   >
-                    {userInitials}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="m-0 block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
-                    {isDemoMode && (
-                      <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
-                    )}
-                  </div>
-                </button>
+                    <Settings size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      closeUserSettingsPanel();
+                      setLogoutConfirmOrigin(captureGlassModalOrigin(e));
+                      setShowLogoutConfirm(true);
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] transition hover:bg-[var(--panel-muted)]"
+                    style={{ color: shellPalette.textMuted }}
+                    aria-label="Log out"
+                    title="Log out"
+                  >
+                    <LogOut size={17} />
+                  </button>
+                </div>
+                <div ref={bottomRestContentRef} className="border-t pb-3 pt-3" style={{ borderColor: shellPalette.border }}>
+                  <button
+                    type="button"
+                    onClick={openUserSettingsPanel}
+                    className="flex w-full items-center justify-center gap-2 rounded-[10px] px-0 py-2 text-left transition hover:bg-[var(--panel-muted)]"
+                    aria-label="Open user settings"
+                  >
+                    <div
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
+                      style={{ backgroundColor: userEmblemColor }}
+                    >
+                      {userInitials}
+                    </div>
+                  </button>
+                </div>
               </div>
+            ) : (
+              // grid-template-columns: minmax(0, 1fr), not the implicit default — an unconstrained
+              // auto column sizes itself to the MAX-CONTENT width of every item stacked into it,
+              // including SidebarUserSettingsPanel below even while it's invisible (opacity:0, but
+              // still mounted so its height stays measurable). minmax(0, 1fr) caps the track at
+              // the container's own available space no matter what its content would prefer.
+              <div key="full-width" className="grid items-start" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+                <div
+                  ref={bottomRestContentRef}
+                  className="border-t pb-3 pt-3"
+                  style={{
+                    gridArea: "1 / 1",
+                    borderColor: shellPalette.border,
+                    opacity: showBottomRestContent ? 1 : 0,
+                    pointerEvents: showBottomRestContent ? "auto" : "none",
+                    transition: "opacity 200ms ease",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={openUserSettingsPanel}
+                    className="flex w-full items-center gap-2 rounded-[10px] px-2 py-2 text-left transition hover:bg-[var(--panel-muted)]"
+                    aria-label="Open user settings"
+                  >
+                    <div
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold text-white"
+                      style={{ backgroundColor: userEmblemColor }}
+                    >
+                      {userInitials}
+                    </div>
+                    <div className="sidebar-label-fade-in min-w-0 flex-1">
+                      <p className="m-0 block truncate text-[12px] font-semibold" style={{ color: shellPalette.text }}>{user?.displayName || "CutSmart User"}</p>
+                      {isDemoMode && (
+                        <span className="block truncate text-[10px] font-semibold" style={{ color: "#B7791F" }}>Demo data mode</span>
+                      )}
+                    </div>
+                  </button>
+                </div>
 
-              <div
-                ref={bottomPanelContentRef}
-                style={{
-                  gridArea: "1 / 1",
-                  opacity: showBottomPanelContent ? 1 : 0,
-                  pointerEvents: showBottomPanelContent ? "auto" : "none",
-                  transition: "opacity 220ms ease",
-                }}
-              >
-                <SidebarUserSettingsPanel
-                  isOpen={isUserSettingsPanelOpen}
-                  onRequestClose={closeUserSettingsPanel}
-                  onRequestLogout={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
-                />
+                <div
+                  ref={bottomPanelContentRef}
+                  style={{
+                    gridArea: "1 / 1",
+                    opacity: showBottomPanelContent ? 1 : 0,
+                    pointerEvents: showBottomPanelContent ? "auto" : "none",
+                    transition: "opacity 220ms ease",
+                  }}
+                >
+                  <SidebarUserSettingsPanel
+                    isOpen={isUserSettingsPanelOpen}
+                    onRequestClose={closeUserSettingsPanel}
+                    onRequestLogout={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -3004,7 +3337,7 @@ export function AppShell({
               unconditionally so a page can opt into filling <main> exactly by
               making its own root height:100% + a flex column, without needing
               any page-specific plumbing here beyond the fillMainViewport flag. */}
-          <div className={effectiveHideSidebar ? "" : "lg:ml-[240px]"} style={{ height: "100%" }}>{children}</div>
+          <div className={effectiveHideSidebar ? "" : "app-content-sidebar-margin"} style={{ height: "100%" }}>{children}</div>
         </main>
       </div>
       {showUpdateNotice && (

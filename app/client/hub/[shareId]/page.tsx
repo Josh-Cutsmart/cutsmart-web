@@ -7,6 +7,7 @@ import SpecsGridClientView from "@/components/specs-grid-client-view";
 import { computeSpecsPageBoxWidthPx, type SpecsCell, type SpecsGrid } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } from "@/lib/specs-grid-pdf";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import { useKeyboardInsetPx } from "@/lib/use-keyboard-inset";
 
 type Phase = "loading" | "ready" | "load-error";
 type Tab = "specs" | "quote";
@@ -81,6 +82,15 @@ function AcceptBar({ onAcceptClick }: { onAcceptClick: (e: ReactMouseEvent<HTMLB
 export default function ClientSpecsSharePage() {
   const params = useParams<{ shareId: string }>();
   const shareId = String(params?.shareId ?? "");
+
+  // Publishes the on-screen keyboard's current height as a CSS variable every .glass-modal-panel
+  // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
+  // screen. This page sits outside AppShell (a public, no-login route), so it needs its own copy
+  // of the same one-line wiring rather than inheriting AppShell's.
+  const keyboardInsetPx = useKeyboardInsetPx();
+  useEffect(() => {
+    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInsetPx}px`);
+  }, [keyboardInsetPx]);
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadError, setLoadError] = useState("");

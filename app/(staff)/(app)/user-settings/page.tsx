@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Bell, Building2, Check, ChevronLeft, ClipboardList, Download, HelpCircle, LayoutDashboard, Mail, MailCheck, PanelTop, Pencil, Plus, Share, Smartphone, Trash2, UserCog, X } from "lucide-react";
+import { Bell, Building2, Check, ChevronLeft, ClipboardList, Download, HelpCircle, LayoutDashboard, Lock, Mail, MailCheck, PanelTop, Pencil, Plus, Share, Smartphone, Trash2, UserCog, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { isIosDevice, promptPwaInstall, usePwaInstall } from "@/lib/pwa-install";
@@ -22,8 +22,10 @@ import { readThemeMode, saveThemeMode, type ThemeMode } from "@/lib/theme-mode";
 import {
   readDashboardStatCardsEnabled,
   readMobileTopBarEnabled,
+  readSidebarResizeLockEnabled,
   saveDashboardStatCardsEnabled,
   saveMobileTopBarEnabled,
+  saveSidebarResizeLockEnabled,
 } from "@/lib/ui-preferences";
 import type { ChecklistTemplate } from "@/lib/types";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
@@ -81,9 +83,11 @@ export default function UserSettingsPage() {
   // account profile save/dirty tracking above.
   const [mobileTopBarEnabled, setMobileTopBarEnabled] = useState(true);
   const [dashboardStatCardsEnabled, setDashboardStatCardsEnabled] = useState(true);
+  const [sidebarResizeLocked, setSidebarResizeLocked] = useState(false);
   useEffect(() => {
     setMobileTopBarEnabled(readMobileTopBarEnabled());
     setDashboardStatCardsEnabled(readDashboardStatCardsEnabled());
+    setSidebarResizeLocked(readSidebarResizeLockEnabled());
   }, []);
   // "Download App" row — mobile only (per the user's own request; the underlying install prompt
   // works on desktop Chrome too, but this is specifically about replacing "visit the site and
@@ -1037,6 +1041,25 @@ export default function UserSettingsPage() {
                   onChange={(next) => {
                     setDashboardStatCardsEnabled(next);
                     saveDashboardStatCardsEnabled(next);
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Lock size={16} style={{ color: "var(--text-muted)" }} />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Lock Sidebar Resizing</p>
+                    <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      Freezes the sidebar at its current width and disables the drag handle.
+                    </p>
+                  </div>
+                </div>
+                <SettingsToggleSwitch
+                  checked={sidebarResizeLocked}
+                  onChange={(next) => {
+                    setSidebarResizeLocked(next);
+                    saveSidebarResizeLockEnabled(next);
                   }}
                 />
               </div>

@@ -1235,6 +1235,14 @@ export default function CompanySettingsPage() {
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
   const [isItemCategoriesModalOpen, setIsItemCategoriesModalOpen] = useState(false);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([]);
+  // Sales Product names offered in the Quote/Specs group editor's Rules "IF <Product>" dropdown —
+  // same "Incl in Sales" filter as the Product panel below and as a project's own "Product"
+  // checklist (see companySalesProductConfigs in app/(app)/projects/[projectId]/page.tsx), so a
+  // rule can only ever reference a product that actually appears there.
+  const specsGroupProductOptions = useMemo(
+    () => jobTypes.filter((row) => row.showInSales).map((row) => row.name.trim()).filter(Boolean),
+    [jobTypes],
+  );
   const [jobTypeExpanded, setJobTypeExpanded] = useState<Record<number, boolean>>({});
   const [jobTypeDragIndex, setJobTypeDragIndex] = useState<number | null>(null);
   const [jobTypeDragOverIndex, setJobTypeDragOverIndex] = useState<number | null>(null);
@@ -5655,6 +5663,7 @@ export default function CompanySettingsPage() {
                               companyLogoUrl={form.logoPath || undefined}
                               companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
                               companyRoleOptions={specsGroupRoleOptions}
+                              productOptions={specsGroupProductOptions}
                             />
                           </div>
                           <div
@@ -5799,6 +5808,7 @@ export default function CompanySettingsPage() {
                               companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
                               groupsSupportPricing
                               companyRoleOptions={specsGroupRoleOptions}
+                              productOptions={specsGroupProductOptions}
                             />
                           </div>
                           <div

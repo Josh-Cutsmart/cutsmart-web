@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, LayoutGrid, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -13,6 +13,8 @@ import * as XLSX from "xlsx-js-style";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
+import { InitialMeasureCloseSummaryModal } from "@/components/initial-measure-close-summary-modal";
+import { ProductionCutlistCloseSummaryModal } from "@/components/production-cutlist-close-summary-modal";
 import { ProtectedRoute } from "@/components/protected-route";
 import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,7 +26,7 @@ import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor from "@/components/specs-grid-editor";
-import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, clearAllConfirmableMarks, createEmptyGrid, computeSpecsPageBoxWidthPx, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
+import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks, createEmptyGrid, computeSpecsPageBoxWidthPx, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow, resolveProjectImageUrl, resolveProjectImageDataUrl, blobToDataUrl } from "@/lib/specs-grid-pdf";
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
@@ -81,7 +83,7 @@ import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/use
 import { QUOTE_TEMPLATE_PLACEHOLDERS, interpolateQuoteTemplateText } from "@/lib/quote-template-placeholders";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageAnnotation, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { storage, auth } from "@/lib/firebase";
-import type { CutlistDraftRow, CutlistEntryDraft, CutlistRow, DoorModeValue, ProductComparison } from "@/lib/cutlist-types";
+import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistEntryDraft, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const QUOTE_SNAPSHOT_RENDERER_VERSION = "html-v1";
@@ -122,7 +124,7 @@ function fallbackStatusPillColors(status: string) {
     "on hold": "#C77700",
   };
   const bg = defaults[key] ?? "#64748B";
-  return { backgroundColor: bg, color: "#FFFFFF" };
+  return { backgroundColor: bg, color: isLightHex(bg, 0.75) ? "#0F172A" : "#FFFFFF" };
 }
 
 function normalizeProjectStatuses(raw: unknown): ProjectStatusRow[] {
@@ -3746,13 +3748,16 @@ function normalizeHexColor(input: unknown): string | null {
   return null;
 }
 
-function isLightHex(hex: string): boolean {
+// threshold defaults to 0.62 (part-type colors' own original cutoff, unchanged). Status pills pass
+// a higher value explicitly so white stays the default text color for longer, only flipping to
+// dark once a color is genuinely too light for white to read against — see their own call sites.
+function isLightHex(hex: string, threshold = 0.62): boolean {
   const safe = normalizeHexColor(hex) ?? "#94A3B8";
   const r = Number.parseInt(safe.slice(1, 3), 16);
   const g = Number.parseInt(safe.slice(3, 5), 16);
   const b = Number.parseInt(safe.slice(5, 7), 16);
   const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  return luminance > 0.62;
+  return luminance > threshold;
 }
 
 function darkenHex(hex: string, amount: number): string {
@@ -5494,6 +5499,7 @@ export default function ProjectDetailsPage() {
   const [expandedChangeIds, setExpandedChangeIds] = useState<Set<string>>(new Set());
   const [isLoadingChanges, setIsLoadingChanges] = useState(false);
   const [hasLoadedChanges, setHasLoadedChanges] = useState(false);
+  const [changesSearchQuery, setChangesSearchQuery] = useState("");
   const [quotes, setQuotes] = useState<SalesQuote[]>([]);
   const [projectImageUrls, setProjectImageUrls] = useState<string[]>([]);
   const [projectImageItemsResolved, setProjectImageItemsResolved] = useState<Array<ProjectImageItem & { resolvedUrl: string }>>([]);
@@ -5617,6 +5623,18 @@ export default function ProjectDetailsPage() {
   // treatment as the Quote sheet's Version History/Quote Extras (see those states' own comments for
   // the full reasoning on every piece of this: default-open-but-collapses-under-1280px, the
   // closing/justOpened animation-gating, etc.) — on the RIGHT, mirroring Version History above.
+  // Asymmetric hover sync between this bubble list and the live preview's own group rows (see
+  // SpecsGridEditor's highlightedGroupId/onHoveredGroupChange props). Two SEPARATE values per
+  // sheet, not one shared one — hovering a BUBBLE highlights both the bubble and its group in the
+  // preview, but hovering a GROup in the preview only highlights the bubble back, never itself:
+  // `hovered*GroupId` is set only by the bubble's own onMouseEnter/onMouseLeave below, and feeds
+  // `highlightedGroupId` back into SpecsGridEditor; `previewHovered*GroupId` is set only by
+  // SpecsGridEditor's onHoveredGroupChange callback (the grid's own internal row-hover) and is
+  // never fed back in anywhere — it only widens the bubble's own highlight condition below.
+  const [hoveredSpecsSectionGroupId, setHoveredSpecsSectionGroupId] = useState<string | null>(null);
+  const [previewHoveredSpecsSectionGroupId, setPreviewHoveredSpecsSectionGroupId] = useState<string | null>(null);
+  const [hoveredQuoteExtraGroupId, setHoveredQuoteExtraGroupId] = useState<string | null>(null);
+  const [previewHoveredQuoteExtraGroupId, setPreviewHoveredQuoteExtraGroupId] = useState<string | null>(null);
   const [isSpecsSectionsPanelOpen, setIsSpecsSectionsPanelOpen] = useState(true);
   const [isSpecsSectionsPanelClosing, setIsSpecsSectionsPanelClosing] = useState(false);
   const [isSpecsSectionsPanelJustOpened, setIsSpecsSectionsPanelJustOpened] = useState(false);
@@ -6231,7 +6249,7 @@ export default function ProjectDetailsPage() {
   const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
   const [editingSalesRoomName, setEditingSalesRoomName] = useState("");
   const [editingSalesRoomDraftName, setEditingSalesRoomDraftName] = useState("");
-  const [salesRoomDeleteBlocked, setSalesRoomDeleteBlocked] = useState<{ roomName: string } | null>(null);
+  const [salesRoomDeleteBlocked, setSalesRoomDeleteBlocked] = useState<{ roomName: string; reason: "value" | "parts" } | null>(null);
   const [isAddRoomModalOpen, setIsAddRoomModalOpen] = useState(false);
   const [addRoomName, setAddRoomName] = useState("");
   // Shown inside the Add Room modal itself (e.g. a duplicate name) — not the page-wide `lockMessage`
@@ -6242,7 +6260,7 @@ export default function ProjectDetailsPage() {
   const addRoomFullscreenPanelRef = useRef<HTMLDivElement | null>(null);
   const roomDeleteBlockedPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderRoomDeleteBlockedModal = useGlassModalPopOrigin(Boolean(salesRoomDeleteBlocked), roomModalOrigin, roomDeleteBlockedPanelRef);
-  const lastSalesRoomDeleteBlockedRef = useRef<{ roomName: string } | null>(null);
+  const lastSalesRoomDeleteBlockedRef = useRef<{ roomName: string; reason: "value" | "parts" } | null>(null);
   if (salesRoomDeleteBlocked) lastSalesRoomDeleteBlockedRef.current = salesRoomDeleteBlocked;
   const displaySalesRoomDeleteBlocked = salesRoomDeleteBlocked ?? lastSalesRoomDeleteBlockedRef.current;
   const shouldRenderAddRoomPilotModal = useGlassModalPopOrigin(isAddRoomModalOpen, roomModalOrigin, addRoomPilotPanelRef);
@@ -6584,6 +6602,20 @@ export default function ProjectDetailsPage() {
   const [cutlistCompactConfiguredDraftPanels, setCutlistCompactConfiguredDraftPanels] = useState<Record<string, "fields" | "drawing">>({});
   const [cutlistCompactDraftDeckIndex, setCutlistCompactDraftDeckIndex] = useState(0);
   const [initialCutlistRows, setInitialCutlistRows] = useState<CutlistRow[]>([]);
+  // Close-summary popups — see saveAndBackFromInitialMeasure/onSaveAndBackFromCutlist. Shown
+  // non-blocking, on top of the nav change that already happens immediately (not gating it), same
+  // as every other "Save & Back" flow in this file.
+  const [showInitialMeasureCloseSummary, setShowInitialMeasureCloseSummary] = useState(false);
+  const [showProductionCutlistCloseSummary, setShowProductionCutlistCloseSummary] = useState(false);
+  // "+N this session" tracking — a ref (not state) holding the per-partType counts as they stood
+  // at the FIRST close of this cutlist this page-visit, so later closes can diff against a stable
+  // baseline instead of "since the last close." Null until the first close. The state alongside
+  // each ref is what's actually handed to the modal as a prop (null on that first close itself, so
+  // it shows plain totals with no delta yet; the captured snapshot on every close after that).
+  const initialMeasureSessionBaselineRef = useRef<Record<string, number> | null>(null);
+  const [initialMeasureSummaryBaseline, setInitialMeasureSummaryBaseline] = useState<Record<string, number> | null>(null);
+  const productionSessionBaselineRef = useRef<Record<string, number> | null>(null);
+  const [productionSummaryBaseline, setProductionSummaryBaseline] = useState<Record<string, number> | null>(null);
   const [initialCutlistSearch, setInitialCutlistSearch] = useState("");
   const [initialCutlistPartTypeFilter, setInitialCutlistPartTypeFilter] = useState("All Part Types");
   const [initialCutlistRoomFilter, setInitialCutlistRoomFilter] = useState("Project Cutlist");
@@ -11254,6 +11286,14 @@ export default function ProjectDetailsPage() {
       string,
       { productName: string; sheetSize: string; sheetCount: number }
     >();
+    // Same totals as sheetCountsByProductMap above, just not collapsed across rooms — used by the
+    // cutlist close-summary popup to show a per-room breakdown when a project has more than one
+    // room. Kept as a separate map (rather than changing sheetCountsByProductMap's own shape) so
+    // every existing reader of sheetCountsByProduct is unaffected.
+    const sheetCountsByRoomProductMap = new Map<
+      string,
+      { room: string; productName: string; sheetSize: string; sheetCount: number }
+    >();
     for (const bucket of piecesByRoomAndSheet.values()) {
       const sheetWidth = Math.max(200, bucket.option.width);
       const sheetHeight = Math.max(150, bucket.option.height);
@@ -11269,6 +11309,18 @@ export default function ProjectDetailsPage() {
           existingSheetCount.sheetCount += sheetsRequired;
         } else {
           sheetCountsByProductMap.set(sheetCountKey, {
+            productName: bucket.productName,
+            sheetSize: bucket.option.sheetSize,
+            sheetCount: sheetsRequired,
+          });
+        }
+        const roomSheetCountKey = `${bucket.room}__${sheetCountKey}`;
+        const existingRoomSheetCount = sheetCountsByRoomProductMap.get(roomSheetCountKey);
+        if (existingRoomSheetCount) {
+          existingRoomSheetCount.sheetCount += sheetsRequired;
+        } else {
+          sheetCountsByRoomProductMap.set(roomSheetCountKey, {
+            room: bucket.room,
             productName: bucket.productName,
             sheetSize: bucket.option.sheetSize,
             sheetCount: sheetsRequired,
@@ -11295,12 +11347,17 @@ export default function ProjectDetailsPage() {
     const sheetCountsByProduct = Array.from(sheetCountsByProductMap.values()).sort(
       (a, b) => a.productName.localeCompare(b.productName) || a.sheetSize.localeCompare(b.sheetSize),
     );
+    const sheetCountsByRoomAndProduct = Array.from(sheetCountsByRoomProductMap.values()).sort(
+      (a, b) =>
+        a.room.localeCompare(b.room) || a.productName.localeCompare(b.productName) || a.sheetSize.localeCompare(b.sheetSize),
+    );
     return {
       pricingByRoom: out,
       largerSheetWarningEntries,
       largerSheetPricingAddedToQuote:
         largerSheetWarningEntries.length > 0 && largerSheetWarningEntries.every((entry) => entry.addedToQuote),
       sheetCountsByProduct,
+      sheetCountsByRoomAndProduct,
     };
     // buildCabinetryDerivedPieces/buildDrawerDerivedPieces/isCabinetryPartType/isDrawerPartType are
     // plain functions redefined every render (not wrapped in useCallback), so listing them here
@@ -15944,7 +16001,7 @@ export default function ProjectDetailsPage() {
   const projectStatusPillStyle = (statusLabel: string) => {
     const configured = projectStatusColorByName.get(String(statusLabel || "").trim().toLowerCase());
     if (configured) {
-      return { backgroundColor: configured, color: "#FFFFFF" };
+      return { backgroundColor: configured, color: isLightHex(configured, 0.75) ? "#0F172A" : "#FFFFFF" };
     }
     return fallbackStatusPillColors(statusLabel);
   };
@@ -15955,10 +16012,14 @@ export default function ProjectDetailsPage() {
     }
 
     setIsSavingStatus(true);
+    const previousStatus = project.statusLabel;
     const ok = await updateProjectStatus(project, value);
     if (ok) {
       setProject({ ...project, statusLabel: value });
       setProjectStatusMenuPos(null);
+      if (previousStatus !== value) {
+        logProjectChange(`Status changed: ${previousStatus || "(none)"} → ${value}`);
+      }
     }
     setIsSavingStatus(false);
   };
@@ -16012,6 +16073,16 @@ export default function ProjectDetailsPage() {
     setChanges((prev) => [entry, ...prev]);
     void addProjectChange(pid, actor, actionText, detailsText || undefined);
   };
+  // Matches against the action line, actor name, and (if expanded) the full details text — so
+  // searching finds a change even when the match is only visible once its row is expanded.
+  const visibleChanges = useMemo(() => {
+    const query = changesSearchQuery.trim().toLowerCase();
+    if (!query) return changes;
+    return changes.filter((change) => {
+      const haystack = `${change.action} ${change.actor} ${change.details ?? ""}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [changes, changesSearchQuery]);
   // Compares `before`/`after` field by field against a key→label map and returns a one-line,
   // comma-joined "Label: old → new" description of whichever mapped fields actually differ (blank
   // values shown as "-"). Returns "" when nothing in the map changed. Shared by every changelog
@@ -16633,7 +16704,14 @@ export default function ProjectDetailsPage() {
     const parsedValue = Number.parseFloat(String(room?.totalPrice ?? "").replace(/[^0-9.-]/g, ""));
     const hasValue = Number.isFinite(parsedValue) ? Math.abs(parsedValue) > 0 : String(room?.totalPrice ?? "").trim().length > 0;
     if (hasValue) {
-      setSalesRoomDeleteBlocked({ roomName: normalized });
+      setSalesRoomDeleteBlocked({ roomName: normalized, reason: "value" });
+      return;
+    }
+    const hasParts =
+      cutlistRows.some((row) => String(row.room || "").trim().toLowerCase() === lower) ||
+      initialCutlistRows.some((row) => String(row.room || "").trim().toLowerCase() === lower);
+    if (hasParts) {
+      setSalesRoomDeleteBlocked({ roomName: normalized, reason: "parts" });
       return;
     }
 
@@ -23863,6 +23941,23 @@ export default function ProjectDetailsPage() {
     }
     return out;
   }, [productionForm.boardTypes, requiredSheetCountByBoardKey, resolveBoardKey]);
+  // Sheet counts for the Production close-summary popup, sourced from the exact same numbers as
+  // Board Settings' own "Sheets" column (requiredSheetCountByBoardRowId, driven by the real
+  // Nesting sheet-layout simulation) — not a separate approximation — so the popup always agrees
+  // with what staff already see in Board Settings.
+  const productionBoardSheetCounts = useMemo(() => {
+    const rows: { productName: string; sheetSize: string; sheetCount: number }[] = [];
+    for (const boardRow of productionForm.boardTypes) {
+      const sheetCount = requiredSheetCountByBoardRowId[boardRow.id] ?? 0;
+      if (sheetCount <= 0) continue;
+      rows.push({
+        productName: boardBaseLabelFromRow(boardRow) || "Board",
+        sheetSize: String(boardRow.sheetSize || "").trim(),
+        sheetCount,
+      });
+    }
+    return rows.sort((a, b) => a.productName.localeCompare(b.productName) || a.sheetSize.localeCompare(b.sheetSize));
+  }, [productionForm.boardTypes, requiredSheetCountByBoardRowId, boardBaseLabelFromRow]);
   const edgebandingSettings = useMemo(
     () => normalizeEdgebandingSettings((companyDoc as Record<string, unknown> | null)?.edgebandingSettings),
     [companyDoc],
@@ -24215,6 +24310,25 @@ export default function ProjectDetailsPage() {
   );
   const showRoomColumnInList = cutlistRoomFilter === "Project Cutlist";
   const showRoomColumnInInitialList = initialCutlistRoomFilter === "Project Cutlist";
+  // Room column width, on smaller/narrower windows only (isCompactProjectViewport) — shrinks
+  // toward the longest room name actually in the rows (plus a little padding) instead of staying
+  // locked at the full 150px this column uses everywhere else. A rough per-character estimate
+  // rather than a real text measurement (canvas/DOM), since this only needs to get in the
+  // right neighborhood, not be pixel-exact — clamped so it never grows past the original 150px
+  // (this is a shrink, not a resize) or below a floor too narrow to read.
+  const estimateRoomColumnWidthPx = (roomNames: string[]): number => {
+    const maxLen = roomNames.reduce((max, name) => Math.max(max, String(name || "").trim().length), 0);
+    if (maxLen === 0) return 150;
+    return Math.max(60, Math.min(150, Math.ceil(maxLen * 6.5) + 24));
+  };
+  const cutlistRoomColumnWidthPx = useMemo(
+    () => (isCompactProjectViewport ? estimateRoomColumnWidthPx(cutlistRows.map((row) => row.room)) : 150),
+    [isCompactProjectViewport, cutlistRows],
+  );
+  const initialCutlistRoomColumnWidthPx = useMemo(
+    () => (isCompactProjectViewport ? estimateRoomColumnWidthPx(initialCutlistRows.map((row) => row.room)) : 150),
+    [isCompactProjectViewport, initialCutlistRows],
+  );
   const cutlistListColumnDefs = useMemo(() => {
     if (showRoomColumnInList) return cutlistColumnDefs;
     const hasPartType = cutlistColumnDefs.some((col) => col.key === "partType");
@@ -25647,7 +25761,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
     if (!template || !project) return;
     specsSheetHydratedForProjectIdRef.current = project?.id ?? null;
-    const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
+    const resolvedRaw = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
+    // Unlike Quote, Specs groups keep the template author's own saved `hidden` as-is (no
+    // defaultIncluded flip) — rules still apply on top of that, evaluated once at clone time.
+    const resolved: SpecsGrid = { ...resolvedRaw, groups: applyGroupRules(resolvedRaw.groups, selectedSalesProductNames) };
     setSpecsSheetGrid(resolved);
     specsGridState.setGridOptimistic(resolved);
     void saveSalesGridData(project, "specifications", resolved).then((ok) => {
@@ -26166,7 +26283,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const template = normalizeSpecsGrid((companyDoc as Record<string, unknown> | null)?.specsTemplateGrid);
     if (!template || !project) return;
     if (specsSheetSaveTimeoutRef.current) clearTimeout(specsSheetSaveTimeoutRef.current);
-    const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
+    const resolvedRaw = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
+    // Same as the initial clone above — rules applied on top of the template author's own saved
+    // `hidden` state.
+    const resolved: SpecsGrid = { ...resolvedRaw, groups: applyGroupRules(resolvedRaw.groups, selectedSalesProductNames) };
     setSpecsSheetGrid(resolved);
     specsGridState.setGridOptimistic(resolved);
     setSpecsSheetEditorKey((prev) => prev + 1);
@@ -26379,7 +26499,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // is a toggleable "quote extra" now, not just priced ones — see displayedQuoteGridExtras).
     const seeded: SpecsGrid = {
       ...resolved,
-      groups: resolved.groups.map((g) => ({ ...g, hidden: !g.defaultIncluded })),
+      // Rules applied AFTER the defaultIncluded seeding, not instead of it — a rule's "IF <Product>
+      // is on/off" reads the project's own currently-selected Sales Products, so a rule can
+      // override what Default alone would have produced (e.g. a group Default-On but turned Off
+      // because a Product it depends on isn't selected on this project).
+      groups: applyGroupRules(resolved.groups.map((g) => ({ ...g, hidden: !g.defaultIncluded })), selectedSalesProductNames),
     };
     setQuoteGrid(seeded);
     quoteGridState.setGridOptimistic(seeded);
@@ -26498,10 +26622,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (!template || !project) return;
     if (quoteGridSaveTimeoutRef.current) clearTimeout(quoteGridSaveTimeoutRef.current);
     const resolved = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
-    // Same defaultIncluded seeding as the initial clone above — every group, not just priced ones.
+    // Same defaultIncluded seeding (+ rules) as the initial clone above — every group, not just
+    // priced ones.
     const seeded: SpecsGrid = {
       ...resolved,
-      groups: resolved.groups.map((g) => ({ ...g, hidden: !g.defaultIncluded })),
+      groups: applyGroupRules(resolved.groups.map((g) => ({ ...g, hidden: !g.defaultIncluded })), selectedSalesProductNames),
     };
     setQuoteGrid(seeded);
     quoteGridState.setGridOptimistic(seeded);
@@ -30257,6 +30382,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
 
   const saveAndBackFromInitialMeasure = async () => {
     setSalesNav("overview");
+    setInitialMeasureSummaryBaseline(initialMeasureSessionBaselineRef.current);
+    if (!initialMeasureSessionBaselineRef.current) {
+      const snapshot: Record<string, number> = {};
+      for (const s of summarizeCutlistRowsByPartType(initialCutlistRows)) snapshot[s.partType] = s.count;
+      initialMeasureSessionBaselineRef.current = snapshot;
+    }
+    setShowInitialMeasureCloseSummary(true);
     if (initialEditingCell) {
       void commitInitialCellEdit().then(() => {
         setLockMessage("");
@@ -30406,6 +30538,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const onSaveAndBackFromCutlist = async () => {
     setProductionNav("overview");
     setNestingFullscreen(false);
+    setProductionSummaryBaseline(productionSessionBaselineRef.current);
+    if (!productionSessionBaselineRef.current) {
+      const snapshot: Record<string, number> = {};
+      for (const s of summarizeCutlistRowsByPartType(cutlistRows)) snapshot[s.partType] = s.count;
+      productionSessionBaselineRef.current = snapshot;
+    }
+    setShowProductionCutlistCloseSummary(true);
     void persistCutlistRows(cutlistRows).then((ok) => {
       if (!ok) {
         setLockMessage("Could not save Production Cutlist changes.");
@@ -35336,7 +35475,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             <thead style={{ backgroundColor: palette.headerBg, color: groupTextColor }}>
                               <tr>
                                 <th className="px-2 py-2" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></th>
-                                {showRoomColumnInInitialList && <th className="px-2 py-2" style={{ color: groupTextColor, width: 150, minWidth: 150 }}>Room</th>}
+                                {showRoomColumnInInitialList && <th className="px-2 py-2" style={{ color: groupTextColor, width: initialCutlistRoomColumnWidthPx, minWidth: initialCutlistRoomColumnWidthPx }}>Room</th>}
                                 {initialCutlistListColumnDefs.map((col) => (
                                   <th
                                     key={`im_full_list_h_${group.partType}_${col.key}`}
@@ -35395,7 +35534,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     {showRoomColumnInInitialList && (
                                       <td
                                         className="px-2 py-[3px] align-middle"
-                                        style={{ width: 150, minWidth: 150, color: groupTextColor }}
+                                        style={{ width: initialCutlistRoomColumnWidthPx, minWidth: initialCutlistRoomColumnWidthPx, color: groupTextColor }}
                                         onDoubleClick={() => startInitialCellEdit(row, "room")}
                                       >
                                         {isInitialEditing(row.id, "room") ? (
@@ -39239,7 +39378,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <tr>
                                 <th className="px-2 py-2" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></th>
                                 {showRoomColumnInList && (
-                                  <th className="px-2 py-2" style={{ color: groupTextColor, width: 150, minWidth: 150 }}>Room</th>
+                                  <th className="px-2 py-2" style={{ color: groupTextColor, width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx }}>Room</th>
                                 )}
                                 {groupColumnDefs.map((col) => (
                                   (() => {
@@ -39380,7 +39519,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <td
                                       className="px-2 py-[3px] align-middle"
                                       onDoubleClick={() => startCellEdit(row, "room")}
-                                      style={{ width: 150, minWidth: 150, color: groupTextColor }}
+                                      style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx, color: groupTextColor }}
                                     >
                                       {isEditing(row.id, "room") ? (
                                         <GlassSelectDropdown
@@ -39818,7 +39957,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 </tr>
                                 {rowIsCabinetry && (
                                   <tr style={{ backgroundColor: palette.rowBg }}>
-                                    {showRoomColumnInList && <td style={{ width: 150, minWidth: 150 }} />}
+                                    {showRoomColumnInList && <td style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx }} />}
                                     {groupColumnDefs.map((col) => {
                                       // Part Type, Information (and the control column, handled
                                       // above) are rowSpan'd down from the main row, so this row
@@ -40045,7 +40184,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       
                                     </td>
                                     {showRoomColumnInList && (
-                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx, color: groupTextColor }}>
                                         {row.room}
                                       </td>
                                     )}
@@ -40104,7 +40243,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   >
                                     <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
                                     {showRoomColumnInList && (
-                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx, color: groupTextColor }}>
                                         {row.room}
                                       </td>
                                     )}
@@ -40154,7 +40293,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   >
                                     <td className="px-2 py-[3px] align-middle text-center text-[10px] font-bold" style={{ width: 78, minWidth: 78, maxWidth: 78 }}></td>
                                     {showRoomColumnInList && (
-                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: 150, minWidth: 150, color: groupTextColor }}>
+                                      <td className="px-2 py-[3px] align-middle text-[11px]" style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx, color: groupTextColor }}>
                                         {row.room}
                                       </td>
                                     )}
@@ -42637,6 +42776,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   showEditableGroupBorders
                   hideCellSelectionOutline
                   companyRoleOptions={specsGroupRoleOptions}
+                  productOptions={companySalesProductNames}
                   canEditSpecsGroup={canEditSpecsGroup}
                   // Locks whatever's actually ON SCREEN whenever IT (not just the hub's currently-
                   // bound one) has ever been sent or accepted — see isQuoteContentLockedForSending's
@@ -42650,6 +42790,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   toolbarFixedLeftPx={isCompactProjectViewport ? 0 : 302}
                   toolbarFixedRightPx={isCompactProjectViewport ? 0 : 280}
                   fitToViewportOnMobile={isCompactProjectViewport}
+                  highlightedGroupId={hoveredQuoteExtraGroupId}
+                  onHoveredGroupChange={setPreviewHoveredQuoteExtraGroupId}
                   // Rendered INSIDE the editor's own canvas area, below its fixed formatting
                   // toolbar and right above the white sheet — see belowToolbarBanner's own comment
                   // in specs-grid-editor.tsx. Exactly one of the two banners ever shows at once
@@ -42749,10 +42891,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         {bucket.items.map((g) => (
                           <div
                             key={g.id}
-                            className="flex items-center justify-between gap-2 rounded-[10px] border px-3 py-2"
+                            onMouseEnter={() => setHoveredQuoteExtraGroupId(g.id)}
+                            onMouseLeave={() => setHoveredQuoteExtraGroupId((prev) => (prev === g.id ? null : prev))}
+                            className="flex items-center justify-between gap-2 rounded-[10px] border px-3 py-2 transition-colors"
                             style={{
-                              borderColor: "var(--glass-border)",
-                              backgroundColor: "var(--panel-muted)",
+                              borderColor: hoveredQuoteExtraGroupId === g.id || previewHoveredQuoteExtraGroupId === g.id ? "#2563EB" : "var(--glass-border)",
+                              backgroundColor: hoveredQuoteExtraGroupId === g.id || previewHoveredQuoteExtraGroupId === g.id ? "rgba(37, 99, 235, 0.12)" : "var(--panel-muted)",
                               // No animation property AT ALL outside the panel's own just-opened/
                               // closing windows (see isQuoteExtrasPanelJustOpened's own comment) — a
                               // content change while the panel stays open (switching versions,
@@ -43700,6 +43844,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   hideSectionsBar
                   allowConfirmationMarking
                   companyRoleOptions={specsGroupRoleOptions}
+                  productOptions={companySalesProductNames}
                   canEditSpecsGroup={canEditSpecsGroup}
                   // Locks whatever's actually ON SCREEN once it's ever been sent or submitted — see
                   // isSpecsContentLockedForSending's own comment above. Specs' live sheet used to
@@ -43715,6 +43860,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   toolbarFixedLeftPx={isCompactProjectViewport ? 0 : 302}
                   toolbarFixedRightPx={isCompactProjectViewport ? 0 : 260}
                   fitToViewportOnMobile={isCompactProjectViewport}
+                  highlightedGroupId={hoveredSpecsSectionGroupId}
+                  onHoveredGroupChange={setPreviewHoveredSpecsSectionGroupId}
                   // Same "banner below the toolbar, right above the sheet" treatment as the Quote
                   // tab's own — see its belowToolbarBanner comment, including the same colors/
                   // layout (right-mounted button, brand-blue pending). Purely a status indicator
@@ -43962,10 +44109,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   specsSheetGroups.map((g) => (
                     <div
                       key={g.id}
-                      className="flex items-center justify-between gap-2 rounded-[10px] border px-3 py-2"
+                      onMouseEnter={() => setHoveredSpecsSectionGroupId(g.id)}
+                      onMouseLeave={() => setHoveredSpecsSectionGroupId((prev) => (prev === g.id ? null : prev))}
+                      className="flex items-center justify-between gap-2 rounded-[10px] border px-3 py-2 transition-colors"
                       style={{
-                        borderColor: "var(--glass-border)",
-                        backgroundColor: "var(--panel-muted)",
+                        borderColor: hoveredSpecsSectionGroupId === g.id || previewHoveredSpecsSectionGroupId === g.id ? "#2563EB" : "var(--glass-border)",
+                        backgroundColor: hoveredSpecsSectionGroupId === g.id || previewHoveredSpecsSectionGroupId === g.id ? "rgba(37, 99, 235, 0.12)" : "var(--panel-muted)",
                         ...(isSpecsSectionsPanelClosing
                           ? { animation: "glass-bubble-slide-out-right 280ms ease both", animationDelay: "0ms" }
                           : isSpecsSectionsPanelJustOpened
@@ -46572,14 +46721,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             style={{ borderColor: "var(--glass-border)", backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                           />
                           {showTagSuggestions && filteredTagSuggestions.length > 0 && (
-                            <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[8px] border p-1 shadow-[var(--shadow-md)]" style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-bg-strong)", backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)" }}>
+                            <div className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-[220px] w-[220px] overflow-auto rounded-[10px] border p-1 shadow-[var(--shadow-md)]" style={GLASS_DROPDOWN_MENU_STYLE}>
                               {filteredTagSuggestions.map((tag) => (
                                 <button
                                   key={tag}
                                   type="button"
                                   onMouseDown={(e) => e.preventDefault()}
                                   onClick={() => void onAddTagValue(tag)}
-                                  className="block w-full rounded-[6px] px-2 py-1 text-left text-[12px] font-semibold hover:bg-[#EEF2F7]"
+                                  className="mb-1 block w-full rounded-[8px] px-2 py-1 text-left text-[12px] font-semibold last:mb-0 hover:bg-[var(--panel-muted)]"
                                   style={{ color: projectPalette.textSoft }}
                                 >
                                   {tag}
@@ -46972,9 +47121,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       type="button"
                       disabled={isSavingStatus}
                       onClick={() => void onChangeStatus(option)}
-                      className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold text-white last:mb-0 disabled:opacity-55"
+                      className="mb-1 block w-full rounded-[8px] px-3 py-2 text-center text-[12px] font-semibold last:mb-0 disabled:opacity-55"
                       style={{
                         backgroundColor: rowColor,
+                        color: isLightHex(rowColor, 0.75) ? "#0F172A" : "#FFFFFF",
                         filter: active ? "brightness(0.96)" : "brightness(1)",
                       }}
                     >
@@ -47117,6 +47267,46 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         </CardContent>
                       </section>
                     </div>
+
+                    {project.leadCustomFields && project.leadCustomFields.length > 0 && (
+                      <section
+                        className="overflow-hidden rounded-[18px] border"
+                        style={{
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-bg-strong)",
+                          backdropFilter: "blur(20px) saturate(180%)",
+                          WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                          boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
+                        }}
+                      >
+                        <CardHeader
+                          className="flex min-h-[50px] flex-row items-center justify-between border-b px-4 py-2"
+                          style={{
+                            borderBottomColor: "var(--glass-border)",
+                            backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)",
+                          }}
+                        >
+                          <CardTitle className="flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                            <ClipboardList size={14} style={{ color: projectPalette.textMuted }} />
+                            From Lead
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="pt-1 text-[13px] text-[#1F2937]">
+                          {project.leadCustomFields.map((field, idx) => (
+                            <div
+                              key={`${field.key}_${idx}`}
+                              className="flex flex-col gap-0.5 border-b py-[9px] last:border-none"
+                              style={{ borderBottomColor: "var(--glass-border)" }}
+                            >
+                              <p className="text-[10px] font-bold uppercase tracking-[0.6px]" style={{ color: projectPalette.textMuted }}>
+                                {field.label || field.key}
+                              </p>
+                              <p style={{ color: projectPalette.textSoft }}>{field.value}</p>
+                            </div>
+                          ))}
+                        </CardContent>
+                      </section>
+                    )}
 
                     <div ref={notesContainerRef}>
                       <section
@@ -47679,7 +47869,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <aside className="h-full overflow-hidden px-3 pb-3 pt-3 sm:overflow-x-auto xl:overflow-hidden xl:pb-4 xl:pl-5 xl:pr-2 xl:pt-5">
                 <div className="grid grid-cols-2 gap-1.5 sm:flex sm:min-w-max sm:flex-row xl:block xl:min-w-0 xl:space-y-1.5">
                 {[
-                  { label: "Overview", icon: LayoutGrid, key: "overview" as const },
                   { label: "Initial Measure", icon: Ruler, key: "initial" as const },
                   { label: "Items", icon: ListChecks, key: "items" as const },
                   { label: "Quote", icon: DollarSign, key: "quote" as const },
@@ -47723,8 +47912,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 className={
                   salesNav === "initial" || salesNav === "items"
-                    ? "isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:px-0"
-                    : "isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:px-0"
+                    ? "isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:pl-0 xl:pr-5"
+                    : "isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
                 }
               >
                 {salesReadOnly && (
@@ -48144,12 +48333,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div
                 className={
                   productionNav === "cutlist" || productionNav === "order"
-                    ? `relative isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:px-0 ${
+                    ? `relative isolate mt-0 w-full min-h-[calc(100svh-235px)] px-3 sm:px-4 md:px-5 xl:pl-0 ${
                         productionNav === "cutlist" && isProductionNotesPanelOpen && !isCompactProjectViewport
                           ? "xl:pr-[356px]"
-                          : ""
+                          : "xl:pr-5"
                       }`
-                    : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:px-0"
+                    : "relative isolate mt-3 w-full max-w-[1120px] space-y-4 px-3 sm:px-4 md:px-5 xl:mt-5 xl:pl-0 xl:pr-5"
                 }
               >
                 {productionNav === "cutlist" ? (
@@ -49120,7 +49309,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <tr>
                                 <th className="w-[62px] px-2 py-2"></th>
                                 {showRoomColumnInList && (
-                                  <th className="px-2 py-2" style={{ width: 150, minWidth: 150 }}>Room</th>
+                                  <th className="px-2 py-2" style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx }}>Room</th>
                                 )}
                                 {cutlistListColumnDefs.map((col) => (
                                   (() => {
@@ -49196,7 +49385,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       <td
                                         className="px-2 py-[3px] align-middle"
                                         onDoubleClick={() => startCellEdit(row, "room")}
-                                        style={{ width: 150, minWidth: 150, color: rowTextColor }}
+                                        style={{ width: cutlistRoomColumnWidthPx, minWidth: cutlistRoomColumnWidthPx, color: rowTextColor }}
                                       >
                                         {isEditing(row.id, "room") ? (
                                           <GlassSelectDropdown
@@ -51350,13 +51539,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 }}
               >
                 <CardHeader
-                  className="flex min-h-[50px] flex-row items-center border-b px-4 py-2"
+                  className="flex min-h-[50px] flex-row items-center gap-3 border-b px-4 py-2"
                   style={{
                     borderBottomColor: "var(--glass-border)",
                     backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)",
                   }}
                 >
-                  <CardTitle className="text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Changelog</CardTitle>
+                  <CardTitle className="shrink-0 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Changelog</CardTitle>
+                  <div
+                    className="ml-auto flex h-8 w-full max-w-[220px] items-center gap-2 rounded-[8px] border px-2"
+                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg }}
+                  >
+                    <Search size={13} className="shrink-0" style={{ color: projectPalette.textMuted }} />
+                    <input
+                      value={changesSearchQuery}
+                      onChange={(e) => setChangesSearchQuery(e.target.value)}
+                      placeholder="Search changes"
+                      className="h-full w-full bg-transparent text-[12px] outline-none"
+                      style={{ color: projectPalette.inputText }}
+                    />
+                    {changesSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setChangesSearchQuery("")}
+                        className="inline-flex shrink-0 items-center justify-center rounded-full"
+                        aria-label="Clear search"
+                      >
+                        <X size={13} style={{ color: projectPalette.textMuted }} />
+                      </button>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent className="h-[560px] overflow-auto pt-2 text-[12px]">
                   {isLoadingChanges && changes.length === 0 && (
@@ -51365,7 +51577,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   {hasLoadedChanges && changes.length === 0 && !isLoadingChanges && (
                     <p style={{ color: projectPalette.textMuted }}>No changes recorded.</p>
                   )}
-                  {changes.map((change) => {
+                  {hasLoadedChanges && changes.length > 0 && visibleChanges.length === 0 && (
+                    <p style={{ color: projectPalette.textMuted }}>No changes match &quot;{changesSearchQuery}&quot;.</p>
+                  )}
+                  {visibleChanges.map((change) => {
                     const hasDetails = Boolean(change.details && change.details.trim());
                     const isExpanded = expandedChangeIds.has(change.id);
                     const actorName = String(change.actor || "").trim();
@@ -51501,23 +51716,27 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <div ref={roomDeleteBlockedPanelRef} className="glass-modal-panel relative z-[1701] w-fit max-w-[min(480px,92vw)] overflow-hidden">
                 <div className="glass-modal-header px-5 py-4">
                   <p className="text-[14px] font-bold" style={{ color: "var(--text-main)" }}>
-                    {displaySalesRoomDeleteBlocked.roomName} contains a value, it cannot be deleted.
+                    {displaySalesRoomDeleteBlocked.reason === "parts"
+                      ? `${displaySalesRoomDeleteBlocked.roomName} has cutlist parts assigned to it, it cannot be deleted.`
+                      : `${displaySalesRoomDeleteBlocked.roomName} contains a value, it cannot be deleted.`}
                   </p>
                 </div>
                 <div className="flex items-center justify-end gap-2 px-5 py-4">
-                  <button
-                    type="button"
-                    disabled={salesReadOnly || isSavingSalesRooms}
-                    onClick={async () => {
-                      const roomName = displaySalesRoomDeleteBlocked.roomName;
-                      await onToggleSalesRoomIncluded(roomName, false);
-                      setSalesRoomDeleteBlocked(null);
-                    }}
-                    className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                  >
-                    Exclude from quote
-                  </button>
+                  {displaySalesRoomDeleteBlocked.reason === "value" && (
+                    <button
+                      type="button"
+                      disabled={salesReadOnly || isSavingSalesRooms}
+                      onClick={async () => {
+                        const roomName = displaySalesRoomDeleteBlocked.roomName;
+                        await onToggleSalesRoomIncluded(roomName, false);
+                        setSalesRoomDeleteBlocked(null);
+                      }}
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
+                      style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                    >
+                      Exclude from quote
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setSalesRoomDeleteBlocked(null)}
@@ -52747,6 +52966,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {productionPrintModalPortal}
           {unlockEditModalPortal}
           {remedialsModalPortal}
+          {showInitialMeasureCloseSummary && (
+            <InitialMeasureCloseSummaryModal
+              rows={initialCutlistRows}
+              partTypeColors={partTypeColors}
+              sheetCounts={salesRoomSheetAnalysis.sheetCountsByProduct}
+              sessionBaseline={initialMeasureSummaryBaseline}
+              onClose={() => setShowInitialMeasureCloseSummary(false)}
+            />
+          )}
+          {showProductionCutlistCloseSummary && (
+            <ProductionCutlistCloseSummaryModal
+              productionRows={cutlistRows}
+              initialRows={initialCutlistRows}
+              partTypeColors={partTypeColors}
+              sheetCounts={productionBoardSheetCounts}
+              sessionBaseline={productionSummaryBaseline}
+              onClose={() => setShowProductionCutlistCloseSummary(false)}
+            />
+          )}
         </div>
   );
 }

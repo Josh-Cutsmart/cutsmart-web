@@ -41,6 +41,8 @@ import {
   type SpecsPageSize,
   type SpecsTextRun,
   type SpecsRowGroupEditableFields,
+  type SpecsGroupRule,
+  genSpecsGroupRuleId,
   getCellRuns,
   runsToPlainText,
   normalizeTextRuns,
@@ -136,6 +138,11 @@ export type SpecsGridEditorProps = {
   // []) to hide that section entirely, e.g. in the company-settings template builder, where there's
   // no per-viewer permission concept yet (it only starts mattering once cloned into a real project).
   companyRoleOptions?: { id: string; name: string }[];
+  // Sales Product names (Company Settings > Sales > PRODUCT, filtered to "Incl in Sales") offered
+  // in the group editor modal's Rules section as the "IF <Product>" dropdown — omit (or pass []) to
+  // leave that dropdown empty. Both the company template builder and a live project's Quote/Specs
+  // editor pass the same company-wide list; only a project actually has any of them selected.
+  productOptions?: string[];
   // Whether the CURRENT viewer is allowed to edit a given group's own rows — omit to leave every
   // group fully editable (the default, and the only behavior for every existing caller). The host
   // page owns the actual policy (role lookup, owner/admin bypass, etc.); this component only ever
@@ -192,6 +199,17 @@ export type SpecsGridEditorProps = {
   // config) to stop mobile Safari auto-zooming into small inputs. Only the two project-sheet
   // callers set this, and only while their own host page is in its mobile/compact layout.
   fitToViewportOnMobile?: boolean;
+  // Hover sync with the host page's own "Sections" bubble list (only the two project-sheet callers
+  // set either of these — every other caller leaves both undefined, a no-op on both sides).
+  // Deliberately ASYMMETRIC, not a plain two-way mirror: hovering a bubble highlights BOTH the
+  // bubble itself and this group's rows here (`highlightedGroupId`, rendered as a new overlay
+  // below), but hovering a group's rows here only highlights the matching bubble back on the host
+  // page — it never highlights itself. So `onHoveredGroupChange` reports this component's own
+  // internal hover (hoveredGroupId, derived from hoveredRowIndex — already tracked for the
+  // drag-handle's own fade-in) up to the page, but the page is expected to feed a SEPARATE,
+  // bubble-hover-only value back in as `highlightedGroupId`, not this same one echoed back.
+  highlightedGroupId?: string | null;
+  onHoveredGroupChange?: (groupId: string | null) => void;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -501,6 +519,7 @@ export default function SpecsGridEditor({
   hideSectionsBar,
   allowConfirmationMarking,
   companyRoleOptions,
+  productOptions,
   canEditSpecsGroup,
   lockUngroupedBlankCells,
   showEditableGroupBorders,
@@ -509,6 +528,8 @@ export default function SpecsGridEditor({
   isViewingSavedVersion,
   belowToolbarBanner,
   fitToViewportOnMobile,
+  highlightedGroupId,
+  onHoveredGroupChange,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -1036,6 +1057,7 @@ export default function SpecsGridEditor({
     anchorFirstPageBottom: false,
     editableByRoleIds: [],
     category: "",
+    rules: [],
   });
   const openGroupModal = (groupId: string | null, startRow: number, endRow: number, existingGroup: SpecsRowGroup | undefined) => {
     setGroupDraft({
@@ -1047,6 +1069,7 @@ export default function SpecsGridEditor({
       anchorFirstPageBottom: Boolean(existingGroup?.anchorFirstPageBottom),
       editableByRoleIds: existingGroup?.editableByRoleIds ?? [],
       category: existingGroup?.category ?? "",
+      rules: existingGroup?.rules ?? [],
     });
     setGroupModalTarget({ groupId, startRow, endRow });
   };
@@ -1432,6 +1455,9 @@ export default function SpecsGridEditor({
   // and onto the handle itself (see manuallyHoveredGroupId's own comment) — falls back to whichever
   // group the currently-hovered ROW belongs to otherwise.
   const hoveredGroupId = manuallyHoveredGroupId ?? (hoveredRowIndex !== null ? (findRowGroupForRow(expandedGroups, hoveredRowIndex)?.id ?? null) : null);
+  useEffect(() => {
+    onHoveredGroupChange?.(hoveredGroupId);
+  }, [hoveredGroupId, onHoveredGroupChange]);
   const restorableDeletedGroups = (liveGrid.deletedGroups ?? []).filter((dg) => !liveGrid.groups.some((g) => g.id === dg.id));
   // Every distinct category already used by another group in this sheet, in first-seen order — fed
   // into the group modal's own Category field as a <datalist> so picking the SAME category on a
@@ -1558,6 +1584,12 @@ export default function SpecsGridEditor({
         // `position: fixed`) — without this, the canvas below would render up underneath it, since a
         // fixed element takes up zero space in normal flow. A plain static height (not measured) —
         // see the host page's own matching comment on why nothing here is JS-measured.
+        // Always reserved, even once the sheet is locked for the client (isSentToClient) and the
+        // toolbar's own BUTTONS stop rendering below — this bar's outer shell (this spacer, plus
+        // the fixed strip's own background/border) stays in place either way, so the canvas/
+        // belowToolbarBanner below it never loses its offset and doesn't end up rendering behind
+        // the host page's own fixed header, and the strip's bottom border stays put as the same
+        // visual boundary it always was.
         <div style={{ height: PROJECT_TOOLBAR_HEIGHT_PX }} />
       ) : null}
       <div
@@ -1586,10 +1618,26 @@ export default function SpecsGridEditor({
                 right: toolbarFixedRightPx ?? 0,
                 zIndex: 95,
                 borderBottom: "1px solid var(--glass-border)",
+                // Explicit, matching the spacer above and the host page's own coordinated backdrop
+                // height — without it, this bar's height is only ever implied by its buttons (h-8 +
+                // p-2 padding), so hiding every button once the sheet is locked for the client
+                // (isSentToClient) collapsed it down to just its padding, leaving its own border —
+                // and the host's "Version History"/"Quote Extras" buttons sitting alongside it at
+                // the ORIGINAL height — no longer aligned with one another.
+                height: PROJECT_TOOLBAR_HEIGHT_PX,
               }
             : { borderBottom: "1px solid var(--glass-border)" }
         }
       >
+        {/* Buttons only — not the bar itself (see the spacer's own comment above) — hidden once
+            the sheet is locked for the client (isSentToClient): applyChange already no-ops every
+            edit the instant that's true, so a Bold/Underline/Undo bar sitting over fully
+            read-only content is dead UI. Reuses the same isSentToClient the row/cell locks below
+            already key off, rather than a stricter "formally accepted/submitted only" condition —
+            the toolbar shouldn't outlive editability just because the client hasn't responded
+            yet. */}
+        {!isSentToClient && (
+        <>
         <button
           type="button"
           disabled={!canUndo}
@@ -1946,6 +1994,8 @@ export default function SpecsGridEditor({
               <Trash2 size={12} /> Col
             </button>
           </>
+        )}
+        </>
         )}
       </div>
       {alignDropdown && typeof document !== "undefined"
@@ -2359,6 +2409,10 @@ export default function SpecsGridEditor({
                   const isUngroupedBlankCell = Boolean(
                     lockUngroupedBlankCells && !rowGroupForRow && !cell.imageUrl && !cell.text.trim(),
                   );
+                  // Single source of truth for "can this specific cell's text actually be edited" —
+                  // feeds both SpecsCellTextArea's own readOnly prop and the wrapper's cursor below,
+                  // so the mouse cursor never promises editability the cell doesn't actually have.
+                  const isCellTextEditableHere = !(isRowLockedForViewer || isUngroupedBlankCell || isRowAnsweredByClient);
                   return (
                     <td
                       key={key}
@@ -2505,6 +2559,36 @@ export default function SpecsGridEditor({
                         </>
                       ) : (
                         <div
+                          onMouseDown={(e) => {
+                            // SpecsCellTextArea's own contentEditable div is left its natural height
+                            // (see its own comment) and only vertically positioned within this taller
+                            // wrapper — a short line of text in a tall (often merged) cell leaves real
+                            // empty space above/below it that isn't part of that div at all. Clicking
+                            // directly on the text already places the caret correctly via the browser's
+                            // own native handling (e.target would be that div, not this wrapper); this
+                            // only steps in for a click that landed in that empty space instead, where
+                            // there's nothing for the browser to focus on its own.
+                            if (e.target !== e.currentTarget) return;
+                            const editable = e.currentTarget.querySelector<HTMLElement>('[contenteditable="true"]');
+                            if (!editable) return;
+                            e.preventDefault();
+                            editable.focus();
+                            // Deferred a frame: placing the selection synchronously, right alongside
+                            // focus() in the same mousedown handler, left the caret focused but not
+                            // actually rendering/blinking in testing — the browser's own native
+                            // click-to-place-caret handling for a contentEditable element runs slightly
+                            // later (on the same click gesture) and was winning the race, silently
+                            // discarding the range set here. Waiting a frame lets that native handling
+                            // finish first, so this one lands last and actually sticks.
+                            requestAnimationFrame(() => {
+                              const range = document.createRange();
+                              range.selectNodeContents(editable);
+                              range.collapse(false);
+                              const sel = window.getSelection();
+                              sel?.removeAllRanges();
+                              sel?.addRange(range);
+                            });
+                          }}
                           style={{
                             height: spannedHeightPx,
                             overflow: "hidden",
@@ -2512,6 +2596,15 @@ export default function SpecsGridEditor({
                             flexDirection: "column",
                             justifyContent:
                               style.verticalAlign === "middle" ? "center" : style.verticalAlign === "bottom" ? "flex-end" : "flex-start",
+                            // The actual contentEditable div (SpecsCellTextArea) already gets the
+                            // browser's own native text (I-beam) cursor for free just by being
+                            // contentEditable — but it's left at its own natural height (see its own
+                            // comment) and only positioned within this taller wrapper, so a short line
+                            // in a tall (often merged) cell leaves empty space around it that's just a
+                            // plain div, defaulting back to the ordinary pointer. Matching the cursor
+                            // here too means every clickable-to-edit pixel in the cell LOOKS clickable,
+                            // not just the exact rows the text happens to occupy.
+                            cursor: isCellTextEditableHere ? "text" : undefined,
                           }}
                         >
                           <SpecsCellTextArea
@@ -2527,7 +2620,7 @@ export default function SpecsGridEditor({
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
                             onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, cell, px)}
-                            readOnly={isRowLockedForViewer || isUngroupedBlankCell || isRowAnsweredByClient}
+                            readOnly={!isCellTextEditableHere}
                             readOnlyReason={
                               isRowAnsweredByClient
                                 ? isSentToClient
@@ -2818,6 +2911,29 @@ export default function SpecsGridEditor({
             }}
           />
         ))}
+
+        {/* highlightedGroupId's own overlay — a bubble on the host page's own "Sections" list is
+            being hovered (see SpecsGridEditorProps' own comment on why this is one-directional:
+            the page deliberately never echoes THIS component's own internal hover back in here).
+            Independent of groupOutlines/editableGroupOutlines above (a plain tinted box, not a
+            label or a permanent border), since neither of those is guaranteed to be visible in
+            every context this needs to work in. */}
+        {groupOutlines
+          .filter((g) => g.id === highlightedGroupId)
+          .map((g) => (
+            <div
+              key={`hover-highlight-${g.id}`}
+              className="pointer-events-none absolute rounded-[2px]"
+              style={{
+                left: rowHeaderWidthPx,
+                top: colHeaderHeightPx + g.top,
+                width: tableTotalWidthPx,
+                height: g.height,
+                backgroundColor: "rgba(37, 99, 235, 0.12)",
+                boxShadow: "inset 0 0 0 2px #2563EB",
+              }}
+            />
+          ))}
 
         {selectionOutline && !hideCellSelectionOutline ? (
           <div
@@ -3202,6 +3318,98 @@ export default function SpecsGridEditor({
                       </span>
                     </label>
                   ) : null}
+                  {/* Rules — NOT gated behind groupsSupportPricing (that flag only controls the
+                      pricing-specific fields above): dependency rules apply to both the Quote and
+                      Specifications template builders alike. */}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <label className="block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                        Rules
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setGroupDraft((d) => ({
+                            ...d,
+                            rules: [...d.rules, { id: genSpecsGroupRuleId(), ifProductName: "", ifState: "on", thenState: "on" }],
+                          }))
+                        }
+                        className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-bold transition hover:brightness-95"
+                        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                      >
+                        <Plus size={12} /> Add Rule
+                      </button>
+                    </div>
+                    <p className="mb-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      Automatically turn this group on or off based on whether a Product is selected on the project, applied the moment a project&apos;s sheet is first generated from this template.
+                    </p>
+                    {groupDraft.rules.length === 0 ? (
+                      <p
+                        className="rounded-[9px] border px-3 py-2 text-[11px]"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                      >
+                        No rules yet.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {groupDraft.rules.map((rule, idx) => {
+                          const updateRule = (patch: Partial<SpecsGroupRule>) =>
+                            setGroupDraft((d) => ({
+                              ...d,
+                              rules: d.rules.map((r, i) => (i === idx ? { ...r, ...patch } : r)),
+                            }));
+                          return (
+                            <div
+                              key={rule.id}
+                              className="flex flex-wrap items-center gap-1.5 rounded-[9px] border p-2"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                            >
+                              <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>IF</span>
+                              <select
+                                value={rule.ifProductName}
+                                onChange={(e) => updateRule({ ifProductName: e.target.value })}
+                                className="h-8 min-w-[110px] flex-1 rounded-[7px] border px-2 text-[11px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              >
+                                <option value="">Select product…</option>
+                                {(productOptions ?? []).map((name) => (
+                                  <option key={name} value={name}>{name}</option>
+                                ))}
+                              </select>
+                              <select
+                                value={rule.ifState}
+                                onChange={(e) => updateRule({ ifState: e.target.value as "on" | "off" })}
+                                className="h-8 rounded-[7px] border px-2 text-[11px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              >
+                                <option value="on">is On</option>
+                                <option value="off">is Off</option>
+                              </select>
+                              <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>THEN this is</span>
+                              <select
+                                value={rule.thenState}
+                                onChange={(e) => updateRule({ thenState: e.target.value as "on" | "off" })}
+                                className="h-8 rounded-[7px] border px-2 text-[11px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              >
+                                <option value="on">On</option>
+                                <option value="off">Off</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => setGroupDraft((d) => ({ ...d, rules: d.rules.filter((_, i) => i !== idx) }))}
+                                className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)]"
+                                style={{ color: "var(--danger-strong)" }}
+                                aria-label="Remove rule"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                   {companyRoleOptions && companyRoleOptions.length > 0 ? (
                     <div>
                       <label className="mb-1 block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>

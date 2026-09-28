@@ -452,6 +452,23 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
+/* Sidebar labels/text that only mount once the sidebar has finished expanding (app-shell.tsx's
+   isSidebarIconOnlyContent) — a plain conditional mount otherwise just pops into existence
+   instantly, since there's no "before" state for a CSS transition to animate from. An animation
+   plays automatically on mount instead, no state tracking needed. */
+.sidebar-label-fade-in {
+  animation: sidebar-label-fade-in 180ms ease;
+}
+
+@keyframes sidebar-label-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* Small "bubble" pop-in for transient confirmation pills (e.g. an "Added" badge) */
 @keyframes glass-bubble-pop-in {
   0% {
@@ -621,6 +638,14 @@ body[data-theme="dark"].cs-app .notes-rich li {
   backdrop-filter: blur(12px) saturate(220%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), var(--shadow-glass), 0 24px 60px rgba(15, 23, 42, 0.25);
   color: var(--text-main);
+  /* Mobile keyboard-avoidance: --keyboard-inset-px is set globally (see useKeyboardInsetPx's call
+     sites) to how many px of the bottom of the screen the on-screen keyboard currently covers, 0
+     when it's closed. Every modal wrapper here centers its panel with flex `items-center` across
+     the full viewport height — shrinking the panel's own box from the bottom by that amount shifts
+     where it lands when centered, so it settles in the visible region above the keyboard instead
+     of the keyboard-obscured full screen. A no-op (0px) everywhere the keyboard isn't open. */
+  margin-bottom: var(--keyboard-inset-px, 0px);
+  transition: margin-bottom 160ms ease;
 }
 
 body[data-theme="dark"] .glass-modal-panel {
@@ -795,6 +820,34 @@ body[data-theme="dark"] .row-glow {
 .no-drag-text-select * {
   user-select: none !important;
   -webkit-user-select: none !important;
+}
+
+/* Left sidebar's own width, published by AppShell (see its --sidebar-width-px effect) as the
+   user drags/collapses it — these two rules are how that one number reaches the other two
+   pieces of layout that depend on it without being part of AppShell's own component tree: the
+   fixed top bar (GlobalAppTabsBar, a separate component) and this same page's own main-content
+   margin. Both stay gated to the same 1024px breakpoint the sidebar itself only renders at
+   (lg:flex) — below it, neither should apply, same as the fixed 240px values they replace. */
+@media (min-width: 1024px) {
+  .app-content-sidebar-margin {
+    margin-left: var(--sidebar-width-px, 240px);
+  }
+  .app-top-bar-sidebar-offset {
+    left: var(--sidebar-width-px, 240px);
+  }
+}
+
+/* Explicit caret ("text cursor") color, matching the theme's own text color. caret-color's
+   default (auto) is SUPPOSED to already track a field's own text color, but plenty of inputs here
+   never set their own `color` directly and only inherit it — this is a defensive, explicit
+   fallback for any of those where that inheritance doesn't carry through to the caret, which
+   otherwise blinks invisibly over a light box in dark mode (or a dark box in light mode) even
+   though the typed text itself displays fine. */
+input,
+textarea,
+[contenteditable="true"],
+[contenteditable=""] {
+  caret-color: var(--text-main);
 }
 
 /* "Ring" wobble for a bell icon on click — a quick swing that settles back to rest, like the

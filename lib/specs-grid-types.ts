@@ -144,7 +144,45 @@ export type SpecsRowGroup = {
   // there, in whatever order they appear in the sheet. Purely cosmetic/organizational: it has no
   // effect on hidden/pricing/anchoring behavior, and an absent category just means "uncategorized".
   category?: string;
+  // Dependency rules — see applyGroupRules below. Evaluated once, only when a project's Quote/
+  // Specs grid is first cloned from the company's template (or reset back to it), NOT on every
+  // later live group toggle in a project.
+  rules?: SpecsGroupRule[];
 };
+
+// "IF this Sales Product (by name — see Company Settings > Sales > PRODUCT) is selected/not
+// selected on the project (the project's own "Product" checklist), turn this group on/off" — a
+// company-configured dependency between a Quote/Specs group and one of the company's Sales
+// Products. "On" for a group means not hidden; "on" for a product means selected/checked on the
+// project. See applyGroupRules for evaluation and the Group Settings modal's "Rules" section in
+// components/specs-grid-editor.tsx for where these are authored.
+export type SpecsGroupRule = {
+  id: string;
+  ifProductName: string;
+  ifState: "on" | "off";
+  thenState: "on" | "off";
+};
+
+// Applies every group's own `rules` against the project's current set of selected Sales Product
+// names — each rule checks whether its referenced product is selected and, if its condition
+// matches, sets this group's hidden state accordingly. A rule whose ifProductName is blank, or
+// doesn't match any product, simply never matches. Matching is trimmed/case-insensitive. Multiple
+// rules on the same group apply in order, last-match-wins.
+export function applyGroupRules(groups: SpecsRowGroup[], selectedProductNames: string[]): SpecsRowGroup[] {
+  const selected = new Set(selectedProductNames.map((name) => name.trim().toLowerCase()).filter(Boolean));
+  return groups.map((group) => {
+    if (!group.rules || group.rules.length === 0) return group;
+    let hidden = Boolean(group.hidden);
+    for (const rule of group.rules) {
+      const productName = rule.ifProductName.trim().toLowerCase();
+      if (!productName) continue;
+      const productIsOn = selected.has(productName);
+      const conditionMatches = rule.ifState === "on" ? productIsOn : !productIsOn;
+      if (conditionMatches) hidden = rule.thenState === "off";
+    }
+    return hidden === group.hidden ? group : { ...group, hidden };
+  });
+}
 
 // A group whose rows were entirely deleted (one at a time, via the row "-" button, or all at once)
 // but is kept around so it can be dragged back into the sheet later — see removeRowWithArchive and
@@ -237,6 +275,10 @@ export function genSpecsRowId(): string {
 
 export function genSpecsGroupId(): string {
   return `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+export function genSpecsGroupRuleId(): string {
+  return `rule_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
 export function createEmptyCell(): SpecsCell {
@@ -872,6 +914,7 @@ export type SpecsRowGroupEditableFields = {
   anchorFirstPageBottom: boolean;
   editableByRoleIds: string[]; // [] = unrestricted
   category: string; // "" = uncategorized
+  rules: SpecsGroupRule[]; // [] = no dependency rules
 };
 
 export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number, fields: SpecsRowGroupEditableFields): SpecsGrid {
@@ -885,6 +928,7 @@ export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number
     ...(fields.anchorFirstPageBottom ? { anchorFirstPageBottom: true } : {}),
     ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
     ...(fields.category ? { category: fields.category } : {}),
+    ...(fields.rules.length > 0 ? { rules: fields.rules } : {}),
   };
   return { ...grid, groups: [...grid.groups, group] };
 }
@@ -923,6 +967,7 @@ export function renameRowGroup(grid: SpecsGrid, groupId: string, fields: SpecsRo
         ...(fields.anchorFirstPageBottom ? { anchorFirstPageBottom: true } : {}),
         ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
         ...(fields.category ? { category: fields.category } : {}),
+        ...(fields.rules.length > 0 ? { rules: fields.rules } : {}),
       };
     }),
   };

@@ -33,6 +33,16 @@ export interface ProjectImageItem {
   annotations?: ProjectImageAnnotation[];
 }
 
+// A lead's custom form field, snapshotted onto the project at the moment a lead is converted —
+// not a live join back to the source lead, which may be archived/deleted afterward, and whose
+// field labels can be renamed later in Company Settings independent of what the client actually
+// saw when they submitted it.
+export interface LeadCustomFieldSnapshot {
+  key: string;
+  label: string;
+  value: string;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -85,6 +95,11 @@ export interface Project {
   projectSettings?: Record<string, unknown>;
   cutlist?: Record<string, unknown>;
   checklists?: ProjectChecklist[];
+  // Custom form fields the client filled in on the source lead, that weren't already mapped to one
+  // of the fixed fields above (clientName/Email/Phone/clientAddress/notes) — see
+  // buildLeadProjectPrefill in app/(staff)/(app)/leads/page.tsx. Absent for a project not created
+  // from a lead, or one whose lead had no unmapped custom fields.
+  leadCustomFields?: LeadCustomFieldSnapshot[];
 }
 
 export interface ProjectChecklistItem {

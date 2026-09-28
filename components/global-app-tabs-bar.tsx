@@ -908,7 +908,7 @@ export function GlobalAppTabsBar() {
     <>
       <div
         data-app-top-bar="true"
-        className="fixed left-0 right-0 top-0 z-[95] h-12 px-2 lg:left-[240px]"
+        className="app-top-bar-sidebar-offset fixed left-0 right-0 top-0 z-[95] h-12 px-2"
         style={{
           backgroundColor: shellPalette.stripBg,
           backdropFilter: "blur(12px) saturate(220%)",

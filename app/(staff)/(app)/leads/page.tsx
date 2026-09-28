@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { createPortal } from "react-dom";
 import { ChevronsLeftRight, ChevronsRightLeft, ChevronUp, ImagePlus, Inbox, Kanban, LayoutGrid, Plus, Rows3, Search, X } from "lucide-react";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
-import { attachBoardArrowKeyScroll } from "@/lib/board-arrow-key-scroll";
+import { useBoardStickyRef } from "@/lib/board-sticky-scroll";
 import { useAuth } from "@/lib/auth-context";
 import { fetchCompanyDoc, fetchCompanyMembers, fetchUserColorMapByUids, type CompanyLeadRow, type CompanyMemberOption } from "@/lib/firestore-data";
 import { storage } from "@/lib/firebase";
@@ -12,6 +12,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
+import { contrastTextForFill } from "@/lib/user-profile-format";
 import {
   LEAD_PROJECT_CREATED_EVENT,
   OPEN_NEW_PROJECT_EVENT,
@@ -72,7 +73,7 @@ function statusPillColors(status: string) {
     archived: "#7F1D1D",
   };
   const bg = defaults[key] ?? "#64748B";
-  return { backgroundColor: bg, color: "#FFFFFF" };
+  return { backgroundColor: bg, color: contrastTextForFill(bg, 0.75) };
 }
 
 function normalizeLeadStatuses(raw: unknown): StatusRow[] {
@@ -423,18 +424,20 @@ function isLikelyPhoneValue(value: string) {
   return /^[+\d()\s-]+$/.test(raw) || /^\d+$/.test(raw);
 }
 
-function buildLeadAddress(fields: LeadDynamicField[]) {
+// Returns consumedKeys alongside the built value — whichever raw field(s) fed into it — so
+// buildLeadProjectPrefill can exclude them from the project's own "leadCustomFields" list; without
+// that, an address already folded into projectAddress would also show up a second time as a
+// generic custom field.
+function buildLeadAddress(fields: LeadDynamicField[]): { value: string; consumedKeys: string[] } {
   const directAddress = findBestLeadField(fields, [/address/, /street/, /location/]);
-  if (directAddress?.value) return directAddress.value;
-  const parts = fields
-    .filter((field) =>
-      [/(^|[^a-z])suburb([^a-z]|$)/, /city/, /region/, /postcode/, /zip/, /state/, /country/].some((pattern) =>
-        pattern.test(`${field.key} ${field.label}`.toLowerCase()),
-      ),
-    )
-    .map((field) => field.value.trim())
-    .filter(Boolean);
-  return Array.from(new Set(parts)).join(", ");
+  if (directAddress?.value) return { value: directAddress.value, consumedKeys: [directAddress.key] };
+  const matched = fields.filter((field) =>
+    [/(^|[^a-z])suburb([^a-z]|$)/, /city/, /region/, /postcode/, /zip/, /state/, /country/].some((pattern) =>
+      pattern.test(`${field.key} ${field.label}`.toLowerCase()),
+    ),
+  );
+  const parts = matched.map((field) => field.value.trim()).filter(Boolean);
+  return { value: Array.from(new Set(parts)).join(", "), consumedKeys: matched.map((field) => field.key) };
 }
 
 // Project name = whichever field is mapped to "Client Name" + whichever field is mapped to
@@ -500,6 +503,9 @@ function buildLeadClientNameParts(fields: LeadDynamicField[], fieldLayout: LeadF
       fullName: explicitNameField.value.trim(),
       firstName: firstNameField?.value?.trim() || split.firstName,
       lastName: lastNameField?.value?.trim() || split.lastName,
+      consumedKeys: [explicitNameField.key, firstNameField?.key, lastNameField?.key].filter(
+        (key): key is string => Boolean(key),
+      ),
     };
   }
 
@@ -509,6 +515,7 @@ function buildLeadClientNameParts(fields: LeadDynamicField[], fieldLayout: LeadF
     fullName: [firstName, lastName].filter(Boolean).join(" ").trim(),
     firstName,
     lastName,
+    consumedKeys: [firstNameField?.key, lastNameField?.key].filter((key): key is string => Boolean(key)),
   };
 }
 
@@ -541,19 +548,45 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
       fields.find((field) => normalizeLeadFieldKey(field.key) === normalizeLeadFieldKey(mapped.key)) || null
     );
   };
+  // Tracks every raw field key that ends up folded into one of the fixed fields below, so the
+  // custom-fields list further down can exclude them — otherwise a field already surfaced as the
+  // project's real clientEmail/clientAddress/etc. would ALSO show up a second time as a generic
+  // "custom field," duplicating the same data under two labels.
+  const consumedKeys = new Set<string>();
   const emailField =
     findMappedField("clientEmail") ||
     findBestLeadField(fields, [/email/, /e-mail/], (field) => isLikelyEmailValue(field.value)) ||
     fields.find((field) => isLikelyEmailValue(field.value)) ||
     null;
+  if (emailField) consumedKeys.add(emailField.key);
   const phoneField =
     findMappedField("clientPhone") ||
     findBestLeadField(fields, [/phone/, /mobile/, /cell/, /contact/], (field) => isLikelyPhoneValue(field.value)) ||
     fields.find((field) => isLikelyPhoneValue(field.value)) ||
     null;
-  const { fullName: clientName, firstName: clientFirstName, lastName: clientLastName } =
-    buildLeadClientNameParts(fields, fieldLayout);
+  if (phoneField) consumedKeys.add(phoneField.key);
+  const {
+    fullName: clientName,
+    firstName: clientFirstName,
+    lastName: clientLastName,
+    consumedKeys: nameConsumedKeys,
+  } = buildLeadClientNameParts(fields, fieldLayout);
+  nameConsumedKeys.forEach((key) => consumedKeys.add(key));
   const notesField = findMappedField("projectNotes");
+  if (notesField) consumedKeys.add(notesField.key);
+  const mappedAddressField = findMappedField("projectAddress");
+  let projectAddress: string;
+  if (mappedAddressField?.value) {
+    projectAddress = mappedAddressField.value.trim();
+    consumedKeys.add(mappedAddressField.key);
+  } else {
+    const builtAddress = buildLeadAddress(fields);
+    projectAddress = builtAddress.value.trim();
+    builtAddress.consumedKeys.forEach((key) => consumedKeys.add(key));
+  }
+  const leadCustomFields = fields
+    .filter((field) => !consumedKeys.has(field.key))
+    .map((field) => ({ key: field.key, label: field.label, value: field.value }));
   return {
     projectName: buildLeadProjectName(clientName, clientLastName),
     clientFirstName,
@@ -561,7 +594,7 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
     clientName,
     clientPhone: String(phoneField?.value || "").trim(),
     clientEmail: String(emailField?.value || "").trim(),
-    projectAddress: String(findMappedField("projectAddress")?.value || buildLeadAddress(fields)).trim(),
+    projectAddress,
     projectNotes: String(notesField?.value || "").trim(),
     projectImages: normalizeLeadImageItems(lead).map((item) => item.url),
     projectImageItems: normalizeLeadImageItems(lead).map((item) => ({
@@ -582,6 +615,7 @@ function buildLeadProjectPrefill(lead: CompanyLeadRow, fieldLayout: LeadFieldLay
     })),
     assignedToUid: String(lead.assignedToUid || "").trim(),
     assignedToName: String(lead.assignedToName || lead.assignedTo || "").trim(),
+    leadCustomFields: leadCustomFields.length > 0 ? leadCustomFields : undefined,
   };
 }
 
@@ -686,245 +720,10 @@ export default function LeadsPage() {
   const leadsViewModeRef = useRef(leadsViewMode);
   leadsViewModeRef.current = leadsViewMode;
   const boardCheckRef = useRef<(() => void) | null>(null);
-  const boardStickyCleanupRef = useRef<(() => void) | null>(null);
-  const boardStickyRef = useCallback((el: HTMLDivElement | null) => {
-    boardStickyCleanupRef.current?.();
-    boardStickyCleanupRef.current = null;
-    boardCheckRef.current = null;
-    if (!el) return;
-    let raf = 0;
-    const mainEl = document.querySelector("main");
-    // The page-scroll-blocked backstop below (see setPageScrollBlocked) only has an un-stick path
-    // via the `wheel` event, which never fires for a touch-driven scroll — a coarse-pointer device
-    // that engages the block while mid-scroll inside a column would then have no way to ever
-    // un-block the page again (exactly "the page won't scroll back up"). Touch doesn't need the
-    // backstop anyway: `.glass-scroll` has no overscroll-behavior set, so native touch scroll-
-    // chaining already hands the gesture back to the page on its own once a column's card list
-    // hits its own scroll boundary, the same way any ordinary nested scrollable does. Computed
-    // once — pointer capability doesn't change over the component's lifetime.
-    const isCoarsePointer = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
-    // Each column's card list toggles overflow-y directly on the DOM (not via React state) for
-    // the same reason clip-path is written directly below: going through setState here would add
-    // a render cycle between "scroll crossed the lock threshold" and "the column can actually be
-    // scrolled", long enough to eat the rest of a trackpad gesture and leave the user stuck until
-    // they start a new one. A plain style write lands on the very next paint, same as clip-path.
-    const setCardListsScrollable = (scrollable: boolean) => {
-      el.querySelectorAll<HTMLElement>(".glass-scroll.flex-1").forEach((list) => {
-        list.style.overflowY = scrollable ? "auto" : "hidden";
-      });
-    };
-    // Each column is two nested elements: an outer shell (marked `data-board-column`) that owns
-    // the box-shadow and layout sizing, and an inner element that owns the background/border/blur
-    // and `rounded-[16px] overflow-hidden`. The reveal below sets the OUTER's real `height`
-    // directly rather than clip-path-ing anything — that's what keeps the shadow (which always
-    // renders around whatever size the outer currently is) and the rounded bottom (the inner's
-    // own border-radius, which rounds correctly at any height) continuously in sync with how much
-    // of the column is actually revealed, instead of a clip-path boundary that doesn't line up
-    // with either. This is safe to do with a real `height` (unlike the row itself) because a
-    // column's own height doesn't feed into the row's — the row's is fixed independently via its
-    // own CSS height, so shrinking a column here never changes the page's total scrollable height.
-    const getColumns = (): HTMLElement[] => Array.from(el.querySelectorAll<HTMLElement>("[data-board-column]"));
-    // Backs the wheel handler below — the EARLY_SCROLLABLE_PX buffer on setCardListsScrollable
-    // helps, but a discrete wheel tick still resolves its scroll target once, based on what the
-    // BROWSER already considers scrollable at that instant; it can't retroactively redirect a
-    // tick that already committed to scrolling the page. `isLocked` (the precise, unbuffered
-    // state — matching exactly when position:sticky has actually engaged) lets the wheel handler
-    // redirect scroll to a column manually, on every tick, without waiting on the browser to
-    // notice anything.
-    let isLocked = false;
-    // Tracks which element actually scrolls the page (mirrors the same check inside `check()`)
-    // so the wheel handler below can manually drive it — see the un-stick comment there.
-    let mainScrolls = false;
-    // Declared up here (rather than down by onWheel, where it's set) so `check()` can also read
-    // it for the page-scroll lock below — see `setPageScrollBlocked`.
-    let unsticking = false;
-    // Belt-and-suspenders backstop on top of the wheel redirect below: rather than rely solely on
-    // preventDefault() suppressing the browser's native scroll on every single wheel tick, this
-    // makes it structurally impossible for the page to scroll at all while locked — there's no
-    // event-level mechanism (native default action, scroll latching, or anything else) that can
-    // scroll a container that has nothing scrollable. Only lifted the instant we deliberately want
-    // the page to move (mid un-stick), and re-applied as soon as we're back to "should stay put."
-    let pageScrollBlocked = false;
-    const setPageScrollBlocked = (blocked: boolean) => {
-      if (pageScrollBlocked === blocked) return;
-      pageScrollBlocked = blocked;
-      const target = mainScrolls ? mainEl : document.documentElement;
-      if (target) target.style.overflowY = blocked ? "hidden" : "";
-    };
-    // Backs the natural-height cache inside `check()` — see the comment down there for why this
-    // isn't just remeasured every scroll frame.
-    let cachedFullHeight = 0;
-    let cachedFullHeightKey = "";
-    const check = () => {
-      raf = 0;
-      // Each column's card list has a fixed, viewport-relative height from the moment it
-      // renders — position:sticky only changes whether the row tracks scroll or holds still,
-      // not its size — so if the card list were always overflow-y-auto, a swipe over an
-      // unlocked (not-yet-stuck) column would scroll the cards instead of the page. Keep it
-      // non-scrollable until the sticky row has actually reached its stuck offset, so the
-      // gesture bubbles up to the page/main scroll and finishes bringing the board to the top.
-      if (leadsViewModeRef.current !== "board") {
-        isLocked = false;
-        setCardListsScrollable(false);
-        setPageScrollBlocked(false);
-        getColumns().forEach((col) => { col.style.height = ""; });
-        cachedFullHeightKey = "";
-        return;
-      }
-      const stuckTop = Number.parseFloat(getComputedStyle(el).top) || 0;
-      // getBoundingClientRect() is always viewport-relative, but the sticky `top` offset is
-      // relative to whichever element is actually scrolling — on mobile that's `<main>` itself
-      // (already offset ~48px below the fixed tab bar), on desktop it's the document (offset 0).
-      // Comparing rect.top straight to the CSS top value only works for the latter, so add back
-      // the scrollport's own offset when main is the one doing the scrolling.
-      mainScrolls = Boolean(mainEl) && getComputedStyle(mainEl as HTMLElement).overflowY !== "visible";
-      const containerTop = mainScrolls ? (mainEl as HTMLElement).getBoundingClientRect().top : 0;
-      const rect = el.getBoundingClientRect();
-      // A discrete wheel/trackpad tick resolves its scroll target ONCE, based on what's
-      // scrollable at that instant — so if a card list only becomes overflow-y-auto exactly AT
-      // the pixel the row finishes locking, the tick that lands the row there still scrolls the
-      // page (the card list wasn't scrollable yet when the browser picked a target), and the user
-      // needs one more, separate tick before the column responds. Unlocking a few pixels EARLY
-      // (while the row's own scroll-into-place is still finishing) means the card list is already
-      // scrollable by the time that happens, so the same continuous gesture carries straight
-      // through. EARLY_SCROLLABLE_PX is small on purpose: position:sticky itself still won't let
-      // the row move past its stuck offset regardless, so this can't reintroduce the original bug
-      // (cards swallowing a swipe well before the row has scrolled into place) — it only shaves
-      // the last few pixels of an already-almost-finished scroll.
-      const EARLY_SCROLLABLE_PX = 24;
-      isLocked = rect.top <= containerTop + stuckTop + 1;
-      const nearlyLocked = rect.top <= containerTop + stuckTop + EARLY_SCROLLABLE_PX;
-      setCardListsScrollable(nearlyLocked);
-      // Blocked on the same EARLY_SCROLLABLE_PX lead as the card lists go scrollable, not just
-      // once `isLocked` — so the page is already unable to scroll by the exact tick that finishes
-      // locking, and that tick's wheel event has nothing left to resolve to except the column.
-      setPageScrollBlocked(!isCoarsePointer && nearlyLocked && !unsticking);
-      const columns = getColumns();
-      const firstCol = columns[0];
-      if (!firstCol) return;
-      // The column's natural (fully-grown) height doesn't change from one scroll frame to the
-      // next — only how much of it is currently revealed does — so it's cached here instead of
-      // being remeasured on every single scroll-driven call. Remeasuring meant resetting height
-      // to "" and immediately reading getBoundingClientRect(), a write-then-read that forces a
-      // synchronous layout reflow; doing that (plus repainting every column's backdrop-filter
-      // blur) on every scroll frame for the whole lock-in transition is what showed up as
-      // stutter, especially visible right at the moving bottom edge, worse on mobile GPUs. The
-      // cache key covers the two things that actually DO change it: the column count (data
-      // load/filter swapping which columns exist) and the viewport size (resize/orientation).
-      const fullHeightCacheKey = `${columns.length}:${window.innerWidth}x${window.innerHeight}`;
-      if (fullHeightCacheKey !== cachedFullHeightKey) {
-        const prevHeight = firstCol.style.height;
-        firstCol.style.height = "";
-        cachedFullHeight = firstCol.getBoundingClientRect().height;
-        firstCol.style.height = prevHeight;
-        cachedFullHeightKey = fullHeightCacheKey;
-      }
-      const colRect = firstCol.getBoundingClientRect();
-      // BOTTOM_PAD gives the revealed edge breathing room from the viewport bottom — matching the
-      // row's own pt-2/px-2/pb-2 (and the gap-2 between columns) so every side of a column has the
-      // same padding — instead of running flush to the screen edge. It stays in the formula even
-      // once locked — rect.top then holds steady at the sticky offset, so this settles just short
-      // of the column's true height rather than snapping straight to it, avoiding a jump at the
-      // handoff. Measured off each column's own rect (not the row's) so this stays correct
-      // regardless of any padding between the row and the columns — they're all the same size and
-      // position, so the first one stands in for all of them.
-      const BOTTOM_PAD = 8;
-      const grownHeight = Math.min(cachedFullHeight, Math.max(0, window.innerHeight - BOTTOM_PAD - colRect.top));
-      const nextHeight = grownHeight < cachedFullHeight - 0.5 ? `${grownHeight}px` : "";
-      columns.forEach((col) => {
-        if (col.style.height !== nextHeight) col.style.height = nextHeight;
-      });
-    };
-    boardCheckRef.current = check;
-    const onScroll = () => {
-      if (raf) return;
-      raf = window.requestAnimationFrame(check);
-    };
-    // For ordinary scrolling within a column, this does NOT intercept the wheel event at all —
-    // `setPageScrollBlocked` above already makes the page unable to scroll while locked, so a
-    // wheel/mouse notch's own native default action has nothing left to resolve to except the
-    // column underneath (the only remaining scrollable thing), and scrolls it with the browser's
-    // own native, smooth, momentum-preserving animation — the same feel as scrolling the page
-    // itself, which a hand-rolled JS scrollTop animation can only ever approximate. This only
-    // steps in for the one case native scrolling can't handle on its own: un-sticking the row
-    // once a column has been scrolled all the way back to its own top.
-    //
-    // Once that scroll-up gesture starts un-sticking the row (see below), `isLocked` flips false
-    // mid-gesture as soon as the row moves off its stuck offset — but the browser still won't
-    // resume its own default scrolling for the REST of that gesture (it was prevented earlier in
-    // this same gesture, to redirect it into the column). Without this flag, the moment isLocked
-    // flips, onWheel's top guard would bail out and hand back to that browser default action,
-    // which visibly reads as the scroll suddenly stopping ("gets stuck") partway through un-
-    // sticking. Keeping this true — independent of isLocked — for the rest of the up-scroll keeps
-    // driving the page manually all the way through, instead of only for the first tick or two.
-    // (Declared up near `isLocked`/`mainScrolls` above, not here, so `check()` can read it too.)
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY === 0) return;
-      if (unsticking) {
-        if (e.deltaY > 0) {
-          unsticking = false;
-        } else {
-          setPageScrollBlocked(false);
-          const scroller = mainScrolls ? mainEl : null;
-          if (scroller) scroller.scrollTop += e.deltaY;
-          else window.scrollBy(0, e.deltaY);
-          e.preventDefault();
-          return;
-        }
-      }
-      if (!isLocked || e.deltaY >= 0) return;
-      const cardList = (e.target as HTMLElement | null)?.closest<HTMLElement>(".glass-scroll.flex-1");
-      if (!cardList || cardList.scrollTop > 0) return;
-      // Scroll the page/main back up manually too, rather than just releasing the event and
-      // hoping the browser's default action takes over — this same continuous gesture has
-      // already had preventDefault() called on it repeatedly (to redirect it into the column),
-      // and the browser doesn't reliably hand default scrolling back to the page for the REST
-      // of that gesture once reversed. Driving it ourselves, the same way we drive the column,
-      // is what actually un-sticks the row within the same swipe instead of needing a new one.
-      unsticking = true;
-      setPageScrollBlocked(false);
-      const scroller = mainScrolls ? mainEl : null;
-      if (scroller) scroller.scrollTop += e.deltaY;
-      else window.scrollBy(0, e.deltaY);
-      e.preventDefault();
-    };
-    check();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    mainEl?.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", onWheel, { passive: false });
-    // Leads load asynchronously, so the very first `check()` call above can land before any
-    // column has actually rendered (still showing the loading state) — `getColumns()` finds
-    // nothing yet, so nothing gets sized, and nothing else was going to call `check()` again once
-    // the columns actually mounted (the view-mode re-check effect below only reruns on
-    // leadsViewMode, which by then has already settled). Watching `el` for child changes catches
-    // that moment generically — real data finishing load, a filter/search change swapping which
-    // columns exist, anything — without needing to name every state that could cause it. Calls
-    // `check()` directly rather than going through the rAF-throttled `onScroll`: that throttle
-    // exists to coalesce rapid-fire scroll events, but mutations here are infrequent, and a
-    // backgrounded tab can leave a pending rAF callback waiting on the browser (which pauses
-    // rAF, not MutationObserver, for hidden tabs) — no reason to route through it.
-    const observer = new MutationObserver(() => check());
-    observer.observe(el, { childList: true, subtree: true });
-    // Left/Right arrow keys — see lib/board-arrow-key-scroll.ts (shared with the Dashboard
-    // board's own arrow-key handling, same [data-board-column] convention). Attached here, in
-    // this same callback ref, rather than a separate one/plain effect, for the identical reason
-    // the rest of this callback already is one: this board mounts behind its own loading gate, so
-    // only a callback ref (running exactly when `el` itself mounts/unmounts) reliably catches it.
-    const detachArrowKeyScroll = attachBoardArrowKeyScroll(el);
-    boardStickyCleanupRef.current = () => {
-      if (raf) window.cancelAnimationFrame(raf);
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      mainEl?.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onWheel);
-      observer.disconnect();
-      detachArrowKeyScroll();
-      getColumns().forEach((col) => { col.style.height = ""; });
-      setCardListsScrollable(false);
-      setPageScrollBlocked(false);
-    };
-  }, []);
+  // See lib/board-sticky-scroll.ts for the mechanism (position:sticky natively pinning the row +
+  // column-height-reveal, plus the shared Left/Right arrow-key handling), and why it no longer
+  // forces the page's own overflow to "hidden".
+  const boardStickyRef = useBoardStickyRef(leadsViewModeRef, boardCheckRef, { bottomPadPx: 8, attachArrowKeyScroll: true });
   // Re-run the check immediately on a view-mode toggle (rather than waiting for the next scroll
   // or resize) so switching into/out of board view updates the lock/height state right away.
   // useLayoutEffect, not useEffect: leadsViewMode can flip away from and back to "board" as the
@@ -1438,7 +1237,7 @@ export default function LeadsPage() {
   const leadStatusPillStyle = (statusLabel: string) => {
     const configured = leadStatusColorByName.get(String(statusLabel || "").trim().toLowerCase());
     if (configured) {
-      return { backgroundColor: configured, color: "#FFFFFF" };
+      return { backgroundColor: configured, color: contrastTextForFill(configured, 0.75) };
     }
     return statusPillColors(statusLabel);
   };
@@ -3771,7 +3570,7 @@ export default function LeadsPage() {
                           className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5"
                           style={{ borderColor: "rgba(0,0,0,0.15)" }}
                         >
-                          <p className="truncate text-[13px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
+                          <p className="truncate text-[15px] font-semibold" style={{ color: "#000000" }}>{column.name}</p>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <span
                               className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full px-2 text-[10px] font-bold"
@@ -3825,7 +3624,7 @@ export default function LeadsPage() {
                         className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2.5"
                         style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
                       >
-                        <p className="truncate text-[13px] font-semibold" style={{ color: "var(--text-main)" }}>Other</p>
+                        <p className="truncate text-[15px] font-semibold" style={{ color: "var(--text-main)" }}>Other</p>
                         <span
                           className="shrink-0 rounded-full px-2 py-[1px] text-[10px] font-bold text-white"
                           style={{ backgroundColor: "var(--text-muted)" }}

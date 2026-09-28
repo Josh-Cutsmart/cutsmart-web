@@ -1,41 +1,49 @@
-Version: v0.4.3
+Version: v0.4.4
 
 whatsNew: [
-<u><b>Dashboard</b></u>
+<u><b>Sidebar</b></u>
 <ul>
-<li>Sub-board columns (the per-status drill-down view) now have the same collapse/expand button in their header as the main board's columns</li>
-<li>Which sub-board you have open, and which columns are collapsed, is now remembered per user across a page refresh — no more reopening the sub-board or re-collapsing columns every time</li>
-<li>Fixed a bug where dragging a card into a sub-stage column and then refreshing the page could send it to a leftover "Other" column that wasn't part of the board — cards now correctly stay exactly where they were dropped, and that catch-all column has been removed entirely</li>
-<li>Added a floating horizontal scrollbar that stays pinned to the bottom of the screen, so board columns can be scrolled left/right at any scroll position — previously you had to scroll all the way down the page first to reach it</li>
-<li>Fixed a hairline visual overshoot in that scrollbar at certain zoom levels/screen scaling</li>
+<li>The left sidebar can now be dragged to resize between its full width and a compact icon-only width, and remembers whichever you left it at</li>
+<li>Added a <b>Lock Sidebar Resizing</b> option in User Settings to freeze it at its current width and disable the drag handle</li>
+</ul>
+
+<u><b>Cutlist</b></u>
+<ul>
+<li>Closing Initial Measure or the Production Cutlist now shows a summary popup, covering:
+  <ul>
+  <li>Part counts by type, broken down by room when a project has more than one</li>
+  <li>How many parts have been added or removed since you first opened it this session</li>
+  <li>Sheet counts by board/sheet size — Production's version reads directly off the same numbers shown in Board Settings' own <b>Sheets</b> column, so the two always match</li>
+  </ul>
+</li>
+<li>The Production summary also compares against Initial Measure and calls out anything <b>Missing From Production</b></li>
+</ul>
+
+<u><b>Quote & Specifications</b></u>
+<ul>
+<li>The formatting toolbar is now hidden once a Quote or Specifications version has been sent to the client, since it's read-only at that point</li>
+<li>Added dependency <b>Rules</b> to groups in both the Quote and Specifications template builders — set a group to automatically turn on/off based on whether a Product is selected on the project</li>
+</ul>
+
+<u><b>Leads</b></u>
+<ul>
+<li>Custom fields a client filled in on a lead form now carry through when that lead becomes a project, shown in a new <b>From Lead</b> card on the project's Overview tab</li>
 </ul>
 
 <u><b>Dashboard & Leads</b></u>
 <ul>
-<li>Pressing the <b>Left</b>/<b>Right</b> arrow keys while hovering over a board now smoothly slides the view to fully reveal whichever column is half-cut-off at that edge, instead of the browser's old small, arbitrary scroll nudge
-  <ul>
-  <li>Works on the main Dashboard board, its sub-board columns, and the Leads board — including columns with no cards in them</li>
-  </ul>
-</li>
+<li>Fixed a bug where board columns could lock up partway through scrolling and become difficult or impossible to scroll back up</li>
+<li>Column title text is now bigger and easier to read</li>
+<li>A column title's underline (on hover) now matches its text colour instead of looking mismatched on darker status colours</li>
 </ul>
 
 <u><b>Mobile</b></u>
 <ul>
-<li>Fixed a regression on Dashboard and Leads where you could only scroll a board's columns left/right by dragging the column header — dragging anywhere else in the column (over cards or empty space) scrolls again</li>
-</ul>
-
-<u><b>Project Details</b></u>
-<ul>
-<li>The project status dropdown now looks and matches everywhere it appears — Dashboard's list view, Dashboard's board view, and the Project Details header bar all share the same frosted-glass style with rounded, colour-coded status options</li>
-</ul>
-
-<u><b>Top Tab Bar</b></u>
-<ul>
-<li>Closing a tab with its <b>X</b> button now saves and closes immediately — the extra <b>Cancel / Close Without Saving / Save & Close</b> confirmation popup has been removed for a faster, one-click close</li>
+<li>Popups no longer get covered by the on-screen keyboard — they now shift up to stay visible above it</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Fixed the page accidentally highlighting/selecting text underneath your cursor while dragging to scroll or reorder something</li>
+<li>Fixed the text cursor being invisible in some fields in dark mode</li>
 </ul>
 ]
