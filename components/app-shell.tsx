@@ -405,10 +405,11 @@ export function AppShell({
   // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
   // screen — mounted once here (AppShell wraps every staff page) rather than per-modal, since
   // every modal already shares that one class.
-  const keyboardInsetPx = useKeyboardInsetPx();
+  const keyboardInset = useKeyboardInsetPx();
   useEffect(() => {
-    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInsetPx}px`);
-  }, [keyboardInsetPx]);
+    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInset.insetPx}px`);
+    document.documentElement.style.setProperty("--keyboard-offset-top-px", `${keyboardInset.offsetTopPx}px`);
+  }, [keyboardInset]);
   const [projectName, setProjectName] = useState("");
   const [clientFirstName, setClientFirstName] = useState("");
   const [clientLastName, setClientLastName] = useState("");

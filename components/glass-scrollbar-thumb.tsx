@@ -86,6 +86,29 @@ export function GlassScrollbarThumb({
     const el = scrollRef.current;
     const anchorEl = anchorRef?.current ?? el;
     if (!el || !anchorEl) return;
+    // Bails out (returns the SAME state reference) when the freshly computed value is equal to
+    // what's already there, instead of always setting a brand-new object — plain setTrack/setThumb
+    // calls built a fresh object literal every time, which React treats as "changed" regardless of
+    // whether the actual numbers moved, re-rendering this component (and reconciling its portal)
+    // on every single scroll tick even during a pure vertical scroll where the track's position
+    // never actually changes. Confirmed contributor to mouse-wheel scroll lag in the
+    // Quote/Specifications windows, which render this directly on their own main scroll container.
+    const setTrackIfChanged = (next: typeof track) => {
+      setTrack((prev) => {
+        if (prev === next) return prev;
+        if (prev && next && prev.left === next.left && prev.top === next.top && prev.bottom === next.bottom && prev.width === next.width && prev.height === next.height) {
+          return prev;
+        }
+        return next;
+      });
+    };
+    const setThumbIfChanged = (next: typeof thumb) => {
+      setThumb((prev) => {
+        if (prev === next) return prev;
+        if (prev && next && prev.offset === next.offset && prev.length === next.length) return prev;
+        return next;
+      });
+    };
     const update = () => {
       const anchorBox = anchorEl.getBoundingClientRect();
       if (isHorizontal) {
@@ -106,7 +129,7 @@ export function GlassScrollbarThumb({
         //    that, still rounded to a whole CSS pixel as a defensive measure for this one case.
         const dockedTop = anchorBox.bottom - thumbWidthPx;
         const isDocked = anchorBox.bottom <= window.innerHeight;
-        setTrack({
+        setTrackIfChanged({
           left: anchorBox.left,
           width: anchorBox.width,
           top: isDocked ? Math.round(dockedTop) : null,
@@ -114,7 +137,7 @@ export function GlassScrollbarThumb({
           height: thumbWidthPx,
         });
         if (el.scrollWidth <= el.clientWidth + 1) {
-          setThumb(null);
+          setThumbIfChanged(null);
           return;
         }
         const ratio = el.clientWidth / el.scrollWidth;
@@ -122,10 +145,10 @@ export function GlassScrollbarThumb({
         const maxThumbOffset = anchorBox.width - thumbLength;
         const scrollableDist = el.scrollWidth - el.clientWidth;
         const scrollRatio = scrollableDist > 0 ? el.scrollLeft / scrollableDist : 0;
-        setThumb({ offset: scrollRatio * maxThumbOffset, length: thumbLength });
+        setThumbIfChanged({ offset: scrollRatio * maxThumbOffset, length: thumbLength });
         return;
       }
-      setTrack({
+      setTrackIfChanged({
         left: side === "left" ? anchorBox.left + insetPx : anchorBox.right - insetPx - thumbWidthPx,
         top: anchorBox.top,
         bottom: null,
@@ -133,7 +156,7 @@ export function GlassScrollbarThumb({
         height: anchorBox.height,
       });
       if (el.scrollHeight <= el.clientHeight + 1) {
-        setThumb(null);
+        setThumbIfChanged(null);
         return;
       }
       const ratio = el.clientHeight / el.scrollHeight;
@@ -141,13 +164,28 @@ export function GlassScrollbarThumb({
       const maxThumbTop = anchorBox.height - thumbHeight;
       const scrollableDist = el.scrollHeight - el.clientHeight;
       const scrollRatio = scrollableDist > 0 ? el.scrollTop / scrollableDist : 0;
-      setThumb({ offset: scrollRatio * maxThumbTop, length: thumbHeight });
+      setThumbIfChanged({ offset: scrollRatio * maxThumbTop, length: thumbHeight });
     };
     update();
-    el.addEventListener("scroll", update);
-    window.addEventListener("scroll", update, { passive: true });
-    window.addEventListener("resize", update);
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    // Coalesces potentially many scroll/resize events firing within the same frame (a fast
+    // mouse-wheel gesture can fire far more scroll events per second than the screen can even
+    // show a difference for) down to at most one recompute per animation frame — update() forces
+    // a synchronous getBoundingClientRect() layout read, so running it once per raw event was
+    // doing many times more layout work than necessary and was a confirmed contributor to
+    // mouse-wheel scroll lag in the Quote/Specifications windows (which render this directly on
+    // their own main scroll container).
+    let rafId: number | null = null;
+    const scheduleUpdate = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        update();
+      });
+    };
+    el.addEventListener("scroll", scheduleUpdate);
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleUpdate) : null;
     ro?.observe(anchorEl);
     if (anchorEl !== el) ro?.observe(el);
     // Horizontal mode's track position depends on the anchor's own bottom edge relative to the
@@ -155,10 +193,11 @@ export function GlassScrollbarThumb({
     // anchor 1:1 via ResizeObserver/scroll-on-el alone, so the extra page-scroll listener above is
     // only actually needed for horizontal, but harmless (just a redundant recompute) either way.
     return () => {
-      el.removeEventListener("scroll", update);
-      window.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
+      el.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
       ro?.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, [scrollRef, anchorRef, orientation, isHorizontal, side, insetPx, thumbWidthPx, viewportBottomInsetPx, refreshKey]);
 

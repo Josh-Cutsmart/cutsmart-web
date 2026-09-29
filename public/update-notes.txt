@@ -1,49 +1,36 @@
-Version: v0.4.4
+Version: v0.4.5
 
 whatsNew: [
-<u><b>Sidebar</b></u>
-<ul>
-<li>The left sidebar can now be dragged to resize between its full width and a compact icon-only width, and remembers whichever you left it at</li>
-<li>Added a <b>Lock Sidebar Resizing</b> option in User Settings to freeze it at its current width and disable the drag handle</li>
-</ul>
-
-<u><b>Cutlist</b></u>
-<ul>
-<li>Closing Initial Measure or the Production Cutlist now shows a summary popup, covering:
-  <ul>
-  <li>Part counts by type, broken down by room when a project has more than one</li>
-  <li>How many parts have been added or removed since you first opened it this session</li>
-  <li>Sheet counts by board/sheet size — Production's version reads directly off the same numbers shown in Board Settings' own <b>Sheets</b> column, so the two always match</li>
-  </ul>
-</li>
-<li>The Production summary also compares against Initial Measure and calls out anything <b>Missing From Production</b></li>
-</ul>
-
 <u><b>Quote & Specifications</b></u>
 <ul>
-<li>The formatting toolbar is now hidden once a Quote or Specifications version has been sent to the client, since it's read-only at that point</li>
-<li>Added dependency <b>Rules</b> to groups in both the Quote and Specifications template builders — set a group to automatically turn on/off based on whether a Product is selected on the project</li>
+<li>Save, Reset, Send to Client, Accepted/Submitted Version and Client Portal buttons have moved into a floating bar at the bottom of the screen — Print and Download stay at the top, and Download is now a dropdown with a PDF option</li>
+<li>The floating bar's buttons now smoothly fade and pop in/out as they become available instead of the bar jumping between sizes</li>
+<li>Added a <b>Reopen Edit</b> button once a version has been sent, including while viewing that exact sent/accepted version (it used to only show while looking at something else)</li>
+<li>Fixed the Reset button sometimes appearing greyed out and unclickable when it shouldn't have been</li>
+<li>The Accepted/Submitted/Pending status banner and the "viewing an older version" banner now live in the top bar instead of a strip above the sheet, and smoothly animate between each other when switching versions</li>
+<li>Fixed occasional lag when scrolling with a mouse wheel</li>
 </ul>
 
-<u><b>Leads</b></u>
+<u><b>Design Tab</b></u>
 <ul>
-<li>Custom fields a client filled in on a lead form now carry through when that lead becomes a project, shown in a new <b>From Lead</b> card on the project's Overview tab</li>
-</ul>
-
-<u><b>Dashboard & Leads</b></u>
-<ul>
-<li>Fixed a bug where board columns could lock up partway through scrolling and become difficult or impossible to scroll back up</li>
-<li>Column title text is now bigger and easier to read</li>
-<li>A column title's underline (on hover) now matches its text colour instead of looking mismatched on darker status colours</li>
+<li>Clicking a room in the Rooms list — or the Project Cost total — now opens a price breakdown popup, showing:
+  <ul>
+  <li>Items, Sheets and Misc costs with their own subtotals and a room total</li>
+  <li>For the whole-project view: every room, collapsed by default and expandable, plus a summary reconciling Quote Extras, Custom Pricing and any discount down to the Project Total</li>
+  <li>A Print button that matches what's shown on screen</li>
+  </ul>
+</li>
+<li>Room rows now highlight blue on hover to show they're clickable, and the edit button only appears (as a small pencil) when hovering over the room's name</li>
+<li>Fixed the Product panel narrowing earlier than it needed to when shrinking the browser window</li>
 </ul>
 
 <u><b>Mobile</b></u>
 <ul>
-<li>Popups no longer get covered by the on-screen keyboard — they now shift up to stay visible above it</li>
+<li>The Quote and Specifications windows' Version History and Extras/Sections panels now take over the full screen when opened, matching the rest of the app, and fixed a bug where closing one could leave the page stuck partway shifted until it was reloaded</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Fixed the text cursor being invisible in some fields in dark mode</li>
+<li>Clicking away from an empty tag box (in the project header) now closes it instead of leaving it open</li>
 </ul>
 ]

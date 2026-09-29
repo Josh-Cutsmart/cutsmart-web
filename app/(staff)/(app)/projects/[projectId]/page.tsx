@@ -4,7 +4,7 @@ import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, us
 import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Great_Vibes } from "next/font/google";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, User, Users, Wrench, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Cpu, DollarSign, Download, ExternalLink, Eye, File as FileIcon, FileSpreadsheet, FileText, GitBranch, GripVertical, HardHat, Image as ImageIcon, Info, Link2, ListChecks, Lock, Mail, MapPin, Minus, NotebookPen, Pencil, Phone, Plus, Printer, Quote, RefreshCw, RotateCcw, Ruler, Save, Scissors, Search, ShoppingCart, Tag, Trash2, Unlink2, Unlock, User, Users, Wrench, X } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
@@ -21,7 +21,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
-import { useKeyboardInsetPx } from "@/lib/use-keyboard-inset";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
@@ -1674,6 +1673,635 @@ function QuoteExtraToggleSwitch({
       />
     </button>
   );
+}
+
+// One slot inside the Quote/Specs floating action-button pill (Save/Reset/Send/Accepted Version/
+// Client Portal) — membership varies with project/version state (Save and Reset only show for the
+// live draft, Send hides once it's locked, etc.), which used to mean an instant, jarring pill-width
+// jump every time a condition flipped. This turns that into a deliberate two-step animation instead
+// of a plain `{visible && <button/>}` mount/unmount: shrinking pops the button THEN slides the pill
+// shut around the gap it leaves; growing slides the pill open FIRST, then fades the new button in
+// once there's actually room for it. Always stays mounted (never returns null) — a fully collapsed
+// slot is zero-width and `overflow: hidden`, so it's already invisible and unclickable without
+// needing to leave the DOM.
+function FloatingBarSlot({ visible, children }: { visible: boolean; children: ReactNode }) {
+  const [collapsed, setCollapsed] = useState(!visible);
+  // Once a slot has FULLY collapsed (maxWidth finished animating to 0 — not the same moment
+  // `collapsed` itself flips true), this pulls it out of the flex row's layout entirely via
+  // `display: none`, so the parent pill/strip can go back to plain `gap` spacing (simple,
+  // naturally symmetric) instead of each slot managing its own margin. `gap` only ever applies
+  // BETWEEN actual participating flex items — a `display: none` slot contributes none on either
+  // side of it, which a merely zero-width one still did on both, and a per-slot marginRight
+  // couldn't either: margin has no idea whether IT happens to be the last VISIBLE slot in a row
+  // whose true last member varies with state, so whichever slot ended up last always carried an
+  // extra, asymmetric-looking trailing gap beyond the pill's own edge padding. Flipping this the
+  // MOMENT `collapsed` does would skip the slide-shut transition outright (no time for the width
+  // to animate before the element leaves the layout); growing reverses the order for the same
+  // reason — rejoin the layout first, still at maxWidth 0, and only expand a tick after that.
+  const [removedFromFlow, setRemovedFromFlow] = useState(!visible);
+  // The pop plays as an independent, position:fixed ghost portaled to <body> (see the JSX below),
+  // positioned at a snapshot of exactly where the real button sat on screen the instant it started
+  // leaving. A portal is outside every ancestor's own box/overflow entirely, so its scale(1.1)
+  // bulge can freely render past the real slot's edges — visually "escaping" the bar, on top of
+  // whatever's there — without growing the slot's own box (an earlier fix, giving the box padding
+  // headroom to avoid clipping the bulge, worked but visibly grew the bar) and without affecting
+  // any ancestor's scrollable-overflow bookkeeping the way an in-flow transform still does (which
+  // is what briefly flashed a scrollbar on the mobile bottom strip's own overflow-x-auto in an
+  // even earlier version of this).
+  const [poppingRect, setPoppingRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  // Drives the child's own opacity, deliberately SEPARATE from `collapsed` above even though it
+  // moves in lockstep with it — see the render below for why the actual fade needs a transition
+  // rule that's constant across renders (never toggled to "none"), which in turn means its target
+  // VALUE has to be controlled independently rather than reusing collapsed's own true/false
+  // directly as that value.
+  const [contentVisible, setContentVisible] = useState(visible);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const prevVisibleRef = useRef(visible);
+
+  useEffect(() => {
+    if (visible === prevVisibleRef.current) return;
+    prevVisibleRef.current = visible;
+    const timers: number[] = [];
+    const rafs: number[] = [];
+    if (visible) {
+      // Growing: rejoin the flex row on one animation frame (still collapsed, maxWidth 0 — this
+      // alone doesn't visibly move anything), then start the actual width transition on the NEXT
+      // frame. This has to be a real double-rAF, not a guessed setTimeout delay: an element that
+      // was `display: none` has no previous computed box AT ALL to animate from, the same way a
+      // brand-new element wouldn't — the browser needs an actual PAINTED frame of "now in the
+      // layout, still at maxWidth 0" to interpolate the following change from, and nothing about a
+      // plain millisecond delay guarantees a real paint happened in between (this is what was
+      // making the bar jump straight to its open width instead of sliding open). Content becomes
+      // visible 300ms after that — a real elapsed-time wait for the width transition's own known
+      // duration to finish, not a "did this paint yet" concern, so a plain setTimeout is fine here.
+      rafs.push(requestAnimationFrame(() => {
+        setRemovedFromFlow(false);
+        rafs.push(requestAnimationFrame(() => {
+          setCollapsed(false);
+          timers.push(window.setTimeout(() => setContentVisible(true), 300));
+        }));
+      }));
+    } else {
+      // Shrinking: measure now (synchronously, before anything moves), then a tick later hide the
+      // real button and spawn the ghost at that exact spot — a plain setTimeout is fine here since
+      // the slot is already `display: block` with a real, already-painted width (never `none`), so
+      // there's no equivalent "nothing to animate from" risk. Once the ghost's own pop has
+      // finished, the real slot collapses (sliding the bar shut); only once THAT transition has
+      // also had time to finish does the slot actually leave the layout (see removedFromFlow's own
+      // comment above for why this can't happen any earlier).
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      timers.push(window.setTimeout(() => {
+        setContentVisible(false);
+        if (rect) setPoppingRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+      }, 0));
+      timers.push(window.setTimeout(() => {
+        setPoppingRect(null);
+        setCollapsed(true);
+      }, 180));
+      timers.push(window.setTimeout(() => setRemovedFromFlow(true), 180 + 320));
+    }
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      rafs.forEach((raf) => cancelAnimationFrame(raf));
+    };
+  }, [visible]);
+
+  return (
+    <>
+      <div
+        ref={wrapperRef}
+        className="overflow-hidden transition-[max-width] duration-300 ease-in-out"
+        style={{ maxWidth: collapsed ? 0 : 260, display: removedFromFlow ? "none" : "block" }}
+      >
+        {/* transition is a CONSTANT rule here (never toggled to/from "none", unlike an earlier
+            version of this) — changing transition-property in the exact same style update as the
+            value it's supposed to cover is a well-known case where browsers skip the animation
+            outright, since there's no prior painted frame under the NEW rule to interpolate from;
+            that was silently turning the "fade in" into an instant snap. With the rule always
+            active, only WHEN contentVisible itself flips (fully independent of this) needs to be
+            timed right — see the effect above. */}
+        <div style={{ opacity: contentVisible ? 1 : 0, transition: "opacity 200ms ease" }}>
+          {children}
+        </div>
+      </div>
+      {poppingRect && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="floating-bar-slot-pop pointer-events-none fixed"
+              style={{ left: poppingRect.left, top: poppingRect.top, width: poppingRect.width, height: poppingRect.height, zIndex: 2000 }}
+            >
+              {children}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+// The chip's own colors, separate from its content — see TopBarStatusChip below for why: it owns
+// one persistent, styled shell element so it can cross-fade the COLORS of a border/background/text
+// change (a plain CSS `transition` on the shell handles that for free — just updating these values
+// is enough) while independently fading the CONTENT and resizing the shell to fit it.
+type TopBarChipStyle = { borderColor: string; backgroundColor: string; color: string };
+type TopBarChipData = { key: string; style: TopBarChipStyle; content: ReactNode } | null;
+
+const TOP_BAR_CHIP_SHELL_CLASSNAME = "inline-flex items-center gap-3 rounded-[10px] border px-4 py-2 text-[12px] font-semibold shadow-lg";
+
+// Reused by both the Quote and Specifications top bars for their centered status chip — either the
+// "viewing an older version"/"outdated" banner or the Accepted/Submitted/Pending one (never both at
+// once, see each host block's own comment). `data.key` identifies WHICH banner is showing (not
+// object identity — the caller rebuilds a fresh object every render even when nothing has actually
+// changed, so comparing by key is what tells a genuine change apart from an unrelated re-render).
+// Three distinct transitions, depending on how the key changes:
+//  - null -> a key (nothing shown, then something is): fades in at its own natural width.
+//  - a key -> null (something shown, then nothing): pops away, the SAME `.floating-bar-slot-pop`
+//    ghost-portal technique as FloatingBarSlot's own buttons just above, reused as-is — a plain
+//    conditional render can't animate its own removal (React deletes the node the instant it's
+//    gone), so this caches the last content long enough to play the pop.
+//  - one key -> a DIFFERENT key (e.g. navigating from one already-shown version straight to
+//    another with its own different banner): morphs in place instead of popping/re-appearing — the
+//    shell resizes to the new content's own natural width, its border/background/text color
+//    cross-fade (free, via the shell's own constant `transition` — see its style below), and the
+//    content itself fades out then back in across the swap.
+function TopBarStatusChip({ data }: { data: TopBarChipData }) {
+  const [renderedData, setRenderedData] = useState(data);
+  const [fadeIn, setFadeIn] = useState(false);
+  const [hiddenForExit, setHiddenForExit] = useState(false);
+  const [contentHiddenForMorph, setContentHiddenForMorph] = useState(false);
+  const [explicitWidthPx, setExplicitWidthPx] = useState<number | null>(null);
+  const [poppingRect, setPoppingRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  // Always reflects `data` (not `renderedData`) at its own natural, unconstrained width — an
+  // invisible, off-screen clone that exists purely so the morph case below can read "how wide would
+  // the shell need to be for the INCOMING content" without ever unlocking the real, visible shell to
+  // find out. That was the earlier bug: the real shell's width is deliberately LOCKED for the
+  // duration of the transition (so it has something to animate FROM), which means its own rect can
+  // only ever report the width it's currently locked to, never the new content's actual natural
+  // size — so the "resize" step was silently resizing to the same value it already had, and the
+  // shell only ever snapped to the right size later, when the lock was released back to auto.
+  const measurerRef = useRef<HTMLDivElement | null>(null);
+  const prevKeyRef = useRef(data?.key ?? null);
+
+  useEffect(() => {
+    const prevKey = prevKeyRef.current;
+    const nextKey = data?.key ?? null;
+    prevKeyRef.current = nextKey;
+    const timers: number[] = [];
+
+    if (prevKey === nextKey) {
+      // Same banner (or still nothing) — just keep its content current (e.g. a timestamp ticking
+      // over), no transition. Also forces hiddenForExit/contentHiddenForMorph back to false — see
+      // the appear branch's own comment on why every branch that can reveal content defensively
+      // resets both, regardless of whether THIS branch would normally need to.
+      if (data) {
+        timers.push(
+          window.setTimeout(() => {
+            setRenderedData(data);
+            setHiddenForExit(false);
+            setContentHiddenForMorph(false);
+          }, 0),
+        );
+      }
+    } else if (!prevKey && nextKey) {
+      timers.push(
+        window.setTimeout(() => {
+          setRenderedData(data);
+          // Defensive resets, not just the "happy path" fadeIn: if this appear is actually the
+          // continuation of an INTERRUPTED disappear or morph (data went away, or started
+          // changing to something else, then changed again before that earlier transition's own
+          // completion timer fired — which the cleanup below cancels), hiddenForExit or
+          // contentHiddenForMorph could otherwise be left stuck `true` from that abandoned
+          // transition with nothing left to ever flip them back — permanently blanking the
+          // content despite renderedData being correct. Since prevKeyRef is updated synchronously
+          // at the top of every effect run (independent of whether that run's OWN timers ever
+          // fire), an interrupted disappear always leaves prevKey null, so THIS branch is exactly
+          // where such a leftover needs to be cleared.
+          setHiddenForExit(false);
+          setContentHiddenForMorph(false);
+          setFadeIn(true);
+        }, 0),
+      );
+    } else if (prevKey && !nextKey) {
+      // Measure now (synchronously, before anything moves) — a plain setTimeout(0) for the actual
+      // state updates is fine here since the chip is already on screen with a real, already-painted
+      // box (never display:none), unlike FloatingBarSlot's OWN growing case.
+      const rect = shellRef.current?.getBoundingClientRect();
+      timers.push(
+        window.setTimeout(() => {
+          setHiddenForExit(true);
+          if (rect) setPoppingRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+        }, 0),
+      );
+      timers.push(
+        window.setTimeout(() => {
+          setPoppingRect(null);
+          setRenderedData(null);
+          setHiddenForExit(false);
+          setContentHiddenForMorph(false);
+          setFadeIn(false);
+          setExplicitWidthPx(null);
+        }, 180),
+      );
+    } else {
+      // Morph: freeze the shell at its CURRENT width, fade the old content out, swap in the new
+      // content (still faded), animate the shell to the new content's width (read from the
+      // measurer, NOT the shell — see measurerRef's own comment), then fade the new content in.
+      // `overflow: hidden` while explicitWidthPx is set (see the shell's own style below) clips
+      // rather than squishes the content mid-resize. Both widths are measurable right now, before
+      // anything else has changed: the shell still shows the OLD content at its own natural width
+      // (nothing has locked it yet), and the measurer already reflects the NEW content (it renders
+      // off of `data` directly, so it's already up to date in this same commit).
+      const oldWidth = shellRef.current?.getBoundingClientRect().width;
+      const newWidth = measurerRef.current?.getBoundingClientRect().width;
+      timers.push(
+        window.setTimeout(() => {
+          setHiddenForExit(false);
+          if (oldWidth) setExplicitWidthPx(oldWidth);
+          setContentHiddenForMorph(true);
+        }, 0),
+      );
+      timers.push(
+        window.setTimeout(() => {
+          setRenderedData(data);
+          if (newWidth) setExplicitWidthPx(newWidth);
+          setContentHiddenForMorph(false);
+          setHiddenForExit(false);
+        }, 140),
+      );
+      timers.push(window.setTimeout(() => setExplicitWidthPx(null), 140 + 240));
+    }
+
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [data]);
+
+  if (!renderedData && !poppingRect) return null;
+
+  return (
+    <>
+      {renderedData ? (
+        <div
+          ref={shellRef}
+          className={fadeIn ? `${TOP_BAR_CHIP_SHELL_CLASSNAME} top-bar-chip-fade-in` : TOP_BAR_CHIP_SHELL_CLASSNAME}
+          style={{
+            borderColor: renderedData.style.borderColor,
+            backgroundColor: renderedData.style.backgroundColor,
+            color: renderedData.style.color,
+            width: explicitWidthPx ?? undefined,
+            overflow: explicitWidthPx ? "hidden" : undefined,
+            // Constant across renders (never toggled to/from "none") — same reasoning as
+            // FloatingBarSlot's own transition comment: only the VALUES changing (color, width)
+            // should drive the animation, not the rule itself appearing/disappearing.
+            transition: "background-color 220ms ease, border-color 220ms ease, color 220ms ease, width 240ms ease",
+            // Deliberately NOT in the transition list above — this needs to snap instantly, not
+            // fade. Without it, only the CONTENT was hidden here while the shell's own border/
+            // background/shadow/padding stayed fully visible for the whole pop — leaving a hollow,
+            // empty little pill sitting in place, on top of (and outlasting) the ghost portal below
+            // that's actually doing the pop animation with its own full copy of the real content.
+            opacity: hiddenForExit ? 0 : 1,
+          }}
+        >
+          {hiddenForExit ? null : (
+            <span
+              className="inline-flex shrink-0 items-center gap-3 whitespace-nowrap"
+              style={{ opacity: contentHiddenForMorph ? 0 : 1, transition: "opacity 140ms ease" }}
+            >
+              {renderedData.content}
+            </span>
+          )}
+        </div>
+      ) : null}
+      {typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={measurerRef}
+              aria-hidden="true"
+              className={TOP_BAR_CHIP_SHELL_CLASSNAME}
+              style={{ position: "fixed", top: -9999, left: -9999, visibility: "hidden", pointerEvents: "none", whiteSpace: "nowrap" }}
+            >
+              {data ? <span className="inline-flex items-center gap-3">{data.content}</span> : null}
+            </div>,
+            document.body,
+          )
+        : null}
+      {poppingRect && renderedData && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className={`${TOP_BAR_CHIP_SHELL_CLASSNAME} floating-bar-slot-pop pointer-events-none fixed`}
+              style={{
+                left: poppingRect.left,
+                top: poppingRect.top,
+                width: poppingRect.width,
+                height: poppingRect.height,
+                borderColor: renderedData.style.borderColor,
+                backgroundColor: renderedData.style.backgroundColor,
+                color: renderedData.style.color,
+                zIndex: 2000,
+              }}
+            >
+              {renderedData.content}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+// Renders `text` on a single line, auto-marquee-scrolling it — same technique/CSS as the CNC
+// mobile row list's own Part Name column (.marquee-track/@keyframes marquee-scroll-frames in
+// globals.css) — if, and only if, it doesn't actually fit in its own rendered width. CNC's own
+// version detects this via a character-count heuristic against a column it sizes itself in fixed
+// `ch` units; that only works because CNC controls that width directly. This is used inside a
+// percentage-width table column (the cost breakdown popup's own colgroup), whose actual pixel
+// width depends on the modal's own width, so it measures instead (scrollWidth vs clientWidth) —
+// correct regardless of viewport size, and re-measured on resize since the popup can stay open
+// across one.
+function MarqueeText({ text, className }: { text: string; className?: string }) {
+  const containerRef = useRef<HTMLSpanElement | null>(null);
+  const [needsMarquee, setNeedsMarquee] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => setNeedsMarquee(el.scrollWidth > el.clientWidth + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+
+  return (
+    <span ref={containerRef} className={`block overflow-hidden whitespace-nowrap ${className ?? ""}`}>
+      {needsMarquee ? (
+        <span className="marquee-track">
+          <span className="whitespace-nowrap pr-6">{text}</span>
+          <span aria-hidden="true" className="whitespace-nowrap pr-6">{text}</span>
+        </span>
+      ) : (
+        text
+      )}
+    </span>
+  );
+}
+
+// A room's price broken into WHY it's that price — see salesRoomCostBreakdownByName's own comment
+// for how these are computed. "Misc" has no dedicated data source anywhere in this app today (no
+// per-room addon-cost concept exists) — it's the leftover once Items+Sheets are subtracted from
+// the room's own displayed total, which is $0 unless something else affecting that total is added
+// later, but keeping the section means this stays correct automatically if that ever changes,
+// rather than silently omitting a real cost.
+type RoomCostBreakdownItemLine = { name: string; categoryName: string; categoryColor: string; quantity: number; unitPrice: number; lineTotal: number };
+type RoomCostBreakdownSheetLine = { productName: string; sheetSize: string; count: number; unitPrice: number; lineTotal: number };
+type RoomCostBreakdown = {
+  items: RoomCostBreakdownItemLine[];
+  itemsTotal: number;
+  sheets: RoomCostBreakdownSheetLine[];
+  sheetsTotal: number;
+  miscTotal: number;
+  roomTotal: number;
+};
+
+// Shared by the single-room cost breakdown popup and each expanded room inside the whole-project
+// cost breakdown popup — one table layout for both, so they can never drift apart. Three sections
+// (Items/Sheets/Misc), each its own small table with its own subtotal, then the room's own grand
+// total underneath.
+function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }) {
+  const cellStyle = { color: "#000000" } as const;
+  const sectionLabelStyle = { color: "var(--text-muted)" } as const;
+  const borderStyle = { borderBottomColor: "var(--glass-border)" } as const;
+  const sectionHeaderBar = (label: string) => (
+    <div className="mb-1.5 rounded-[6px] px-2 py-1.5" style={{ backgroundColor: "var(--panel-muted)" }}>
+      <p className="text-[11px] font-bold uppercase tracking-[1px]" style={cellStyle}>{label}</p>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      <div>
+        {sectionHeaderBar("Items")}
+        {breakdown.items.length === 0 ? (
+          <p className="text-[12px] italic" style={sectionLabelStyle}>No items assigned to this room.</p>
+        ) : (
+          <table className="w-full text-[12px]" style={{ tableLayout: "fixed" }}>
+            {/* Same column proportions as the Sheets table just below (colgroup widths must match
+                exactly, not just the count) — that's what makes the Qty columns of two entirely
+                separate tables line up vertically, since each table would otherwise size its own
+                columns purely from its own content, with no relation to the other table at all. */}
+            <colgroup>
+              <col style={{ width: "22%" }} />
+              <col style={{ width: "43%" }} />
+              <col style={{ width: "15%" }} />
+              <col style={{ width: "20%" }} />
+            </colgroup>
+            <thead>
+              <tr className="border-b" style={borderStyle}>
+                <th className="whitespace-nowrap px-2 py-1.5 text-left" style={cellStyle}>Category</th>
+                <th className="px-2 py-1.5 text-left" style={cellStyle}>Item</th>
+                <th className="px-2 py-1.5 text-center" style={cellStyle}>Qty</th>
+                <th className="px-2 py-1.5 text-right" style={cellStyle}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.items.map((line, index) => (
+                <tr key={`${line.name}_${index}`} className="border-b last:border-none" style={borderStyle}>
+                  <td className="whitespace-nowrap px-2 py-1.5" style={cellStyle}>
+                    {line.categoryName ? (
+                      <span
+                        className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold text-white"
+                        style={{ backgroundColor: line.categoryColor }}
+                      >
+                        {line.categoryName}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-2 py-1.5" style={cellStyle}>
+                    <MarqueeText text={line.name} />
+                  </td>
+                  <td className="px-2 py-1.5 text-center" style={cellStyle}>{line.quantity}</td>
+                  <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(line.lineTotal)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Items Total: {formatCurrencyValue(breakdown.itemsTotal)}</p>
+      </div>
+      <div>
+        {sectionHeaderBar("Sheets")}
+        {breakdown.sheets.length === 0 ? (
+          <p className="text-[12px] italic" style={sectionLabelStyle}>No sheets required for this room.</p>
+        ) : (
+          <table className="w-full text-[12px]" style={{ tableLayout: "fixed" }}>
+            {/* Matches the Items table's own colgroup exactly — see its comment. */}
+            <colgroup>
+              <col style={{ width: "22%" }} />
+              <col style={{ width: "43%" }} />
+              <col style={{ width: "15%" }} />
+              <col style={{ width: "20%" }} />
+            </colgroup>
+            <thead>
+              <tr className="border-b" style={borderStyle}>
+                <th className="px-2 py-1.5 text-left" style={cellStyle}>Product</th>
+                <th className="px-2 py-1.5 text-left" style={cellStyle}>Sheet Size</th>
+                <th className="px-2 py-1.5 text-center" style={cellStyle}>Qty</th>
+                <th className="px-2 py-1.5 text-right" style={cellStyle}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.sheets.map((line, index) => (
+                <tr key={`${line.productName}_${line.sheetSize}_${index}`} className="border-b last:border-none" style={borderStyle}>
+                  <td className="px-2 py-1.5" style={cellStyle}>{line.productName}</td>
+                  <td className="px-2 py-1.5" style={cellStyle}>{line.sheetSize}</td>
+                  <td className="px-2 py-1.5 text-center" style={cellStyle}>{line.count}</td>
+                  <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(line.lineTotal)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Sheets Total: {formatCurrencyValue(breakdown.sheetsTotal)}</p>
+      </div>
+      <div>
+        {sectionHeaderBar("Misc")}
+        {breakdown.miscTotal <= 0 ? (
+          <p className="text-[12px] italic" style={sectionLabelStyle}>No additional costs for this room.</p>
+        ) : (
+          <table className="w-full text-[12px]">
+            <tbody>
+              <tr>
+                <td className="px-2 py-1.5" style={cellStyle}>Other costs</td>
+                <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle}>{formatCurrencyValue(breakdown.miscTotal)}</td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+        <p className="mt-1 text-right text-[12px] font-bold" style={cellStyle}>Misc Total: {formatCurrencyValue(breakdown.miscTotal)}</p>
+      </div>
+      <div className="border-t pt-2" style={{ borderTopColor: "var(--glass-border)" }}>
+        <p className="text-right text-[14px] font-bold" style={cellStyle}>Room Total: {formatCurrencyValue(breakdown.roomTotal)}</p>
+      </div>
+    </div>
+  );
+}
+
+// Plain, self-contained CSS for the print tab below — deliberately NOT the app's own CSS custom
+// properties (--glass-border etc.), which are only ever defined against this app's own light/dark
+// theme and wouldn't resolve to anything sensible in a bare document.write()'d tab. Structurally
+// mirrors RoomCostBreakdownTables' own classes/layout as closely as a plain page can (same section
+// header bar treatment, same Category/Item split with a colored pill, same row borders) —
+// printed-page colors are a bit darker/more visible than the on-screen --panel-muted/--glass-border
+// tokens, which lean very light/translucent against the modal's own glass background and would
+// barely register as a "bar" at all against plain white paper.
+//
+// No @page size declaration and no font-size-scaling tricks — an earlier version tried both to
+// out-guess the print engine's own paper-size/DPI assumptions and made things WORSE (an A4 @page
+// that doesn't match the destination paper's own actual default size is what was making Chrome
+// auto-scale everything to "fit", not fix it). Plain, ordinary CSS at normal sizes, opened as a
+// normal tab (not a sized popup window — see openHtmlPrintWindow's own comment), is what makes the
+// print actually match this tab's own on-screen rendering, since there's nothing left fighting the
+// browser's own default (unscaled) print behavior.
+const ROOM_COST_BREAKDOWN_PRINT_STYLES = `
+  /* Browsers strip background colors/fills when actually printing by default (an ink-saving
+     default meant for regular web pages) — without this, the tab looks right on screen but the
+     section bars and category pills disappear the moment it's actually sent to a printer or
+     "Save as PDF". This opts every element back in, since the whole point here IS those fills. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; font-size: 13px; color: #000000; margin: 0; padding: 32px; background: #ffffff; max-width: 720px; }
+  h1 { font-size: 20px; font-weight: 700; margin: 0 0 14px; }
+  .section-bar { border-radius: 6px; padding: 6px 9px; background: #eef0f3; margin: 16px 0 6px; }
+  .section-bar:first-of-type { margin-top: 0; }
+  .section-bar p { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #000000; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 4px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #dfe3e8; }
+  th { font-weight: 700; }
+  td.num, th.num { text-align: right; }
+  td.center, th.center { text-align: center; }
+  td.category-cell, th.category-cell { white-space: nowrap; width: 1%; }
+  .pill { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 700; color: #ffffff; }
+  p.empty { font-size: 13px; font-style: italic; color: #6b7280; margin: 4px 0; }
+  p.subtotal { text-align: right; font-size: 13px; font-weight: 700; margin: 4px 0 0; }
+  .room-total { text-align: right; font-size: 15px; font-weight: 700; border-top: 1px solid #dfe3e8; padding-top: 8px; margin-top: 10px; }
+  .room-block { page-break-inside: avoid; margin-bottom: 26px; }
+  .summary-row { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; }
+  .grand-total { display: flex; justify-content: space-between; font-size: 16px; font-weight: 700; border-top: 1px solid #dfe3e8; padding-top: 8px; margin-top: 8px; }
+`;
+
+// One room's Items/Sheets/Misc/Total, as plain HTML — shared by the single-room popup's own Print
+// button and the project popup's Print button (which concatenates one of these per room). Mirrors
+// RoomCostBreakdownTables' own layout exactly (same columns, same category pill treatment) so the
+// printed page matches what's on screen instead of reading as a generic, differently-laid-out table.
+function roomCostBreakdownRoomBlockHtml(roomName: string, breakdown: RoomCostBreakdown): string {
+  const sectionBar = (label: string) => `<div class="section-bar"><p>${escapeHtml(label)}</p></div>`;
+  // Same colgroup on both tables (widths must match exactly, not just the count) — see
+  // RoomCostBreakdownTables' own identical comment for why: it's what makes the Qty column of two
+  // otherwise entirely independent tables line up vertically on the printed page.
+  const colgroup = `<colgroup><col style="width:22%" /><col style="width:43%" /><col style="width:15%" /><col style="width:20%" /></colgroup>`;
+  const itemsTable = breakdown.items.length
+    ? `<table style="table-layout:fixed">${colgroup}<thead><tr><th class="category-cell">Category</th><th>Item</th><th class="center">Qty</th><th class="num">Total</th></tr></thead><tbody>${breakdown.items
+        .map(
+          (line) =>
+            `<tr><td class="category-cell">${
+              line.categoryName
+                ? `<span class="pill" style="background-color:${escapeHtml(line.categoryColor)}">${escapeHtml(line.categoryName)}</span>`
+                : ""
+            }</td><td>${escapeHtml(line.name)}</td><td class="center">${line.quantity}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
+        )
+        .join("")}</tbody></table>`
+    : `<p class="empty">No items assigned to this room.</p>`;
+  const sheetsTable = breakdown.sheets.length
+    ? `<table style="table-layout:fixed">${colgroup}<thead><tr><th>Product</th><th>Sheet Size</th><th class="center">Qty</th><th class="num">Total</th></tr></thead><tbody>${breakdown.sheets
+        .map(
+          (line) =>
+            `<tr><td>${escapeHtml(line.productName)}</td><td>${escapeHtml(line.sheetSize)}</td><td class="center">${line.count}</td><td class="num">${formatCurrencyValue(line.lineTotal)}</td></tr>`,
+        )
+        .join("")}</tbody></table>`
+    : `<p class="empty">No sheets required for this room.</p>`;
+  const miscTable =
+    breakdown.miscTotal > 0
+      ? `<table><tbody><tr><td>Other costs</td><td class="num">${formatCurrencyValue(breakdown.miscTotal)}</td></tr></tbody></table>`
+      : `<p class="empty">No additional costs for this room.</p>`;
+  return `
+    <div class="room-block">
+      <h1>${escapeHtml(roomName)}</h1>
+      ${sectionBar("Items")}
+      ${itemsTable}
+      <p class="subtotal">Items Total: ${formatCurrencyValue(breakdown.itemsTotal)}</p>
+      ${sectionBar("Sheets")}
+      ${sheetsTable}
+      <p class="subtotal">Sheets Total: ${formatCurrencyValue(breakdown.sheetsTotal)}</p>
+      ${sectionBar("Misc")}
+      ${miscTable}
+      <p class="subtotal">Misc Total: ${formatCurrencyValue(breakdown.miscTotal)}</p>
+      <p class="room-total">Room Total: ${formatCurrencyValue(breakdown.roomTotal)}</p>
+    </div>
+  `;
+}
+
+// Opens a blank tab, writes a minimal standalone HTML document into it, and triggers the browser's
+// own print dialog — same "print to a page" idea as the rest of the app's Print buttons, just for
+// a plain data table instead of a paginated PDF document (those go through buildSpecsGridPdfBlob/
+// openPdfBlobInPrintWindow, built for the Quote/Specs grid specifically — overkill for this). The
+// short delay before calling print() gives the new tab a moment to actually lay out the written
+// content first; calling it immediately after document.write can print a still-blank page in some
+// browsers.
+function openHtmlPrintWindow(title: string, bodyHtml: string) {
+  if (typeof window === "undefined") return;
+  // No features string (width/height/etc.) — passing one is what makes browsers treat this as a
+  // separate popup WINDOW instead of an ordinary new TAB alongside the rest of the app.
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return;
+  printWindow.document.write(
+    // The viewport meta matters here specifically — without it, a freshly document.write()-ed
+    // window (no navigation, no real page load) is exactly the case where some browsers apply
+    // their own automatic zoom/scale heuristics to the content (most visible on a system with
+    // OS-level display scaling), inflating every size in the stylesheet well past its literal
+    // px/em value. This is the same declaration the main app's own root layout already carries.
+    `<!doctype html><html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>${escapeHtml(title)}</title><style>${ROOM_COST_BREAKDOWN_PRINT_STYLES}</style></head><body>${bodyHtml}</body></html>`,
+  );
+  printWindow.document.close();
+  printWindow.focus();
+  window.setTimeout(() => printWindow.print(), 250);
 }
 
 // "Update" on an outdated quote (see onUpdateOutdatedQuoteGrid) needs to refresh whatever's actually
@@ -5854,6 +6482,39 @@ export default function ProjectDetailsPage() {
   // stays fully user-toggleable afterward regardless of screen size.
   const [isQuoteExtrasPanelOpen, setIsQuoteExtrasPanelOpen] = useState(true);
   const [isQuoteHistoryPanelOpen, setIsQuoteHistoryPanelOpen] = useState(true);
+  // "Custom Prices" popup (see quoteCustomPriceRows/onSaveQuoteCustomPriceRows above) — a local
+  // draft, same pattern as the Rules editor's groupDraft: freely editable while open, only written
+  // back via onSaveQuoteCustomPriceRows on Save, discarded on Cancel/backdrop-click.
+  const [isQuoteCustomPriceModalOpen, setIsQuoteCustomPriceModalOpen] = useState(false);
+  const [quoteCustomPriceDraftRows, setQuoteCustomPriceDraftRows] = useState<{ id: string; name: string; price: string }[]>([]);
+  // "Download" button (top bar, both Quote and Specs) — opens a small glass dropdown with the
+  // available export formats (just "PDF" for now) instead of downloading immediately, so more
+  // formats can be added later without the button itself needing to change. Same
+  // anchor-rect-plus-outside-click-close pattern as SpecsGridEditor's own alignDropdown. One state
+  // per window (only one can ever be open at a time, but kept separate rather than shared to
+  // match this file's existing quote/specs naming convention throughout).
+  const [quoteDownloadMenuAnchor, setQuoteDownloadMenuAnchor] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const quoteDownloadMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!quoteDownloadMenuAnchor) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (quoteDownloadMenuRef.current?.contains(e.target as Node)) return;
+      setQuoteDownloadMenuAnchor(null);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [quoteDownloadMenuAnchor]);
+  const [specsDownloadMenuAnchor, setSpecsDownloadMenuAnchor] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const specsDownloadMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!specsDownloadMenuAnchor) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (specsDownloadMenuRef.current?.contains(e.target as Node)) return;
+      setSpecsDownloadMenuAnchor(null);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [specsDownloadMenuAnchor]);
   // Tracks whether the Quote fullscreen view was already showing on the PREVIOUS render — lets the
   // isSalesQuoteFullscreen effect further down (near where that flag is computed) tell "freshly
   // entered this view" apart from "still sitting in it," to fire the bubbles' entrance animation
@@ -6017,6 +6678,20 @@ export default function ProjectDetailsPage() {
   const [costByRoomModalOrigin, setCostByRoomModalOrigin] = useState<GlassModalOrigin>(null);
   const costByRoomModalPanelRef = useRef<HTMLDivElement | null>(null);
   const shouldRenderCostByRoomModal = useGlassModalPopOrigin(isCostByRoomModalOpen, costByRoomModalOrigin, costByRoomModalPanelRef);
+  // Per-room "how is this price made up" popup — opened by clicking a room row in the ROOMS card.
+  const [isRoomCostBreakdownModalOpen, setIsRoomCostBreakdownModalOpen] = useState(false);
+  const [roomCostBreakdownModalOrigin, setRoomCostBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
+  const roomCostBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderRoomCostBreakdownModal = useGlassModalPopOrigin(isRoomCostBreakdownModalOpen, roomCostBreakdownModalOrigin, roomCostBreakdownModalPanelRef);
+  const [roomCostBreakdownModalRoomName, setRoomCostBreakdownModalRoomName] = useState("");
+  // Whole-project "how is this price made up" popup — opened from the "Project Cost" KPI tile and
+  // the ROOMS card's own Total figure. Every room starts collapsed (see its own render site's
+  // comment on why) — this tracks which ones the user has expanded, keyed by lowercased room name.
+  const [isProjectCostBreakdownModalOpen, setIsProjectCostBreakdownModalOpen] = useState(false);
+  const [projectCostBreakdownModalOrigin, setProjectCostBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
+  const projectCostBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRenderProjectCostBreakdownModal = useGlassModalPopOrigin(isProjectCostBreakdownModalOpen, projectCostBreakdownModalOrigin, projectCostBreakdownModalPanelRef);
+  const [expandedProjectCostBreakdownRooms, setExpandedProjectCostBreakdownRooms] = useState<Record<string, boolean>>({});
   const [isProjectManagementModalOpen, setIsProjectManagementModalOpen] = useState(false);
   const [projectManagementModalOrigin, setProjectManagementModalOrigin] = useState<GlassModalOrigin>(null);
   const projectManagementModalPanelRef = useRef<HTMLDivElement | null>(null);
@@ -6232,6 +6907,14 @@ export default function ProjectDetailsPage() {
   const [hoveredBoardRemoveRowId, setHoveredBoardRemoveRowId] = useState<string>("");
   const [hoveredItemsRoomDeleteId, setHoveredItemsRoomDeleteId] = useState<string>("");
   const [hoveredSalesRoomDeleteName, setHoveredSalesRoomDeleteName] = useState<string>("");
+  // Tracks the room row itself (not just its delete button) — mouseenter/mouseleave never refire
+  // for a child within the same element (unlike mouseover/mouseout), so this stays true the whole
+  // time the pointer is anywhere inside the row, including while over the delete button. Combined
+  // with hoveredSalesRoomDeleteName below (see the row's own render site), that's what makes the
+  // blue "open breakdown" glow and the red "delete" glow cross-fade into each other instead of
+  // snapping — moving onto the delete button flips this row's own blue condition off and the red
+  // one on in the same tick, so one fades out as the other fades in.
+  const [hoveredSalesRoomRowName, setHoveredSalesRoomRowName] = useState<string>("");
   const [boardRowDeleteBlocked, setBoardRowDeleteBlocked] = useState<{ colour: string } | null>(null);
   const [boardRowModalOrigin, setBoardRowModalOrigin] = useState<GlassModalOrigin>(null);
   const boardRowDeleteBlockedPanelRef = useRef<HTMLDivElement | null>(null);
@@ -6377,16 +7060,34 @@ export default function ProjectDetailsPage() {
   const [isProjectHeaderStuck, setIsProjectHeaderStuck] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // <main> is this app-shell's own structural wrapper — it doesn't get unmounted/replaced during
+    // ordinary navigation, so querying it once here (not inside sync, which used to re-run the
+    // query on every single scroll event) is safe. Confirmed contributor to mouse-wheel scroll lag
+    // (this listener is capture-phase and mounted for this whole component's lifetime, so it's
+    // active — and re-querying the DOM on every tick — while scrolling inside the Quote/
+    // Specifications windows too, regardless of which tab is actually open).
+    const mainEl = document.querySelector("main");
     const sync = () => {
-      const mainEl = document.querySelector("main");
       setIsProjectHeaderStuck(window.scrollY > 0 || (mainEl ? mainEl.scrollTop > 0 : false));
     };
     sync();
-    window.addEventListener("scroll", sync, true);
-    window.addEventListener("resize", sync);
+    // rAF-throttled for the same reason as GlassScrollbarThumb's own identical fix — coalesces
+    // however many scroll events a fast wheel gesture fires down to at most one recompute per
+    // frame, instead of running sync() (and its DOM reads) once per raw event.
+    let rafId: number | null = null;
+    const scheduleSync = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        sync();
+      });
+    };
+    window.addEventListener("scroll", scheduleSync, true);
+    window.addEventListener("resize", scheduleSync);
     return () => {
-      window.removeEventListener("scroll", sync, true);
-      window.removeEventListener("resize", sync);
+      window.removeEventListener("scroll", scheduleSync, true);
+      window.removeEventListener("resize", scheduleSync);
+      if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, []);
   const [isDeleteProjectModalOpen, setIsDeleteProjectModalOpen] = useState(false);
@@ -6607,6 +7308,15 @@ export default function ProjectDetailsPage() {
   // as every other "Save & Back" flow in this file.
   const [showInitialMeasureCloseSummary, setShowInitialMeasureCloseSummary] = useState(false);
   const [showProductionCutlistCloseSummary, setShowProductionCutlistCloseSummary] = useState(false);
+  // Makes the Initial Measure close-summary popup shrink INTO the sidebar's own "Initial Measure"
+  // tab button when closed (via useGlassModalShrinkOnClose — see its own comment for why there's
+  // no matching grow-in on open: this popup appears as a side effect of Save & Back, not a button
+  // click, so it should just already be open). initialMeasureCloseSummaryOrigin is set fresh at
+  // the moment of closing (see the modal's own onClose below), not captured once back when it
+  // opened — the tab button's position can shift while the popup is sitting open (e.g. the page
+  // scrolls), and animating toward a stale rect would visibly miss it.
+  const [initialMeasureCloseSummaryOrigin, setInitialMeasureCloseSummaryOrigin] = useState<GlassModalOrigin>(null);
+  const initialMeasureTabButtonRef = useRef<HTMLButtonElement | null>(null);
   // "+N this session" tracking — a ref (not state) holding the per-partType counts as they stood
   // at the FIRST close of this cutlist this page-visit, so later closes can diff against a stable
   // baseline instead of "since the last close." Null until the first close. The state alongside
@@ -6789,10 +7499,6 @@ export default function ProjectDetailsPage() {
     nestingSheetPreviewOrigin,
     nestingSheetPreviewPanelRef,
   );
-  // Shared by every mobile row-detail popup with editable fields (Production Cutlist, Initial
-  // Measure, ...) so tapping a field to edit it shifts the popup up to stay clear of the on-screen
-  // keyboard instead of the keyboard just covering whatever was tapped.
-  const keyboardInsetPx = useKeyboardInsetPx();
   const [nestingPreviewHoverPieceId, setNestingPreviewHoverPieceId] = useState<string | null>(null);
   const [nestingPreviewScale, setNestingPreviewScale] = useState(1);
   const [nestingPreviewOffset, setNestingPreviewOffset] = useState({ x: 0, y: 0 });
@@ -11989,6 +12695,40 @@ export default function ProjectDetailsPage() {
       }, 0),
     [displayedSalesRoomRows],
   );
+  // Feeds the room/project cost-breakdown popups (RoomCostBreakdownTables) — one lookup, keyed by
+  // lowercased room name, built from the SAME data sources displayedSalesRoomRows itself already
+  // reads (salesRoomPricingByName for Sheets, salesItemsRoomPricingByName for Items via
+  // effectiveSalesItemsRooms), so the popup's own subtotals can never disagree with the room's
+  // displayed total. Misc is whatever's left after Items+Sheets are subtracted from that total —
+  // see RoomCostBreakdownTables' own comment on why that's $0 today but still worth keeping.
+  const salesRoomCostBreakdownByName = useMemo(() => {
+    const map: Record<string, RoomCostBreakdown> = {};
+    for (const row of displayedSalesRoomRows) {
+      const key = String(row.name || "").trim().toLowerCase();
+      const itemsRoom = effectiveSalesItemsRooms.find((r) => String(r.name || "").trim().toLowerCase() === key);
+      const items: RoomCostBreakdownItemLine[] = (itemsRoom?.items ?? []).map((item) => {
+        const unitPrice = parseCurrencyNumber(item.price);
+        const quantity = Math.max(0, Number(item.quantity) || 0);
+        return { name: item.name, categoryName: item.categoryName, categoryColor: item.categoryColor, quantity, unitPrice, lineTotal: unitPrice * quantity };
+      });
+      const itemsTotal = items.reduce((sum, line) => sum + line.lineTotal, 0);
+
+      const sheets: RoomCostBreakdownSheetLine[] = salesRoomSheetAnalysis.sheetCountsByRoomAndProduct
+        .filter((entry) => entry.room.trim().toLowerCase() === key)
+        .map((entry) => {
+          const productPricing = productSheetPricingByName.get(entry.productName.trim().toLowerCase());
+          const unitPrice = productPricing?.options.find((option) => option.sheetSize === entry.sheetSize)?.price ?? 0;
+          return { productName: entry.productName, sheetSize: entry.sheetSize, count: entry.sheetCount, unitPrice, lineTotal: unitPrice * entry.sheetCount };
+        });
+      const sheetsTotal = sheets.reduce((sum, line) => sum + line.lineTotal, 0);
+
+      const roomTotal = parseCurrencyNumber(row.totalPrice);
+      const miscTotal = Math.max(0, roomTotal - itemsTotal - sheetsTotal);
+
+      map[key] = { items, itemsTotal, sheets, sheetsTotal, miscTotal, roomTotal };
+    }
+    return map;
+  }, [displayedSalesRoomRows, effectiveSalesItemsRooms, salesRoomSheetAnalysis, productSheetPricingByName]);
   // Every named row-group in the project's own LIVE Quote grid directly IS a toggleable "quote
   // extra" now — same on/off-a-whole-section idea as the Specifications sheet's own "Sections"
   // checklist, just surfaced here as a sidebar instead (see displayedQuoteGridExtras' own comment
@@ -12012,9 +12752,30 @@ export default function ProjectDetailsPage() {
     () => liveQuoteGridExtras.reduce((sum, g) => (g.hidden ? sum : sum + parseCurrencyNumber(g.price)), 0),
     [liveQuoteGridExtras],
   );
+  // Manually-entered "Custom Prices" (see the Quote Extras panel's own "+ Custom Price" button) —
+  // a simple name+price list staff can add to straight from the Quote window, kept entirely
+  // separate from the grid: unlike a Quote Extra, a custom price row is never a group and never
+  // appears on the printed sheet itself — only its price folds into the total below. Persisted as
+  // its own salesPayload field so it survives independently of the grid/template.
+  const quoteCustomPriceRows = useMemo(() => {
+    const raw = Array.isArray((salesPayload as Record<string, unknown>).quoteCustomPriceRows)
+      ? ((salesPayload as Record<string, unknown>).quoteCustomPriceRows as unknown[])
+      : [];
+    return raw
+      .filter((row) => row && typeof row === "object")
+      .map((row) => {
+        const item = row as Record<string, unknown>;
+        return { id: String(item.id || ""), name: String(item.name || ""), price: String(item.price || "") };
+      })
+      .filter((row) => row.id);
+  }, [salesPayload]);
+  const displayedSalesQuoteCustomPriceTotal = useMemo(
+    () => quoteCustomPriceRows.reduce((sum, row) => sum + parseCurrencyNumber(row.price), 0),
+    [quoteCustomPriceRows],
+  );
   const displayedSalesQuoteGrandTotal = useMemo(
-    () => displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal,
-    [displayedSalesQuoteExtrasTotal, displayedSalesRoomsTotal],
+    () => displayedSalesRoomsTotal + displayedSalesQuoteExtrasTotal + displayedSalesQuoteCustomPriceTotal,
+    [displayedSalesQuoteExtrasTotal, displayedSalesQuoteCustomPriceTotal, displayedSalesRoomsTotal],
   );
   const displayedSalesQuoteDiscountTotal = useMemo(() => {
     const rawTiers = Array.isArray((companyDoc as Record<string, unknown> | null)?.salesQuoteDiscountTiers)
@@ -16647,6 +17408,26 @@ export default function ProjectDetailsPage() {
     setIsSavingSalesRooms(true);
     const ok = await persistSalesPatch(nextSales);
     setIsSavingSalesRooms(false);
+  };
+
+  const onSaveQuoteCustomPriceRows = async (nextRows: { id: string; name: string; price: string }[]) => {
+    if (!project || !salesAccess.edit) return;
+    const nextSales: Record<string, unknown> = { ...salesPayload, quoteCustomPriceRows: nextRows };
+    // A custom price row changes the quote's own total — without clearing this, the outdated-quote
+    // staleness check (leaveQuoteGridWindow / the effect right after it) would compare the NEW
+    // total against the stale "last closed" baseline captured before this edit, wrongly conclude
+    // the quote changed while the tab was closed, and pull the user out of live editing into that
+    // frozen snapshot (effectively forcing a new version). Clearing the baseline here is exactly
+    // what actually leaving and re-entering the Quote tab would do anyway (leaveQuoteGridWindow
+    // re-captures a fresh one) — just done immediately, since the user is editing the live quote
+    // right now, not coming back to it after being away.
+    if (quoteGridLastClosedVersion) nextSales.quoteGridLastClosedVersion = null;
+    setProject((prevProject) =>
+      prevProject
+        ? { ...prevProject, sales: nextSales as never, projectSettings: { ...(prevProject.projectSettings ?? {}), sales: nextSales } }
+        : prevProject,
+    );
+    await persistSalesPatch(nextSales);
   };
 
   const onRenameSalesRoom = async (oldName: string, rawNextName: string) => {
@@ -24144,6 +24925,128 @@ export default function ProjectDetailsPage() {
     rawEdgeTapeByBoardKey,
     resolveBoardKey,
   ]);
+  // Linear metres of edge tape per Sales Product, shown next to each product in the Sales tab's
+  // own "Product" checklist. Same excess-per-end/minimum-order-rules/round-to-nearest formula as
+  // requiredEdgetapeByBoardRowId just above, and the same raw-mm-then-apply-settings two-step
+  // shape — but computed from INITIAL MEASURE rows (not Production's), bucketed by Sales Product
+  // name directly (row.board on an Initial Measure row already IS the product name — no Board
+  // Settings row indirection to go through, unlike Production). Kept as its own duplicated
+  // calculation rather than a shared extraction, same reasoning as productionSheetCountsByRoom
+  // above: this is a second, independent caller of the same idea, not a reshaping of the existing,
+  // already-reviewed Production computation.
+  const initialMeasureRawEdgeTapeByProduct = useMemo(() => {
+    const rowsForEdgeTape: CutlistRow[] = [];
+    for (const row of initialCutlistRows) {
+      if (isCabinetryPartType(row.partType)) {
+        for (const piece of buildCabinetryDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || "") });
+        }
+        continue;
+      }
+      if (isDrawerPartType(row.partType)) {
+        for (const piece of buildDrawerDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || "") });
+        }
+        continue;
+      }
+      if (isDoorPartType(row.partType) && normalizeDoorModeValue(row.doorMode) !== "manual") {
+        for (const piece of buildConfiguredDoorDerivedPieces(row)) {
+          const qty = Math.max(0, Number.parseInt(String(piece.quantity || "0"), 10) || 0);
+          if (qty <= 0) continue;
+          rowsForEdgeTape.push({ ...row, height: String(piece.height || ""), width: String(piece.width || ""), depth: String(piece.depth || ""), quantity: String(qty), clashLeft: String(piece.clashLeft || ""), clashRight: String(piece.clashRight || ""), grainValue: String(piece.grainValue || row.grainValue || "") });
+        }
+        continue;
+      }
+      rowsForEdgeTape.push(row);
+    }
+
+    const mmByProduct: Record<string, number> = {};
+    const tapeRunCountByProduct: Record<string, number> = {};
+    const parseDim = (value: unknown): number => {
+      const match = String(value ?? "").replace(/,/g, ".").match(/-?\d+(?:\.\d+)?/);
+      if (!match) return 0;
+      const n = Number.parseFloat(match[0]);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    };
+    const tapeFromToken = (tokenRaw: string, longDim: number, shortDim: number, qty: number): { mm: number; runs: number } => {
+      const token = String(tokenRaw || "").trim().toUpperCase();
+      if (!token || !["1L", "2L", "1S", "2S"].includes(token)) return { mm: 0, runs: 0 };
+      const isLong = token.endsWith("L");
+      const edgeCount = token.startsWith("2") ? 2 : 1;
+      const dim = isLong ? longDim : shortDim;
+      if (!Number.isFinite(dim) || dim <= 0 || qty <= 0) return { mm: 0, runs: 0 };
+      return { mm: dim * qty * edgeCount, runs: qty * edgeCount };
+    };
+
+    for (const row of rowsForEdgeTape) {
+      const productName = String(row.board || "").trim().toLowerCase();
+      if (!productName) continue;
+      const qty = Math.max(0, Number.parseInt(String(row.quantity || "0"), 10) || 0);
+      if (qty <= 0) continue;
+      const dims = [parseDim(row.height), parseDim(row.width), parseDim(row.depth)].filter((v) => v > 0);
+      if (!dims.length) continue;
+      const longDim = Math.max(...dims);
+      const shortDim = Math.min(...dims);
+      const split = splitClashing(String(row.clashing || ""));
+      const left = String(row.clashLeft || split.left || "").trim().toUpperCase();
+      const right = String(row.clashRight || split.right || "").trim().toUpperCase();
+      const leftTape = tapeFromToken(left, longDim, shortDim, qty);
+      const rightTape = tapeFromToken(right, longDim, shortDim, qty);
+      const rowMm = leftTape.mm + rightTape.mm;
+      if (rowMm <= 0) continue;
+      mmByProduct[productName] = (mmByProduct[productName] ?? 0) + rowMm;
+      tapeRunCountByProduct[productName] = (tapeRunCountByProduct[productName] ?? 0) + leftTape.runs + rightTape.runs;
+    }
+    return { mmByProduct, tapeRunCountByProduct };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCutlistRows, isCabinetryPartType, isDrawerPartType, isDoorPartType, buildCabinetryDerivedPieces, buildDrawerDerivedPieces, buildConfiguredDoorDerivedPieces]);
+  const initialMeasureEdgeTapeMetersByProductName = useMemo(() => {
+    const out: Record<string, string> = {};
+    const excessPerEndMm = Math.max(0, Number.parseFloat(String(edgebandingSettings.excessPerEndMm || "").replace(/,/g, ".")) || 0);
+    const rules = [...(edgebandingSettings.rules || [])]
+      .map((rule) => ({
+        upToMeters: Math.max(0, Number.parseFloat(String(rule.upToMeters || "").replace(/,/g, ".")) || 0),
+        addMeters: Math.max(0, Number.parseFloat(String(rule.addMeters || "").replace(/,/g, ".")) || 0),
+      }))
+      .filter((rule) => rule.upToMeters > 0 && rule.addMeters >= 0)
+      .sort((a, b) => a.upToMeters - b.upToMeters);
+    const roundEnabled = Boolean(edgebandingSettings.roundEnabled);
+    const roundDirection: "up" | "down" = edgebandingSettings.roundDirection === "down" ? "down" : "up";
+    const roundNearestMeters = Math.max(0, Number.parseFloat(String(edgebandingSettings.roundNearestMeters || "").replace(/,/g, ".")) || 0);
+    const formatMeters = (meters: number) => {
+      const rounded = Math.round(Math.max(0, meters) * 100) / 100;
+      return rounded % 1 === 0 ? String(Math.round(rounded)) : String(rounded.toFixed(2).replace(/\.?0+$/, ""));
+    };
+    const { mmByProduct, tapeRunCountByProduct } = initialMeasureRawEdgeTapeByProduct;
+    for (const productName of Object.keys(mmByProduct)) {
+      const rawMm = mmByProduct[productName] ?? 0;
+      const runs = tapeRunCountByProduct[productName] ?? 0;
+      const baseMeters = (rawMm + excessPerEndMm * 2 * runs) / 1000;
+      let extraMeters = 0;
+      if (baseMeters > 0) {
+        const matchRule = rules.find((rule) => baseMeters <= rule.upToMeters);
+        if (matchRule) extraMeters = matchRule.addMeters;
+      }
+      let finalMeters = baseMeters + extraMeters;
+      if (finalMeters > 0 && roundEnabled && roundNearestMeters > 0) {
+        const ratio = finalMeters / roundNearestMeters;
+        finalMeters = (roundDirection === "down" ? Math.floor(ratio) : Math.ceil(ratio)) * roundNearestMeters;
+      }
+      out[productName] = finalMeters > 0 ? formatMeters(finalMeters) : "";
+    }
+    return out;
+  }, [
+    initialMeasureRawEdgeTapeByProduct,
+    edgebandingSettings.excessPerEndMm,
+    edgebandingSettings.rules,
+    edgebandingSettings.roundEnabled,
+    edgebandingSettings.roundDirection,
+    edgebandingSettings.roundNearestMeters,
+  ]);
   // Company Wrapped inputs — both requiredSheetCountByBoardRowId/requiredEdgetapeByBoardRowId are
   // outputs of the nesting/edgebanding simulation above (no stored per-row value to diff on save),
   // so instead of hooking a commit function, a useEffect below watches these totals for change.
@@ -25762,9 +26665,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (!template || !project) return;
     specsSheetHydratedForProjectIdRef.current = project?.id ?? null;
     const resolvedRaw = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
-    // Unlike Quote, Specs groups keep the template author's own saved `hidden` as-is (no
-    // defaultIncluded flip) — rules still apply on top of that, evaluated once at clone time.
-    const resolved: SpecsGrid = { ...resolvedRaw, groups: applyGroupRules(resolvedRaw.groups, selectedSalesProductNames) };
+    // A group starts hidden only if its author EXPLICITLY marked it "Default: Off" — anything else
+    // (including every pre-existing Specs group, which predates this toggle and has
+    // defaultIncluded left unset) stays visible, same as before this toggle existed. Unlike Quote's
+    // `!g.defaultIncluded` flip, this can't just treat "unset" as "off": Quote's seeding has always
+    // run through defaultIncluded since that field was introduced, but Specs groups have never been
+    // seeded this way before, so "unset" has to keep meaning "visible" for backward compatibility.
+    // Rules still apply on top, evaluated once at clone time.
+    const resolved: SpecsGrid = {
+      ...resolvedRaw,
+      groups: applyGroupRules(resolvedRaw.groups.map((g) => ({ ...g, hidden: g.defaultIncluded === false })), selectedSalesProductNames),
+    };
     setSpecsSheetGrid(resolved);
     specsGridState.setGridOptimistic(resolved);
     void saveSalesGridData(project, "specifications", resolved).then((ok) => {
@@ -26284,9 +27195,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     if (!template || !project) return;
     if (specsSheetSaveTimeoutRef.current) clearTimeout(specsSheetSaveTimeoutRef.current);
     const resolvedRaw = resolveSpecsGridTokens(template, effectiveQuoteTemplateReplacements);
-    // Same as the initial clone above — rules applied on top of the template author's own saved
-    // `hidden` state.
-    const resolved: SpecsGrid = { ...resolvedRaw, groups: applyGroupRules(resolvedRaw.groups, selectedSalesProductNames) };
+    // Same defaultIncluded seeding (+ rules) as the initial clone above.
+    const resolved: SpecsGrid = {
+      ...resolvedRaw,
+      groups: applyGroupRules(resolvedRaw.groups.map((g) => ({ ...g, hidden: g.defaultIncluded === false })), selectedSalesProductNames),
+    };
     setSpecsSheetGrid(resolved);
     specsGridState.setGridOptimistic(resolved);
     setSpecsSheetEditorKey((prev) => prev + 1);
@@ -26399,31 +27312,34 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     setActiveSpecsSheetVersionId("");
     setSpecsSheetEditorKey((prev) => prev + 1);
   };
-  // Small "Viewing {date} version" banner, same placement/treatment as quoteGridOutdatedBanner's
+  // Small "Viewing {date} version" banner, same placement/treatment as quoteGridOutdatedChipData's
   // own "isViewingQuoteGridVersion" branch — shows the version's saved date/time (not "v1") since
   // that's what actually distinguishes one version from another at a glance in this sidebar. Never
   // shown once that version has been sent or submitted — "editing here saves to this version only"
   // is actively wrong once editing is fully blocked (see isSentToClient/isSpecsContentLockedForSending),
-  // and the belowToolbarBanner (Pending/Submitted) already covers that version's own status.
-  const specsSheetVersionBanner = isViewingSpecsSheetVersion && !(activeSpecsSheetVersion?.sentToClient || activeSpecsSheetVersion?.submittedAtIso) ? (
-    <span
-      className="inline-flex items-center gap-3 rounded-[10px] border px-4 py-2 text-[12px] font-semibold shadow-lg"
-      style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
-    >
-      <span>
-        Viewing {activeSpecsSheetVersion?.savedAtIso ? dashboardStyleDate(activeSpecsSheetVersion.savedAtIso) : "an older"} version —
-        editing here saves to this version only
-      </span>
-      <button
-        type="button"
-        onClick={returnToLiveSpecsSheet}
-        className="inline-flex h-7 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95"
-        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)", border: "1px solid" }}
-      >
-        Return to Live Specifications
-      </button>
-    </span>
-  ) : null;
+  // and specsSubmittedOrPendingChipData already covers that version's own status. Data, not JSX —
+  // see TopBarChipData's own comment for why (TopBarStatusChip owns the shared shell so it can
+  // morph between this and specsSubmittedOrPendingChipData instead of just swapping instantly).
+  const specsSheetVersionChipData: TopBarChipData = isViewingSpecsSheetVersion && !(activeSpecsSheetVersion?.sentToClient || activeSpecsSheetVersion?.submittedAtIso) ? {
+    key: "specs-viewing-version",
+    style: { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" },
+    content: (
+      <>
+        <span>
+          Viewing {activeSpecsSheetVersion?.savedAtIso ? dashboardStyleDate(activeSpecsSheetVersion.savedAtIso) : "an older"} version —
+          editing here saves to this version only
+        </span>
+        <button
+          type="button"
+          onClick={returnToLiveSpecsSheet}
+          className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95"
+          style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)", borderWidth: "1px", borderStyle: "solid" }}
+        >
+          Return to Live Specifications
+        </button>
+      </>
+    ),
+  } : null;
   // Every named row-group in this project's own specifications sheet — the "Sections" floating
   // bubble's own data source, same idea as displayedQuoteGridExtras/onToggleQuoteGridExtra for the
   // Quote sheet, just without that one's price/category concepts (groupsSupportPricing is never on
@@ -26817,47 +27733,44 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // to a tiny chip) — the 56px bar has enough headroom for it, especially centered vertically there.
   // The "Viewing {version} — editing here saves to this version only" half is never shown once
   // that version has been sent or accepted — actively wrong once editing is fully blocked (see
-  // isSentToClient/isQuoteContentLockedForSending), and the belowToolbarBanner (Pending/Accepted)
-  // already covers that version's own status. The isQuoteGridOutdated half is unrelated (about the
-  // LIVE grid, not a saved version) and always shows regardless.
-  const quoteGridOutdatedBanner =
-    isQuoteGridOutdated || (isViewingQuoteGridVersion && !(activeQuoteGridVersion?.sentToClient || activeQuoteGridVersion?.acceptedAtIso)) ? (
-      <span
-        className="inline-flex items-center gap-3 rounded-[10px] border px-4 py-2 text-[12px] font-semibold shadow-lg"
-        style={
-          isQuoteGridOutdated
-            ? { borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }
-            : { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
-        }
-      >
-        {isQuoteGridOutdated ? (
-          <>
-            <span>Project changed since last viewed — showing the version last seen</span>
-            <button
-              type="button"
-              disabled={isSavingQuoteGridUpdate}
-              onClick={() => void onUpdateOutdatedQuoteGrid()}
-              className="inline-flex h-7 items-center rounded-[8px] px-3 text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-60"
-              style={{ backgroundImage: "var(--danger-gradient)" }}
-            >
-              {isSavingQuoteGridUpdate ? "Updating…" : "Update"}
-            </button>
-          </>
-        ) : (
-          <>
-            <span>Viewing {activeQuoteGridVersion ? quoteGridVersionPriceLabel(activeQuoteGridVersion.grid) : "?"} version — editing here saves to this version only</span>
-            <button
-              type="button"
-              onClick={returnToLiveQuoteGrid}
-              className="inline-flex h-7 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95"
-              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)", border: "1px solid" }}
-            >
-              Return to Live Quote
-            </button>
-          </>
-        )}
-      </span>
-    ) : null;
+  // isSentToClient/isQuoteContentLockedForSending), and quoteAcceptedOrPendingChipData already
+  // covers that version's own status. The isQuoteGridOutdated half is unrelated (about the LIVE
+  // grid, not a saved version) and always shows regardless. Data, not JSX — see TopBarChipData's
+  // own comment for why (TopBarStatusChip owns the shared shell so it can morph between this and
+  // quoteAcceptedOrPendingChipData instead of just swapping instantly).
+  const quoteGridOutdatedChipData: TopBarChipData =
+    isQuoteGridOutdated || (isViewingQuoteGridVersion && !(activeQuoteGridVersion?.sentToClient || activeQuoteGridVersion?.acceptedAtIso)) ? {
+      key: isQuoteGridOutdated ? "quote-outdated" : "quote-viewing-version",
+      style: isQuoteGridOutdated
+        ? { borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }
+        : { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" },
+      content: isQuoteGridOutdated ? (
+        <>
+          <span>Project changed since last viewed — showing the version last seen</span>
+          <button
+            type="button"
+            disabled={isSavingQuoteGridUpdate}
+            onClick={() => void onUpdateOutdatedQuoteGrid()}
+            className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--danger-gradient)" }}
+          >
+            {isSavingQuoteGridUpdate ? "Updating…" : "Update"}
+          </button>
+        </>
+      ) : (
+        <>
+          <span>Viewing {activeQuoteGridVersion ? quoteGridVersionPriceLabel(activeQuoteGridVersion.grid) : "?"} version — editing here saves to this version only</span>
+          <button
+            type="button"
+            onClick={returnToLiveQuoteGrid}
+            className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95"
+            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)", borderWidth: "1px", borderStyle: "solid" }}
+          >
+            Return to Live Quote
+          </button>
+        </>
+      ),
+    } : null;
 
   // ===== Extras — every named row-group directly IS a toggleable "quote extra" (see
   // SpecsRowGroup's own price/defaultIncluded fields in lib/specs-grid-types.ts) — no separate list
@@ -29182,6 +30095,224 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           document.body,
         )
       : null;
+  // Same red-close-button treatment as the cutlist close-summary popups (see
+  // components/production-cutlist-close-summary-modal.tsx) rather than the plain black close
+  // button the OTHER modals in this file use — the user specifically asked to match that one.
+  const roomCostBreakdownModalBreakdown = salesRoomCostBreakdownByName[roomCostBreakdownModalRoomName.trim().toLowerCase()];
+  const roomCostBreakdownModalPortal =
+    shouldRenderRoomCostBreakdownModal && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+            <button
+              type="button"
+              aria-label="Close room cost breakdown dialog backdrop"
+              onClick={() => setIsRoomCostBreakdownModalOpen(false)}
+              className="glass-modal-backdrop absolute inset-0"
+            />
+            <div
+              ref={roomCostBreakdownModalPanelRef}
+              className="glass-modal-panel relative z-[2147483647] flex max-h-[80vh] w-[min(560px,96vw)] flex-col overflow-hidden"
+            >
+              <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
+                <p className="min-w-0 truncate text-[15px] font-bold" style={{ color: "#000000" }}>
+                  {roomCostBreakdownModalRoomName || "Room"} — Cost Breakdown
+                </p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="Print"
+                    title="Print"
+                    disabled={!roomCostBreakdownModalBreakdown}
+                    onClick={() =>
+                      roomCostBreakdownModalBreakdown &&
+                      openHtmlPrintWindow(
+                        roomCostBreakdownModalRoomName || "Room",
+                        roomCostBreakdownRoomBlockHtml(roomCostBreakdownModalRoomName || "Room", roomCostBreakdownModalBreakdown),
+                      )
+                    }
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-50"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "#000000" }}
+                  >
+                    <Printer size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    onClick={() => setIsRoomCostBreakdownModalOpen(false)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
+                    style={{
+                      borderColor: "var(--danger-glass-border)",
+                      backgroundColor: "var(--danger-glass-bg)",
+                      backdropFilter: "blur(10px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                      color: "#FFFFFF",
+                    }}
+                  >
+                    <X size={16} strokeWidth={2.4} />
+                  </button>
+                </div>
+              </div>
+              <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                {roomCostBreakdownModalBreakdown ? (
+                  <RoomCostBreakdownTables breakdown={roomCostBreakdownModalBreakdown} />
+                ) : (
+                  <p className="text-[13px]" style={{ color: "#000000" }}>No pricing data for this room.</p>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+  const projectCostBreakdownModalPortal =
+    shouldRenderProjectCostBreakdownModal && typeof document !== "undefined"
+      ? createPortal(
+          <div className="fixed inset-0 z-[2147483646] flex items-center justify-center px-4 py-4">
+            <button
+              type="button"
+              aria-label="Close project cost breakdown dialog backdrop"
+              onClick={() => setIsProjectCostBreakdownModalOpen(false)}
+              className="glass-modal-backdrop absolute inset-0"
+            />
+            <div
+              ref={projectCostBreakdownModalPanelRef}
+              className="glass-modal-panel relative z-[2147483647] flex max-h-[85vh] w-[min(680px,96vw)] flex-col overflow-hidden"
+            >
+              <div className="glass-modal-header flex items-center justify-between gap-2 px-5 py-4">
+                <p className="text-[15px] font-bold" style={{ color: "#000000" }}>Project Cost Breakdown</p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="Print"
+                    title="Print"
+                    disabled={displayedSalesRoomRows.length === 0}
+                    onClick={() => {
+                      // Always the FULL breakdown for every room, regardless of which ones are
+                      // currently expanded on screen — collapse/expand is a screen-space affordance
+                      // for a long list, not something a printed page should also make the reader
+                      // click through.
+                      const roomsHtml = displayedSalesRoomRows
+                        .map((row) => {
+                          const breakdown = salesRoomCostBreakdownByName[String(row.name || "").trim().toLowerCase()];
+                          if (!breakdown) return "";
+                          return roomCostBreakdownRoomBlockHtml(row.name + (row.included ? "" : " (Not Included)"), breakdown);
+                        })
+                        .join("");
+                      const discountAmount = parseCurrencyNumber(displayedSalesQuoteDiscountTotal);
+                      const summaryHtml = `
+                        <div class="room-block">
+                          <h1>Project Summary</h1>
+                          <div class="summary-row"><span>Rooms Subtotal</span><span>${formatCurrencyValue(displayedSalesRoomsTotal)}</span></div>
+                          ${displayedSalesQuoteExtrasTotal > 0 ? `<div class="summary-row"><span>Quote Extras</span><span>${formatCurrencyValue(displayedSalesQuoteExtrasTotal)}</span></div>` : ""}
+                          ${displayedSalesQuoteCustomPriceTotal > 0 ? `<div class="summary-row"><span>Custom Pricing</span><span>${formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span></div>` : ""}
+                          ${salesMinusOffQuoteTotalEnabled && discountAmount > 0 ? `<div class="summary-row"><span>Discount</span><span>-${escapeHtml(displayedSalesQuoteDiscountTotal)}</span></div>` : ""}
+                          <div class="grand-total"><span>Project Total</span><span>${formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span></div>
+                        </div>
+                      `;
+                      openHtmlPrintWindow("Project Cost Breakdown", roomsHtml + summaryHtml);
+                    }}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-50"
+                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "#000000" }}
+                  >
+                    <Printer size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    onClick={() => setIsProjectCostBreakdownModalOpen(false)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95"
+                    style={{
+                      borderColor: "var(--danger-glass-border)",
+                      backgroundColor: "var(--danger-glass-bg)",
+                      backdropFilter: "blur(10px) saturate(180%)",
+                      WebkitBackdropFilter: "blur(10px) saturate(180%)",
+                      color: "#FFFFFF",
+                    }}
+                  >
+                    <X size={16} strokeWidth={2.4} />
+                  </button>
+                </div>
+              </div>
+              <div className="glass-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                {displayedSalesRoomRows.length === 0 ? (
+                  <p className="text-[13px]" style={{ color: "#000000" }}>No rooms added.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {displayedSalesRoomRows.map((row) => {
+                      const roomKey = String(row.name || "").trim().toLowerCase();
+                      const breakdown = salesRoomCostBreakdownByName[roomKey];
+                      const isExpanded = Boolean(expandedProjectCostBreakdownRooms[roomKey]);
+                      return (
+                        <div key={row.name} className="overflow-hidden rounded-[10px] border" style={{ borderColor: "var(--glass-border)" }}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedProjectCostBreakdownRooms((prev) => ({ ...prev, [roomKey]: !prev[roomKey] }))
+                            }
+                            className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:brightness-95"
+                            style={{ backgroundColor: "var(--panel-muted)" }}
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              {isExpanded ? <ChevronDown size={14} style={{ color: "#000000" }} /> : <ChevronRight size={14} style={{ color: "#000000" }} />}
+                              <span className="text-[13px] font-semibold" style={{ color: "#000000" }}>{row.name}</span>
+                              {!row.included ? (
+                                <span
+                                  className="rounded-[6px] border px-1.5 py-0.5 text-[10px] font-bold uppercase"
+                                  style={{ borderColor: "var(--glass-border)", color: "var(--text-muted)" }}
+                                >
+                                  Not Included
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="text-[13px] font-bold" style={{ color: "#000000" }}>{row.totalPrice}</span>
+                          </button>
+                          {isExpanded ? (
+                            <div className="border-t px-3 py-3" style={{ borderTopColor: "var(--glass-border)" }}>
+                              {breakdown ? <RoomCostBreakdownTables breakdown={breakdown} /> : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="mt-4 space-y-1 border-t pt-3" style={{ borderTopColor: "var(--glass-border)" }}>
+                  <div className="flex items-center justify-between text-[12px]" style={{ color: "#000000" }}>
+                    <span>Rooms Subtotal</span>
+                    <span className="font-semibold">{formatCurrencyValue(displayedSalesRoomsTotal)}</span>
+                  </div>
+                  {displayedSalesQuoteExtrasTotal > 0 ? (
+                    <div className="flex items-center justify-between text-[12px]" style={{ color: "#000000" }}>
+                      <span>Quote Extras</span>
+                      <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteExtrasTotal)}</span>
+                    </div>
+                  ) : null}
+                  {displayedSalesQuoteCustomPriceTotal > 0 ? (
+                    <div className="flex items-center justify-between text-[12px]" style={{ color: "#000000" }}>
+                      <span>Custom Pricing</span>
+                      <span className="font-semibold">{formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span>
+                    </div>
+                  ) : null}
+                  {salesMinusOffQuoteTotalEnabled && parseCurrencyNumber(displayedSalesQuoteDiscountTotal) > 0 ? (
+                    <div className="flex items-center justify-between text-[12px]" style={{ color: "var(--danger-strong)" }}>
+                      <span>Discount</span>
+                      <span className="font-semibold">-{displayedSalesQuoteDiscountTotal}</span>
+                    </div>
+                  ) : null}
+                  <div
+                    className="flex items-center justify-between border-t pt-2 text-[15px] font-bold"
+                    style={{ borderTopColor: "var(--glass-border)", color: "#000000" }}
+                  >
+                    <span>Project Total</span>
+                    <span>{formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
   const projectManagementModalPortal =
     shouldRenderProjectManagementModal && typeof document !== "undefined"
       ? createPortal(
@@ -29363,7 +30494,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
-          { key: "total", label: "Project Cost", value: formatCurrencyValue(displayedSalesQuoteFinalTotal), hero: true, onClick: undefined },
+          {
+            key: "total",
+            label: "Project Cost",
+            value: formatCurrencyValue(displayedSalesQuoteFinalTotal),
+            hero: true,
+            onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
+              setProjectCostBreakdownModalOrigin(captureGlassModalOrigin(e));
+              setIsProjectCostBreakdownModalOpen(true);
+            },
+          },
           {
             key: "rooms",
             label: "Rooms",
@@ -29432,7 +30572,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           );
         })}
       </div>
-      <div className="grid gap-4 xl:grid-cols-[430px_1fr_1fr]">
+      {/* Two grid items live here (ROOMS, PRODUCT) — grid-cols is 430px + ONE 1fr, matching that
+          exactly. It used to declare a second 1fr track too (presumably for a third section that
+          existed at some point and was since removed without updating this), which CSS Grid just
+          leaves empty when there's nothing to place in it — visible as dead space on the right,
+          while PRODUCT was squeezed into sharing the remaining width with that phantom column
+          instead of getting all of it, so it started shrinking well before it needed to. */}
+      <div className="grid gap-4 xl:grid-cols-[430px_1fr]">
         <section
           className="overflow-hidden rounded-[18px] border"
           style={{
@@ -29468,21 +30614,63 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </button>
           </div>
           <div className="p-3">
-            <div className="mb-2 grid grid-cols-[24px_28px_1fr_100px_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
-              <p></p><p></p><p>Room</p><p className="text-right">Price</p><p className="text-center">Included</p>
+            <div className="mb-2 grid grid-cols-[24px_1fr_100px_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
+              <p></p><p>Room</p><p className="text-right">Price</p><p className="text-center">Included</p>
             </div>
-            <div className="space-y-1">
-              {displayedSalesRoomRows.map((room) => (
-                <div key={room.name} className="row-glow-anchor grid grid-cols-[24px_28px_1fr_100px_64px] items-center gap-2 border-b py-2" style={{ borderBottomColor: projectPalette.border }}>
+            <div>
+              {displayedSalesRoomRows.map((room, index) => {
+                // Rows are flush against each other now (no gap between them — see the parent
+                // div's own comment history), so each row's border-b doubles as the divider
+                // touching the row BELOW it — the row above has no border-t of its own. A
+                // highlighted row's glow should read as one clean block with nothing slicing
+                // across its edges, which means hiding TWO different borders while row N is
+                // highlighted: its own (touching its bottom edge) AND the row above it's (N-1's
+                // border-b, touching N's top edge, since that's a different element's border).
+                const isThisRowHighlighted = hoveredSalesRoomRowName === room.name;
+                const isNextRowHighlighted = hoveredSalesRoomRowName === displayedSalesRoomRows[index + 1]?.name;
+                return (
+                <div
+                  key={room.name}
+                  role="button"
+                  tabIndex={0}
+                  title={`View ${room.name} cost breakdown`}
+                  onClick={(e) => {
+                    setRoomCostBreakdownModalOrigin(captureGlassModalOrigin(e));
+                    setRoomCostBreakdownModalRoomName(room.name);
+                    setIsRoomCostBreakdownModalOpen(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    setRoomCostBreakdownModalOrigin(captureGlassModalOrigin(e as unknown as ReactMouseEvent<HTMLElement>));
+                    setRoomCostBreakdownModalRoomName(room.name);
+                    setIsRoomCostBreakdownModalOpen(true);
+                  }}
+                  onMouseEnter={() => setHoveredSalesRoomRowName(room.name)}
+                  onMouseLeave={() => setHoveredSalesRoomRowName((prev) => (prev === room.name ? "" : prev))}
+                  className="row-glow-anchor grid grid-cols-[24px_1fr_100px_64px] items-center gap-2 border-b py-2 cursor-pointer"
+                  style={{
+                    borderBottomColor: isThisRowHighlighted || isNextRowHighlighted ? "transparent" : projectPalette.border,
+                    transition: "border-bottom-color 200ms ease",
+                  }}
+                >
                   {/* Same row-glow-anchor/row-glow pattern as Board Settings' own delete button, but
                       with its usual -5px top/bottom bleed trimmed down — this row (py-2) is more
                       compact than Board Settings' own rows, so the shared class's default inset
-                      made the highlight look oversized here. */}
+                      made the highlight look oversized here. Two stacked glows, not one: blue for
+                      "open the cost breakdown" (this row generally) and red for "delete" (its own
+                      button specifically) — see hoveredSalesRoomRowName's own comment for how they
+                      cross-fade into each other as the pointer moves between the two. */}
+                  <div
+                    className="row-glow row-glow--brand"
+                    data-active={hoveredSalesRoomRowName === room.name && hoveredSalesRoomDeleteName !== room.name}
+                    style={{ top: -1, bottom: -1 }}
+                  />
                   <div className="row-glow" data-active={hoveredSalesRoomDeleteName === room.name} style={{ top: -1, bottom: -1 }} />
                   <button
                     type="button"
                     disabled={salesReadOnly || isSavingSalesRooms}
-                    onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onDeleteSalesRoom(room.name); }}
+                    onClick={(e) => { e.stopPropagation(); setRoomModalOrigin(captureGlassModalOrigin(e)); void onDeleteSalesRoom(room.name); }}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                     onMouseEnter={() => setHoveredSalesRoomDeleteName(room.name)}
@@ -29490,32 +30678,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   >
                     <X size={11} strokeWidth={2.5} />
                   </button>
-                  <button
-                    type="button"
-                    disabled={salesReadOnly || isSavingSalesRooms}
-                    onClick={() => startEditingSalesRoom(room.name)}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-60"
-                    style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
-                    title="Edit room name"
-                  >
-                    <img
-                      src="/edit.png"
-                      alt="Edit"
-                      className="block object-contain"
-                      style={{ width: 13, height: 13, filter: "brightness(0) invert(1)" }}
-                      onError={(e) => {
-                        e.currentTarget.src = "/file.svg";
-                      }}
-                    />
-                  </button>
                   {salesAccess.edit && editingSalesRoomName === room.name ? (
                     <input
                       disabled={salesReadOnly || isSavingSalesRooms}
                       autoFocus
                       value={editingSalesRoomDraftName}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setEditingSalesRoomDraftName(e.currentTarget.value)}
                       onBlur={() => void commitEditingSalesRoom()}
                       onKeyDown={(e) => {
+                        e.stopPropagation();
                         if (e.key === "Enter") {
                           e.preventDefault();
                           void commitEditingSalesRoom();
@@ -29529,10 +30701,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.inputBg, color: projectPalette.inputText }}
                     />
                   ) : (
-                    <p className="text-[12px] font-semibold" style={{ color: projectPalette.text }}>{room.name}</p>
+                    // Same "group" + hover-reveal pencil pattern as the project name's own desktop
+                    // treatment (General tab) — no separate, always-visible edit button taking up
+                    // its own grid column; the pencil fades in next to the name itself on hover.
+                    <div className="group flex min-w-0 items-center gap-1">
+                      <p className="min-w-0 truncate text-[12px] font-semibold" style={{ color: projectPalette.text }}>{room.name}</p>
+                      {salesAccess.edit ? (
+                        <button
+                          type="button"
+                          disabled={salesReadOnly || isSavingSalesRooms}
+                          onClick={(e) => { e.stopPropagation(); startEditingSalesRoom(room.name); }}
+                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] opacity-0 transition-opacity hover:bg-[var(--panel-muted)] group-hover:opacity-100 disabled:opacity-0"
+                          style={{ color: "var(--text-muted)" }}
+                          title="Edit room name"
+                          aria-label="Edit room name"
+                        >
+                          <Pencil size={11} />
+                        </button>
+                      ) : null}
+                    </div>
                   )}
                   <p className="text-right text-[12px] font-semibold italic" style={{ color: projectPalette.text }}>{room.totalPrice}</p>
-                  <div className="flex items-center justify-center">
+                  <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
                     <QuoteExtraToggleSwitch
                       checked={Boolean(room.included)}
                       disabled={salesReadOnly || isSavingSalesRooms}
@@ -29540,7 +30730,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     />
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div className="mt-3 flex items-center justify-between">
               <button
@@ -29561,7 +30752,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   }}
                 />
               </button>
-              <div className="flex flex-col items-end">
+              {/* Disabled while viewing a frozen quote snapshot — the breakdown popup always reads
+                  LIVE room/pricing data, which would disagree with that historical total shown
+                  here (see its own isViewingQuoteSnapshot branch just below). */}
+              <button
+                type="button"
+                disabled={isViewingQuoteSnapshot}
+                title={isViewingQuoteSnapshot ? undefined : "View project cost breakdown"}
+                onClick={(e) => {
+                  setProjectCostBreakdownModalOrigin(captureGlassModalOrigin(e));
+                  setIsProjectCostBreakdownModalOpen(true);
+                }}
+                className="flex flex-col items-end text-right disabled:cursor-default"
+              >
                 <span className="text-[10px] font-semibold uppercase tracking-[1.5px]" style={{ color: "var(--text-muted)" }}>Total</span>
                 <p
                   className="text-[34px] font-bold leading-[1.1] tracking-tight"
@@ -29577,13 +30780,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     ? activeQuoteSnapshot.totalFormatted
                     : formatCurrencyValue(displayedSalesQuoteFinalTotal)}
                 </p>
-              </div>
+              </button>
             </div>
           </div>
         </section>
 
         <section
-          className="overflow-hidden rounded-[18px] border"
+          className="overflow-hidden rounded-[18px] border xl:max-w-[340px]"
           style={{
             borderColor: "var(--glass-border)",
             backgroundColor: "var(--glass-bg-strong)",
@@ -29592,26 +30795,42 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             boxShadow: `inset 0 1px 0 ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.7)"}, var(--shadow-glass)`,
           }}
         >
+          {/* xl:max-w caps this section instead of letting it stretch to fill the whole 1fr track
+              (roughly matching ROOMS' own 430px, for a balanced two-box look) — but the grid cell
+              ITSELF stays a single full 1fr (see this grid's own comment on the removed phantom
+              second 1fr column), so this only ever starts shrinking once the viewport genuinely
+              can't fit it, not artificially early from splitting space with an empty column that
+              isn't there anymore. Only at xl: — below that breakpoint the grid is a single stacked
+              column and this should stay full width like everything else in it. */}
           <div
             className="flex h-[50px] items-center border-b px-4"
             style={{ borderBottomColor: "var(--glass-border)", backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.025)" }}
           >
             <p className="text-[14px] font-medium tracking-[1px]" style={{ color: "var(--text-main)" }}>PRODUCT</p>
           </div>
-          <div className="space-y-2 p-4 text-[12px]">
+          <div className="p-3 text-[12px]">
             {salesProductRows.length > 0 ? (
-              salesProductRows.map((row) => (
-                <label key={row.name} className="flex items-center gap-2" style={{ color: projectPalette.text }}>
-                  <input
-                    type="checkbox"
-                    disabled={salesReadOnly || isSavingSalesRooms}
-                    checked={row.selected}
-                    onChange={(e) => void onToggleSalesProductSelected(row.name, e.target.checked)}
-                    className="h-[12px] w-[12px]"
-                  />
-                  <span className="font-semibold">{row.name}</span>
-                </label>
-              ))
+              <>
+                <div className="mb-2 grid grid-cols-[40px_1fr_64px] gap-2 text-[11px] font-bold" style={{ color: projectPalette.textMuted }}>
+                  <p></p><p>Product</p><p className="text-right">Edge Tape</p>
+                </div>
+                <div className="space-y-1">
+                  {salesProductRows.map((row) => {
+                    const edgeTapeMeters = initialMeasureEdgeTapeMetersByProductName[row.name.trim().toLowerCase()] || "";
+                    return (
+                      <div key={row.name} className="grid grid-cols-[40px_1fr_64px] items-center gap-2 border-b py-2 last:border-none" style={{ borderBottomColor: projectPalette.border }}>
+                        <QuoteExtraToggleSwitch
+                          checked={row.selected}
+                          disabled={salesReadOnly || isSavingSalesRooms}
+                          onChange={(checked) => void onToggleSalesProductSelected(row.name, checked)}
+                        />
+                        <span className="font-semibold" style={{ color: projectPalette.text }}>{row.name}</span>
+                        <span className="text-right font-medium" style={{ color: "var(--text-muted)" }}>{edgeTapeMeters ? `${edgeTapeMeters}m` : ""}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             ) : (
               <p className="text-[12px]" style={{ color: projectPalette.textMuted }}>No products available.</p>
             )}
@@ -29639,6 +30858,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       {partTypeBreakdownModalPortal}
       {sheetCountModalPortal}
       {costByRoomModalPortal}
+      {roomCostBreakdownModalPortal}
+      {projectCostBreakdownModalPortal}
     </>
   );
 
@@ -34370,13 +35591,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         style={{ maxHeight: "calc(100svh - 32px)", backgroundColor: hexToRgba(detailPalette.rowBg, 0.55) }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div
-                          className="flex min-h-0 flex-1 flex-col"
-                          style={{
-                            transform: keyboardInsetPx > 0 ? `translateY(-${Math.min(keyboardInsetPx, 220)}px)` : undefined,
-                            transition: "transform 150ms ease",
-                          }}
-                        >
+                        <div className="flex min-h-0 flex-1 flex-col">
                           <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
                             <div className="min-w-0">
                               <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
@@ -37087,13 +38302,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         style={{ maxHeight: "calc(100svh - 32px)", backgroundColor: hexToRgba(detailPalette.rowBg, 0.55) }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div
-                          className="flex min-h-0 flex-1 flex-col"
-                          style={{
-                            transform: keyboardInsetPx > 0 ? `translateY(-${Math.min(keyboardInsetPx, 220)}px)` : undefined,
-                            transition: "transform 150ms ease",
-                          }}
-                        >
+                        <div className="flex min-h-0 flex-1 flex-col">
                           <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4" style={{ backgroundColor: hexToRgba(detailPalette.titleBarBg, 0.6) }}>
                             <div className="min-w-0">
                               <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: detailPalette.text }}>{row.name || "Part"}</p>
@@ -42478,62 +43687,153 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // above the sheet" decision as quoteAcceptedBannerVisible above; exactly one of the two is ever
     // true at once.
     const quotePendingBannerVisible = isQuoteLockedForSending && !specsShareStatus?.quoteAcceptedAt && isViewingSentQuoteVersion;
+    // Rendered in the SAME centered top-bar slot as quoteGridOutdatedChipData (mutually exclusive
+    // with it — that one explicitly excludes sent/accepted versions, this one requires it), via the
+    // shared TopBarStatusChip shell instead of the previous full-width banner above the sheet — one
+    // consistent place for "what's special about the version on screen" instead of two.
+    const quoteAcceptedOrPendingChipData: TopBarChipData = quoteAcceptedBannerVisible ? {
+      key: "quote-accepted",
+      style: { borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" },
+      content: (
+        <>
+          <span>
+            {specsShareStatus?.quoteAcceptedAt
+              ? (() => {
+                  const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.quoteAcceptedAt);
+                  return `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"} on ${date} at ${time}`;
+                })()
+              : `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"}`}
+          </span>
+          {salesAllowReopenForEditingEnabled ? (
+            <button
+              type="button"
+              disabled={isReopeningQuoteAcceptance}
+              onClick={(e) => {
+                setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
+                setIsReopenQuoteConfirmOpen(true);
+              }}
+              className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-60"
+              style={{ borderColor: "#15803D", backgroundColor: "#ffffff", color: "#15803D", borderWidth: "1px", borderStyle: "solid" }}
+            >
+              {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for editing"}
+            </button>
+          ) : null}
+        </>
+      ),
+    } : quotePendingBannerVisible ? {
+      key: "quote-pending",
+      style: { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" },
+      content: (
+        <>
+          <span>Pending Review by Client</span>
+          {salesAllowReopenForEditingEnabled ? (
+            <button
+              type="button"
+              disabled={isReopeningQuoteAcceptance}
+              onClick={(e) => {
+                setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
+                setIsReopenQuoteConfirmOpen(true);
+              }}
+              className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-60"
+              style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--panel-bg)", color: "var(--brand-strong)", borderWidth: "1px", borderStyle: "solid" }}
+            >
+              {isReopeningQuoteAcceptance ? "Reopening…" : "Open for editing"}
+            </button>
+          ) : null}
+        </>
+      ),
+    } : null;
     // Mobile: title bar is title + Back only, everything else moves to a bar fixed at the BOTTOM
     // of the screen — see specsHeaderHeight's identical comment above (Specifications fullscreen
     // view) for the full reasoning. Desktop keeps the original single combined title+buttons row.
     const quoteHeaderHeight = 56;
-    const quoteOtherActionButtons = (
+    // Print/Download stay in the fixed top bar on both breakpoints (icon-only on mobile, matching
+    // quoteBackButton's own compact treatment) — every other action lives in quoteFloatingActionButtons
+    // below, which renders in its own floating pill fixed to the bottom of the screen on desktop
+    // (see its render site further down) or in the pre-existing bottom action strip on mobile.
+    const quoteTopActionButtons = (
       <>
         <button
           type="button"
           disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
           onClick={() => void onPrintQuoteGrid()}
-          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          className={
+            isCompactProjectViewport
+              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
+              : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          }
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          aria-label="Print"
         >
-          <Printer size={14} />
-          Print
+          <Printer size={isCompactProjectViewport ? 16 : 14} />
+          {!isCompactProjectViewport && "Print"}
         </button>
         <button
           type="button"
           disabled={!hasQuoteGridTemplate || !displayedQuoteGrid}
-          onClick={() => void onDownloadQuoteGridPdf()}
-          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setQuoteDownloadMenuAnchor({ left: rect.left, top: rect.bottom, width: rect.width, height: 0 });
+          }}
+          className={
+            isCompactProjectViewport
+              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
+              : "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          }
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          aria-label="Download"
         >
-          <Download size={14} />
-          Download PDF
+          <Download size={isCompactProjectViewport ? 16 : 14} />
+          {!isCompactProjectViewport && (
+            <>
+              Download
+              <ChevronDown size={12} />
+            </>
+          )}
         </button>
-        {!isViewingQuoteGridVersion ? (
+      </>
+    );
+    const quoteFloatingActionButtons = (
+      <>
+        {/* Save/Reset both only ever act on the LIVE grid (never rendered while viewing a
+            historical version, per the isViewingQuoteGridVersion guard just below) — neither used
+            to check that scoping, and instead disabled themselves off isQuoteLockedForSending,
+            which just means "something, anything, is currently sent" with no regard for whether
+            the live draft itself is the thing that's sent (it never is — only a saved version can
+            be). That blocked editing the live draft any time an unrelated already-sent/accepted
+            version existed in history, with no way back in short of Reopening it. Specs' own
+            equivalent (isSpecsContentLockedForSending) already gets this right by only locking
+            while a SENT version is what's actually being viewed — Send Quote to Client below is
+            the one button that legitimately still needs the broad check (only one version may be
+            sent at a time, regardless of what's currently on screen). */}
+        <FloatingBarSlot visible={!isViewingQuoteGridVersion}>
           <button
             type="button"
-            disabled={!quoteGrid || isSavingQuoteGridVersion || isQuoteLockedForSending}
-            title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
+            disabled={!quoteGrid || isSavingQuoteGridVersion}
             onClick={(e) => {
               setQuoteGridSaveVersionModalOrigin(captureGlassModalOrigin(e));
               setQuoteGridSaveVersionNameDraft(`Version ${quoteGridVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
               setIsQuoteGridSaveVersionModalOpen(true);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
           >
             <Save size={14} />
-            Save Version
+            Save
           </button>
-        ) : null}
-        {!isViewingQuoteGridVersion ? (
+        </FloatingBarSlot>
+        <FloatingBarSlot visible={!isViewingQuoteGridVersion}>
           <button
             type="button"
-            disabled={!hasQuoteGridTemplate || isQuoteLockedForSending}
-            title={isQuoteLockedForSending ? "Locked — Reopen for Editing first" : undefined}
+            disabled={!hasQuoteGridTemplate}
             onClick={() => setIsQuoteGridResetConfirmOpen(true)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
           >
             <RotateCcw size={14} />
-            Reset to Template
+            Reset
           </button>
-        ) : null}
+        </FloatingBarSlot>
         {/* Available while viewing EITHER the live grid or a historical version — sending
             marks whichever's on screen as sent (see sendQuoteToClient's own comment on how it
             branches on activeQuoteGridVersionId). Only one version may be sent at a time —
@@ -42542,11 +43842,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             Not even rendered at all when what's actually on screen IS that already-sent/
             accepted version (isQuoteContentLockedForSending) — sending it again makes no
             sense once it's the very thing already sent. */}
-        {!isQuoteContentLockedForSending ? (
+        {/* Folded isQuoteLockedForSending into `visible` itself (rather than just disabling the
+            button) — a button that can never be clicked right now (something else is already
+            sent; Reopen for Editing first) reads as clutter, not a real option, so it pops out of
+            the pill entirely instead of sitting there greyed out. */}
+        <FloatingBarSlot visible={!isQuoteContentLockedForSending && !isQuoteLockedForSending}>
           <button
             type="button"
-            disabled={!displayedQuoteGrid || isQuoteLockedForSending}
-            title={isQuoteLockedForSending ? "Already sent — Reopen for Editing first to send a different version" : undefined}
+            disabled={!displayedQuoteGrid}
             onClick={(e) => {
               setSendQuoteToClientOrigin(captureGlassModalOrigin(e));
               setSendQuoteToClientError("");
@@ -42554,42 +43857,67 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               setIsSendQuoteToClientModalOpen(true);
               void sendQuoteToClient();
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
           >
             <Mail size={14} />
-            Send Quote to Client
+            Send to Client
           </button>
-        ) : null}
+        </FloatingBarSlot>
+        {/* The other half of the pair just above: whenever Send is hidden because something's
+            already sent (isQuoteLockedForSending), this takes its place instead of leaving nothing
+            there — same "Reopen for Editing" flow already offered inline on the accepted/pending
+            banner (see quoteAcceptedBannerVisible/quotePendingBannerVisible above), just also
+            reachable from here without needing to be viewing that exact sent version. Respects the
+            same company-level salesAllowReopenForEditingEnabled setting as that banner's own link.
+            Deliberately shown WHILE viewing the accepted/sent version itself too (unlike Send,
+            which excludes that case) — that's exactly where "reopen this for editing" is most
+            useful, not a case to hide it in. */}
+        <FloatingBarSlot visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled}>
+          <button
+            type="button"
+            disabled={isReopeningQuoteAcceptance}
+            onClick={(e) => {
+              setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
+              setIsReopenQuoteConfirmOpen(true);
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+          >
+            <Unlock size={14} />
+            {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen Edit"}
+          </button>
+        </FloatingBarSlot>
         {/* Only when there's actually an accepted version to jump to, and it isn't already
             what's on screen — a quick way back to it from live (or any other version) without
             digging through the Version History sidebar. */}
-        {specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId ? (
+        <FloatingBarSlot visible={Boolean(specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId)}>
           <button
             type="button"
-            onClick={() => openQuoteGridVersion(specsShareStatus.quoteVersionId as string)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-            style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+            onClick={() => openQuoteGridVersion(specsShareStatus?.quoteVersionId as string)}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+            style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
           >
             <Eye size={14} />
-            View Accepted Version
+            Accepted Version
           </button>
-        ) : null}
+        </FloatingBarSlot>
         {/* Only meaningful once something's actually been sent at least once — before that,
             the hub link exists as a route but there's nothing behind it for the client to see. */}
-        {specsShareStatus && project?.id ? (
+        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)}>
           <button
             type="button"
             onClick={() => {
+              if (!project?.id) return;
               window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
           >
             <ExternalLink size={14} />
-            View Client Portal
+            Client Portal
           </button>
-        ) : null}
+        </FloatingBarSlot>
       </>
     );
     // Mobile: a plain icon, no box/border/label — same brand-strong blue as the desktop "Edit"
@@ -42646,8 +43974,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{
               height: quoteHeaderHeight + 49,
               backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              // Reduced from blur(12px) saturate(220%) — still the largest, always-mounted,
+              // persistently-visible blurred layer in this view (full width, 105px tall), sitting
+              // directly over the scroll container's own content, so it's re-sampled on every
+              // scroll frame regardless of will-change/translateZ layer promotion below — that
+              // alone wasn't enough to fix reported lag specifically at the moment the sheet
+              // scrolls underneath it, so this directly cuts the filter's own per-frame cost
+              // (backdrop-filter cost scales with blur radius, and saturate is a second, separate
+              // filter pass stacked on top of it). Same reduction on the Specifications tab's
+              // identical layer below.
+              backdropFilter: "blur(8px) saturate(160%)",
+              WebkitBackdropFilter: "blur(8px) saturate(160%)",
+              // Same GPU layer-promotion pattern already used for this exact purpose elsewhere in
+              // this file (the Production fullscreen view's own identical shared backdrop) —
+              // translateZ(0) forces the promotion more reliably across Chromium versions than
+              // will-change alone for a backdrop-filter layer specifically.
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
             }}
           />
           <div
@@ -42667,29 +44011,83 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   Save failed — your last edit may not have saved
                 </span>
               ) : null}
-              {/* Both the accepted AND pending-acceptance cases have their own full-width banner
-                  right above the page preview now (see quoteAcceptedBannerVisible/
-                  quotePendingBannerVisible below) instead of living here as a small chip. */}
             </div>
-            {quoteGridOutdatedBanner ? (
-              <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                <div className="pointer-events-auto">{quoteGridOutdatedBanner}</div>
+            {/* quoteGridOutdatedChipData and quoteAcceptedOrPendingChipData are mutually exclusive
+                (see quoteAcceptedOrPendingChipData's own comment) — whichever applies renders
+                centered in this same 56px bar, via TopBarStatusChip so it fades in/pops away when
+                appearing/disappearing, or morphs in place when switching directly from one to the
+                other, instead of snapping. This wrapper stays mounted unconditionally (unlike
+                before) so that chip can track the visible/hidden edge itself. */}
+            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <div className="pointer-events-auto">
+                <TopBarStatusChip data={quoteGridOutdatedChipData || quoteAcceptedOrPendingChipData} />
               </div>
-            ) : null}
+            </div>
             <div className={isCompactProjectViewport ? "ml-auto flex shrink-0 items-center gap-2" : "hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto"}>
-              {!isCompactProjectViewport && quoteOtherActionButtons}
+              {quoteTopActionButtons}
               {quoteBackButton}
             </div>
           </div>
+          {quoteDownloadMenuAnchor && typeof document !== "undefined"
+            ? createPortal(
+                <div
+                  ref={quoteDownloadMenuRef}
+                  className="fixed z-[2000] overflow-hidden rounded-[10px] border p-1"
+                  style={{
+                    left: quoteDownloadMenuAnchor.left,
+                    top: quoteDownloadMenuAnchor.top + 4,
+                    borderColor: "var(--glass-border)",
+                    backgroundColor: "var(--glass-bg-strong)",
+                    backdropFilter: "blur(24px) saturate(180%)",
+                    WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                    boxShadow: "var(--shadow-glass)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuoteDownloadMenuAnchor(null);
+                      void onDownloadQuoteGridPdf();
+                    }}
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    <FileText size={14} />
+                    PDF
+                  </button>
+                </div>,
+                document.body,
+              )
+            : null}
           {/* Mobile only: every OTHER action lives in its own bar fixed to the BOTTOM of the
-              screen instead of squeezing onto the title row — desktop keeps them all inline above. */}
+              screen instead of squeezing onto the title row — desktop gets its own floating pill,
+              see quoteFloatingActionButtons' desktop render site further down. */}
           {isCompactProjectViewport && (
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
-              {quoteOtherActionButtons}
+              {quoteFloatingActionButtons}
+            </div>
+          )}
+          {/* Desktop only: the same buttons as the mobile strip above, in a centered floating
+              pill fixed to the bottom of the screen instead of a squeezed-in top row — SpecsGridEditor's
+              own canvas reserves the matching bottom inset for this (canvasBottomInsetPx below) so the
+              pill floats over its grey canvas background rather than a separate section of the host
+              page's own background, which would show through the pill's blur as a mismatched seam. */}
+          {!isCompactProjectViewport && (
+            <div
+              className="fixed bottom-6 left-1/2 z-[95] flex -translate-x-1/2 items-center gap-1.5 rounded-full border p-1.5"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-modal-bg)",
+                backdropFilter: "blur(16px) saturate(200%)",
+                WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.4), var(--shadow-glass), 0 16px 40px rgba(15,23,42,0.25)",
+              }}
+            >
+              {quoteFloatingActionButtons}
             </div>
           )}
           {/* Title-only toggles for the two floating bubbles below — sit in the SAME row as
@@ -42746,14 +44144,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             </>
           )}
-          <div className="flex flex-1" style={{ paddingTop: quoteHeaderHeight, paddingBottom: isCompactProjectViewport ? 56 : 0 }}>
+          <div className="flex flex-1" style={{ paddingTop: quoteHeaderHeight }}>
             {/* No top padding here (only horizontal/bottom) — SpecsGridEditor owns its own vertical
                 spacing (its fixed toolbar's reserved flow space, then the canvas's own p-6), and any
                 top padding on this wrapper pushes its canvas further down than the fixed toolbar/
                 backdrop above actually accounts for, opening a real gap — showing this wrapper's own
                 (unstyled, page-background-colored) padding as a visible seam between the toolbar and
                 the canvas below it. The two fallback states below (no template / still cloning)
-                don't need it either — both already have their own py-16 vertical spacing. */}
+                don't need it either — both already have their own py-16 vertical spacing.
+                Same reasoning is why this wrapper has no paddingBottom either — the floating action
+                pill's reserved room lives inside SpecsGridEditor's own canvas instead
+                (canvasBottomInsetPx below), so the pill floats over that canvas's own grey background
+                rather than this wrapper's unstyled one. */}
             <div className="flex-1 px-3 pb-3 sm:px-4 sm:pb-4 md:px-5 md:pb-5">
               {!hasQuoteGridTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
@@ -42790,59 +44192,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   toolbarFixedLeftPx={isCompactProjectViewport ? 0 : 302}
                   toolbarFixedRightPx={isCompactProjectViewport ? 0 : 280}
                   fitToViewportOnMobile={isCompactProjectViewport}
+                  // Mobile: matches the docked bar's own h-[56px] exactly (flush, no extra gap either
+                  // side). Desktop 56: base 24 (this canvas's own p-6) + 56 extra = 80 total reserved
+                  // below the sheet, so the gap from the sheet's bottom edge to the pill's TOP edge
+                  // reads as the same size as the pill's own bottom-6 gap to the screen below it (the
+                  // pill's downward box-shadow visually eats into that bottom gap, so the top number
+                  // needs to land smaller than the pill's raw height + bottom-6 would suggest to
+                  // actually look even — tuned down from 72 per visual feedback; coincidentally lands
+                  // on the same 56 as mobile's own value, unrelated to it).
+                  canvasBottomInsetPx={56}
                   highlightedGroupId={hoveredQuoteExtraGroupId}
                   onHoveredGroupChange={setPreviewHoveredQuoteExtraGroupId}
-                  // Rendered INSIDE the editor's own canvas area, below its fixed formatting
-                  // toolbar and right above the white sheet — see belowToolbarBanner's own comment
-                  // in specs-grid-editor.tsx. Exactly one of the two banners ever shows at once
-                  // (quoteAcceptedBannerVisible/quotePendingBannerVisible are mutually exclusive),
-                  // both scoped to whatever's actually on screen being the sent version.
-                  belowToolbarBanner={
-                    quoteAcceptedBannerVisible ? (
-                      <div className="flex items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
-                        <span>
-                          {specsShareStatus?.quoteAcceptedAt ? (
-                            (() => {
-                              const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.quoteAcceptedAt);
-                              return `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"} on ${date} at ${time}`;
-                            })()
-                          ) : (
-                            `Accepted by ${specsShareStatus?.quoteAcceptedByName || "client"}`
-                          )}
-                        </span>
-                        {salesAllowReopenForEditingEnabled ? (
-                          <button
-                            type="button"
-                            disabled={isReopeningQuoteAcceptance}
-                            onClick={(e) => {
-                              setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
-                              setIsReopenQuoteConfirmOpen(true);
-                            }}
-                            className="shrink-0 underline decoration-dotted underline-offset-2 disabled:opacity-60"
-                          >
-                            {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen for editing"}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : quotePendingBannerVisible ? (
-                      <div className="flex items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
-                        <span>Pending Review by Client</span>
-                        {salesAllowReopenForEditingEnabled ? (
-                          <button
-                            type="button"
-                            disabled={isReopeningQuoteAcceptance}
-                            onClick={(e) => {
-                              setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
-                              setIsReopenQuoteConfirmOpen(true);
-                            }}
-                            className="shrink-0 underline decoration-dotted underline-offset-2 disabled:opacity-60"
-                          >
-                            {isReopeningQuoteAcceptance ? "Reopening…" : "Open for editing"}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : undefined
-                  }
                 />
               ) : (
                 <div className="flex items-center justify-center py-16 text-[12px]" style={{ color: "var(--text-muted)" }}>
@@ -42861,6 +44221,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {(() => {
               const quoteExtrasListContent = (
                 <>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isQuoteExtrasLockedForSending || !salesAccess.edit}
+                    onClick={() => {
+                      setQuoteCustomPriceDraftRows(quoteCustomPriceRows);
+                      setIsQuoteCustomPriceModalOpen(true);
+                    }}
+                    className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-bold transition hover:brightness-95 disabled:opacity-50"
+                    style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                  >
+                    <Plus size={12} /> Custom Price
+                  </button>
+                  {displayedSalesQuoteCustomPriceTotal > 0 && (
+                    <span className="text-[11px] font-bold" style={{ color: "var(--text-muted)" }}>{formatCurrencyValue(displayedSalesQuoteCustomPriceTotal)}</span>
+                  )}
+                </div>
                 {displayedQuoteGridExtras.length === 0 ? (
                   <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                     No groups yet — highlight rows and &quot;Link Rows as Group&quot; to add one.
@@ -42929,8 +44306,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 )}
                 </>
               );
-              if (!isQuoteExtrasPanelOpen) return null;
               if (isCompactProjectViewport) {
+                // Gated on the swipe hook's OWN shouldRender, never the raw isQuoteExtrasPanelOpen
+                // flag — that flag flips false immediately on a mobile close (see
+                // closeQuoteExtrasPanelMobile's own comment), and gating on it directly here used to
+                // unmount this whole portalled subtree (backdrop AND the div holding
+                // quoteMobileExtrasPanelRef) in that same commit, before useSwipeToClose's own
+                // closing effect could run. That effect found panelRef.current already null,
+                // hit its early-return branch, and skipped resetting salesQuoteScrollRef's own
+                // pushed transform back to "" — leaving the whole fullscreen view stuck visibly
+                // shoved sideways until a reload (or until another drawer was opened, which
+                // force-resets push to 0, only to break again on ITS close). shouldRender instead
+                // keeps this mounted for the whole close animation, exactly like the reference
+                // mobile nav/notifications drawers (components/app-shell.tsx) already do.
                 if (!quoteMobileExtrasSwipe.shouldRender || typeof document === "undefined") return null;
                 // Portalled straight to <body> rather than rendered in place — this fullscreen
                 // view's own scroll container (salesQuoteScrollRef) is what gets the live CSS
@@ -42950,10 +44338,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       onClick={closeQuoteExtrasPanelMobile}
                       aria-label="Close Quote Extras backdrop"
                     />
+                    {/* Full page takeover (h-full w-full), same as the reference mobile nav/
+                        notifications drawers — not the previous 85%-width/340px-capped drawer
+                        with a visible backdrop strip down one side. */}
                     <div
                       ref={quoteMobileExtrasPanelRef}
                       {...quoteMobileExtrasSwipe.touchHandlers}
-                      className="hide-scrollbar absolute inset-y-0 right-0 z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-3 overflow-y-auto p-3"
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-3 overflow-y-auto p-3"
                       style={{ backgroundColor: "var(--bg-app)", paddingTop: quoteHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
                     >
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Quote Extras</p>
@@ -42963,6 +44354,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   document.body,
                 );
               }
+              if (!isQuoteExtrasPanelOpen) return null;
               return (
                 <div
                   className="hide-scrollbar fixed z-[90] flex w-[280px] flex-col gap-3 overflow-y-auto px-3"
@@ -42972,6 +44364,96 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               );
             })()}
+            {isQuoteCustomPriceModalOpen && typeof document !== "undefined" &&
+              createPortal(
+                <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+                  <button
+                    type="button"
+                    aria-label="Close custom price backdrop"
+                    onClick={() => setIsQuoteCustomPriceModalOpen(false)}
+                    className="glass-modal-backdrop absolute inset-0"
+                  />
+                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                    <div className="glass-modal-header px-5 py-4">
+                      <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Custom Prices</p>
+                    </div>
+                    <div className="max-h-[70vh] space-y-3 overflow-y-auto px-5 py-4">
+                      <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                        Adds each row&apos;s price to the quote&apos;s total only — the name and these rows never appear on the printed quote itself.
+                      </p>
+                      {quoteCustomPriceDraftRows.length === 0 ? (
+                        <p
+                          className="rounded-[9px] border px-3 py-2 text-[11px]"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                        >
+                          No custom price rows yet.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {quoteCustomPriceDraftRows.map((row, idx) => (
+                            <div key={row.id} className="flex items-center gap-1.5">
+                              <input
+                                value={row.name}
+                                onChange={(e) => setQuoteCustomPriceDraftRows((rows) => rows.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r)))}
+                                placeholder="Name"
+                                className="h-8 min-w-0 flex-1 rounded-[7px] border px-2 text-[12px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                              <input
+                                value={row.price}
+                                onChange={(e) => setQuoteCustomPriceDraftRows((rows) => rows.map((r, i) => (i === idx ? { ...r, price: e.target.value } : r)))}
+                                placeholder="$0.00"
+                                className="h-8 w-24 shrink-0 rounded-[7px] border px-2 text-[12px]"
+                                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setQuoteCustomPriceDraftRows((rows) => rows.filter((_, i) => i !== idx))}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)]"
+                                style={{ color: "var(--danger-strong)" }}
+                                aria-label="Remove row"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setQuoteCustomPriceDraftRows((rows) => [...rows, { id: genSpecsRowId(), name: "", price: "" }])}
+                        className="inline-flex h-8 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-bold transition hover:brightness-95"
+                        style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                      >
+                        <Plus size={12} /> Add Row
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t px-5 py-3" style={{ borderColor: "var(--glass-border)" }}>
+                      <button
+                        type="button"
+                        onClick={() => setIsQuoteCustomPriceModalOpen(false)}
+                        className="h-9 rounded-[9px] border px-4 text-[12px] font-bold"
+                        style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cleaned = quoteCustomPriceDraftRows.filter((row) => row.name.trim() || parseCurrencyNumber(row.price) !== 0);
+                          void onSaveQuoteCustomPriceRows(cleaned);
+                          setIsQuoteCustomPriceModalOpen(false);
+                        }}
+                        className="h-9 rounded-[9px] border px-4 text-[12px] font-bold text-white"
+                        style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>,
+                document.body,
+              )}
             {/* Same floating-bubble treatment as Quote Extras above, mirrored to the left — its own
                 title lives on the "Version History" toggle button in the header, not repeated here. */}
             {(() => {
@@ -43079,11 +44561,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               setQuoteVersionDeleteOrigin(captureGlassModalOrigin(e));
                               setQuoteVersionPendingDeleteId(v.id);
                             }}
-                            className="absolute right-0 top-0 z-0 flex h-full w-9 shrink-0 items-center justify-center rounded-[10px] border shadow-sm"
+                            className="absolute right-0 top-0 z-0 flex h-full w-9 shrink-0 items-center justify-center rounded-[10px] border text-white shadow-sm"
                             style={{
-                              borderColor: "var(--danger-border)",
-                              backgroundColor: "var(--danger-soft)",
-                              color: "var(--danger-strong)",
+                              backgroundImage: "var(--danger-gradient)",
+                              borderColor: "var(--danger-strong)",
                               pointerEvents: hoveredQuoteVersionId === v.id ? "auto" : "none",
                               opacity: hoveredQuoteVersionId === v.id ? 1 : 0,
                               transform: hoveredQuoteVersionId === v.id ? "translateX(0)" : "translateX(-42px)",
@@ -43092,7 +44573,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1), ease-out",
                             }}
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={18} />
                           </button>
                         )}
                         <button
@@ -43156,8 +44637,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
                 </>
               );
-              if (!isQuoteHistoryPanelOpen) return null;
               if (isCompactProjectViewport) {
+                // Gated on shouldRender, not the raw isQuoteHistoryPanelOpen flag — see Quote
+                // Extras' own identical comment on why (the "stuck shoved sideways until reload"
+                // bug this fixes).
                 if (!quoteMobileVersionsSwipe.shouldRender || typeof document === "undefined") return null;
                 // Portalled to <body> — see Quote Extras' own identical comment on why (the pushed
                 // scroll container's own transform would otherwise become this drawer's containing
@@ -43172,10 +44655,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       onClick={closeQuoteHistoryPanelMobile}
                       aria-label="Close Version History backdrop"
                     />
+                    {/* Full page takeover — see Quote Extras' own identical comment. */}
                     <div
                       ref={quoteMobileVersionsPanelRef}
                       {...quoteMobileVersionsSwipe.touchHandlers}
-                      className="hide-scrollbar relative z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-3 overflow-y-auto p-3"
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-3 overflow-y-auto p-3"
                       style={{ backgroundColor: "var(--bg-app)", paddingTop: quoteHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
                     >
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
@@ -43185,6 +44669,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   document.body,
                 );
               }
+              if (!isQuoteHistoryPanelOpen) return null;
               return (
                 <div
                   className="hide-scrollbar fixed z-[95] flex w-[302px] flex-col gap-3 overflow-y-auto px-3"
@@ -43544,6 +45029,46 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       : false;
     const specsSubmittedBannerVisible = Boolean(specsShareStatus?.submittedAt) && isViewingSentSpecsVersion;
     const specsPendingBannerVisible = Boolean(specsShareStatus?.versionId) && !specsShareStatus?.submittedAt && isViewingSentSpecsVersion;
+    // Rendered in the SAME centered top-bar slot as specsSheetVersionChipData (mutually exclusive
+    // with it — that one explicitly excludes sent/submitted versions, this one requires it), via the
+    // shared TopBarStatusChip shell instead of the previous full-width banner above the sheet.
+    // Purely a status indicator here (unlike Quote, Specs' own live sheet stays freely editable
+    // after sending by design), so there's no matching isSentToClient lock to go with it, and the
+    // pending chip has no action button — there's nothing to "reopen," it's already editable.
+    const specsSubmittedOrPendingChipData: TopBarChipData = specsSubmittedBannerVisible ? {
+      key: "specs-submitted",
+      style: { borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" },
+      content: (
+        <>
+          <span>
+            {specsShareStatus?.submittedAt
+              ? (() => {
+                  const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.submittedAt);
+                  return `Submitted by ${specsShareStatus?.submittedByName || "client"} on ${date} at ${time}`;
+                })()
+              : `Submitted by ${specsShareStatus?.submittedByName || "client"}`}
+          </span>
+          {salesAllowReopenForEditingEnabled ? (
+            <button
+              type="button"
+              disabled={isReopeningSpecsConfirmation}
+              onClick={(e) => {
+                setReopenSpecsConfirmOrigin(captureGlassModalOrigin(e));
+                setIsReopenSpecsConfirmOpen(true);
+              }}
+              className="inline-flex h-7 shrink-0 items-center rounded-[8px] px-3 text-[11px] font-bold hover:brightness-95 disabled:opacity-60"
+              style={{ borderColor: "#15803D", backgroundColor: "#ffffff", color: "#15803D", borderWidth: "1px", borderStyle: "solid" }}
+            >
+              {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen for editing"}
+            </button>
+          ) : null}
+        </>
+      ),
+    } : specsPendingBannerVisible ? {
+      key: "specs-pending",
+      style: { borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" },
+      content: <span>Pending Review by Client</span>,
+    } : null;
     // Mobile: the top bar is title + Back only (per design, matching a plain "page title, back
     // button" convention) — every other action moves to its own bar fixed at the BOTTOM of the
     // screen instead. Desktop is untouched: all buttons stay inline in the single combined title
@@ -43551,29 +45076,56 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     // there's no longer a second TOP row on either breakpoint (mobile's second row used to hold
     // buttons; now the formatting toolbar sits there directly, same as desktop).
     const specsHeaderHeight = 56;
-    const specsOtherActionButtons = (
+    // Print/Download stay in the fixed top bar on both breakpoints (icon-only on mobile, matching
+    // specsBackButton's own compact treatment) — every other action lives in
+    // specsFloatingActionButtons below, which renders in its own floating pill fixed to the bottom
+    // of the screen on desktop (see its render site further down) or in the pre-existing bottom
+    // action strip on mobile — same split as the Quote tab's own identical treatment above.
+    const specsTopActionButtons = (
       <>
         <button
           type="button"
           disabled={!hasTemplate || !displayedSpecsSheetGrid}
           onClick={() => void onPrintSpecificationsSheet()}
-          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          className={
+            isCompactProjectViewport
+              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
+              : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          }
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          aria-label="Print"
         >
-          <Printer size={14} />
-          Print
+          <Printer size={isCompactProjectViewport ? 16 : 14} />
+          {!isCompactProjectViewport && "Print"}
         </button>
         <button
           type="button"
           disabled={!hasTemplate || !displayedSpecsSheetGrid}
-          onClick={() => void onDownloadSpecificationsSheetPdf()}
-          className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setSpecsDownloadMenuAnchor({ left: rect.left, top: rect.bottom, width: rect.width, height: 0 });
+          }}
+          className={
+            isCompactProjectViewport
+              ? "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95 disabled:opacity-40"
+              : "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+          }
           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+          aria-label="Download"
         >
-          <Download size={14} />
-          Download PDF
+          <Download size={isCompactProjectViewport ? 16 : 14} />
+          {!isCompactProjectViewport && (
+            <>
+              Download
+              <ChevronDown size={12} />
+            </>
+          )}
         </button>
-        {!isViewingSpecsSheetVersion ? (
+      </>
+    );
+    const specsFloatingActionButtons = (
+      <>
+        <FloatingBarSlot visible={!isViewingSpecsSheetVersion}>
           <button
             type="button"
             disabled={!specsSheetGrid || isSavingSpecsVersion || isSpecsContentLockedForSending}
@@ -43583,26 +45135,26 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               setSpecsSaveVersionNameDraft(`Version ${specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
               setIsSpecsSaveVersionModalOpen(true);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
           >
             <Save size={14} />
-            Save Version
+            Save
           </button>
-        ) : null}
-        {!isViewingSpecsSheetVersion ? (
+        </FloatingBarSlot>
+        <FloatingBarSlot visible={!isViewingSpecsSheetVersion}>
           <button
             type="button"
             disabled={!hasTemplate || isSpecsContentLockedForSending}
             title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
             onClick={() => setIsSpecsSheetResetConfirmOpen(true)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-            style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
           >
             <RotateCcw size={14} />
-            Reset to Template
+            Reset
           </button>
-        ) : null}
+        </FloatingBarSlot>
         {/* Available while viewing EITHER the live sheet or a historical version — sending
             marks whichever's on screen as sent (see sendSpecsToClient's own branch on
             activeSpecsSheetVersionId), mirroring the Quote tab's own identical button. Only
@@ -43611,11 +45163,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             first. Not even rendered at all when what's actually on screen IS that already-
             sent/submitted version (isSpecsContentLockedForSending) — sending it again makes
             no sense once it's the very thing already sent. */}
-        {!isSpecsContentLockedForSending ? (
+        {/* Same reasoning as the Quote tab's identical treatment above — folded into `visible`
+            itself instead of just disabling the button. */}
+        <FloatingBarSlot visible={!isSpecsContentLockedForSending && !specsShareStatus?.versionId}>
           <button
             type="button"
-            disabled={!displayedSpecsSheetGrid || Boolean(specsShareStatus?.versionId)}
-            title={specsShareStatus?.versionId ? "Already sent — Reopen for Editing first to send a different version" : undefined}
+            disabled={!displayedSpecsSheetGrid}
             onClick={(e) => {
               setSendSpecsToClientOrigin(captureGlassModalOrigin(e));
               setSendSpecsToClientError("");
@@ -43623,42 +45176,62 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               setIsSendSpecsToClientModalOpen(true);
               void sendSpecsToClient();
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
-            style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
           >
             <Mail size={14} />
             Send to Client
           </button>
-        ) : null}
+        </FloatingBarSlot>
+        {/* Same reasoning as the Quote tab's identical pair above — whenever Send is hidden
+            because something's already sent, this takes its place instead of leaving nothing
+            there, including while viewing the submitted version itself (unlike Send, which
+            excludes that case) — that's exactly where "reopen this for editing" is most useful. */}
+        <FloatingBarSlot visible={Boolean(specsShareStatus?.versionId) && salesAllowReopenForEditingEnabled}>
+          <button
+            type="button"
+            disabled={isReopeningSpecsConfirmation}
+            onClick={(e) => {
+              setReopenSpecsConfirmOrigin(captureGlassModalOrigin(e));
+              setIsReopenSpecsConfirmOpen(true);
+            }}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+          >
+            <Unlock size={14} />
+            {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen Edit"}
+          </button>
+        </FloatingBarSlot>
         {/* Only when there's actually a submitted version to jump to, and it isn't already
             what's on screen — a quick way back to it from live (or any other version) without
             digging through the Version History sidebar. */}
-        {specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId ? (
+        <FloatingBarSlot visible={Boolean(specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId)}>
           <button
             type="button"
-            onClick={() => openSpecsSheetVersion(specsShareStatus.versionId as string)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
-            style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+            onClick={() => openSpecsSheetVersion(specsShareStatus?.versionId as string)}
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+            style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
           >
             <Eye size={14} />
-            View Submitted Version
+            Submitted Version
           </button>
-        ) : null}
+        </FloatingBarSlot>
         {/* Only meaningful once something's actually been sent at least once — before that,
             the hub link exists as a route but there's nothing behind it for the client to see. */}
-        {specsShareStatus && project?.id ? (
+        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)}>
           <button
             type="button"
             onClick={() => {
+              if (!project?.id) return;
               window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border px-3 text-[12px] font-bold hover:brightness-95"
+            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
           >
             <ExternalLink size={14} />
-            View Client Portal
+            Client Portal
           </button>
-        ) : null}
+        </FloatingBarSlot>
       </>
     );
     // Mobile: a plain icon, no box/border/label — see quoteBackButton's identical comment above.
@@ -43718,8 +45291,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             style={{
               height: specsHeaderHeight + 49,
               backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              // Same reasoning/reduction as the Quote tab's identical layer — see its own comment.
+              backdropFilter: "blur(8px) saturate(160%)",
+              WebkitBackdropFilter: "blur(8px) saturate(160%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
             }}
           />
           {/* Content-only — no background/blur of its own, the shared backdrop above provides it.
@@ -43743,29 +45320,83 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   Save failed — your last edit may not have saved
                 </span>
               ) : null}
-              {/* Both the submitted AND pending-submission cases have their own full-width banner
-                  right above the page preview now (see specsSubmittedBannerVisible/
-                  specsPendingBannerVisible below) instead of living here as a small chip. */}
             </div>
-            {specsSheetVersionBanner ? (
-              <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                <div className="pointer-events-auto">{specsSheetVersionBanner}</div>
+            {/* specsSheetVersionChipData and specsSubmittedOrPendingChipData are mutually exclusive
+                (see specsSubmittedOrPendingChipData's own comment) — whichever applies renders
+                centered in this same 56px bar, via TopBarStatusChip so it fades in/pops away when
+                appearing/disappearing, or morphs in place when switching directly from one to the
+                other, instead of snapping. This wrapper stays mounted unconditionally (unlike
+                before) so that chip can track the visible/hidden edge itself. */}
+            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <div className="pointer-events-auto">
+                <TopBarStatusChip data={specsSheetVersionChipData || specsSubmittedOrPendingChipData} />
               </div>
-            ) : null}
+            </div>
             <div className={isCompactProjectViewport ? "ml-auto flex shrink-0 items-center gap-2" : "hide-native-scrollbar flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto"}>
-              {!isCompactProjectViewport && specsOtherActionButtons}
+              {specsTopActionButtons}
               {specsBackButton}
             </div>
           </div>
+          {specsDownloadMenuAnchor && typeof document !== "undefined"
+            ? createPortal(
+                <div
+                  ref={specsDownloadMenuRef}
+                  className="fixed z-[2000] overflow-hidden rounded-[10px] border p-1"
+                  style={{
+                    left: specsDownloadMenuAnchor.left,
+                    top: specsDownloadMenuAnchor.top + 4,
+                    borderColor: "var(--glass-border)",
+                    backgroundColor: "var(--glass-bg-strong)",
+                    backdropFilter: "blur(24px) saturate(180%)",
+                    WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                    boxShadow: "var(--shadow-glass)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSpecsDownloadMenuAnchor(null);
+                      void onDownloadSpecificationsSheetPdf();
+                    }}
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[12px] font-semibold hover:brightness-95"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    <FileText size={14} />
+                    PDF
+                  </button>
+                </div>,
+                document.body,
+              )
+            : null}
           {/* Mobile only: every OTHER action lives in its own bar fixed to the BOTTOM of the
-              screen instead of squeezing onto the title row — desktop keeps them all inline above. */}
+              screen instead of squeezing onto the title row — desktop gets its own floating pill,
+              see specsFloatingActionButtons' desktop render site further down. */}
           {isCompactProjectViewport && (
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
-              {specsOtherActionButtons}
+              {specsFloatingActionButtons}
+            </div>
+          )}
+          {/* Desktop only: the same buttons as the mobile strip above, in a centered floating
+              pill fixed to the bottom of the screen instead of a squeezed-in top row — SpecsGridEditor's
+              own canvas reserves the matching bottom inset for this (canvasBottomInsetPx below) so the
+              pill floats over its grey canvas background rather than a separate section of the host
+              page's own background, which would show through the pill's blur as a mismatched seam. */}
+          {!isCompactProjectViewport && (
+            <div
+              className="fixed bottom-6 left-1/2 z-[95] flex -translate-x-1/2 items-center gap-1.5 rounded-full border p-1.5"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-modal-bg)",
+                backdropFilter: "blur(16px) saturate(200%)",
+                WebkitBackdropFilter: "blur(16px) saturate(200%)",
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.4), var(--shadow-glass), 0 16px 40px rgba(15,23,42,0.25)",
+              }}
+            >
+              {specsFloatingActionButtons}
             </div>
           )}
           {/* Desktop only — title-only toggles for the two floating bubbles below, same treatment
@@ -43824,7 +45455,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               padding pushes the canvas further down than the toolbar/backdrop actually accounts
               for, opening a visible gap between them (same fix as the Quote fullscreen view above;
               both fallback states below already have their own py-16). */}
-          <div className="flex flex-1" style={{ paddingTop: specsHeaderHeight, paddingBottom: isCompactProjectViewport ? 56 : 0 }}>
+          <div className="flex flex-1" style={{ paddingTop: specsHeaderHeight }}>
+            {/* No paddingBottom on this wrapper — same reasoning as the Quote tab's own identical
+                wrapper (see its comment): the floating action pill's reserved room lives inside
+                SpecsGridEditor's own canvas instead (canvasBottomInsetPx below), so the pill floats
+                over that canvas's own grey background rather than this wrapper's unstyled one. */}
             <div className="flex-1 px-3 pb-3 sm:px-4 sm:pb-4 md:px-5 md:pb-5">
               {!hasTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
@@ -43860,48 +45495,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   toolbarFixedLeftPx={isCompactProjectViewport ? 0 : 302}
                   toolbarFixedRightPx={isCompactProjectViewport ? 0 : 260}
                   fitToViewportOnMobile={isCompactProjectViewport}
+                  // Same reasoning as the Quote tab's own identical prop — see its comment.
+                  canvasBottomInsetPx={56}
                   highlightedGroupId={hoveredSpecsSectionGroupId}
                   onHoveredGroupChange={setPreviewHoveredSpecsSectionGroupId}
-                  // Same "banner below the toolbar, right above the sheet" treatment as the Quote
-                  // tab's own — see its belowToolbarBanner comment, including the same colors/
-                  // layout (right-mounted button, brand-blue pending). Purely a status indicator
-                  // here (unlike Quote, Specs' own live sheet stays freely editable after sending
-                  // by design), so there's no matching isSentToClient lock to go with it, and the
-                  // pending banner has no action button — there's nothing to "reopen," it's already
-                  // editable.
-                  belowToolbarBanner={
-                    specsSubmittedBannerVisible ? (
-                      <div className="flex items-center justify-between gap-3 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "#15803D", backgroundColor: "#F0FDF4", color: "#15803D" }}>
-                        <span>
-                          {specsShareStatus?.submittedAt ? (
-                            (() => {
-                              const { date, time } = numericDDMMYYYYAndTime(specsShareStatus.submittedAt);
-                              return `Submitted by ${specsShareStatus?.submittedByName || "client"} on ${date} at ${time}`;
-                            })()
-                          ) : (
-                            `Submitted by ${specsShareStatus?.submittedByName || "client"}`
-                          )}
-                        </span>
-                        {salesAllowReopenForEditingEnabled ? (
-                          <button
-                            type="button"
-                            disabled={isReopeningSpecsConfirmation}
-                            onClick={(e) => {
-                              setReopenSpecsConfirmOrigin(captureGlassModalOrigin(e));
-                              setIsReopenSpecsConfirmOpen(true);
-                            }}
-                            className="shrink-0 underline decoration-dotted underline-offset-2 disabled:opacity-60"
-                          >
-                            {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen for editing"}
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : specsPendingBannerVisible ? (
-                      <div className="flex items-center justify-center gap-2 rounded-[10px] border px-4 py-3 text-[13px] font-bold" style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}>
-                        <span>Pending Review by Client</span>
-                      </div>
-                    ) : undefined
-                  }
                 />
               ) : (
                 <div className="flex items-center justify-center py-16 text-[12px]" style={{ color: "var(--text-muted)" }}>
@@ -43987,11 +45584,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             setSpecsVersionDeleteOrigin(captureGlassModalOrigin(e));
                             setSpecsVersionPendingDeleteId(v.id);
                           }}
-                          className="absolute right-0 top-0 z-0 flex h-full w-9 shrink-0 items-center justify-center rounded-[10px] border shadow-sm"
+                          className="absolute right-0 top-0 z-0 flex h-full w-9 shrink-0 items-center justify-center rounded-[10px] border text-white shadow-sm"
                           style={{
-                            borderColor: "var(--danger-border)",
-                            backgroundColor: "var(--danger-soft)",
-                            color: "var(--danger-strong)",
+                            backgroundImage: "var(--danger-gradient)",
+                            borderColor: "var(--danger-strong)",
                             pointerEvents: hoveredSpecsVersionId === v.id ? "auto" : "none",
                             opacity: hoveredSpecsVersionId === v.id ? 1 : 0,
                             transform: hoveredSpecsVersionId === v.id ? "translateX(0)" : "translateX(-42px)",
@@ -44000,7 +45596,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1), ease-out",
                           }}
                         >
-                          <Trash2 size={14} />
+                          <Trash2 size={18} />
                         </button>
                       )}
                       <button
@@ -44054,8 +45650,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 )}
                 </>
               );
-              if (!isSpecsVersionsSidebarOpen) return null;
               if (isCompactProjectViewport) {
+                // Gated on shouldRender, not the raw isSpecsVersionsSidebarOpen flag — see Quote
+                // Extras' own identical comment (in the Quote fullscreen block above) on why (the
+                // "stuck shoved sideways until reload" bug this fixes).
                 if (!specsMobileVersionsSwipe.shouldRender || typeof document === "undefined") return null;
                 // Portalled to <body> — see Quote Extras' own identical comment on why (the pushed
                 // scroll container's own transform would otherwise become this drawer's containing
@@ -44070,10 +45668,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       onClick={closeSpecsVersionsSidebarMobile}
                       aria-label="Close Version History backdrop"
                     />
+                    {/* Full page takeover — see Quote Extras' own identical comment. */}
                     <div
                       ref={specsMobileVersionsPanelRef}
                       {...specsMobileVersionsSwipe.touchHandlers}
-                      className="hide-scrollbar relative z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-2 overflow-y-auto p-3"
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-2 overflow-y-auto p-3"
                       style={{ backgroundColor: "var(--bg-app)", paddingTop: specsHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
                     >
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
@@ -44083,6 +45682,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   document.body,
                 );
               }
+              if (!isSpecsVersionsSidebarOpen) return null;
               return (
                 <div
                   className="hide-scrollbar fixed z-[95] flex w-[302px] flex-col gap-2 overflow-y-auto px-3"
@@ -44146,8 +45746,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 )}
                 </>
               );
-              if (!isSpecsSectionsPanelOpen) return null;
               if (isCompactProjectViewport) {
+                // Gated on shouldRender, not the raw isSpecsSectionsPanelOpen flag — see Quote
+                // Extras' own identical comment (in the Quote fullscreen block above) on why (the
+                // "stuck shoved sideways until reload" bug this fixes).
                 if (!specsMobileSectionsSwipe.shouldRender || typeof document === "undefined") return null;
                 // Portalled to <body> — see Quote Extras' own identical comment on why (the pushed
                 // scroll container's own transform would otherwise become this drawer's containing
@@ -44162,10 +45764,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       onClick={closeSpecsSectionsPanelMobile}
                       aria-label="Close Sections backdrop"
                     />
+                    {/* Full page takeover — see Quote Extras' own identical comment. */}
                     <div
                       ref={specsMobileSectionsPanelRef}
                       {...specsMobileSectionsSwipe.touchHandlers}
-                      className="hide-scrollbar absolute inset-y-0 right-0 z-[1] flex h-full w-[85%] max-w-[340px] flex-col gap-2 overflow-y-auto p-3"
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-2 overflow-y-auto p-3"
                       style={{ backgroundColor: "var(--bg-app)", paddingTop: specsHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
                     >
                       <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Sections</p>
@@ -44175,6 +45778,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   document.body,
                 );
               }
+              if (!isSpecsSectionsPanelOpen) return null;
               return (
                 <div
                   className="hide-scrollbar fixed z-[95] flex w-[260px] flex-col gap-2 overflow-y-auto px-3"
@@ -46700,7 +48304,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             autoFocus
                             value={tagInput}
                             onFocus={() => setShowTagSuggestions(true)}
-                            onBlur={() => window.setTimeout(() => setShowTagSuggestions(false), 120)}
+                            onBlur={() =>
+                              window.setTimeout(() => {
+                                setShowTagSuggestions(false);
+                                // Clicking off an empty tag box should just close it, not leave it
+                                // sitting open and blank — same as pressing Escape. A non-empty
+                                // draft is left open/untouched, same as before.
+                                if (!tagInput.trim()) {
+                                  setTagInput("");
+                                  setIsTagInputOpen(false);
+                                }
+                              }, 120)
+                            }
                             onChange={(e) => {
                               setTagInput(e.target.value);
                               setShowTagSuggestions(true);
@@ -47882,6 +49497,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div key={item.label} className="w-full sm:w-auto xl:w-full">
                     <button
                       type="button"
+                      ref={item.key === "initial" ? initialMeasureTabButtonRef : undefined}
                       disabled={salesReadOnly}
                       onClick={(e) => {
                         if (item.key === "projectManagement") {
@@ -50877,13 +52493,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         style={{ maxHeight: "calc(100svh - 32px)" }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div
-                          className="flex min-h-0 flex-1 flex-col"
-                          style={{
-                            transform: keyboardInsetPx > 0 ? `translateY(-${Math.min(keyboardInsetPx, 220)}px)` : undefined,
-                            transition: "transform 150ms ease",
-                          }}
-                        >
+                        <div className="flex min-h-0 flex-1 flex-col">
                           <div className="glass-modal-header relative flex min-h-[58px] items-center justify-between gap-3 px-4">
                             <p className="whitespace-nowrap text-[19px] font-medium" style={{ color: "#000000" }}>Board {rowIndex + 1}</p>
                             <div className="flex items-center gap-2">
@@ -52966,15 +54576,30 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {productionPrintModalPortal}
           {unlockEditModalPortal}
           {remedialsModalPortal}
-          {showInitialMeasureCloseSummary && (
-            <InitialMeasureCloseSummaryModal
-              rows={initialCutlistRows}
-              partTypeColors={partTypeColors}
-              sheetCounts={salesRoomSheetAnalysis.sheetCountsByProduct}
-              sessionBaseline={initialMeasureSummaryBaseline}
-              onClose={() => setShowInitialMeasureCloseSummary(false)}
-            />
-          )}
+          {/* Always rendered now (not gated on showInitialMeasureCloseSummary here) — the
+              shrink-on-close animation needs the component to stay mounted one extra beat after
+              isOpen goes false to actually play; it renders nothing itself until its own internal
+              shouldRender says otherwise. See its own comment. */}
+          <InitialMeasureCloseSummaryModal
+            isOpen={showInitialMeasureCloseSummary}
+            origin={initialMeasureCloseSummaryOrigin}
+            rows={initialCutlistRows}
+            partTypeColors={partTypeColors}
+            sheetCounts={salesRoomSheetAnalysis.sheetCountsByProduct}
+            edgeTapeMetersByProductName={initialMeasureEdgeTapeMetersByProductName}
+            sessionBaseline={initialMeasureSummaryBaseline}
+            onClose={() => {
+              // Measured fresh right here, not reused from whenever this opened — the tab button
+              // can have moved since (e.g. the page scrolled while this was open), and shrinking
+              // toward a stale rect would visibly miss it. Both updates land in the same batch, so
+              // the closing animation always has this exact origin to work with.
+              const rect = initialMeasureTabButtonRef.current?.getBoundingClientRect();
+              setInitialMeasureCloseSummaryOrigin(
+                rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null,
+              );
+              setShowInitialMeasureCloseSummary(false);
+            }}
+          />
           {showProductionCutlistCloseSummary && (
             <ProductionCutlistCloseSummaryModal
               productionRows={cutlistRows}

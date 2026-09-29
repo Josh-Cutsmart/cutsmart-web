@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import {
@@ -186,12 +186,6 @@ export type SpecsGridEditorProps = {
   // version diverges from it — showing "Pending" there forever, regardless of the real answer,
   // would be actively misleading. Only a saved version's own data is ever current.
   isViewingSavedVersion?: boolean;
-  // Arbitrary content rendered inside the grey canvas area, centered and width-matched to the
-  // white mock-page sheet (mockPageBoxWidthPx — the same value the sheet itself uses), sitting
-  // directly above it — below the fixed formatting toolbar, which stays exactly where it's always
-  // been. Only Quote's own live project sheet sets this (an "Accepted by X on Y" banner once the
-  // client has accepted) — omit for every other caller, which renders nothing extra here.
-  belowToolbarBanner?: ReactNode;
   // Scales the whole white page down to fit the canvas's own available width by default (the page
   // is sized to real physical mm dimensions, which routinely overflows a phone screen), with a
   // self-contained pinch-to-zoom/pan on top to go in closer — independent of the browser's own
@@ -199,6 +193,11 @@ export type SpecsGridEditorProps = {
   // config) to stop mobile Safari auto-zooming into small inputs. Only the two project-sheet
   // callers set this, and only while their own host page is in its mobile/compact layout.
   fitToViewportOnMobile?: boolean;
+  // Extra bottom padding on the grey canvas itself (below the mock page), reserved so a host
+  // page's OWN floating action bar can float over this canvas's own background instead of a
+  // separate, unstyled section of the host page's background — which reads as a visible seam
+  // where the two backgrounds don't match. Only the two project-sheet callers set this.
+  canvasBottomInsetPx?: number;
   // Hover sync with the host page's own "Sections" bubble list (only the two project-sheet callers
   // set either of these — every other caller leaves both undefined, a no-op on both sides).
   // Deliberately ASYMMETRIC, not a plain two-way mirror: hovering a bubble highlights BOTH the
@@ -526,8 +525,8 @@ export default function SpecsGridEditor({
   hideCellSelectionOutline,
   isSentToClient,
   isViewingSavedVersion,
-  belowToolbarBanner,
   fitToViewportOnMobile,
+  canvasBottomInsetPx,
   highlightedGroupId,
   onHoveredGroupChange,
 }: SpecsGridEditorProps) {
@@ -2202,13 +2201,15 @@ export default function SpecsGridEditor({
         // bubbles sitting at the same height), not the canvas below it. The sheet stays centered at
         // its own natural width; any floating bubble the host page renders alongside it sits OVER
         // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
-        style={{ backgroundColor: "#EDEFF4" }}
+        style={{
+          backgroundColor: "#EDEFF4",
+          // Added on top of the base 24px (p-6/py-6 above) rather than replacing it, so the host's
+          // floating action bar gets its own reserved room INSIDE this grey canvas — its background
+          // — instead of the host page reserving that space itself further down, past this canvas's
+          // own bottom edge, where the page's own (differently-colored) background would show through.
+          ...(canvasBottomInsetPx ? { paddingBottom: 24 + canvasBottomInsetPx } : {}),
+        }}
       >
-        {belowToolbarBanner ? (
-          <div className="relative mx-auto mb-3" style={{ width: fitToViewportOnMobile ? "100%" : mockPageBoxWidthPx, maxWidth: mockPageBoxWidthPx }}>
-            {belowToolbarBanner}
-          </div>
-        ) : null}
         {/* fitToViewportOnMobile: a fixed-height, overflow-hidden viewport the page below is scaled
             down INTO (transform: scale, not a layout-affecting resize — the mm-accurate table inside
             stays exactly as-authored) so it starts fully visible on a phone screen instead of
@@ -3286,20 +3287,23 @@ export default function SpecsGridEditor({
                       </datalist>
                     </div>
                   ) : null}
-                  {groupsSupportPricing ? (
-                    <label className="flex items-center justify-between gap-2 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
-                      Default
-                      <span className="inline-flex items-center gap-2">
-                        <span style={{ color: "var(--text-muted)" }}>{groupDraft.defaultIncluded ? "On" : "Off"}</span>
-                        <input
-                          type="checkbox"
-                          checked={groupDraft.defaultIncluded}
-                          onChange={(e) => setGroupDraft((d) => ({ ...d, defaultIncluded: e.target.checked }))}
-                          className="h-4 w-4"
-                        />
-                      </span>
-                    </label>
-                  ) : null}
+                  {/* Whether a project's clone of this group starts shown or hidden — NOT gated
+                      behind groupsSupportPricing (unlike Category/Anchor above, which are Quote-
+                      Extras-sidebar-specific): both Quote and Specifications seed a fresh clone's
+                      hidden state from this. Rules (below) are still applied on top and can
+                      override whatever this produces. */}
+                  <label className="flex items-center justify-between gap-2 text-[12px] font-semibold" style={{ color: "var(--text-main)" }}>
+                    Default
+                    <span className="inline-flex items-center gap-2">
+                      <span style={{ color: "var(--text-muted)" }}>{groupDraft.defaultIncluded ? "On" : "Off"}</span>
+                      <input
+                        type="checkbox"
+                        checked={groupDraft.defaultIncluded}
+                        onChange={(e) => setGroupDraft((d) => ({ ...d, defaultIncluded: e.target.checked }))}
+                        className="h-4 w-4"
+                      />
+                    </span>
+                  </label>
                   {groupsSupportPricing ? (
                     <label
                       className="flex items-center justify-between gap-2 text-[12px] font-semibold"

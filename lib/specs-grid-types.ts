@@ -625,6 +625,20 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
         ? { editableByRoleIds: group.editableByRoleIds.filter((id): id is string => typeof id === "string" && id.length > 0) }
         : {}),
       ...(typeof group.category === "string" && group.category ? { category: group.category } : {}),
+      ...(Array.isArray(group.rules)
+        ? {
+            rules: group.rules.filter((r): r is SpecsGroupRule => {
+              if (!r || typeof r !== "object") return false;
+              const rule = r as Record<string, unknown>;
+              return (
+                typeof rule.id === "string" &&
+                typeof rule.ifProductName === "string" &&
+                (rule.ifState === "on" || rule.ifState === "off") &&
+                (rule.thenState === "on" || rule.thenState === "off")
+              );
+            }),
+          }
+        : {}),
     });
   }
   // Same leniency as groups above — a deleted group is recoverable convenience, not structural, so a
@@ -924,7 +938,13 @@ export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number
     name: fields.name,
     ...expanded,
     ...(fields.price ? { price: fields.price } : {}),
-    ...(fields.defaultIncluded ? { defaultIncluded: true } : {}),
+    // Always written as an explicit boolean, never omitted when false — Quote's own seeding
+    // (`!g.defaultIncluded`) treats "omitted" and "explicit false" identically, so this is a no-op
+    // for Quote either way, but Specs' seeding (`g.defaultIncluded === false`) NEEDS the explicit
+    // false to tell "author deliberately turned Default off" apart from "never touched" (which has
+    // to keep meaning "visible" for every pre-existing Specs group — see that seeding's own
+    // comment). Omitting it here silently made every Specs group's Default:Off setting a no-op.
+    defaultIncluded: fields.defaultIncluded,
     ...(fields.anchorFirstPageBottom ? { anchorFirstPageBottom: true } : {}),
     ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
     ...(fields.category ? { category: fields.category } : {}),
@@ -963,7 +983,8 @@ export function renameRowGroup(grid: SpecsGrid, groupId: string, fields: SpecsRo
         ...(g.hidden !== undefined ? { hidden: g.hidden } : {}),
         name: fields.name,
         ...(fields.price ? { price: fields.price } : {}),
-        ...(fields.defaultIncluded ? { defaultIncluded: true } : {}),
+        // Explicit boolean, never omitted when false — see createRowGroup's own identical comment.
+        defaultIncluded: fields.defaultIncluded,
         ...(fields.anchorFirstPageBottom ? { anchorFirstPageBottom: true } : {}),
         ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
         ...(fields.category ? { category: fields.category } : {}),

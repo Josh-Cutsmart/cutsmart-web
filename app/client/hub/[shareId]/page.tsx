@@ -87,10 +87,11 @@ export default function ClientSpecsSharePage() {
   // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
   // screen. This page sits outside AppShell (a public, no-login route), so it needs its own copy
   // of the same one-line wiring rather than inheriting AppShell's.
-  const keyboardInsetPx = useKeyboardInsetPx();
+  const keyboardInset = useKeyboardInsetPx();
   useEffect(() => {
-    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInsetPx}px`);
-  }, [keyboardInsetPx]);
+    document.documentElement.style.setProperty("--keyboard-inset-px", `${keyboardInset.insetPx}px`);
+    document.documentElement.style.setProperty("--keyboard-offset-top-px", `${keyboardInset.offsetTopPx}px`);
+  }, [keyboardInset]);
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadError, setLoadError] = useState("");

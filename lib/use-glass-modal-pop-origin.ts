@@ -152,3 +152,83 @@ export function useGlassModalPopOrigin(
 
   return shouldRender;
 }
+
+// A trimmed-down sibling of useGlassModalPopOrigin above, for a popup that has no button click to
+// grow out of when it opens (it appears as a side effect of some other action — see the Initial
+// Measure close-summary popup's own comment) and should just already be there, fully visible, with
+// no entrance animation at all — but should still shrink INTO a specific on-screen element when
+// closed, same as a normal one would.
+//
+// `origin` must be a FRESH measurement taken at the exact moment `isOpen` flips to false, not a
+// value captured earlier and reused — unlike a normal click-to-open popup (open and close happen
+// within the same brief interaction), this kind can sit open for a while, during which the page
+// can scroll or the target element can otherwise move. Animating toward a stale rect visibly misses
+// the target ("goes past it"). Callers should compute both `origin` and `isOpen: false` together,
+// in the same state update, e.g.:
+//   onClose={() => {
+//     const rect = targetRef.current?.getBoundingClientRect();
+//     setOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null);
+//     setIsOpen(false);
+//   }}
+export function useGlassModalShrinkOnClose(
+  isOpen: boolean,
+  origin: GlassModalOrigin,
+  panelRef: RefObject<HTMLDivElement | null>,
+  options?: Pick<GlassModalPopOriginOptions, "duration" | "closingEasing">,
+): boolean {
+  const duration = options?.duration ?? 320;
+  const closingEasing = options?.closingEasing ?? "cubic-bezier(0.34, 1, 0.64, 1)";
+  const [shouldRender, setShouldRender] = useState(isOpen);
+
+  if (isOpen && !shouldRender) {
+    setShouldRender(true);
+  }
+
+  useLayoutEffect(() => {
+    // Opening: deliberately does nothing — no grow-from-origin, no fade. The panel appears in
+    // React's own normal mount position immediately, "already open."
+    if (isOpen) return;
+
+    const panel = panelRef.current;
+    if (!panel) {
+      const noPanelTimeout = window.setTimeout(() => setShouldRender(false), 0);
+      return () => window.clearTimeout(noPanelTimeout);
+    }
+
+    const backdrop = findGlassModalBackdrop(panel);
+    if (backdrop) {
+      backdrop.style.transition = `opacity ${duration}ms ease`;
+      backdrop.style.opacity = "0";
+    }
+
+    if (!origin) {
+      panel.style.transition = `opacity ${duration}ms ${closingEasing}`;
+      panel.style.opacity = "0";
+      const noOriginTimeout = window.setTimeout(() => setShouldRender(false), duration);
+      return () => window.clearTimeout(noOriginTimeout);
+    }
+
+    const panelRect = panel.getBoundingClientRect();
+    const originCenterX = origin.left + origin.width / 2;
+    const originCenterY = origin.top + origin.height / 2;
+    const panelCenterX = panelRect.left + panelRect.width / 2;
+    const panelCenterY = panelRect.top + panelRect.height / 2;
+    const dx = originCenterX - panelCenterX;
+    const dy = originCenterY - panelCenterY;
+    const scaleX = Math.max(origin.width / panelRect.width, 0.02);
+    const scaleY = Math.max(origin.height / panelRect.height, 0.02);
+
+    panel.style.transition = "none";
+    panel.style.transform = "translate(0px, 0px) scale(1, 1)";
+    panel.style.opacity = "1";
+    void panel.offsetWidth;
+    panel.style.transition = `transform ${duration}ms ${closingEasing}, opacity ${duration}ms ${closingEasing}`;
+    panel.style.transform = `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`;
+    panel.style.opacity = "0";
+
+    const timeout = window.setTimeout(() => setShouldRender(false), duration);
+    return () => window.clearTimeout(timeout);
+  }, [isOpen, origin, duration, closingEasing, panelRef]);
+
+  return shouldRender;
+}
