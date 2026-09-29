@@ -373,19 +373,41 @@ export function AppShell({
   // side effect of the browser's own default text-selection behavior kicking in on any mouse/touch
   // move while the button is down, regardless of what's actually being dragged. Toggling a
   // body-level class for the duration of each pointer-down-to-up gesture (see .no-drag-text-select
-  // in globals.css) disables selection app-wide for that gesture without permanently disabling it —
-  // normal click-and-drag text selection still works the instant no gesture is in progress. Skips
-  // gestures starting on an actual text-input control (input/textarea/contenteditable) so typing
-  // and deliberately selecting/copying text there is never affected. Mounted once here (AppShell
-  // wraps every staff page) rather than per-feature, so it covers the whole app, including any
-  // future drag interaction, without needing to be wired up again elsewhere.
+  // in globals.css) disables selection app-wide for that gesture without permanently disabling it.
+  //
+  // Only actually toggled when the gesture STARTS on a real drag source, though — isDragSource
+  // below. The original version toggled it on literally every pointerdown anywhere on the page
+  // (excluding text inputs), which is exactly backwards for the "normal click-and-drag text
+  // selection still works" half of the intent above: a plain text-selection drag is ALSO a
+  // pointerdown-to-pointerup gesture over ordinary content, so it was ALSO getting
+  // user-select:none applied to it the instant the mouse went down — before the drag that would
+  // have created the selection even started — silently breaking ordinary text highlighting
+  // everywhere in the app, not just during an actual scrollbar/card/handle drag.
+  //
+  // isDragSource recognizes a drag source via signals this codebase's own drag interactions
+  // already carry, rather than requiring every one of them to be individually re-tagged: the
+  // native HTML5 draggable="true" attribute (kanban cards, sales items, etc.), or a grab/grabbing/
+  // resize cursor (custom scrollbar thumbs, the sidebar's own resize handle, click-drag-scroll
+  // strips) — ordinary text/content never carries either of these.
   useEffect(() => {
     const isTextEditable = (target: EventTarget | null) => {
       const node = target instanceof HTMLElement ? target : null;
       return Boolean(node?.closest('input, textarea, [contenteditable="true"], [contenteditable=""]'));
     };
+    const DRAG_CURSORS = new Set(["grab", "grabbing", "ns-resize", "ew-resize", "col-resize", "row-resize"]);
+    const isDragSource = (target: EventTarget | null) => {
+      let node = target instanceof HTMLElement ? target : null;
+      if (!node) return false;
+      if (node.closest('[draggable="true"]')) return true;
+      // Walked manually (no native "closest computed style" API) — capped so a pathologically
+      // deep tree can't turn every pointerdown into an unbounded walk to the document root.
+      for (let depth = 0; node && depth < 25; depth += 1, node = node.parentElement) {
+        if (DRAG_CURSORS.has(window.getComputedStyle(node).cursor)) return true;
+      }
+      return false;
+    };
     const onPointerDown = (e: PointerEvent) => {
-      if (isTextEditable(e.target)) return;
+      if (isTextEditable(e.target) || !isDragSource(e.target)) return;
       document.body.classList.add("no-drag-text-select");
     };
     const onPointerUp = () => {

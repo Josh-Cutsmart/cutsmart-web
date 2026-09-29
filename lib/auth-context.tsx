@@ -249,14 +249,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, AUTH_CALLBACK_TIMEOUT_MS);
 
     const boot = async () => {
-      try {
-        const rememberOnDevice =
-          typeof window !== "undefined" && window.localStorage.getItem(REMEMBER_DEVICE_STORAGE_KEY) === "1";
-        await setPersistence(firebaseAuth, rememberOnDevice ? browserLocalPersistence : browserSessionPersistence);
-      } catch {
-        // Ignore persistence bootstrap issues and continue with auth observer.
-      }
-
+      // Deliberately no setPersistence() call here. signIn() below already sets the right
+      // persistence at the moment of login, and that choice persists across reloads on its own —
+      // getAuth() resolves an already-stored session from whichever persistence layer holds it
+      // without needing to be told again. Re-calling setPersistence on every mount (i.e. every
+      // reload of any staff page) forces Firebase to re-migrate the current user across persistence
+      // layers, clearing it from the ones it doesn't migrate to — since IndexedDB/localStorage are
+      // shared across every tab of the origin (unlike sessionStorage), that migration running on
+      // one tab's reload was wiping the shared credential a second tab of the same account depends
+      // on to restore its own session, logging it out.
       if (!activeRef.current) return;
       try {
         unsubscribeAuth = onAuthStateChanged(firebaseAuth, (firebaseUser) => {

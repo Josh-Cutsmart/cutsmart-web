@@ -263,10 +263,16 @@ export function GlassScrollbarThumb({
           };
         }}
         className="pointer-events-auto absolute rounded-full transition-colors"
+        // "grab", not "pointer" — this is a drag handle, not a link/button, and AppShell's own
+        // app-wide text-selection guard (see its isDragSource comment) specifically looks for a
+        // grab/grabbing/resize cursor to recognize a drag source without needing every one
+        // individually tagged. With "pointer" here, dragging this thumb wasn't recognized as a
+        // drag at all, so nothing suppressed selection for its gesture — every scrollbar drag was
+        // also select-dragging whatever text sat under the pointer's path.
         style={
           isHorizontal
-            ? { top: 0, left: thumb.offset, width: thumb.length, height: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "pointer" }
-            : { left: 0, top: thumb.offset, height: thumb.length, width: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "pointer" }
+            ? { top: 0, left: thumb.offset, width: thumb.length, height: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
+            : { left: 0, top: thumb.offset, height: thumb.length, width: thumbWidthPx, backgroundColor: "var(--custom-scrollbar-thumb)", cursor: "grab" }
         }
         onMouseEnter={(event) => {
           event.currentTarget.style.backgroundColor = "var(--custom-scrollbar-thumb-hover)";

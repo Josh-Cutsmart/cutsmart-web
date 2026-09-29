@@ -1474,6 +1474,26 @@ function toStr(value: unknown, fallback = "") {
   return text || fallback;
 }
 
+// Opens the client hub link as an ordinary new TAB — shared by the Quote and Specs "Client Portal"
+// buttons. Not window.open(url, "_blank", "noopener,noreferrer"): passing ANY features string as
+// the third argument (even one that's really just security flags, not sizing) is what makes
+// browsers open it as a separate, chromeless popup WINDOW instead of a tab (same root cause as the
+// print popup's own earlier fix). A plain <a target="_blank" rel="noopener noreferrer"> click gets
+// the same noopener/noreferrer protection via the rel attribute instead — but it has to actually be
+// attached to the document first: a detached anchor's programmatic .click() isn't reliably treated
+// the same as a genuine user click by every browser for target="_blank" specifically, and can fall
+// back to the same popup-style handling this is meant to avoid. Removed right after, same as the
+// existing file-download helpers elsewhere in this file that already follow this exact pattern.
+function openClientHubInNewTab(projectId: string) {
+  const a = document.createElement("a");
+  a.href = `${window.location.origin}/client/hub/${projectId}`;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function parseCurrencyNumber(value: unknown): number {
   const parsed = Number.parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -43909,7 +43929,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             type="button"
             onClick={() => {
               if (!project?.id) return;
-              window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
+              openClientHubInNewTab(project.id);
             }}
             className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -45223,7 +45243,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             type="button"
             onClick={() => {
               if (!project?.id) return;
-              window.open(`${window.location.origin}/client/hub/${project.id}`, "_blank", "noopener,noreferrer");
+              openClientHubInNewTab(project.id);
             }}
             className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
