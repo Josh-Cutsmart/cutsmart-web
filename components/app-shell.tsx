@@ -2778,7 +2778,20 @@ export function AppShell({
 
   return (
     <div
-      className="min-h-screen"
+      // min-h-[100svh], not Tailwind's own min-h-screen (min-height: 100vh): this div is the
+      // outermost wrapper around EVERY page in the app, and min-height is only ever a FLOOR — on
+      // any page whose own content is shorter than a full screen, min-h-screen forces this div (a
+      // child of body) to be AT LEAST 100vh tall regardless, which on iOS Safari is the viewport
+      // height with the browser's own toolbar fully COLLAPSED (the tallest it ever gets) — taller
+      // than what's actually visible whenever that toolbar is showing, its resting state. Since
+      // this div is what actually ends up too tall (not body itself, whose own min-height a
+      // shorter child growing past it simply overrides), body's own min-height fix elsewhere in
+      // this file couldn't do anything about it — body just grows to contain this. That phantom
+      // extra height is exactly what made the PAGE genuinely (if invisibly) scrollable, and
+      // scrolling the real document is what makes Safari's own toolbar animate in response —
+      // reading as a blank bar sliding up from the bottom on any short-content page, everywhere in
+      // the app. 100svh can never exceed the visible area, so there's nothing left to grow into.
+      className="min-h-[100svh]"
       data-theme-mode={themeMode}
       style={{ color: shellPalette.text }}
     >
