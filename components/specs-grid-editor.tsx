@@ -2233,6 +2233,15 @@ export default function SpecsGridEditor({
           onTouchStart={fitToViewportOnMobile ? onSheetViewportTouchStart : undefined}
           onTouchMove={fitToViewportOnMobile ? onSheetViewportTouchMove : undefined}
           onTouchEnd={fitToViewportOnMobile ? onSheetViewportTouchEnd : undefined}
+          // Tells the host page's own page-wide gesture systems (app-shell.tsx's pulldown-to-
+          // reveal-nav, and the Quote/Specs host's own swipe-open-a-drawer handlers) to leave a
+          // touch starting here alone entirely — a pinch-to-zoom naturally has one finger moving
+          // in a direction that can look just like a page-level pull-down or side-drawer swipe, and
+          // those page-level gestures only ever look at a single touch point, so without this they
+          // could fire alongside (and fight) the pinch/pan handling directly above. See
+          // app-shell.tsx's own onMainTouchStart comment on data-app-gesture-exempt for the other
+          // documented use of this same attribute.
+          data-app-gesture-exempt={fitToViewportOnMobile ? "true" : undefined}
           style={
             fitToViewportOnMobile
               ? { overflow: "hidden", height: mockPageBoxHeightPx * sheetFitScale, touchAction: sheetZoom > 1 ? "none" : "pan-y" }

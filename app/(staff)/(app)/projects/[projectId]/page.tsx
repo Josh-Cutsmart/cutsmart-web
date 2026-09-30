@@ -8119,52 +8119,104 @@ export default function ProjectDetailsPage() {
   // just these two scroll containers. Per the exact mapping asked for: dragging LEFT-TO-RIGHT
   // (finger moves right) opens Version History (the left-edge panel, sliding in from the left,
   // under the finger); dragging RIGHT-TO-LEFT opens Sections/Quote Extras (the right-edge panel).
-  const specsQuoteMobileSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical" } | null>(null);
+  //
+  // Live-tracks the panel under the finger the same way closing (dragging the panel's own header)
+  // already does, instead of only reacting once the gesture ends — via versionsSwipe/extrasSwipe's
+  // own beginOpenDrag/updateOpenDrag/endOpenDrag (see use-swipe-to-close.ts), which drive the SAME
+  // transform/backdrop/push a plain tap-to-open would, just imperatively, one frame at a time.
+  const specsQuoteMobileSwipeStartRef = useRef<{ x: number; y: number; axis: "" | "horizontal" | "vertical"; dragging: "" | "versions" | "extras" } | null>(
+    null,
+  );
   const SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX = 60;
   // Data attribute marking the formatting toolbar and the bottom action bar — a swipe starting
   // inside either of those shouldn't also be interpreted as "open a drawer" (they're their own
   // horizontally-scrollable strips, and dragging across them to scroll would otherwise fight with
   // this page-wide gesture).
   const SPECS_QUOTE_SWIPE_EXCLUDE_ATTR = "data-specs-quote-swipe-exclude";
-  const makeSpecsQuoteMobileSwipeHandlers = (openVersions: () => void, openExtras: () => void, versionsOpen: boolean, extrasOpen: boolean) => ({
+  const makeSpecsQuoteMobileSwipeHandlers = (
+    versionsSwipe: ReturnType<typeof useSwipeToClose>,
+    extrasSwipe: ReturnType<typeof useSwipeToClose>,
+    openVersions: () => void,
+    openExtras: () => void,
+    closeVersions: () => void,
+    closeExtras: () => void,
+    versionsOpen: boolean,
+    extrasOpen: boolean,
+  ) => ({
     onTouchStart: (event: ReactTouchEvent<HTMLElement>) => {
-      if (!isCompactProjectViewport || versionsOpen || extrasOpen) {
+      // event.touches.length > 1: a pinch's two fingers can easily read as one finger dragging
+      // horizontally (exactly the motion that opens a drawer here) — bail out on any multi-touch
+      // start entirely rather than trying to track just one of the two points. Belt-and-braces
+      // alongside the gesture-exempt check below, which is what actually stops this in the common
+      // case (a pinch's very first touch already landing inside the sheet preview).
+      if (!isCompactProjectViewport || versionsOpen || extrasOpen || event.touches.length > 1) {
         specsQuoteMobileSwipeStartRef.current = null;
         return;
       }
       const target = event.target as HTMLElement | null;
-      if (target?.closest(`[${SPECS_QUOTE_SWIPE_EXCLUDE_ATTR}]`)) {
+      // data-app-gesture-exempt: the sheet preview's own pinch/pan viewport (specs-grid-editor.tsx)
+      // — same attribute and reasoning as app-shell.tsx's onMainTouchStart, which this gesture
+      // otherwise mirrors exactly. Checked in addition to (not instead of) SPECS_QUOTE_SWIPE_EXCLUDE_ATTR
+      // below, which covers a different pair of surfaces (the toolbar/action bar).
+      if (target?.closest(`[${SPECS_QUOTE_SWIPE_EXCLUDE_ATTR}], [data-app-gesture-exempt="true"]`)) {
         specsQuoteMobileSwipeStartRef.current = null;
         return;
       }
       const touch = event.touches[0];
       if (!touch) return;
-      specsQuoteMobileSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "" };
+      specsQuoteMobileSwipeStartRef.current = { x: touch.clientX, y: touch.clientY, axis: "", dragging: "" };
     },
     onTouchMove: (event: ReactTouchEvent<HTMLElement>) => {
       const start = specsQuoteMobileSwipeStartRef.current;
       if (!start) return;
+      // A second finger landing mid-gesture (the pinch starting just after this one already
+      // passed the exempt-zone check, e.g. right at its edge) — if a drag had already mounted a
+      // panel and taken control of its transform (start.dragging), that needs a real endOpenDrag
+      // call to hand control back (dx: 0 guarantees it's under the commit threshold, so this always
+      // resolves as a cancel — sliding whatever was showing back closed), not just abandoning the
+      // ref: openDragRef inside useSwipeToClose would otherwise stay active forever with nothing
+      // left to ever clear it, leaving the panel permanently stuck mid-slide.
+      if (event.touches.length > 1) {
+        if (start.dragging === "versions") versionsSwipe.endOpenDrag(0, SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX, closeVersions);
+        else if (start.dragging === "extras") extrasSwipe.endOpenDrag(0, SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX, closeExtras);
+        specsQuoteMobileSwipeStartRef.current = null;
+        return;
+      }
       const touch = event.touches[0];
       if (!touch) return;
+      const dx = touch.clientX - start.x;
       if (!start.axis) {
-        const dx = touch.clientX - start.x;
         const dy = touch.clientY - start.y;
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         start.axis = Math.abs(dx) > Math.abs(dy) ? "horizontal" : "vertical";
+        if (start.axis === "horizontal") {
+          // Direction decided once, right here, same as before — the drag stays locked to
+          // whichever panel it started opening even if the finger later wobbles back the other way
+          // (that just plays as the live drag retreating toward closed again, handled naturally by
+          // updateOpenDrag/endOpenDrag below rather than needing to re-decide direction mid-gesture).
+          if (dx > 0) {
+            start.dragging = "versions";
+            versionsSwipe.beginOpenDrag(openVersions);
+          } else {
+            start.dragging = "extras";
+            extrasSwipe.beginOpenDrag(openExtras);
+          }
+        }
       }
+      if (start.axis !== "horizontal" || !start.dragging) return;
+      event.preventDefault();
+      if (start.dragging === "versions") versionsSwipe.updateOpenDrag(dx);
+      else extrasSwipe.updateOpenDrag(dx);
     },
     onTouchEnd: (event: ReactTouchEvent<HTMLElement>) => {
       const start = specsQuoteMobileSwipeStartRef.current;
       specsQuoteMobileSwipeStartRef.current = null;
-      if (!start || start.axis !== "horizontal") return;
+      if (!start || start.axis !== "horizontal" || !start.dragging) return;
       const touch = event.changedTouches[0];
       if (!touch) return;
       const dx = touch.clientX - start.x;
-      if (dx > SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
-        openVersions();
-      } else if (dx < -SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX) {
-        openExtras();
-      }
+      if (start.dragging === "versions") versionsSwipe.endOpenDrag(dx, SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX, closeVersions);
+      else extrasSwipe.endOpenDrag(dx, SPECS_QUOTE_MOBILE_SWIPE_THRESHOLD_PX, closeExtras);
     },
   });
   const productionCutlistFullscreenScrollRef = useRef<HTMLDivElement | null>(null);
@@ -35341,9 +35393,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
               style={{
                 height: 56,
-                backgroundColor: "var(--glass-modal-bg)",
-                backdropFilter: "blur(12px) saturate(220%)",
-                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px) saturate(220%)",
+                WebkitBackdropFilter: "blur(14px) saturate(220%)",
                 transform: "translateZ(0)",
                 WebkitTransform: "translateZ(0)",
                 willChange: "transform",
@@ -36342,9 +36394,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56,
-              backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -37388,9 +37440,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
               style={{
                 height: 56,
-                backgroundColor: "var(--glass-modal-bg)",
-                backdropFilter: "blur(12px) saturate(220%)",
-                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px) saturate(220%)",
+                WebkitBackdropFilter: "blur(14px) saturate(220%)",
                 transform: "translateZ(0)",
                 WebkitTransform: "translateZ(0)",
                 willChange: "transform",
@@ -39611,9 +39663,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56,
-              backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -42414,9 +42466,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56 + 49,
-              backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -44084,9 +44136,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56,
-              backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -44487,8 +44539,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           data-app-scroll-root="true"
           className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
+            quoteMobileVersionsSwipe,
+            quoteMobileExtrasSwipe,
             () => { if (isQuoteExtrasPanelOpen) toggleQuoteExtrasPanel(); if (!isQuoteHistoryPanelOpen) toggleQuoteHistoryPanel(); },
             () => { if (isQuoteHistoryPanelOpen) toggleQuoteHistoryPanel(); if (!isQuoteExtrasPanelOpen) toggleQuoteExtrasPanel(); },
+            closeQuoteHistoryPanelMobile,
+            closeQuoteExtrasPanelMobile,
             isQuoteHistoryPanelOpen,
             isQuoteExtrasPanelOpen,
           ) : {})}
@@ -44511,18 +44567,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: quoteHeaderHeight + 49,
-              backgroundColor: "var(--glass-modal-bg)",
-              // Reduced from blur(12px) saturate(220%) — still the largest, always-mounted,
-              // persistently-visible blurred layer in this view (full width, 105px tall), sitting
-              // directly over the scroll container's own content, so it's re-sampled on every
-              // scroll frame regardless of will-change/translateZ layer promotion below — that
-              // alone wasn't enough to fix reported lag specifically at the moment the sheet
-              // scrolls underneath it, so this directly cuts the filter's own per-frame cost
-              // (backdrop-filter cost scales with blur radius, and saturate is a second, separate
-              // filter pass stacked on top of it). Same reduction on the Specifications tab's
-              // identical layer below.
-              backdropFilter: "blur(8px) saturate(160%)",
-              WebkitBackdropFilter: "blur(8px) saturate(160%)",
+              // Stronger, more opaque tint than the plain var(--glass-modal-bg) used elsewhere
+              // (40% alpha) — that read as "completely see-through" on a real device rather than
+              // a genuine frosted-glass surface, for the largest, always-mounted, persistently-
+              // visible blurred layer in this view (full width, 105px tall). Was previously
+              // blur(8px) saturate(160%), reduced from blur(12px) to cut this layer's own
+              // per-frame backdrop-filter cost (it's re-sampled on every scroll frame regardless of
+              // will-change/translateZ layer promotion below) — legibility won out over that
+              // perf trade-off. Same treatment on the Specifications tab's identical layer below.
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               // Same GPU layer-promotion pattern already used for this exact purpose elsewhere in
               // this file (the Production fullscreen view's own identical shared backdrop) —
               // translateZ(0) forces the promotion more reliably across Chromium versions than
@@ -44769,7 +44824,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 floats over that canvas's own grey background rather than this wrapper's unstyled one;
                 a pb-* class here used to double up on top of that reserved space instead of leaving
                 it as the single source of truth. */}
-            <div className="flex-1 px-3 sm:px-4 md:px-5">
+            {/* min-w-0: without it this flex item's default min-width:auto refuses to shrink below
+                its content's intrinsic width (the mm-accurate quote page can be 800px+ wide
+                unscaled), ballooning this whole row past the viewport on mobile — invisibly clipped
+                by an overflow-x:hidden ancestor on desktop browsers, but real iOS Safari can still
+                rubber-band-scroll into that hidden overflow, which is what read as "the scale isn't
+                working" (grey margin revealed beside an otherwise-correctly-scaled page). */}
+            <div className="flex-1 min-w-0 px-3 sm:px-4 md:px-5">
               {!hasQuoteGridTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
                   <Quote size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
@@ -46005,8 +46066,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           data-app-scroll-root="true"
           className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
+            specsMobileVersionsSwipe,
+            specsMobileSectionsSwipe,
             () => { if (isSpecsSectionsPanelOpen) toggleSpecsSectionsPanel(); if (!isSpecsVersionsSidebarOpen) toggleSpecsVersionsSidebar(); },
             () => { if (isSpecsVersionsSidebarOpen) toggleSpecsVersionsSidebar(); if (!isSpecsSectionsPanelOpen) toggleSpecsSectionsPanel(); },
+            closeSpecsVersionsSidebarMobile,
+            closeSpecsSectionsPanelMobile,
             isSpecsVersionsSidebarOpen,
             isSpecsSectionsPanelOpen,
           ) : {})}
@@ -46037,10 +46102,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: specsHeaderHeight + 49,
-              backgroundColor: "var(--glass-modal-bg)",
-              // Same reasoning/reduction as the Quote tab's identical layer — see its own comment.
-              backdropFilter: "blur(8px) saturate(160%)",
-              WebkitBackdropFilter: "blur(8px) saturate(160%)",
+              // Same stronger/more-opaque treatment as the Quote tab's identical layer — see its
+              // own comment for the full reasoning.
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -46273,7 +46339,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 wrapper (see its comment): the floating action pill's reserved room lives inside
                 SpecsGridEditor's own canvas instead (canvasBottomInsetPx below), so the pill floats
                 over that canvas's own grey background rather than this wrapper's unstyled one. */}
-            <div className="flex-1 px-3 sm:px-4 md:px-5">
+            {/* min-w-0: same overflow fix as the Quote tab's identical wrapper above — see its
+                comment. */}
+            <div className="flex-1 min-w-0 px-3 sm:px-4 md:px-5">
               {!hasTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
                   <ClipboardList size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
@@ -47001,9 +47069,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56,
-              backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -47800,9 +47868,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56 + 49,
-              backgroundColor: "var(--glass-modal-bg)",
-              backdropFilter: "blur(12px) saturate(220%)",
-              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",

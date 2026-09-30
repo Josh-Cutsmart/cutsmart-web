@@ -982,7 +982,11 @@ export function AppShell({
     // else on the page. So this one is only checked once the axis is known, in onMainTouchMove's
     // horizontal branch, not bailed out of here.
     const startedOnGestureExempt = (event.target as HTMLElement | null)?.closest('[data-app-gesture-exempt="true"]');
-    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt) {
+    // event.touches.length > 1: a pinch's two fingers can easily read as one finger dragging
+    // (the exact motion that pulls down the nav bar or swipes open the nav/notif drawers here) —
+    // belt-and-braces alongside startedOnGestureExempt above, which is what actually stops this in
+    // the common case of a pinch starting on a marked surface (e.g. the Quote/Specs sheet preview).
+    if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt || event.touches.length > 1) {
       mainSwipeStartRef.current = null;
       pullDashboardRef.current = null;
       return;
@@ -1040,6 +1044,24 @@ export function AppShell({
   const onMainTouchMove = (event: ReactTouchEvent<HTMLElement>) => {
     const start = mainSwipeStartRef.current;
     if (!start) return;
+    // A second finger landing mid-gesture (a pinch starting just after this one already passed
+    // startedOnGestureExempt, e.g. right at a marked surface's edge) — unwind whichever drag was in
+    // flight the same way its own early-abort path already does (mirroring onMainTouchEnd's <
+    // MAIN_SWIPE_OPEN_THRESHOLD_PX branch and onMainTouchMove's own dy <= 0 pull-cancel branch
+    // below) rather than just dropping the ref, which would leave a nav/notif panel or the pulldown
+    // banner permanently stuck mid-drag with nothing left to ever finish animating it closed.
+    if (event.touches.length > 1) {
+      const kind = mainOpenDragRef.current.kind;
+      mainOpenDragRef.current.kind = null;
+      if (kind === "nav") setMobileNavOpen(false);
+      else if (kind === "notif") setNotifOpen(false);
+      if (kind && typeof document !== "undefined") document.body.style.touchAction = "";
+      const pull = pullDashboardRef.current;
+      if (pull?.active) resetPullBanner(false);
+      pullDashboardRef.current = null;
+      mainSwipeStartRef.current = null;
+      return;
+    }
     const touch = event.touches[0];
     if (!touch) return;
     if (!start.axis) {

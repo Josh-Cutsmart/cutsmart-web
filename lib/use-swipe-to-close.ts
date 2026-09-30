@@ -49,6 +49,15 @@ export function useSwipeToClose(
     onTouchMove: (e: ReactTouchEvent<HTMLElement>) => void;
     onTouchEnd: () => void;
   };
+  // A second, externally-driven drag for the OPPOSITE gesture — some other element entirely (e.g.
+  // the main sheet behind this panel) swiping this panel open, rather than the panel's own header
+  // dragging it shut. Kept on this same hook instance (not a separate one) so it can reuse the
+  // panel/push/backdrop refs and the sign/duration/easing captured above instead of duplicating
+  // them. See beginOpenDrag's own comment for why the caller drives this imperatively instead of
+  // spreading a second touchHandlers object onto some element.
+  beginOpenDrag: (onOpen: () => void) => void;
+  updateOpenDrag: (dx: number) => void;
+  endOpenDrag: (dx: number, commitThresholdPx: number, onCancel: () => void) => void;
 } {
   const duration = options.duration ?? 260;
   const easing = options.easing ?? "cubic-bezier(0.32, 0.72, 0, 1)";
@@ -60,6 +69,11 @@ export function useSwipeToClose(
   const sign = edge === "left" ? -1 : 1;
   const [shouldRender, setShouldRender] = useState(isOpen);
   const dragRef = useRef<DragState>({ startX: 0, startY: 0, width: 0, dragging: false, axisLocked: null });
+  // Set for the whole lifetime of an external open-drag (beginOpenDrag through either
+  // endOpenDrag branch) — read by the isOpen effect below so it can step aside instead of racing
+  // the drag for control of the panel's transform. width is measured lazily on the first update
+  // (see updateOpenDrag) since the panel has only just mounted when a drag begins.
+  const openDragRef = useRef<{ active: boolean; width: number }>({ active: false, width: 0 });
 
   if (isOpen && !shouldRender) {
     // Same render-time sync as useGlassModalPopOrigin — mounts in the same pass `isOpen`
@@ -103,6 +117,16 @@ export function useSwipeToClose(
         const noPanelTimeout = window.setTimeout(() => setShouldRender(false), 0);
         return () => window.clearTimeout(noPanelTimeout);
       }
+      return;
+    }
+    if (isOpen && openDragRef.current.active) {
+      // A live open-drag (beginOpenDrag/updateOpenDrag below) already has its hands on this
+      // panel's transform and is driving it in real time off the finger — this effect's own
+      // canned "force closed, then animate to open" sequence would immediately fight it for the
+      // same style properties, reading as a one-frame flinch toward translateX(0) before the drag
+      // catches up. endOpenDrag clears openDragRef.current.active once the drag itself resolves
+      // (either finishing the open or handing off to the normal close animation on cancel), at
+      // which point this effect is free to run again on the next isOpen change.
       return;
     }
     const backdrop = findSwipeBackdrop(panel);
@@ -215,5 +239,98 @@ export function useSwipeToClose(
     applyPush(1, transition, drag.width);
   };
 
-  return { shouldRender, touchHandlers: { onTouchStart, onTouchMove, onTouchEnd } };
+  // Called once, right when some OTHER element's touchmove first confirms a drag toward this
+  // panel's open direction (see updateOpenDrag) — flips openDragRef so the isOpen effect above
+  // steps aside, then calls the caller's onOpen (the same state setter a plain tap would use) to
+  // mount the panel. Mounting is asynchronous (a render has to happen before panelRef.current
+  // exists), which is why updateOpenDrag tolerates panel still being null on its first call or
+  // two rather than requiring it here.
+  const beginOpenDrag = (onOpen: () => void) => {
+    if (openDragRef.current.active) return;
+    openDragRef.current = { active: true, width: 0 };
+    onOpen();
+  };
+
+  // dx: raw finger delta from wherever the caller's own gesture started (NOT from when this drag
+  // began — the caller locks direction a few px into the touch, same deadzone as the close-drag's
+  // own axisLocked check, so dx already reflects the whole gesture by the time this first fires).
+  const updateOpenDrag = (dx: number) => {
+    if (!openDragRef.current.active) return;
+    const panel = panelRef.current;
+    if (!panel) return; // Not mounted yet this tick — onOpen's state update hasn't committed/
+    // painted yet. The next touchmove (a few ms later at most) will find it mounted instead.
+    if (openDragRef.current.width === 0) {
+      // First tick with a real panel to measure — these panels are always a full-viewport-width
+      // takeover on mobile (see their own JSX), so this only ever runs once per drag. Seed the
+      // panel/backdrop/push to the same fully-closed, transition-less starting point the isOpen
+      // effect's own open branch would have, so this drag's very first visible frame is correct
+      // regardless of how far the finger has already moved.
+      openDragRef.current.width = panel.getBoundingClientRect().width || (typeof window === "undefined" ? 1 : window.innerWidth);
+      panel.style.transition = "none";
+      panel.style.transform = `translateX(${sign * 100}%)`;
+      applyPush(0, "none", openDragRef.current.width);
+      const backdrop = findSwipeBackdrop(panel);
+      if (backdrop) {
+        backdrop.style.transition = "none";
+        backdrop.style.opacity = "0";
+      }
+      void panel.offsetWidth;
+    }
+    const width = openDragRef.current.width;
+    // Only the opening direction (the opposite of the closing direction above) moves the panel —
+    // dragging the "wrong" way (further toward closed) has no effect rather than overshooting
+    // past the closed position.
+    const openingDx = edge === "left" ? Math.max(0, Math.min(dx, width)) : Math.min(0, Math.max(dx, -width));
+    const progress = width > 0 ? Math.abs(openingDx) / width : 0;
+    panel.style.transition = "none";
+    panel.style.transform = `translateX(${sign * 100 * (1 - progress)}%)`;
+    applyPush(progress, "none", width);
+    const backdrop = findSwipeBackdrop(panel);
+    if (backdrop) backdrop.style.opacity = String(progress);
+  };
+
+  // commitThresholdPx: an absolute pixel distance (not a fraction of width, unlike closeThreshold
+  // above) — the caller passes the SAME small threshold it used to use to decide "open" outright
+  // before this drag existed, so adding live tracking doesn't also make the gesture itself harder
+  // to trigger than it already was.
+  const endOpenDrag = (dx: number, commitThresholdPx: number, onCancel: () => void) => {
+    const panel = panelRef.current;
+    const width = openDragRef.current.width;
+    openDragRef.current = { active: false, width: 0 };
+    if (!panel || width === 0) return;
+    const openingDx = edge === "left" ? Math.max(0, Math.min(dx, width)) : Math.min(0, Math.max(dx, -width));
+    if (Math.abs(openingDx) > commitThresholdPx) {
+      // Finish sliding the rest of the way open with the same transition every other open/close
+      // in this hook uses, exactly like the close-drag above snapping the rest of the way shut.
+      const transition = `transform ${duration}ms ${easing}`;
+      panel.style.transition = transition;
+      panel.style.transform = "translateX(0px)";
+      applyPush(1, transition, width);
+      const backdrop = findSwipeBackdrop(panel);
+      if (backdrop) {
+        backdrop.style.transition = `opacity ${duration}ms ease`;
+        backdrop.style.opacity = "1";
+      }
+      const clear = () => {
+        panel.style.transition = "";
+      };
+      panel.addEventListener("transitionend", clear, { once: true });
+      return;
+    }
+    // Didn't drag far enough to commit — the panel was already mounted (onOpen ran in
+    // beginOpenDrag), so undo that the same way a real close would: hand off to onCancel (the
+    // caller's usual close callback), which flips the external isOpen prop back false. openDragRef
+    // is already cleared above, so the isOpen effect's own closing branch runs normally and
+    // animates the rest of the way shut from wherever this drag left the panel, instead of the
+    // effect seeing openDragRef still active and stepping aside with nothing left to finish the job.
+    onCancel();
+  };
+
+  return {
+    shouldRender,
+    touchHandlers: { onTouchStart, onTouchMove, onTouchEnd },
+    beginOpenDrag,
+    updateOpenDrag,
+    endOpenDrag,
+  };
 }
