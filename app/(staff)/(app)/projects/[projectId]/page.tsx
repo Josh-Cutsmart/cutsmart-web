@@ -44537,7 +44537,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         <div
           ref={salesQuoteScrollRef}
           data-app-scroll-root="true"
-          className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
+          // h-full, not h-[100svh]: this div's own parent chain (app-shell.tsx's <main>, height:
+          // 100svh on mobile/100dvh on desktop, then a height:100% wrapper, then ProtectedRoute's
+          // plain fragment) already resolves to that same value — inheriting it via percentage
+          // instead of independently re-evaluating the viewport-unit expression here guarantees an
+          // EXACT match with zero possibility of the two drifting apart by a sub-pixel rounding
+          // difference. Two elements each claiming to BE the full viewport height, computed
+          // separately, is what let this div occasionally end up a hair taller than <main>'s own
+          // box — enough for <main>'s OWN overflow-y-auto (needed by every OTHER chromeHidden
+          // fullscreen view that, unlike Quote/Specs, has no scroll wrapper of its own) to treat
+          // that sliver as genuine scroll, which on a real device (most visibly in a standalone
+          // home-screen PWA, with no Safari chrome to blame it on) showed as a blank gap briefly
+          // appearing at the bottom mid-scroll, right over the docked mobile Actions bar, before
+          // this div's own background caught back up to cover it again.
+          className="flex h-full flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
             quoteMobileVersionsSwipe,
             quoteMobileExtrasSwipe,
@@ -46065,7 +46078,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         <div
           ref={salesSpecsScrollRef}
           data-app-scroll-root="true"
-          className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
+          // h-full, not h-[100svh]: same fix as the Quote tab's own identical wrapper — see its
+          // comment.
+          className="flex h-full flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
             specsMobileVersionsSwipe,
             specsMobileSectionsSwipe,
