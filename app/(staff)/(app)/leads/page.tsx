@@ -773,10 +773,11 @@ export default function LeadsPage() {
   const [cardStatusMenuOrigin, setCardStatusMenuOrigin] = useState<GlassModalOrigin>(null);
   const cardStatusMenuRef = useRef<HTMLDivElement | null>(null);
   const cardStatusMenuPanelRef = useRef<HTMLDivElement | null>(null);
+  const cardStatusMenuOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderCardStatusMenu = useGlassModalPopOrigin(Boolean(cardStatusMenuLeadId), cardStatusMenuOrigin, cardStatusMenuPanelRef, {
     duration: 180,
     easing: "cubic-bezier(0.34, 1.35, 0.64, 1)",
-  });
+  }, cardStatusMenuOriginElRef);
   const lastCardStatusMenuLeadIdRef = useRef("");
   if (cardStatusMenuLeadId) lastCardStatusMenuLeadIdRef.current = cardStatusMenuLeadId;
   const effectiveCardStatusMenuLeadId = shouldRenderCardStatusMenu
@@ -793,15 +794,19 @@ export default function LeadsPage() {
   const assignModalPanelRef = useRef<HTMLDivElement | null>(null);
   const leadImagesModalPanelRef = useRef<HTMLDivElement | null>(null);
   const deleteConfirmModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const leadDetailModalOriginElRef = useRef<HTMLElement | null>(null);
+  const assignModalOriginElRef = useRef<HTMLElement | null>(null);
+  const deleteConfirmModalOriginElRef = useRef<HTMLElement | null>(null);
   const [assignLeadId, setAssignLeadId] = useState("");
-  const shouldRenderLeadDetailModal = useGlassModalPopOrigin(Boolean(selectedLeadId), leadDetailModalOrigin, leadDetailModalPanelRef);
-  const shouldRenderAssignModal = useGlassModalPopOrigin(Boolean(assignLeadId), assignModalOrigin, assignModalPanelRef);
-  const shouldRenderDeleteConfirmModal = useGlassModalPopOrigin(Boolean(confirmDeleteLeadId), deleteConfirmModalOrigin, deleteConfirmModalPanelRef);
+  const shouldRenderLeadDetailModal = useGlassModalPopOrigin(Boolean(selectedLeadId), leadDetailModalOrigin, leadDetailModalPanelRef, undefined, leadDetailModalOriginElRef);
+  const shouldRenderAssignModal = useGlassModalPopOrigin(Boolean(assignLeadId), assignModalOrigin, assignModalPanelRef, undefined, assignModalOriginElRef);
+  const shouldRenderDeleteConfirmModal = useGlassModalPopOrigin(Boolean(confirmDeleteLeadId), deleteConfirmModalOrigin, deleteConfirmModalPanelRef, undefined, deleteConfirmModalOriginElRef);
   const [assignSearch, setAssignSearch] = useState("");
   const [assignSelectedUid, setAssignSelectedUid] = useState("");
   const [assigningLeadId, setAssigningLeadId] = useState("");
   const [leadImagesLeadId, setLeadImagesLeadId] = useState("");
-  const shouldRenderLeadImagesModal = useGlassModalPopOrigin(Boolean(leadImagesLeadId), leadImagesModalOrigin, leadImagesModalPanelRef);
+  const leadImagesModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderLeadImagesModal = useGlassModalPopOrigin(Boolean(leadImagesLeadId), leadImagesModalOrigin, leadImagesModalPanelRef, undefined, leadImagesModalOriginElRef);
   const [leadImagesUploading, setLeadImagesUploading] = useState(false);
   const [leadImagesDragActive, setLeadImagesDragActive] = useState(false);
   const [leadImagesError, setLeadImagesError] = useState("");
@@ -829,10 +834,18 @@ export default function LeadsPage() {
   const [leadImagePinPopupOrigin, setLeadImagePinPopupOrigin] = useState<GlassModalOrigin>(null);
   const leadImagePinPopupPanelRef = useRef<HTMLDivElement | null>(null);
   const leadImageLastActiveAnnotationIdRef = useRef<string>("");
+  // Same push-nudge + duck-behind-the-pin close treatment as elsewhere — safe here too even
+  // though the pin marker's own on-screen position can move (image pan/zoom, cluster expand/
+  // collapse) while this popup sits open: the nudge/duck-behind only ever apply a relative
+  // transform/z-index to whichever DOM node this ref currently points at, wherever it's since
+  // moved to — they never re-measure or depend on its original captured rect.
+  const leadImagePinPopupOriginElRef = useRef<HTMLElement | null>(null);
   const leadImagePinPopupShouldRender = useGlassModalPopOrigin(
     Boolean(leadImageActiveAnnotationId),
     leadImagePinPopupOrigin,
     leadImagePinPopupPanelRef,
+    undefined,
+    leadImagePinPopupOriginElRef,
   );
   useEffect(() => {
     if (leadImageActiveAnnotationId) {
@@ -2947,6 +2960,7 @@ export default function LeadsPage() {
             suppressNextLeadCardClickRef.current = "";
             return;
           }
+          leadDetailModalOriginElRef.current = e.currentTarget;
           setLeadDetailModalOrigin(captureGlassModalOrigin(e));
           setSelectedLeadId(lead.id);
         }}
@@ -3002,6 +3016,7 @@ export default function LeadsPage() {
                       if (isStatusMenuOpen) {
                         setCardStatusMenuLeadId("");
                       } else {
+                        cardStatusMenuOriginElRef.current = e.currentTarget;
                         setCardStatusMenuOrigin(captureGlassModalOrigin(e));
                         setCardStatusMenuLeadId(lead.id);
                       }
@@ -3173,6 +3188,7 @@ export default function LeadsPage() {
             <button
               type="button"
               onClick={(e) => {
+                leadImagesModalOriginElRef.current = e.currentTarget;
                 setLeadImagesModalOrigin(captureGlassModalOrigin(e));
                 setLeadImagesLeadId(lead.id);
                 setLeadImagesDragActive(false);
@@ -3186,6 +3202,7 @@ export default function LeadsPage() {
             <button
               type="button"
               onClick={(e) => {
+                assignModalOriginElRef.current = e.currentTarget;
                 setAssignModalOrigin(captureGlassModalOrigin(e));
                 openAssignLeadModal(renderLead);
               }}
@@ -3209,6 +3226,7 @@ export default function LeadsPage() {
             <button
               type="button"
               onClick={(e) => {
+                deleteConfirmModalOriginElRef.current = e.currentTarget;
                 setDeleteConfirmModalOrigin(captureGlassModalOrigin(e));
                 setConfirmDeleteLeadId(lead.id);
               }}
@@ -4715,6 +4733,7 @@ export default function LeadsPage() {
                               setLeadImageDraftAnnotation(null);
                               setLeadImageHighlightedAnnotationId("");
                               setLeadImageEditingAnnotation(null);
+                              leadImagePinPopupOriginElRef.current = event.currentTarget;
                               setLeadImagePinPopupOrigin(captureGlassModalOrigin(event));
                               setLeadImageActiveAnnotationId((current) => (current === annotation.id ? "" : annotation.id));
                             }}

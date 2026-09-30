@@ -26,6 +26,119 @@ function findGlassModalBackdrop(panel: HTMLElement): HTMLElement | null {
   return parent.querySelector<HTMLElement>(".glass-modal-backdrop");
 }
 
+// How much longer the panel stays mounted, past its own shrink `duration`, once it's arrived at
+// the origin — just long enough for the sunk-behind-the-origin state (see applyOriginArrival
+// below) to actually be visible for a beat before the panel unmounts, instead of the two happening
+// in the same instant (which would make the z-index drop invisible — nothing to see it happen to).
+const ORIGIN_ARRIVAL_HOLD_MS = 140;
+
+// Optional, opt-in effects on/around the origin element itself (the button/tab the panel is
+// shrinking back into), once the panel has fully arrived there — nothing calls this unless a
+// caller actually passes `originElRef`, so every existing call site is unaffected. `el` is
+// re-read from the ref fresh at the moment this fires (not captured once), and `.isConnected` is
+// checked by the caller before invoking this — see the closing branches below — so a
+// since-unmounted or since-replaced origin (a list row that got deleted/filtered out while its
+// modal was still closing) is simply skipped rather than acting on a detached node.
+function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy: number) {
+  // Sinks the WHOLE modal (backdrop + panel share one portaled wrapper — see findGlassModalBackdrop)
+  // behind ordinary page content for its brief remaining hold — reads as the popup slipping BEHIND
+  // the button it just landed on rather than sitting visibly on top of it. Safe to do now (not
+  // earlier in the shrink): the backdrop's own fade-out finishes in lockstep with the panel's own
+  // shrink, so by this point it's already invisible regardless of stacking order, and the panel
+  // itself has shrunk down to exactly the origin's own box, so there's nothing else on screen for
+  // dropping behind normal content to visibly disturb.
+  const wrapper = panel.parentElement;
+  if (wrapper) wrapper.style.zIndex = "-1";
+
+  // Belt-and-braces alongside sinking the wrapper above: the origin element's own ancestor chain
+  // runs through the whole app shell (sidebar, main scroll area, page layout), any link of which
+  // could be establishing its own stacking context this file has no visibility into — unlike the
+  // modal's own short, single-level portal wrapper, which this hook fully controls. Directly
+  // lifting the origin itself covers that case too, so whichever side actually decides the
+  // ordering, the origin ends up on top either way. Restored once the hold window ends.
+  const previousPosition = el.style.position;
+  const previousZIndex = el.style.zIndex;
+  if (getComputedStyle(el).position === "static") {
+    el.style.position = "relative";
+  }
+  el.style.zIndex = "10000";
+  window.setTimeout(() => {
+    el.style.position = previousPosition;
+    el.style.zIndex = previousZIndex;
+  }, ORIGIN_ARRIVAL_HOLD_MS);
+
+  const distance = Math.hypot(dx, dy);
+  if (distance < 1) return;
+  const nx = dx / distance;
+  const ny = dy / distance;
+  // A decaying spring wobble — push out, overshoot back PAST rest, a smaller correction, settle —
+  // with a gentle scale squash/stretch riding along with the displacement, instead of a single
+  // straight-line push-and-snap-back. The Web Animations API (not a CSS transition/transitionend
+  // pair) is what makes the multi-point, non-monotonic path practical: a transition can only ever
+  // interpolate straight toward one target, so getting an overshoot-past-center out of it meant
+  // chaining two separate transitions end to end, which is exactly what read as rigid/directional
+  // — one motion out, one motion back, nothing in between. `fill: "none"` (the default) means the
+  // element simply reverts to its underlying (untouched) transform once this finishes, no cleanup
+  // needed.
+  el.animate(
+    [
+      { transform: "translate(0px, 0px) scale(1, 1)" },
+      { transform: `translate(${nx * 10}px, ${ny * 10}px) scale(0.965, 0.965)`, offset: 0.24 },
+      { transform: `translate(${-nx * 4}px, ${-ny * 4}px) scale(1.02, 1.02)`, offset: 0.52 },
+      { transform: `translate(${nx * 1.6}px, ${ny * 1.6}px) scale(0.99, 0.99)`, offset: 0.78 },
+      { transform: "translate(0px, 0px) scale(1, 1)" },
+    ],
+    { duration: 460, easing: "ease-in-out" },
+  );
+}
+
+// Ties the arrival moment to what's ACTUALLY on screen — polls the panel's live shrinking size
+// every frame and fires once it's visually close to the origin's own box — rather than a flat
+// setTimeout guess at the CSS transition's nominal `duration`. A flat timeout waits for the panel
+// to be fully, exactly arrived before switching it behind the origin, which reads as "lands on top
+// of the button, THEN disappears" — two distinct beats. Firing a little earlier, while the panel
+// is still visibly mid-shrink and only close to (not yet exactly at) the origin's size, means the
+// remaining bit of shrink motion plays out already-hidden behind the origin, reading as one
+// continuous motion of sliding INTO it rather than landing ONTO it. Capped by maxDelayMs so this
+// still fires even if the panel's rect never quite converges (rounding, a transition that got
+// interrupted, etc).
+function scheduleOriginArrival(
+  panel: HTMLElement,
+  targetWidth: number,
+  targetHeight: number,
+  originElRef: RefObject<HTMLElement | null> | undefined,
+  dx: number,
+  dy: number,
+  maxDelayMs: number,
+): () => void {
+  if (!originElRef) return () => {};
+  let cancelled = false;
+  let rafId = 0;
+  const targetDiagonal = Math.hypot(targetWidth, targetHeight);
+  // 1.35x, not 1.0x — firing at exact convergence is the "lands then disappears" case this exists
+  // to avoid; firing while there's still a visible bit of shrink left to play out is the point.
+  const closeEnoughDiagonal = targetDiagonal * 1.35;
+  const deadline = performance.now() + maxDelayMs;
+  const check = () => {
+    if (cancelled) return;
+    const rect = panel.getBoundingClientRect();
+    const currentDiagonal = Math.hypot(rect.width, rect.height);
+    if (currentDiagonal <= closeEnoughDiagonal || performance.now() >= deadline) {
+      const originEl = originElRef.current;
+      if (originEl?.isConnected) {
+        applyOriginArrival(panel, originEl, dx, dy);
+      }
+      return;
+    }
+    rafId = requestAnimationFrame(check);
+  };
+  rafId = requestAnimationFrame(check);
+  return () => {
+    cancelled = true;
+    cancelAnimationFrame(rafId);
+  };
+}
+
 // Returns whether the caller should still render the modal's portal JSX.
 // Callers must gate their portal on this return value instead of their own
 // `isOpen` state — it stays true for one extra beat after `isOpen` goes false
@@ -36,6 +149,11 @@ export function useGlassModalPopOrigin(
   origin: GlassModalOrigin,
   panelRef: RefObject<HTMLDivElement | null>,
   options?: GlassModalPopOriginOptions,
+  // Optional — re-read fresh at close time, never captured once, so a caller can safely pass a
+  // ref to a list-row-sourced button without risking a stale/unmounted element (see
+  // applyOriginArrival's own comment). Omit entirely to leave this hook's behavior exactly as
+  // it was before this param existed.
+  originElRef?: RefObject<HTMLElement | null>,
 ): boolean {
   const duration = options?.duration ?? 320;
   const easing = options?.easing ?? "cubic-bezier(0.34, 1.56, 0.64, 1)";
@@ -146,9 +264,16 @@ export function useGlassModalPopOrigin(
     panel.style.transform = `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`;
     panel.style.opacity = "0";
 
-    const timeout = window.setTimeout(() => setShouldRender(false), duration);
-    return () => window.clearTimeout(timeout);
-  }, [isOpen, origin, duration, easing, closingEasing, panelRef]);
+    const cancelArrival = scheduleOriginArrival(panel, activeOrigin.width, activeOrigin.height, originElRef, dx, dy, duration + 60);
+
+    // Held open a bit past `duration` only when there's a real origin to arrive at — long enough
+    // for the sunk-behind-the-button state above to actually be visible before unmounting.
+    const timeout = window.setTimeout(() => setShouldRender(false), originElRef ? duration + ORIGIN_ARRIVAL_HOLD_MS : duration);
+    return () => {
+      cancelArrival();
+      window.clearTimeout(timeout);
+    };
+  }, [isOpen, origin, duration, easing, closingEasing, panelRef, originElRef]);
 
   return shouldRender;
 }
@@ -175,6 +300,11 @@ export function useGlassModalShrinkOnClose(
   origin: GlassModalOrigin,
   panelRef: RefObject<HTMLDivElement | null>,
   options?: Pick<GlassModalPopOriginOptions, "duration" | "closingEasing">,
+  // Optional — same opt-in push-nudge as useGlassModalPopOrigin's own identical param (see
+  // applyOriginArrival). Re-read fresh at close time, same as `origin` itself already must be
+  // for this hook (see this hook's own top comment) — pass the SAME ref a caller re-measures
+  // `origin` from in its onClose handler, not a value captured once.
+  originElRef?: RefObject<HTMLElement | null>,
 ): boolean {
   const duration = options?.duration ?? 320;
   const closingEasing = options?.closingEasing ?? "cubic-bezier(0.34, 1, 0.64, 1)";
@@ -218,17 +348,24 @@ export function useGlassModalShrinkOnClose(
     const scaleX = Math.max(origin.width / panelRect.width, 0.02);
     const scaleY = Math.max(origin.height / panelRect.height, 0.02);
 
+    // No opacity fade here (unlike the no-origin fallback above) — this popup shrinks straight
+    // into its target, fully opaque the whole way, rather than also fading out on top of that.
     panel.style.transition = "none";
     panel.style.transform = "translate(0px, 0px) scale(1, 1)";
-    panel.style.opacity = "1";
     void panel.offsetWidth;
-    panel.style.transition = `transform ${duration}ms ${closingEasing}, opacity ${duration}ms ${closingEasing}`;
+    panel.style.transition = `transform ${duration}ms ${closingEasing}`;
     panel.style.transform = `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`;
-    panel.style.opacity = "0";
 
-    const timeout = window.setTimeout(() => setShouldRender(false), duration);
-    return () => window.clearTimeout(timeout);
-  }, [isOpen, origin, duration, closingEasing, panelRef]);
+    const cancelArrival = scheduleOriginArrival(panel, origin.width, origin.height, originElRef, dx, dy, duration + 60);
+
+    // Held open a bit past `duration` only when there's a real origin to arrive at — see
+    // useGlassModalPopOrigin's identical comment on this same pattern.
+    const timeout = window.setTimeout(() => setShouldRender(false), originElRef ? duration + ORIGIN_ARRIVAL_HOLD_MS : duration);
+    return () => {
+      cancelArrival();
+      window.clearTimeout(timeout);
+    };
+  }, [isOpen, origin, duration, closingEasing, panelRef, originElRef]);
 
   return shouldRender;
 }

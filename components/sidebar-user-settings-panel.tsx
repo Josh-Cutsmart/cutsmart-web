@@ -49,6 +49,7 @@ export function SidebarUserSettingsPanel({
   const [colorPopoverAnchor, setColorPopoverAnchor] = useState<ColorPickerAnchorRect | null>(null);
   const [isVerifyBoxOpen, setIsVerifyBoxOpen] = useState(false);
   const [verifyModalOrigin, setVerifyModalOrigin] = useState<GlassModalOrigin>(null);
+  const verifyModalOriginElRef = useRef<HTMLElement | null>(null);
 
   const autoSaveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef(false);
@@ -499,6 +500,7 @@ export function SidebarUserSettingsPanel({
               <button
                 type="button"
                 onClick={(e) => {
+                  verifyModalOriginElRef.current = e.currentTarget;
                   setVerifyModalOrigin(captureGlassModalOrigin(e));
                   setIsVerifyBoxOpen(true);
                 }}
@@ -518,6 +520,7 @@ export function SidebarUserSettingsPanel({
         open={isVerifyBoxOpen}
         origin={verifyModalOrigin}
         onClose={() => setIsVerifyBoxOpen(false)}
+        originElRef={verifyModalOriginElRef}
       />
 
       <SidebarColorPickerPopover

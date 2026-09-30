@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MailCheck, X } from "lucide-react";
 import { useAccountVerification } from "@/lib/use-account-verification";
@@ -15,13 +15,18 @@ export function VerifyAccountModal({
   open,
   origin,
   onClose,
+  originElRef,
 }: {
   open: boolean;
   origin?: GlassModalOrigin;
   onClose: () => void;
+  // Optional — the "push"/duck-behind close effect on whichever button opened this (e.g. the
+  // sidebar's "Unverified" pill). The app-shell auto-prompt path opens this with no button at all
+  // (origin is then null too), so it simply omits this prop.
+  originElRef?: RefObject<HTMLElement | null>;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRender = useGlassModalPopOrigin(open, origin ?? null, panelRef);
+  const shouldRender = useGlassModalPopOrigin(open, origin ?? null, panelRef, undefined, originElRef);
   const { code, setCode, error, setError, busy, resendCooldown, onSend, onConfirm } = useAccountVerification(onClose);
 
   useEffect(() => {

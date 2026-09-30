@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import {
   Bold,
   Underline,
@@ -1049,6 +1050,10 @@ export default function SpecsGridEditor({
   // `groupId: null` means creating a brand-new group from `startRow`/`endRow` (the selection's row
   // span at the moment "Group" was clicked); a real id means editing that existing group in place.
   const [groupModalTarget, setGroupModalTarget] = useState<{ groupId: string | null; startRow: number; endRow: number } | null>(null);
+  const [groupModalOrigin, setGroupModalOrigin] = useState<GlassModalOrigin>(null);
+  const groupModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const groupModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderGroupModal = useGlassModalPopOrigin(Boolean(groupModalTarget), groupModalOrigin, groupModalPanelRef, undefined, groupModalOriginElRef);
   const [groupDraft, setGroupDraft] = useState<SpecsRowGroupEditableFields>({
     name: "",
     price: "",
@@ -3145,7 +3150,9 @@ export default function SpecsGridEditor({
                         <div className="my-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
                         <button
                           type="button"
-                          onClick={() => {
+                          onClick={(e) => {
+                            groupModalOriginElRef.current = e.currentTarget;
+                            setGroupModalOrigin(captureGlassModalOrigin(e));
                             openGroupModal(existingGroup?.id ?? null, rangeStart, rangeEnd, existingGroup);
                             setHeaderContextMenu(null);
                           }}
@@ -3229,7 +3236,7 @@ export default function SpecsGridEditor({
             document.body,
           )
         : null}
-      {groupModalTarget && typeof document !== "undefined"
+      {shouldRenderGroupModal && typeof document !== "undefined"
         ? createPortal(
             <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
               <button
@@ -3238,10 +3245,10 @@ export default function SpecsGridEditor({
                 onClick={() => setGroupModalTarget(null)}
                 className="glass-modal-backdrop absolute inset-0"
               />
-              <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+              <div ref={groupModalPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                 <div className="glass-modal-header px-5 py-4">
                   <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                    {groupModalTarget.groupId ? "Group Settings" : "New Group"}
+                    {groupModalTarget?.groupId ? "Group Settings" : "New Group"}
                   </p>
                 </div>
                 <form

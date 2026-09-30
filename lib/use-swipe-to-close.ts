@@ -87,6 +87,19 @@ export function useSwipeToClose(
     const panel = panelRef.current;
     if (!panel) {
       if (!isOpen) {
+        // The panel can already be unmounted by the time this effect sees isOpen go false —
+        // e.g. isOpen is itself `isCompactProjectViewport && isXOpen` at the call site, so
+        // rotating the device/resizing past the mobile breakpoint while a drawer is open flips
+        // isOpen false in the SAME render that swaps the surrounding ternary from this mobile
+        // drawer to its desktop fallback, unmounting panelRef's node before this effect ever
+        // runs. With no panel to drive the normal close transition through, still reset the
+        // push target directly here — otherwise it's left permanently mid-"shoved over" (a non-
+        // empty inline transform, which is also a containing block for every position:fixed
+        // descendant it parents — see pushRef's own comment), stuck until a full page reload.
+        if (pushRef?.current) {
+          pushRef.current.style.transition = "";
+          pushRef.current.style.transform = "";
+        }
         const noPanelTimeout = window.setTimeout(() => setShouldRender(false), 0);
         return () => window.clearTimeout(noPanelTimeout);
       }

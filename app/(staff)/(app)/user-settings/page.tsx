@@ -31,6 +31,7 @@ import type { ChecklistTemplate } from "@/lib/types";
 import { dispatchUserColorUpdated } from "@/lib/user-color-sync";
 import { contrastTextForFill, labelFromRoleKey, normalizeRoleKey } from "@/lib/user-profile-format";
 import { SidebarColorPickerPopover, type ColorPickerAnchorRect } from "@/components/sidebar-color-picker-popover";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
 function newChecklistLocalId(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -118,6 +119,10 @@ export default function UserSettingsPage() {
   // (iOS always, or Android/Chrome before it decides the site is install-eligible) — walks through
   // the manual "Add to Home Screen" steps rather than leaving people to look it up themselves.
   const [isPwaHelpOpen, setIsPwaHelpOpen] = useState(false);
+  const [pwaHelpOrigin, setPwaHelpOrigin] = useState<GlassModalOrigin>(null);
+  const pwaHelpPanelRef = useRef<HTMLDivElement | null>(null);
+  const pwaHelpOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderPwaHelp = useGlassModalPopOrigin(isPwaHelpOpen, pwaHelpOrigin, pwaHelpPanelRef, undefined, pwaHelpOriginElRef);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [resolvedCompanyId, setResolvedCompanyId] = useState("");
@@ -660,7 +665,11 @@ export default function UserSettingsPage() {
           ) : (
             <button
               type="button"
-              onClick={() => setIsPwaHelpOpen(true)}
+              onClick={(e) => {
+                pwaHelpOriginElRef.current = e.currentTarget;
+                setPwaHelpOrigin(captureGlassModalOrigin(e));
+                setIsPwaHelpOpen(true);
+              }}
               className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[12px] border text-[13px] font-bold text-white transition hover:brightness-95"
               style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
             >
@@ -674,7 +683,7 @@ export default function UserSettingsPage() {
         </div>
       )}
 
-      {isPwaHelpOpen && typeof document !== "undefined" && createPortal(
+      {shouldRenderPwaHelp && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
           <button
             type="button"
@@ -682,7 +691,7 @@ export default function UserSettingsPage() {
             onClick={() => setIsPwaHelpOpen(false)}
             className="glass-modal-backdrop absolute inset-0"
           />
-          <div className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
+          <div ref={pwaHelpPanelRef} className="glass-modal-panel relative w-full max-w-[420px] overflow-hidden">
             <div className="glass-modal-header flex h-[50px] items-center justify-between px-4">
               <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 Save as App

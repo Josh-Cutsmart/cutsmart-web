@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { summarizeCutlistRowsByPartType, type CutlistRow } from "@/lib/cutlist-types";
@@ -24,6 +24,7 @@ export function InitialMeasureCloseSummaryModal({
   edgeTapeMetersByProductName,
   sessionBaseline,
   onClose,
+  originElRef,
 }: {
   // No grow-in animation (unlike Cost by Room/etc.'s own click-triggered popups) — this one opens
   // as a side effect of Save & Back, not a button press, so it should just already be open. It
@@ -43,9 +44,13 @@ export function InitialMeasureCloseSummaryModal({
   edgeTapeMetersByProductName: Record<string, string>;
   sessionBaseline: Record<string, number> | null;
   onClose: () => void;
+  // Optional "push" nudge on the sidebar's Initial Measure tab button as this shrinks into it —
+  // the SAME ref the caller re-measures `origin` from in its own onClose handler, not a value
+  // captured once (see useGlassModalShrinkOnClose's own comment on why `origin` must be fresh).
+  originElRef?: RefObject<HTMLElement | null>;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRender = useGlassModalShrinkOnClose(isOpen, origin, panelRef);
+  const shouldRender = useGlassModalShrinkOnClose(isOpen, origin, panelRef, undefined, originElRef);
   if (typeof document === "undefined" || !shouldRender) return null;
   const summary = summarizeCutlistRowsByPartType(rows);
   const totalParts = summary.reduce((sum, s) => sum + s.count, 0);

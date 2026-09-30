@@ -342,11 +342,31 @@ export function AppShell({
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
   const newProjectPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderNewProjectModal = useGlassModalPopOrigin(showNewProject, newProjectOrigin, newProjectPanelRef);
+  const newProjectModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderNewProjectModal = useGlassModalPopOrigin(
+    showNewProject,
+    newProjectOrigin,
+    newProjectPanelRef,
+    undefined,
+    newProjectModalOriginElRef,
+  );
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [logoutConfirmOrigin, setLogoutConfirmOrigin] = useState<GlassModalOrigin>(null);
   const logoutConfirmPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderLogoutConfirmModal = useGlassModalPopOrigin(showLogoutConfirm, logoutConfirmOrigin, logoutConfirmPanelRef);
+  // Prototype site for the "push" nudge on the origin element itself (see
+  // applyOriginPushNudge's own comment in use-glass-modal-pop-origin.ts) — picked as the first
+  // rollout target because it's the simplest possible case: a single, always-mounted nav/menu
+  // button, never inside a list, never at risk of unmounting mid-animation. Set fresh at click
+  // time by both onRequestLogout call sites below (desktop/mobile menu variants), same as
+  // logoutConfirmOrigin's own rect.
+  const logoutConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderLogoutConfirmModal = useGlassModalPopOrigin(
+    showLogoutConfirm,
+    logoutConfirmOrigin,
+    logoutConfirmPanelRef,
+    undefined,
+    logoutConfirmOriginElRef,
+  );
   const [isAutoVerifyModalOpen, setIsAutoVerifyModalOpen] = useState(false);
   // Prompts once per freshly-signed-in session (covers both "just registered" and "just logged
   // into an account that's still unverified") — keyed off uid so it never re-fires just because
@@ -988,6 +1008,21 @@ export function AppShell({
         hasScrolledAncestor = true;
         break;
       }
+    }
+    // Some chromeHidden fullscreen views (Quote, Specifications) own their real scroll
+    // independently of <main> — <main> is height-matched to its single child there, so its own
+    // scrollTop never leaves 0 — AND portal a large share of their touchable UI (the Version
+    // History/Extras drawers, Download menu, Save/Reset/Send/Custom-Price modals) straight to
+    // document.body. A touch starting on any of that portaled content has no DOM path back to
+    // the view's actual scroll container, so the ancestor walk above can't find it and always
+    // concludes "not scrolled," arming the pulldown regardless of how far the view is actually
+    // scrolled. Such a view marks its own true scroll owner with data-app-scroll-root — when
+    // present, cross-check it directly (authoritative regardless of where the touch started)
+    // rather than relying solely on DOM ancestry, which portals deliberately break out of.
+    const scrollRootEl =
+      typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-scroll-root="true"]') : null;
+    if (scrollRootEl && scrollRootEl.scrollTop > 0) {
+      hasScrolledAncestor = true;
     }
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0 && !hasScrolledAncestor;
     if (alreadyAtTop && mobileTopBarEnabled) {
@@ -2341,6 +2376,14 @@ export function AppShell({
       if (mobileNavPanelRef.current?.contains(targetNode)) return;
       const popoverEl = targetNode instanceof Element ? targetNode.closest('[data-sidebar-color-popover="true"]') : null;
       if (popoverEl) return;
+      // A glass modal opened FROM the settings panel (e.g. the Log out confirm dialog, or New
+      // Project) is portaled/rendered outside desktopAsideRef/mobileNavPanelRef entirely, so a
+      // click on it — its backdrop, or Cancel/Confirm inside its panel — was reading as "clicked
+      // away from the settings panel" and silently closing the panel behind it too, on top of
+      // whatever the modal's own dismiss did. Any glass modal's own backdrop/panel already handles
+      // its own open/close; it shouldn't also count as dismissing the settings panel underneath it.
+      const modalEl = targetNode instanceof Element ? targetNode.closest(".glass-modal-backdrop, .glass-modal-panel") : null;
+      if (modalEl) return;
       closeUserSettingsPanel();
     };
     document.addEventListener("mousedown", onPointerDown);
@@ -2778,6 +2821,7 @@ export function AppShell({
                 <button
                   type="button"
                   onClick={(e) => {
+                    newProjectModalOriginElRef.current = e.currentTarget;
                     setAssigneeUid("");
                     setNewProjectOrigin(captureGlassModalOrigin(e));
                     setShowNewProject(true);
@@ -2871,7 +2915,7 @@ export function AppShell({
                     <SidebarUserSettingsPanel
                       isOpen={isUserSettingsPanelOpen}
                       onRequestClose={closeUserSettingsPanel}
-                      onRequestLogout={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                      onRequestLogout={(e) => { logoutConfirmOriginElRef.current = e.currentTarget; setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
                     />
                   </div>
                 </div>
@@ -2993,7 +3037,7 @@ export function AppShell({
           {canCreateProject && (
             <button
               type="button"
-              onClick={(e) => { setAssigneeUid(""); setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
+              onClick={(e) => { newProjectModalOriginElRef.current = e.currentTarget; setAssigneeUid(""); setNewProjectOrigin(captureGlassModalOrigin(e)); setShowNewProject(true); }}
               title={isSidebarIconOnlyContent ? "New Project" : undefined}
               className="mb-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[10px] bg-[image:var(--brand-gradient)] text-[13px] font-semibold text-white shadow-[var(--shadow-sm)] transition hover:brightness-105"
             >
@@ -3203,7 +3247,7 @@ export function AppShell({
                   <SidebarUserSettingsPanel
                     isOpen={isUserSettingsPanelOpen}
                     onRequestClose={closeUserSettingsPanel}
-                    onRequestLogout={(e) => { setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
+                    onRequestLogout={(e) => { logoutConfirmOriginElRef.current = e.currentTarget; setLogoutConfirmOrigin(captureGlassModalOrigin(e)); setShowLogoutConfirm(true); }}
                   />
                 </div>
               </div>

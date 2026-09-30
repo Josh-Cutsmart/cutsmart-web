@@ -367,9 +367,11 @@ export default function RecentlyDeletedPage() {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectModalOrigin, setProjectModalOrigin] = useState<GlassModalOrigin>(null);
   const projectModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const projectModalOriginElRef = useRef<HTMLElement | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState("");
   const [leadModalOrigin, setLeadModalOrigin] = useState<GlassModalOrigin>(null);
   const leadModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const leadModalOriginElRef = useRef<HTMLElement | null>(null);
   const [leadFieldLayout, setLeadFieldLayout] = useState<LeadFieldLayoutRow[]>([]);
   const [leadStatusRows, setLeadStatusRows] = useState<StatusRow[]>(normalizeLeadStatuses(undefined));
   const [activeTab, setActiveTab] = useState<"leads" | "projects">("projects");
@@ -685,6 +687,7 @@ export default function RecentlyDeletedPage() {
   };
 
   const openProjectDetail = (project: Project, e: ReactMouseEvent<HTMLElement>) => {
+    projectModalOriginElRef.current = e.currentTarget;
     setProjectModalOrigin(captureGlassModalOrigin(e));
     setSelectedProjectId(project.id);
   };
@@ -692,14 +695,27 @@ export default function RecentlyDeletedPage() {
   const closeProjectDetail = () => setSelectedProjectId("");
 
   const openLeadDetail = (lead: CompanyLeadRow, e: ReactMouseEvent<HTMLElement>) => {
+    leadModalOriginElRef.current = e.currentTarget;
     setLeadModalOrigin(captureGlassModalOrigin(e));
     setSelectedLeadId(lead.id);
   };
 
   const closeLeadDetail = () => setSelectedLeadId("");
 
-  const shouldRenderProjectModal = useGlassModalPopOrigin(Boolean(selectedProjectId), projectModalOrigin, projectModalPanelRef);
-  const shouldRenderLeadModal = useGlassModalPopOrigin(Boolean(selectedLeadId), leadModalOrigin, leadModalPanelRef);
+  const shouldRenderProjectModal = useGlassModalPopOrigin(
+    Boolean(selectedProjectId),
+    projectModalOrigin,
+    projectModalPanelRef,
+    undefined,
+    projectModalOriginElRef,
+  );
+  const shouldRenderLeadModal = useGlassModalPopOrigin(
+    Boolean(selectedLeadId),
+    leadModalOrigin,
+    leadModalPanelRef,
+    undefined,
+    leadModalOriginElRef,
+  );
   const selectedProject = useMemo(
     () => deletedProjects.find((row) => row.id === selectedProjectId) || null,
     [deletedProjects, selectedProjectId],

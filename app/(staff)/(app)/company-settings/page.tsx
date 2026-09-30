@@ -30,6 +30,7 @@ import { QUOTE_TEMPLATE_PLACEHOLDERS } from "@/lib/quote-template-placeholders";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
 import SpecsGridEditor from "@/components/specs-grid-editor";
 import { type SpecsGrid, createEmptyGrid, normalizeSpecsGrid } from "@/lib/specs-grid-types";
+import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
 type SettingsSection =
   | "company" | "dashboard" | "sales" | "production" | "nesting" | "materials"
@@ -1208,9 +1209,15 @@ export default function CompanySettingsPage() {
   const [roleDragIndex, setRoleDragIndex] = useState<number | null>(null);
   const [roleDragOverIndex, setRoleDragOverIndex] = useState<number | null>(null);
   const [activeRoleModalIndex, setActiveRoleModalIndex] = useState<number | null>(null);
+  const [roleModalOrigin, setRoleModalOrigin] = useState<GlassModalOrigin>(null);
+  const roleModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const roleModalOriginElRef = useRef<HTMLElement | null>(null);
   const [itemCategories, setItemCategories] = useState<ItemCategoryRow[]>([]);
   const [isSpecsLayoutModalOpen, setIsSpecsLayoutModalOpen] = useState(false);
   const [isSpecsTemplateResetConfirmOpen, setIsSpecsTemplateResetConfirmOpen] = useState(false);
+  const [specsTemplateResetConfirmOrigin, setSpecsTemplateResetConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const specsTemplateResetConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const specsTemplateResetConfirmOriginElRef = useRef<HTMLElement | null>(null);
   // Surfaces the isolated specs-template write's real failure reason — previously it was fired via
   // `void saveCompanyDocPatchDetailed(...)` with the result thrown away, so a failed write (e.g. a
   // Firestore document-too-large error once the template grows, or a permission error) had zero
@@ -1225,6 +1232,9 @@ export default function CompanySettingsPage() {
   // separate template field (a project's Quote and Specifications sheets are unrelated documents).
   const [isQuoteLayoutModalOpen, setIsQuoteLayoutModalOpen] = useState(false);
   const [isQuoteTemplateResetConfirmOpen, setIsQuoteTemplateResetConfirmOpen] = useState(false);
+  const [quoteTemplateResetConfirmOrigin, setQuoteTemplateResetConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const quoteTemplateResetConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const quoteTemplateResetConfirmOriginElRef = useRef<HTMLElement | null>(null);
   const [quoteTemplateSaveError, setQuoteTemplateSaveError] = useState("");
   const [quoteTemplateEditorKey, setQuoteTemplateEditorKey] = useState(0);
   const [quoteGridTemplate, setQuoteGridTemplate] = useState<SpecsGrid | null>(null);
@@ -1234,6 +1244,9 @@ export default function CompanySettingsPage() {
   const [itemCategoryDragIndex, setItemCategoryDragIndex] = useState<number | null>(null);
   const [itemCategoryDragOverIndex, setItemCategoryDragOverIndex] = useState<number | null>(null);
   const [isItemCategoriesModalOpen, setIsItemCategoriesModalOpen] = useState(false);
+  const [itemCategoriesModalOrigin, setItemCategoriesModalOrigin] = useState<GlassModalOrigin>(null);
+  const itemCategoriesModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const itemCategoriesModalOriginElRef = useRef<HTMLElement | null>(null);
   const [jobTypes, setJobTypes] = useState<JobTypeRow[]>([]);
   // Sales Product names offered in the Quote/Specs group editor's Rules "IF <Product>" dropdown —
   // same "Incl in Sales" filter as the Product panel below and as a project's own "Product"
@@ -1315,7 +1328,13 @@ export default function CompanySettingsPage() {
   const [openStaffRoleUid, setOpenStaffRoleUid] = useState("");
   const [pendingOwnerTransfer, setPendingOwnerTransfer] = useState<PendingOwnerTransferState | null>(null);
   const [pendingOwnerTransferTargetUid, setPendingOwnerTransferTargetUid] = useState("");
+  const [ownerTransferOrigin, setOwnerTransferOrigin] = useState<GlassModalOrigin>(null);
+  const ownerTransferPanelRef = useRef<HTMLDivElement | null>(null);
+  const ownerTransferOriginElRef = useRef<HTMLElement | null>(null);
   const [pendingStaffRemoval, setPendingStaffRemoval] = useState<PendingStaffRemovalState | null>(null);
+  const [staffRemovalOrigin, setStaffRemovalOrigin] = useState<GlassModalOrigin>(null);
+  const staffRemovalPanelRef = useRef<HTMLDivElement | null>(null);
+  const staffRemovalOriginElRef = useRef<HTMLElement | null>(null);
   const [preparingStaffRemovalUid, setPreparingStaffRemovalUid] = useState("");
   const [removingStaffUid, setRemovingStaffUid] = useState("");
   // Shown inline in the Remove Staff Member popup itself — a validation/API failure here used to
@@ -2236,6 +2255,48 @@ export default function CompanySettingsPage() {
 
   const activeRoleModal = activeRoleModalIndex !== null ? roles[activeRoleModalIndex] ?? null : null;
   const activeRoleIsProtected = isProtectedStarterRole(activeRoleModal?.id || activeRoleModal?.name);
+  const shouldRenderRoleModal = useGlassModalPopOrigin(
+    activeRoleModalIndex !== null,
+    roleModalOrigin,
+    roleModalPanelRef,
+    undefined,
+    roleModalOriginElRef,
+  );
+  const shouldRenderOwnerTransferModal = useGlassModalPopOrigin(
+    Boolean(pendingOwnerTransfer),
+    ownerTransferOrigin,
+    ownerTransferPanelRef,
+    undefined,
+    ownerTransferOriginElRef,
+  );
+  const shouldRenderStaffRemovalModal = useGlassModalPopOrigin(
+    Boolean(pendingStaffRemoval),
+    staffRemovalOrigin,
+    staffRemovalPanelRef,
+    undefined,
+    staffRemovalOriginElRef,
+  );
+  const shouldRenderItemCategoriesModal = useGlassModalPopOrigin(
+    isItemCategoriesModalOpen,
+    itemCategoriesModalOrigin,
+    itemCategoriesModalPanelRef,
+    undefined,
+    itemCategoriesModalOriginElRef,
+  );
+  const shouldRenderSpecsTemplateResetConfirmModal = useGlassModalPopOrigin(
+    isSpecsTemplateResetConfirmOpen,
+    specsTemplateResetConfirmOrigin,
+    specsTemplateResetConfirmPanelRef,
+    undefined,
+    specsTemplateResetConfirmOriginElRef,
+  );
+  const shouldRenderQuoteTemplateResetConfirmModal = useGlassModalPopOrigin(
+    isQuoteTemplateResetConfirmOpen,
+    quoteTemplateResetConfirmOrigin,
+    quoteTemplateResetConfirmPanelRef,
+    undefined,
+    quoteTemplateResetConfirmOriginElRef,
+  );
   const zapierWebhookBaseUrl = appOrigin ? `${appOrigin}/api/leads` : "";
   const existingZapierWebhookSecret = useMemo(() => {
     const integrations =
@@ -4201,7 +4262,15 @@ export default function CompanySettingsPage() {
                         >
                           <button
                             type="button"
-                            onClick={() => void openStaffRemovalDialog(row)}
+                            onClick={(e) => {
+                              // Captured synchronously here, before openStaffRemovalDialog's own
+                              // internal `await fetchProjects(...)` — by the time that resolves,
+                              // React may have already re-rendered this row away from under
+                              // `e.currentTarget`, per captureGlassModalOrigin's own doc comment.
+                              staffRemovalOriginElRef.current = e.currentTarget;
+                              setStaffRemovalOrigin(captureGlassModalOrigin(e));
+                              void openStaffRemovalDialog(row);
+                            }}
                             disabled={
                               !canRemoveStaff ||
                               normalizeRoleKey(row.roleId || row.role) === "owner" ||
@@ -4321,7 +4390,9 @@ export default function CompanySettingsPage() {
                                       <button
                                         key={role.id}
                                         type="button"
-                                        onClick={() => {
+                                        onClick={(e) => {
+                                          ownerTransferOriginElRef.current = e.currentTarget;
+                                          setOwnerTransferOrigin(captureGlassModalOrigin(e));
                                           setOpenStaffRoleUid("");
                                           const shouldRequireOwnerTransfer =
                                             toStr(row.uid) === toStr(user?.uid) &&
@@ -4443,7 +4514,11 @@ export default function CompanySettingsPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setActiveRoleModalIndex(idx)}
+                            onClick={(e) => {
+                              roleModalOriginElRef.current = e.currentTarget;
+                              setRoleModalOrigin(captureGlassModalOrigin(e));
+                              setActiveRoleModalIndex(idx);
+                            }}
                             className="truncate text-left text-[12px] font-extrabold"
                           >
                             {toStr(row.name, "Untitled Role")}
@@ -4451,7 +4526,9 @@ export default function CompanySettingsPage() {
                         </div>
                       ))}
                       <button
-                        onClick={() => {
+                        onClick={(e) => {
+                          roleModalOriginElRef.current = e.currentTarget;
+                          setRoleModalOrigin(captureGlassModalOrigin(e));
                           setRoles((prev) => {
                             const next = [...prev, { id: `role_${prev.length + 1}`, name: "", color: "#7D99B3", permissions: ["company.dashboard.view"] }];
                             setActiveRoleModalIndex(next.length - 1);
@@ -4464,7 +4541,7 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  {activeRoleModal ? (
+                  {shouldRenderRoleModal ? (
                     <div className="fixed inset-0 z-[1600] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -4472,7 +4549,7 @@ export default function CompanySettingsPage() {
                         onClick={() => setActiveRoleModalIndex(null)}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative z-[1601] flex w-full max-w-[760px] flex-col overflow-hidden">
+                      <div ref={roleModalPanelRef} className="glass-modal-panel relative z-[1601] flex w-full max-w-[760px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Role Permissions
@@ -4491,7 +4568,7 @@ export default function CompanySettingsPage() {
                             <div className="space-y-1">
                               <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Role Name</p>
                               <input
-                                value={activeRoleModal.name}
+                                value={activeRoleModal?.name ?? ""}
                                 onChange={(e) =>
                                   setRoles((prev) =>
                                     prev.map((role, idx) =>
@@ -4508,10 +4585,10 @@ export default function CompanySettingsPage() {
                                 className="relative inline-flex h-9 w-full overflow-hidden rounded-[10px] border"
                                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
                               >
-                                <span className="block h-full w-full" style={{ backgroundColor: activeRoleModal.color || "#7D99B3" }} />
+                                <span className="block h-full w-full" style={{ backgroundColor: activeRoleModal?.color || "#7D99B3" }} />
                                 <input
                                   type="color"
-                                  value={activeRoleModal.color || "#7D99B3"}
+                                  value={activeRoleModal?.color || "#7D99B3"}
                                   onChange={(e) =>
                                     setRoles((prev) =>
                                       prev.map((role, idx) =>
@@ -4528,7 +4605,7 @@ export default function CompanySettingsPage() {
                             <div className="mb-2 flex items-center justify-between">
                               <p className="text-[11px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>Permissions</p>
                               <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                                {activeRoleModal.permissions.length} selected
+                                {activeRoleModal?.permissions.length ?? 0} selected
                               </span>
                             </div>
                             <div className="grid grid-cols-2 gap-x-2 gap-y-1">
@@ -4540,7 +4617,7 @@ export default function CompanySettingsPage() {
                                 >
                                   <input
                                     type="checkbox"
-                                    checked={activeRoleModal.permissions.includes(perm)}
+                                    checked={activeRoleModal?.permissions.includes(perm) ?? false}
                                     onChange={() => {
                                       if (activeRoleModalIndex !== null) toggleRolePermission(activeRoleModalIndex, perm);
                                     }}
@@ -4580,7 +4657,7 @@ export default function CompanySettingsPage() {
                       </div>
                     </div>
                   ) : null}
-                  {pendingOwnerTransfer ? (
+                  {shouldRenderOwnerTransferModal ? (
                     <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -4591,7 +4668,7 @@ export default function CompanySettingsPage() {
                         }}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative z-[1701] flex w-full max-w-[520px] flex-col overflow-hidden">
+                      <div ref={ownerTransferPanelRef} className="glass-modal-panel relative z-[1701] flex w-full max-w-[520px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Transfer Owner Role
@@ -4610,7 +4687,7 @@ export default function CompanySettingsPage() {
                         </div>
                         <div className="space-y-4 px-4 py-4">
                           <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                            <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingOwnerTransfer.currentOwnerName}</span>
+                            <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingOwnerTransfer?.currentOwnerName}</span>
                             {" "}
                             is changing out of the <span className="font-bold" style={{ color: "var(--text-main)" }}>Owner</span> role.
                             Choose another staff member to become the new Owner first.
@@ -4655,7 +4732,7 @@ export default function CompanySettingsPage() {
                       </div>
                     </div>
                   ) : null}
-                  {pendingStaffRemoval ? (
+                  {shouldRenderStaffRemovalModal ? (
                     <div className="fixed inset-0 z-[1725] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -4667,7 +4744,7 @@ export default function CompanySettingsPage() {
                         }}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative z-[1726] flex w-full max-w-[560px] flex-col overflow-hidden">
+                      <div ref={staffRemovalPanelRef} className="glass-modal-panel relative z-[1726] flex w-full max-w-[560px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
                             Remove Staff Member
@@ -4689,23 +4766,23 @@ export default function CompanySettingsPage() {
                           <div className="space-y-1">
                             <p className="text-[16px] font-extrabold" style={{ color: "var(--text-main)" }}>Are you sure?</p>
                             <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                              <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval.displayName}</span>
+                              <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval?.displayName}</span>
                               {" "}
                               has{" "}
                               <span className="font-bold" style={{ color: "var(--text-main)" }}>
-                                {pendingStaffRemoval.activeProjectCount}
+                                {pendingStaffRemoval?.activeProjectCount ?? 0}
                               </span>
                               {" "}
-                              active project{pendingStaffRemoval.activeProjectCount === 1 ? "" : "s"}.
+                              active project{(pendingStaffRemoval?.activeProjectCount ?? 0) === 1 ? "" : "s"}.
                             </p>
                           </div>
-                          {pendingStaffRemoval.activeProjectCount > 0 ? (
+                          {(pendingStaffRemoval?.activeProjectCount ?? 0) > 0 ? (
                             <div className="space-y-1">
                               <p className="text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
                                 Transfer Projects To
                               </p>
                               <select
-                                value={pendingStaffRemoval.transferToUid}
+                                value={pendingStaffRemoval?.transferToUid ?? ""}
                                 onChange={(e) =>
                                   setPendingStaffRemoval((current) =>
                                     current
@@ -4716,7 +4793,7 @@ export default function CompanySettingsPage() {
                                       : current,
                                   )
                                 }
-                                disabled={pendingStaffRemoval.confirmPhase === "type_name" || !!removingStaffUid}
+                                disabled={pendingStaffRemoval?.confirmPhase === "type_name" || !!removingStaffUid}
                                 className={`${fieldInputClass} h-10`}
                               >
                                 <option value="">Choose staff member</option>
@@ -4733,16 +4810,16 @@ export default function CompanySettingsPage() {
                               ) : null}
                             </div>
                           ) : null}
-                          {pendingStaffRemoval.confirmPhase === "type_name" ? (
+                          {pendingStaffRemoval?.confirmPhase === "type_name" ? (
                             <div className="space-y-1">
                               <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                                 Type{" "}
-                                <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval.displayName}</span>
+                                <span className="font-bold" style={{ color: "var(--text-main)" }}>{pendingStaffRemoval?.displayName}</span>
                                 {" "}
                                 to remove this user from the company.
                               </p>
                               <input
-                                value={pendingStaffRemoval.typedName}
+                                value={pendingStaffRemoval?.typedName ?? ""}
                                 onChange={(e) => {
                                   setStaffRemovalError("");
                                   setPendingStaffRemoval((current) =>
@@ -4758,7 +4835,7 @@ export default function CompanySettingsPage() {
                                 autoCorrect="off"
                                 spellCheck={false}
                                 className={`${fieldInputClass} h-10`}
-                                placeholder={pendingStaffRemoval.displayName}
+                                placeholder={pendingStaffRemoval?.displayName}
                               />
                             </div>
                           ) : null}
@@ -4780,13 +4857,13 @@ export default function CompanySettingsPage() {
                           >
                             Cancel
                           </button>
-                          {pendingStaffRemoval.confirmPhase === "type_name" ? (
+                          {pendingStaffRemoval?.confirmPhase === "type_name" ? (
                             <button
                               type="button"
                               onClick={() => void confirmStaffRemoval()}
                               disabled={
                                 !!removingStaffUid ||
-                                !namesMatchForConfirmation(pendingStaffRemoval.typedName, pendingStaffRemoval.displayName)
+                                !namesMatchForConfirmation(pendingStaffRemoval?.typedName ?? "", pendingStaffRemoval?.displayName ?? "")
                               }
                               className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
                               style={{ backgroundImage: "var(--danger-gradient)" }}
@@ -4799,8 +4876,8 @@ export default function CompanySettingsPage() {
                               onClick={advanceStaffRemovalConfirmation}
                               disabled={
                                 !!removingStaffUid ||
-                                (pendingStaffRemoval.activeProjectCount > 0 &&
-                                  (!pendingStaffRemoval.transferToUid || !staffRemovalTransferCandidates.length))
+                                ((pendingStaffRemoval?.activeProjectCount ?? 0) > 0 &&
+                                  (!pendingStaffRemoval?.transferToUid || !staffRemovalTransferCandidates.length))
                               }
                               className="rounded-[8px] px-4 py-1.5 text-[11px] font-bold text-white transition hover:brightness-105 disabled:opacity-60"
                               style={{ backgroundImage: "var(--brand-gradient)" }}
@@ -5332,14 +5409,18 @@ export default function CompanySettingsPage() {
                       </p>
                       <button
                         type="button"
-                        onClick={() => setIsItemCategoriesModalOpen(true)}
+                        onClick={(e) => {
+                          itemCategoriesModalOriginElRef.current = e.currentTarget;
+                          setItemCategoriesModalOrigin(captureGlassModalOrigin(e));
+                          setIsItemCategoriesModalOpen(true);
+                        }}
                         className={secondaryButtonClass}
                       >
                         Manage Item Categories
                       </button>
                     </div>
                   </Panel>
-                  {isItemCategoriesModalOpen ? (
+                  {shouldRenderItemCategoriesModal ? (
                     <div className="fixed inset-0 z-[1750] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -5347,7 +5428,7 @@ export default function CompanySettingsPage() {
                         onClick={() => setIsItemCategoriesModalOpen(false)}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
+                      <div ref={itemCategoriesModalPanelRef} className="glass-modal-panel relative z-[1751] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[1080px] flex-col overflow-hidden">
                         <div className="glass-modal-header flex items-center justify-between px-4 py-3">
                           <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>Item Categories</p>
                           <button
@@ -5634,7 +5715,11 @@ export default function CompanySettingsPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setIsSpecsTemplateResetConfirmOpen(true)}
+                            onClick={(e) => {
+                              specsTemplateResetConfirmOriginElRef.current = e.currentTarget;
+                              setSpecsTemplateResetConfirmOrigin(captureGlassModalOrigin(e));
+                              setIsSpecsTemplateResetConfirmOpen(true);
+                            }}
                             className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
                             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
@@ -5686,7 +5771,7 @@ export default function CompanySettingsPage() {
                         </div>
                     </div>
                   ) : null}
-                  {isSpecsTemplateResetConfirmOpen ? (
+                  {shouldRenderSpecsTemplateResetConfirmModal ? (
                     <div className="fixed inset-0 z-[1010] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -5694,7 +5779,7 @@ export default function CompanySettingsPage() {
                         onClick={() => setIsSpecsTemplateResetConfirmOpen(false)}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
+                      <div ref={specsTemplateResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
                         <div className="glass-modal-header px-5 py-4">
                           <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset Template</p>
                         </div>
@@ -5778,7 +5863,11 @@ export default function CompanySettingsPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setIsQuoteTemplateResetConfirmOpen(true)}
+                            onClick={(e) => {
+                              quoteTemplateResetConfirmOriginElRef.current = e.currentTarget;
+                              setQuoteTemplateResetConfirmOrigin(captureGlassModalOrigin(e));
+                              setIsQuoteTemplateResetConfirmOpen(true);
+                            }}
                             className="inline-flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold transition hover:brightness-95"
                             style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                           >
@@ -5837,7 +5926,7 @@ export default function CompanySettingsPage() {
                         </div>
                     </div>
                   ) : null}
-                  {isQuoteTemplateResetConfirmOpen ? (
+                  {shouldRenderQuoteTemplateResetConfirmModal ? (
                     <div className="fixed inset-0 z-[1010] flex items-center justify-center px-4 py-4">
                       <button
                         type="button"
@@ -5845,7 +5934,7 @@ export default function CompanySettingsPage() {
                         onClick={() => setIsQuoteTemplateResetConfirmOpen(false)}
                         className="glass-modal-backdrop absolute inset-0"
                       />
-                      <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
+                      <div ref={quoteTemplateResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden">
                         <div className="glass-modal-header px-5 py-4">
                           <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset Template</p>
                         </div>

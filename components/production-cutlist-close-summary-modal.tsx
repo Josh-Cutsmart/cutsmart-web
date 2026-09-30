@@ -1,9 +1,11 @@
 "use client";
 
+import { useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { findMissingProductionRows, summarizeCutlistRowsByPartType, type CutlistRow } from "@/lib/cutlist-types";
 import { contrastTextForFill } from "@/lib/user-profile-format";
+import { useGlassModalShrinkOnClose, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 
 type SheetCountEntry = { productName: string; sheetSize: string; sheetCount: number };
 
@@ -14,21 +16,36 @@ function roomLabel(row: CutlistRow): string {
 }
 
 export function ProductionCutlistCloseSummaryModal({
+  isOpen,
+  origin,
   productionRows,
   initialRows,
   partTypeColors,
   sheetCounts,
   sessionBaseline,
   onClose,
+  originElRef,
 }: {
+  // No grow-in animation — same reasoning as InitialMeasureCloseSummaryModal's own comment: this
+  // opens as a side effect of Save & Back, not a button press, so it should just already be open.
+  // It still shrinks INTO the Production sidebar's "Cutlist" tab button on close, via
+  // useGlassModalShrinkOnClose — `origin` must be a fresh measurement taken at the exact moment of
+  // close (see that hook's own comment), not one captured back when this opened.
+  isOpen: boolean;
+  origin: GlassModalOrigin;
   productionRows: CutlistRow[];
   initialRows: CutlistRow[];
   partTypeColors: Record<string, string>;
   sheetCounts: SheetCountEntry[];
   sessionBaseline: Record<string, number> | null;
   onClose: () => void;
+  // Push-nudge + duck-behind-the-tab close treatment — the SAME ref the caller re-measures
+  // `origin` from in its own onClose handler, not a value captured once.
+  originElRef?: RefObject<HTMLElement | null>;
 }) {
-  if (typeof document === "undefined") return null;
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const shouldRender = useGlassModalShrinkOnClose(isOpen, origin, panelRef, undefined, originElRef);
+  if (typeof document === "undefined" || !shouldRender) return null;
   const summary = summarizeCutlistRowsByPartType(productionRows);
   const totalParts = summary.reduce((sum, s) => sum + s.count, 0);
   // Part types to show in the table: every type with a part right now, PLUS any type that had
@@ -57,8 +74,13 @@ export function ProductionCutlistCloseSummaryModal({
         aria-label="Close summary backdrop"
         onClick={onClose}
         className="glass-modal-backdrop absolute inset-0"
+        // .glass-modal-backdrop has its own built-in fade-in animation (globals.css), which fires
+        // on every mount regardless of what useGlassModalShrinkOnClose does — that hook only ever
+        // touches this backdrop's opacity/transition while CLOSING. Since this popup should already
+        // be fully blurred in, not fade in, that animation needs suppressing specifically on open.
+        style={{ animation: "none" }}
       />
-      <div className="glass-modal-panel relative flex max-h-[85vh] w-full max-w-[480px] flex-col overflow-hidden">
+      <div ref={panelRef} className="glass-modal-panel relative flex max-h-[85vh] w-full max-w-[480px] flex-col overflow-hidden">
         <div className="glass-modal-header flex h-[50px] shrink-0 items-center justify-between px-4">
           <p className="text-[15px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>
             Production Cutlist Summary

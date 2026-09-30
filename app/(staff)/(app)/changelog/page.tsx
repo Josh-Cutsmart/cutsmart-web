@@ -318,7 +318,14 @@ export default function ChangelogPage() {
   const suppressScrollSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [composerOrigin, setComposerOrigin] = useState<GlassModalOrigin>(null);
   const composerPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderComposer = useGlassModalPopOrigin(Boolean(composerKind), composerOrigin, composerPanelRef);
+  const composerOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderComposer = useGlassModalPopOrigin(
+    Boolean(composerKind),
+    composerOrigin,
+    composerPanelRef,
+    undefined,
+    composerOriginElRef,
+  );
   const [versionHighlightRect, setVersionHighlightRect] = useState<{ top: number; height: number } | null>(null);
   const versionListRef = useRef<HTMLDivElement | null>(null);
   const versionItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -336,7 +343,14 @@ export default function ChangelogPage() {
   const [isMobileVersionPopupOpen, setIsMobileVersionPopupOpen] = useState(false);
   const [mobileVersionPopupOrigin, setMobileVersionPopupOrigin] = useState<GlassModalOrigin>(null);
   const mobileVersionPopupPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderMobileVersionPopup = useGlassModalPopOrigin(isMobileVersionPopupOpen, mobileVersionPopupOrigin, mobileVersionPopupPanelRef);
+  const mobileVersionPopupOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderMobileVersionPopup = useGlassModalPopOrigin(
+    isMobileVersionPopupOpen,
+    mobileVersionPopupOrigin,
+    mobileVersionPopupPanelRef,
+    undefined,
+    mobileVersionPopupOriginElRef,
+  );
 
   // Dev-only (isDevUser, below) raw-HTML editor for one version's whatsNew content — same
   // grow-from-the-clicked-button pop as the other glass modals on this page.
@@ -345,10 +359,18 @@ export default function ChangelogPage() {
   const [isSavingVersionEdit, setIsSavingVersionEdit] = useState(false);
   const [editVersionModalOrigin, setEditVersionModalOrigin] = useState<GlassModalOrigin>(null);
   const editVersionModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const editVersionModalOriginElRef = useRef<HTMLElement | null>(null);
   const editVersionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const shouldRenderEditVersionModal = useGlassModalPopOrigin(Boolean(editingVersionEntry), editVersionModalOrigin, editVersionModalPanelRef);
+  const shouldRenderEditVersionModal = useGlassModalPopOrigin(
+    Boolean(editingVersionEntry),
+    editVersionModalOrigin,
+    editVersionModalPanelRef,
+    undefined,
+    editVersionModalOriginElRef,
+  );
 
   const startEditingVersionEntry = (entry: UpdateChangelogEntry, e: ReactMouseEvent<HTMLButtonElement>) => {
+    editVersionModalOriginElRef.current = e.currentTarget;
     setEditVersionModalOrigin(captureGlassModalOrigin(e));
     setEditingVersionDraft(entry.whatsNew);
     setEditingVersionEntry(entry);
@@ -932,7 +954,7 @@ export default function ChangelogPage() {
                 <div className="flex items-center gap-2 border-l pl-3" style={{ borderColor: "var(--glass-border)" }}>
                   <button
                     type="button"
-                    onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
+                    onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("issue", captureGlassModalOrigin(e)); }}
                     className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                   >
@@ -940,7 +962,7 @@ export default function ChangelogPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
+                    onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("feature", captureGlassModalOrigin(e)); }}
                     className="h-8 rounded-[8px] border px-3 text-[12px] font-bold text-white transition hover:brightness-95"
                     style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
                   >
@@ -1220,6 +1242,7 @@ export default function ChangelogPage() {
                                 // comparable amount, matching that feel.
                                 const badge = e.currentTarget.querySelector<HTMLElement>("[data-version-popup-origin]");
                                 const originEl = badge ?? e.currentTarget;
+                                mobileVersionPopupOriginElRef.current = originEl;
                                 const rect = originEl.getBoundingClientRect();
                                 setMobileVersionPopupOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
                                 setIsMobileVersionPopupOpen(true);
@@ -1383,7 +1406,7 @@ export default function ChangelogPage() {
             >
               <button
                 type="button"
-                onClick={(e) => openComposer("issue", captureGlassModalOrigin(e))}
+                onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("issue", captureGlassModalOrigin(e)); }}
                 className="flex-1 text-[15px] font-bold text-white transition hover:brightness-95"
                 style={{ backgroundImage: "var(--danger-gradient)" }}
               >
@@ -1391,7 +1414,7 @@ export default function ChangelogPage() {
               </button>
               <button
                 type="button"
-                onClick={(e) => openComposer("feature", captureGlassModalOrigin(e))}
+                onClick={(e) => { composerOriginElRef.current = e.currentTarget; openComposer("feature", captureGlassModalOrigin(e)); }}
                 className="flex-1 text-[15px] font-bold text-white transition hover:brightness-95"
                 style={{ backgroundImage: "var(--success-gradient)" }}
               >

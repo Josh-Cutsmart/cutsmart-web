@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { useParams } from "next/navigation";
-import { ClipboardList, DollarSign as QuoteIcon, Printer, Download, User, AtSign, Phone } from "lucide-react";
+import { useParams, useSearchParams } from "next/navigation";
+import { ArrowLeft, ClipboardList, DollarSign as QuoteIcon, Printer, Download, User, AtSign, Phone } from "lucide-react";
 import SpecsGridClientView from "@/components/specs-grid-client-view";
 import { computeSpecsPageBoxWidthPx, type SpecsCell, type SpecsGrid } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow } from "@/lib/specs-grid-pdf";
@@ -82,6 +82,14 @@ function AcceptBar({ onAcceptClick }: { onAcceptClick: (e: ReactMouseEvent<HTMLB
 export default function ClientSpecsSharePage() {
   const params = useParams<{ shareId: string }>();
   const shareId = String(params?.shareId ?? "");
+  // Set ONLY by openClientHubInNewTab (projects/[projectId]/page.tsx) when STAFF open their own
+  // project's hub link to preview it — the real link a client actually receives is generated
+  // entirely separately (buildSpecsShareUrl, server-side) and never carries this or any other
+  // query string, so a real client can never see this flag or the exit button it gates below.
+  // Deliberately a URL marker, not session/auth state — this route is intentionally public/
+  // no-login (see app/client/layout.tsx's own comment), so staff-ness here can't come from being
+  // signed in; it has to come from the link itself.
+  const isStaffPreview = useSearchParams().get("staffPreview") === "1";
 
   // Publishes the on-screen keyboard's current height as a CSS variable every .glass-modal-panel
   // reads (see app/globals.css) to keep itself centered above the keyboard instead of the full
@@ -139,7 +147,8 @@ export default function ClientSpecsSharePage() {
   // THAT button, the same "pop" animation every other modal in the app uses.
   const [submitModalOrigin, setSubmitModalOrigin] = useState<GlassModalOrigin>(null);
   const submitModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderSubmitModal = useGlassModalPopOrigin(showSubmitModal, submitModalOrigin, submitModalPanelRef);
+  const submitModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSubmitModal = useGlassModalPopOrigin(showSubmitModal, submitModalOrigin, submitModalPanelRef, undefined, submitModalOriginElRef);
   const [submitNameDraft, setSubmitNameDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -148,7 +157,8 @@ export default function ClientSpecsSharePage() {
   const [showAcceptModal, setShowAcceptModal] = useState(false);
   const [acceptModalOrigin, setAcceptModalOrigin] = useState<GlassModalOrigin>(null);
   const acceptModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderAcceptModal = useGlassModalPopOrigin(showAcceptModal, acceptModalOrigin, acceptModalPanelRef);
+  const acceptModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderAcceptModal = useGlassModalPopOrigin(showAcceptModal, acceptModalOrigin, acceptModalPanelRef, undefined, acceptModalOriginElRef);
   const [acceptNameDraft, setAcceptNameDraft] = useState("");
   const [isAccepting, setIsAccepting] = useState(false);
   const [acceptError, setAcceptError] = useState("");
@@ -410,6 +420,31 @@ export default function ClientSpecsSharePage() {
             whichever side has less content. */}
         <div className="mx-auto grid h-full w-full max-w-[1000px] grid-cols-[1fr_auto_1fr] items-stretch gap-3">
           <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+            {isStaffPreview ? (
+              <button
+                type="button"
+                onClick={() => {
+                  // This tab only ever exists via openClientHubInNewTab's own target="_blank"
+                  // anchor click, which gives it no prior history to go "back" to (it's a brand
+                  // new browsing context) — window.close() is what mobile Safari/Chrome actually
+                  // honor for a tab a script opened itself off a real user gesture, unlike
+                  // history navigation, which would have nothing to land on here.
+                  try {
+                    window.close();
+                  } catch {
+                    // Some locked-down mobile configurations silently refuse this — nothing else
+                    // to fall back to that would reliably "return to the app" from a tab that was
+                    // never navigated there in its own history.
+                  }
+                }}
+                className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] hover:brightness-95"
+                style={{ color: "var(--text-main)" }}
+                aria-label="Exit to CutSmart"
+                title="Exit to CutSmart"
+              >
+                <ArrowLeft size={18} />
+              </button>
+            ) : null}
             <span className="truncate">{projectName || "Project"}</span>
           </div>
 
@@ -567,6 +602,7 @@ export default function ClientSpecsSharePage() {
                       <div className="mb-4">
                         <SubmitBar
                           onSubmitClick={(e) => {
+                            submitModalOriginElRef.current = e.currentTarget;
                             setSubmitModalOrigin(captureGlassModalOrigin(e));
                             setShowSubmitModal(true);
                           }}
@@ -582,6 +618,7 @@ export default function ClientSpecsSharePage() {
                       <div className="mt-4">
                         <SubmitBar
                           onSubmitClick={(e) => {
+                            submitModalOriginElRef.current = e.currentTarget;
                             setSubmitModalOrigin(captureGlassModalOrigin(e));
                             setShowSubmitModal(true);
                           }}
@@ -605,6 +642,7 @@ export default function ClientSpecsSharePage() {
                       <div className="mb-4">
                         <AcceptBar
                           onAcceptClick={(e) => {
+                            acceptModalOriginElRef.current = e.currentTarget;
                             setAcceptModalOrigin(captureGlassModalOrigin(e));
                             setShowAcceptModal(true);
                           }}
@@ -623,6 +661,7 @@ export default function ClientSpecsSharePage() {
                       <div className="mt-4">
                         <AcceptBar
                           onAcceptClick={(e) => {
+                            acceptModalOriginElRef.current = e.currentTarget;
                             setAcceptModalOrigin(captureGlassModalOrigin(e));
                             setShowAcceptModal(true);
                           }}

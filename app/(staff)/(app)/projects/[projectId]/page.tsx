@@ -22,6 +22,7 @@ import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
+import { useMobileBottomSheet } from "@/lib/use-mobile-bottom-sheet";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor from "@/components/specs-grid-editor";
@@ -1486,7 +1487,13 @@ function toStr(value: unknown, fallback = "") {
 // existing file-download helpers elsewhere in this file that already follow this exact pattern.
 function openClientHubInNewTab(projectId: string) {
   const a = document.createElement("a");
-  a.href = `${window.location.origin}/client/hub/${projectId}`;
+  // ?staffPreview=1 marks this specific link as a STAFF-opened preview — never present on the
+  // real link a client actually receives, which is generated entirely separately, server-side, by
+  // buildSpecsShareUrl (lib/specs-share.ts) for the "Send to Client"/hub email flows and never
+  // carries this or any other query string. The hub page uses this marker (and only this marker,
+  // never any signed-in/staff auth state — this route is deliberately public/no-login) to decide
+  // whether to show a staff-only "exit" button back to the app, hidden from real clients.
+  a.href = `${window.location.origin}/client/hub/${projectId}?staffPreview=1`;
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   document.body.appendChild(a);
@@ -1704,7 +1711,17 @@ function QuoteExtraToggleSwitch({
 // once there's actually room for it. Always stays mounted (never returns null) — a fully collapsed
 // slot is zero-width and `overflow: hidden`, so it's already invisible and unclickable without
 // needing to leave the DOM.
-function FloatingBarSlot({ visible, children }: { visible: boolean; children: ReactNode }) {
+function FloatingBarSlot({
+  visible,
+  children,
+  orientation = "horizontal",
+}: {
+  visible: boolean;
+  children: ReactNode;
+  // "vertical" collapses maxHeight instead of maxWidth — used when this slot sits in a stacked
+  // list (Quote/Specifications' own mobile action sheet) instead of the default horizontal pill.
+  orientation?: "horizontal" | "vertical";
+}) {
   const [collapsed, setCollapsed] = useState(!visible);
   // Once a slot has FULLY collapsed (maxWidth finished animating to 0 — not the same moment
   // `collapsed` itself flips true), this pulls it out of the flex row's layout entirely via
@@ -1790,8 +1807,16 @@ function FloatingBarSlot({ visible, children }: { visible: boolean; children: Re
     <>
       <div
         ref={wrapperRef}
-        className="overflow-hidden transition-[max-width] duration-300 ease-in-out"
-        style={{ maxWidth: collapsed ? 0 : 260, display: removedFromFlow ? "none" : "block" }}
+        className={
+          orientation === "vertical"
+            ? "w-full overflow-hidden transition-[max-height] duration-300 ease-in-out"
+            : "overflow-hidden transition-[max-width] duration-300 ease-in-out"
+        }
+        style={
+          orientation === "vertical"
+            ? { maxHeight: collapsed ? 0 : 200, display: removedFromFlow ? "none" : "block" }
+            : { maxWidth: collapsed ? 0 : 260, display: removedFromFlow ? "none" : "block" }
+        }
       >
         {/* transition is a CONSTANT rule here (never toggled to/from "none", unlike an earlier
             version of this) — changing transition-property in the exact same style update as the
@@ -2205,46 +2230,58 @@ function RoomCostBreakdownTables({ breakdown }: { breakdown: RoomCostBreakdown }
   );
 }
 
-// Plain, self-contained CSS for the print tab below — deliberately NOT the app's own CSS custom
-// properties (--glass-border etc.), which are only ever defined against this app's own light/dark
-// theme and wouldn't resolve to anything sensible in a bare document.write()'d tab. Structurally
-// mirrors RoomCostBreakdownTables' own classes/layout as closely as a plain page can (same section
-// header bar treatment, same Category/Item split with a colored pill, same row borders) —
-// printed-page colors are a bit darker/more visible than the on-screen --panel-muted/--glass-border
-// tokens, which lean very light/translucent against the modal's own glass background and would
-// barely register as a "bar" at all against plain white paper.
+// Plain, self-contained CSS for the print-only root below — deliberately NOT the app's own CSS
+// custom properties (--glass-border etc.), which are only ever defined against this app's own
+// light/dark theme and can't be relied on to still resolve sensibly once everything else on the
+// page is hidden for print. Structurally mirrors RoomCostBreakdownTables' own classes/layout as
+// closely as a plain page can (same section header bar treatment, same Category/Item split with a
+// colored pill, same row borders) — printed-page colors are a bit darker/more visible than the
+// on-screen --panel-muted/--glass-border tokens, which lean very light/translucent against the
+// modal's own glass background and would barely register as a "bar" at all against plain white
+// paper.
 //
-// No @page size declaration and no font-size-scaling tricks — an earlier version tried both to
-// out-guess the print engine's own paper-size/DPI assumptions and made things WORSE (an A4 @page
-// that doesn't match the destination paper's own actual default size is what was making Chrome
-// auto-scale everything to "fit", not fix it). Plain, ordinary CSS at normal sizes, opened as a
-// normal tab (not a sized popup window — see openHtmlPrintWindow's own comment), is what makes the
-// print actually match this tab's own on-screen rendering, since there's nothing left fighting the
-// browser's own default (unscaled) print behavior.
-const ROOM_COST_BREAKDOWN_PRINT_STYLES = `
+// No @page size declaration and no font-size-scaling tricks — an earlier version (back when this
+// printed via a separate document.write()'d tab) tried both to out-guess the print engine's own
+// paper-size/DPI assumptions and made things WORSE (an A4 @page that doesn't match the destination
+// paper's own actual default size is what was making Chrome auto-scale everything to "fit", not
+// fix it). Plain, ordinary CSS at normal sizes is what makes the print actually match this
+// popup's own on-screen rendering, since there's nothing left fighting the browser's own default
+// (unscaled) print behavior.
+//
+// Every selector is scoped under #cost-breakdown-print-root (see triggerCostBreakdownPrint below)
+// and the whole block only takes effect @media print — the root itself stays display:none the
+// rest of the time, and `body > *:not(#cost-breakdown-print-root) { display: none }` hides
+// everything ELSE (the actual on-screen app, including this very modal) for the duration of the
+// print, so what actually reaches paper is ONLY this content, laid out fresh at the document's own
+// root — untouched by the modal's own overflow-hidden/backdrop-filter/transform, which print
+// engines (Safari/WebKit especially) don't always fully neutralize on an ancestor.
+const ROOM_COST_BREAKDOWN_PRINT_MEDIA_CSS = `
+@media print {
+  body > *:not(#cost-breakdown-print-root) { display: none !important; }
+  #cost-breakdown-print-root { display: block !important; position: static !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; font-size: 13px; color: #000000; margin: 0; padding: 32px; background: #ffffff; max-width: 720px; }
   /* Browsers strip background colors/fills when actually printing by default (an ink-saving
-     default meant for regular web pages) — without this, the tab looks right on screen but the
-     section bars and category pills disappear the moment it's actually sent to a printer or
-     "Save as PDF". This opts every element back in, since the whole point here IS those fills. */
-  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; font-size: 13px; color: #000000; margin: 0; padding: 32px; background: #ffffff; max-width: 720px; }
-  h1 { font-size: 20px; font-weight: 700; margin: 0 0 14px; }
-  .section-bar { border-radius: 6px; padding: 6px 9px; background: #eef0f3; margin: 16px 0 6px; }
-  .section-bar:first-of-type { margin-top: 0; }
-  .section-bar p { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #000000; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 4px; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #dfe3e8; }
-  th { font-weight: 700; }
-  td.num, th.num { text-align: right; }
-  td.center, th.center { text-align: center; }
-  td.category-cell, th.category-cell { white-space: nowrap; width: 1%; }
-  .pill { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 700; color: #ffffff; }
-  p.empty { font-size: 13px; font-style: italic; color: #6b7280; margin: 4px 0; }
-  p.subtotal { text-align: right; font-size: 13px; font-weight: 700; margin: 4px 0 0; }
-  .room-total { text-align: right; font-size: 15px; font-weight: 700; border-top: 1px solid #dfe3e8; padding-top: 8px; margin-top: 10px; }
-  .room-block { page-break-inside: avoid; margin-bottom: 26px; }
-  .summary-row { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; }
-  .grand-total { display: flex; justify-content: space-between; font-size: 16px; font-weight: 700; border-top: 1px solid #dfe3e8; padding-top: 8px; margin-top: 8px; }
+     default meant for regular web pages) — without this, the section bars and category pills
+     disappear the moment it's actually sent to a printer or "Save as PDF". This opts every
+     element back in, since the whole point here IS those fills. */
+  #cost-breakdown-print-root * { -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+  #cost-breakdown-print-root h1 { font-size: 20px; font-weight: 700; margin: 0 0 14px; }
+  #cost-breakdown-print-root .section-bar { border-radius: 6px; padding: 6px 9px; background: #eef0f3; margin: 16px 0 6px; }
+  #cost-breakdown-print-root .section-bar:first-of-type { margin-top: 0; }
+  #cost-breakdown-print-root .section-bar p { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #000000; }
+  #cost-breakdown-print-root table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 4px; }
+  #cost-breakdown-print-root th, #cost-breakdown-print-root td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #dfe3e8; }
+  #cost-breakdown-print-root th { font-weight: 700; }
+  #cost-breakdown-print-root td.num, #cost-breakdown-print-root th.num { text-align: right; }
+  #cost-breakdown-print-root td.center, #cost-breakdown-print-root th.center { text-align: center; }
+  #cost-breakdown-print-root td.category-cell, #cost-breakdown-print-root th.category-cell { white-space: nowrap; width: 1%; }
+  #cost-breakdown-print-root .pill { display: inline-block; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 700; color: #ffffff; }
+  #cost-breakdown-print-root p.empty { font-size: 13px; font-style: italic; color: #6b7280; margin: 4px 0; }
+  #cost-breakdown-print-root p.subtotal { text-align: right; font-size: 13px; font-weight: 700; margin: 4px 0 0; }
+  #cost-breakdown-print-root .room-total { text-align: right; font-size: 15px; font-weight: 700; border-top: 1px solid #dfe3e8; padding-top: 8px; margin-top: 10px; }
+  #cost-breakdown-print-root .room-block { page-break-inside: avoid; margin-bottom: 26px; }
+  #cost-breakdown-print-root .summary-row { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; }
+  #cost-breakdown-print-root .grand-total { display: flex; justify-content: space-between; font-size: 16px; font-weight: 700; border-top: 1px solid #dfe3e8; padding-top: 8px; margin-top: 8px; }
+}
 `;
 
 // One room's Items/Sheets/Misc/Total, as plain HTML — shared by the single-room popup's own Print
@@ -2298,30 +2335,39 @@ function roomCostBreakdownRoomBlockHtml(roomName: string, breakdown: RoomCostBre
   `;
 }
 
-// Opens a blank tab, writes a minimal standalone HTML document into it, and triggers the browser's
-// own print dialog — same "print to a page" idea as the rest of the app's Print buttons, just for
-// a plain data table instead of a paginated PDF document (those go through buildSpecsGridPdfBlob/
-// openPdfBlobInPrintWindow, built for the Quote/Specs grid specifically — overkill for this). The
-// short delay before calling print() gives the new tab a moment to actually lay out the written
-// content first; calling it immediately after document.write can print a still-blank page in some
-// browsers.
-function openHtmlPrintWindow(title: string, bodyHtml: string) {
-  if (typeof window === "undefined") return;
-  // No features string (width/height/etc.) — passing one is what makes browsers treat this as a
-  // separate popup WINDOW instead of an ordinary new TAB alongside the rest of the app.
-  const printWindow = window.open("", "_blank");
-  if (!printWindow) return;
-  printWindow.document.write(
-    // The viewport meta matters here specifically — without it, a freshly document.write()-ed
-    // window (no navigation, no real page load) is exactly the case where some browsers apply
-    // their own automatic zoom/scale heuristics to the content (most visible on a system with
-    // OS-level display scaling), inflating every size in the stylesheet well past its literal
-    // px/em value. This is the same declaration the main app's own root layout already carries.
-    `<!doctype html><html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>${escapeHtml(title)}</title><style>${ROOM_COST_BREAKDOWN_PRINT_STYLES}</style></head><body>${bodyHtml}</body></html>`,
-  );
-  printWindow.document.close();
-  printWindow.focus();
-  window.setTimeout(() => printWindow.print(), 250);
+// Prints the cost breakdown IN PLACE — no separate tab/window — by dropping bodyHtml into a
+// single, normally-hidden root appended directly to document.body (created once, reused on every
+// call) and calling the current window's own print(). A separate document.write()'d tab used to
+// do this instead, but on mobile that left the user stuck on a blank print tab with nothing to
+// navigate "back" to — this keeps them on the same popup the whole time; the print dialog opens
+// and closes over top of it, same as printing any other page.
+function triggerCostBreakdownPrint(title: string, bodyHtml: string) {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  let styleEl = document.getElementById("cost-breakdown-print-style") as HTMLStyleElement | null;
+  if (!styleEl) {
+    styleEl = document.createElement("style");
+    styleEl.id = "cost-breakdown-print-style";
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent = `#cost-breakdown-print-root { display: none; } ${ROOM_COST_BREAKDOWN_PRINT_MEDIA_CSS}`;
+  let root = document.getElementById("cost-breakdown-print-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "cost-breakdown-print-root";
+    document.body.appendChild(root);
+  }
+  root.innerHTML = bodyHtml;
+  // Cosmetic only (the PDF filename a "Save as PDF" print defaults to) — restored the moment the
+  // print UI closes, on both a completed print and a cancel, so the app's own tab title is never
+  // left showing this instead of the project's.
+  const previousTitle = document.title;
+  document.title = title;
+  const restoreTitle = () => {
+    document.title = previousTitle;
+    window.removeEventListener("afterprint", restoreTitle);
+  };
+  window.addEventListener("afterprint", restoreTitle);
+  window.print();
 }
 
 // "Update" on an outdated quote (see onUpdateOutdatedQuoteGrid) needs to refresh whatever's actually
@@ -6172,10 +6218,18 @@ export default function ProjectDetailsPage() {
   const [projectImageViewerPinPopupOrigin, setProjectImageViewerPinPopupOrigin] = useState<GlassModalOrigin>(null);
   const projectImageViewerPinPopupPanelRef = useRef<HTMLDivElement | null>(null);
   const projectImageViewerLastActiveAnnotationIdRef = useRef<string>("");
+  // Same push-nudge + duck-behind-the-pin close treatment as leads.tsx's identical annotation pin
+  // popup — safe here too even though the pin marker's own on-screen position can move (image
+  // pan/zoom, cluster expand/collapse) while this popup sits open: the nudge/duck-behind only ever
+  // apply a relative transform/z-index to whichever DOM node this ref currently points at, wherever
+  // it's since moved to — they never re-measure or depend on its original captured rect.
+  const projectImageViewerPinPopupOriginElRef = useRef<HTMLElement | null>(null);
   const projectImageViewerPinPopupShouldRender = useGlassModalPopOrigin(
     Boolean(projectImageViewerActiveAnnotationId),
     projectImageViewerPinPopupOrigin,
     projectImageViewerPinPopupPanelRef,
+    undefined,
+    projectImageViewerPinPopupOriginElRef,
   );
   useEffect(() => {
     if (projectImageViewerActiveAnnotationId) {
@@ -6228,6 +6282,16 @@ export default function ProjectDetailsPage() {
   // had zero visible symptom beyond edits silently not surviving a refresh/reprint.
   const [specsSheetSaveError, setSpecsSheetSaveError] = useState("");
   const [isSpecsSheetResetConfirmOpen, setIsSpecsSheetResetConfirmOpen] = useState(false);
+  const [specsSheetResetConfirmOrigin, setSpecsSheetResetConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const specsSheetResetConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const specsSheetResetConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSpecsSheetResetConfirmModal = useGlassModalPopOrigin(
+    isSpecsSheetResetConfirmOpen,
+    specsSheetResetConfirmOrigin,
+    specsSheetResetConfirmPanelRef,
+    undefined,
+    specsSheetResetConfirmOriginElRef,
+  );
   // Bumped whenever this project's sheet is force-reset to a fresh company-template clone, so
   // <SpecsGridEditor> (whose internal selection/drag state isn't derived from its `value` prop)
   // remounts instead of silently keeping stale internal state.
@@ -6321,7 +6385,14 @@ export default function ProjectDetailsPage() {
   const [isSpecsSaveVersionModalOpen, setIsSpecsSaveVersionModalOpen] = useState(false);
   const [specsSaveVersionModalOrigin, setSpecsSaveVersionModalOrigin] = useState<GlassModalOrigin>(null);
   const specsSaveVersionModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderSpecsSaveVersionModal = useGlassModalPopOrigin(isSpecsSaveVersionModalOpen, specsSaveVersionModalOrigin, specsSaveVersionModalPanelRef);
+  const specsSaveVersionModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSpecsSaveVersionModal = useGlassModalPopOrigin(
+    isSpecsSaveVersionModalOpen,
+    specsSaveVersionModalOrigin,
+    specsSaveVersionModalPanelRef,
+    undefined,
+    specsSaveVersionModalOriginElRef,
+  );
   const [specsSaveVersionNameDraft, setSpecsSaveVersionNameDraft] = useState("");
   const [isSavingSpecsVersion, setIsSavingSpecsVersion] = useState(false);
   // Which saved version (if any) is currently displayed instead of the live sheet — same
@@ -6356,6 +6427,16 @@ export default function ProjectDetailsPage() {
   // "New Comparison" clicked while there's unsaved draft work — asks whether to save it first
   // rather than silently discarding it (see onClickNewComparison/saveCurrentAndStartNewComparison).
   const [isNewComparisonConfirmOpen, setIsNewComparisonConfirmOpen] = useState(false);
+  const [newComparisonConfirmOrigin, setNewComparisonConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const newComparisonConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const newComparisonConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderNewComparisonConfirmModal = useGlassModalPopOrigin(
+    isNewComparisonConfirmOpen,
+    newComparisonConfirmOrigin,
+    newComparisonConfirmPanelRef,
+    undefined,
+    newComparisonConfirmOriginElRef,
+  );
   // How the piece checklist below is grouped for selection — purely about how easy the pieces are
   // to find and tick (e.g. selecting "everything currently in Melteca" is much easier grouped by
   // product); has no effect on pricing/wording.
@@ -6388,10 +6469,13 @@ export default function ProjectDetailsPage() {
   const [comparisonPendingDeleteId, setComparisonPendingDeleteId] = useState("");
   const [comparisonDeleteModalOrigin, setComparisonDeleteModalOrigin] = useState<GlassModalOrigin>(null);
   const comparisonDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const comparisonDeleteModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderComparisonDeleteModal = useGlassModalPopOrigin(
     Boolean(comparisonPendingDeleteId),
     comparisonDeleteModalOrigin,
     comparisonDeleteModalPanelRef,
+    undefined,
+    comparisonDeleteModalOriginElRef,
   );
   // Same idea for "Apply to Cutlist" — writes that comparison's per-row product overrides
   // permanently into the real Initial Measure cutlist (see applyProductComparisonToCutlist and
@@ -6399,6 +6483,7 @@ export default function ProjectDetailsPage() {
   const [isApplyingComparison, setIsApplyingComparison] = useState(false);
   const [comparisonApplyModalOrigin, setComparisonApplyModalOrigin] = useState<GlassModalOrigin>(null);
   const comparisonApplyModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const comparisonApplyModalOriginElRef = useRef<HTMLElement | null>(null);
   const [comparisonCopyFeedback, setComparisonCopyFeedback] = useState(false);
   const comparisonSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -6408,7 +6493,14 @@ export default function ProjectDetailsPage() {
   const [isSendSpecsToClientModalOpen, setIsSendSpecsToClientModalOpen] = useState(false);
   const [sendSpecsToClientOrigin, setSendSpecsToClientOrigin] = useState<GlassModalOrigin>(null);
   const sendSpecsToClientPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderSendSpecsToClientModal = useGlassModalPopOrigin(isSendSpecsToClientModalOpen, sendSpecsToClientOrigin, sendSpecsToClientPanelRef);
+  const sendSpecsToClientOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSendSpecsToClientModal = useGlassModalPopOrigin(
+    isSendSpecsToClientModalOpen,
+    sendSpecsToClientOrigin,
+    sendSpecsToClientPanelRef,
+    undefined,
+    sendSpecsToClientOriginElRef,
+  );
   const [isSendingSpecsToClient, setIsSendingSpecsToClient] = useState(false);
   const [sendSpecsToClientError, setSendSpecsToClientError] = useState("");
   // Populated once the link is generated — not emailed automatically (the user doesn't want
@@ -6422,7 +6514,14 @@ export default function ProjectDetailsPage() {
   const [isReopenSpecsConfirmOpen, setIsReopenSpecsConfirmOpen] = useState(false);
   const [reopenSpecsConfirmOrigin, setReopenSpecsConfirmOrigin] = useState<GlassModalOrigin>(null);
   const reopenSpecsConfirmModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderReopenSpecsConfirmModal = useGlassModalPopOrigin(isReopenSpecsConfirmOpen, reopenSpecsConfirmOrigin, reopenSpecsConfirmModalPanelRef);
+  const reopenSpecsConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderReopenSpecsConfirmModal = useGlassModalPopOrigin(
+    isReopenSpecsConfirmOpen,
+    reopenSpecsConfirmOrigin,
+    reopenSpecsConfirmModalPanelRef,
+    undefined,
+    reopenSpecsConfirmOriginElRef,
+  );
   // Fetched from specsShareLinks/{projectId} (see fetchSpecsShareStatus below) — null means no
   // share link (hub) has been created for this project yet. The hub doc carries BOTH tabs' state
   // in one document (see SpecsShareLinkDoc's own header comment in lib/specs-share.ts), so one
@@ -6459,7 +6558,14 @@ export default function ProjectDetailsPage() {
   const [isSendQuoteToClientModalOpen, setIsSendQuoteToClientModalOpen] = useState(false);
   const [sendQuoteToClientOrigin, setSendQuoteToClientOrigin] = useState<GlassModalOrigin>(null);
   const sendQuoteToClientPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderSendQuoteToClientModal = useGlassModalPopOrigin(isSendQuoteToClientModalOpen, sendQuoteToClientOrigin, sendQuoteToClientPanelRef);
+  const sendQuoteToClientOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSendQuoteToClientModal = useGlassModalPopOrigin(
+    isSendQuoteToClientModalOpen,
+    sendQuoteToClientOrigin,
+    sendQuoteToClientPanelRef,
+    undefined,
+    sendQuoteToClientOriginElRef,
+  );
   const [isSendingQuoteToClient, setIsSendingQuoteToClient] = useState(false);
   const [sendQuoteToClientError, setSendQuoteToClientError] = useState("");
   const [sendQuoteToClientPreview, setSendQuoteToClientPreview] = useState<{ to: string; subject: string; body: string } | null>(null);
@@ -6471,7 +6577,14 @@ export default function ProjectDetailsPage() {
   const [isReopenQuoteConfirmOpen, setIsReopenQuoteConfirmOpen] = useState(false);
   const [reopenQuoteConfirmOrigin, setReopenQuoteConfirmOrigin] = useState<GlassModalOrigin>(null);
   const reopenQuoteConfirmModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderReopenQuoteConfirmModal = useGlassModalPopOrigin(isReopenQuoteConfirmOpen, reopenQuoteConfirmOrigin, reopenQuoteConfirmModalPanelRef);
+  const reopenQuoteConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderReopenQuoteConfirmModal = useGlassModalPopOrigin(
+    isReopenQuoteConfirmOpen,
+    reopenQuoteConfirmOrigin,
+    reopenQuoteConfirmModalPanelRef,
+    undefined,
+    reopenQuoteConfirmOriginElRef,
+  );
 
   // ===== Quote Grid — the cell/grid-based replacement for the old block/container Quote template
   // system, built the same way the Specifications sheet already was earlier this session. A priced
@@ -6486,6 +6599,16 @@ export default function ProjectDetailsPage() {
   const [quoteGridSaveError, setQuoteGridSaveError] = useState("");
   const quoteGridSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isQuoteGridResetConfirmOpen, setIsQuoteGridResetConfirmOpen] = useState(false);
+  const [quoteGridResetConfirmOrigin, setQuoteGridResetConfirmOrigin] = useState<GlassModalOrigin>(null);
+  const quoteGridResetConfirmPanelRef = useRef<HTMLDivElement | null>(null);
+  const quoteGridResetConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderQuoteGridResetConfirmModal = useGlassModalPopOrigin(
+    isQuoteGridResetConfirmOpen,
+    quoteGridResetConfirmOrigin,
+    quoteGridResetConfirmPanelRef,
+    undefined,
+    quoteGridResetConfirmOriginElRef,
+  );
   // Bumped on Reset AND whenever the viewed grid switches between "live" and "a historical version"
   // (activeQuoteGridVersionId changes) — <SpecsGridEditor>'s own selection/drag state isn't derived
   // from its `value` prop, so without remounting it here a stale selection could point at a row index
@@ -6506,6 +6629,16 @@ export default function ProjectDetailsPage() {
   // draft, same pattern as the Rules editor's groupDraft: freely editable while open, only written
   // back via onSaveQuoteCustomPriceRows on Save, discarded on Cancel/backdrop-click.
   const [isQuoteCustomPriceModalOpen, setIsQuoteCustomPriceModalOpen] = useState(false);
+  const [quoteCustomPriceModalOrigin, setQuoteCustomPriceModalOrigin] = useState<GlassModalOrigin>(null);
+  const quoteCustomPriceModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const quoteCustomPriceModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderQuoteCustomPriceModal = useGlassModalPopOrigin(
+    isQuoteCustomPriceModalOpen,
+    quoteCustomPriceModalOrigin,
+    quoteCustomPriceModalPanelRef,
+    undefined,
+    quoteCustomPriceModalOriginElRef,
+  );
   const [quoteCustomPriceDraftRows, setQuoteCustomPriceDraftRows] = useState<{ id: string; name: string; price: string }[]>([]);
   // "Download" button (top bar, both Quote and Specs) — opens a small glass dropdown with the
   // available export formats (just "PDF" for now) instead of downloading immediately, so more
@@ -6623,7 +6756,14 @@ export default function ProjectDetailsPage() {
   const [isQuoteGridSaveVersionModalOpen, setIsQuoteGridSaveVersionModalOpen] = useState(false);
   const [quoteGridSaveVersionModalOrigin, setQuoteGridSaveVersionModalOrigin] = useState<GlassModalOrigin>(null);
   const quoteGridSaveVersionModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderQuoteGridSaveVersionModal = useGlassModalPopOrigin(isQuoteGridSaveVersionModalOpen, quoteGridSaveVersionModalOrigin, quoteGridSaveVersionModalPanelRef);
+  const quoteGridSaveVersionModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderQuoteGridSaveVersionModal = useGlassModalPopOrigin(
+    isQuoteGridSaveVersionModalOpen,
+    quoteGridSaveVersionModalOrigin,
+    quoteGridSaveVersionModalPanelRef,
+    undefined,
+    quoteGridSaveVersionModalOriginElRef,
+  );
   const [quoteGridSaveVersionNameDraft, setQuoteGridSaveVersionNameDraft] = useState("");
   const [isSavingQuoteGridVersion, setIsSavingQuoteGridVersion] = useState(false);
 
@@ -6634,10 +6774,13 @@ export default function ProjectDetailsPage() {
   const [quoteVersionPendingDeleteId, setQuoteVersionPendingDeleteId] = useState("");
   const [quoteVersionDeleteOrigin, setQuoteVersionDeleteOrigin] = useState<GlassModalOrigin>(null);
   const quoteVersionDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const quoteVersionDeleteModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderQuoteVersionDeleteModal = useGlassModalPopOrigin(
     Boolean(quoteVersionPendingDeleteId),
     quoteVersionDeleteOrigin,
     quoteVersionDeleteModalPanelRef,
+    undefined,
+    quoteVersionDeleteModalOriginElRef,
   );
   const [isDeletingQuoteVersion, setIsDeletingQuoteVersion] = useState(false);
   // Drives the delete icon's slide/bounce via a literal inline `transform` string toggled by real
@@ -6689,20 +6832,51 @@ export default function ProjectDetailsPage() {
   const [isPartTypeBreakdownModalOpen, setIsPartTypeBreakdownModalOpen] = useState(false);
   const [partTypeBreakdownModalOrigin, setPartTypeBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
   const partTypeBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderPartTypeBreakdownModal = useGlassModalPopOrigin(isPartTypeBreakdownModalOpen, partTypeBreakdownModalOrigin, partTypeBreakdownModalPanelRef);
+  // Same push-nudge + duck-behind-the-tile close treatment as the Logout confirm/Initial Measure
+  // summary popups — see useGlassModalPopOrigin's originElRef param and applyOriginArrival in
+  // lib/use-glass-modal-pop-origin.ts. Set fresh at click time by this tile's own onClick below.
+  const partTypeBreakdownModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderPartTypeBreakdownModal = useGlassModalPopOrigin(
+    isPartTypeBreakdownModalOpen,
+    partTypeBreakdownModalOrigin,
+    partTypeBreakdownModalPanelRef,
+    undefined,
+    partTypeBreakdownModalOriginElRef,
+  );
   const [isSheetCountModalOpen, setIsSheetCountModalOpen] = useState(false);
   const [sheetCountModalOrigin, setSheetCountModalOrigin] = useState<GlassModalOrigin>(null);
   const sheetCountModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderSheetCountModal = useGlassModalPopOrigin(isSheetCountModalOpen, sheetCountModalOrigin, sheetCountModalPanelRef);
+  const sheetCountModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderSheetCountModal = useGlassModalPopOrigin(
+    isSheetCountModalOpen,
+    sheetCountModalOrigin,
+    sheetCountModalPanelRef,
+    undefined,
+    sheetCountModalOriginElRef,
+  );
   const [isCostByRoomModalOpen, setIsCostByRoomModalOpen] = useState(false);
   const [costByRoomModalOrigin, setCostByRoomModalOrigin] = useState<GlassModalOrigin>(null);
   const costByRoomModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderCostByRoomModal = useGlassModalPopOrigin(isCostByRoomModalOpen, costByRoomModalOrigin, costByRoomModalPanelRef);
+  const costByRoomModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderCostByRoomModal = useGlassModalPopOrigin(
+    isCostByRoomModalOpen,
+    costByRoomModalOrigin,
+    costByRoomModalPanelRef,
+    undefined,
+    costByRoomModalOriginElRef,
+  );
   // Per-room "how is this price made up" popup — opened by clicking a room row in the ROOMS card.
   const [isRoomCostBreakdownModalOpen, setIsRoomCostBreakdownModalOpen] = useState(false);
   const [roomCostBreakdownModalOrigin, setRoomCostBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
   const roomCostBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderRoomCostBreakdownModal = useGlassModalPopOrigin(isRoomCostBreakdownModalOpen, roomCostBreakdownModalOrigin, roomCostBreakdownModalPanelRef);
+  const roomCostBreakdownModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderRoomCostBreakdownModal = useGlassModalPopOrigin(
+    isRoomCostBreakdownModalOpen,
+    roomCostBreakdownModalOrigin,
+    roomCostBreakdownModalPanelRef,
+    undefined,
+    roomCostBreakdownModalOriginElRef,
+  );
   const [roomCostBreakdownModalRoomName, setRoomCostBreakdownModalRoomName] = useState("");
   // Whole-project "how is this price made up" popup — opened from the "Project Cost" KPI tile and
   // the ROOMS card's own Total figure. Every room starts collapsed (see its own render site's
@@ -6710,12 +6884,28 @@ export default function ProjectDetailsPage() {
   const [isProjectCostBreakdownModalOpen, setIsProjectCostBreakdownModalOpen] = useState(false);
   const [projectCostBreakdownModalOrigin, setProjectCostBreakdownModalOrigin] = useState<GlassModalOrigin>(null);
   const projectCostBreakdownModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderProjectCostBreakdownModal = useGlassModalPopOrigin(isProjectCostBreakdownModalOpen, projectCostBreakdownModalOrigin, projectCostBreakdownModalPanelRef);
+  // Two call sites can open this (the "Project Cost" KPI tile and the ROOMS card's own Total row)
+  // — whichever was actually clicked sets this fresh, same as its own origin rect.
+  const projectCostBreakdownModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderProjectCostBreakdownModal = useGlassModalPopOrigin(
+    isProjectCostBreakdownModalOpen,
+    projectCostBreakdownModalOrigin,
+    projectCostBreakdownModalPanelRef,
+    undefined,
+    projectCostBreakdownModalOriginElRef,
+  );
   const [expandedProjectCostBreakdownRooms, setExpandedProjectCostBreakdownRooms] = useState<Record<string, boolean>>({});
   const [isProjectManagementModalOpen, setIsProjectManagementModalOpen] = useState(false);
   const [projectManagementModalOrigin, setProjectManagementModalOrigin] = useState<GlassModalOrigin>(null);
   const projectManagementModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderProjectManagementModal = useGlassModalPopOrigin(isProjectManagementModalOpen, projectManagementModalOrigin, projectManagementModalPanelRef);
+  const projectManagementModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderProjectManagementModal = useGlassModalPopOrigin(
+    isProjectManagementModalOpen,
+    projectManagementModalOrigin,
+    projectManagementModalPanelRef,
+    undefined,
+    projectManagementModalOriginElRef,
+  );
   const [isSavingSnapshotEdit, setIsSavingSnapshotEdit] = useState(false);
   const snapshotEditSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeQuoteSnapshotId, setActiveQuoteSnapshotId] = useState("");
@@ -6726,7 +6916,14 @@ export default function ProjectDetailsPage() {
   const [isDeletingQuoteSnapshot, setIsDeletingQuoteSnapshot] = useState(false);
   const [deleteQuoteSnapshotOrigin, setDeleteQuoteSnapshotOrigin] = useState<GlassModalOrigin>(null);
   const deleteQuoteSnapshotModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderDeleteQuoteSnapshotModal = useGlassModalPopOrigin(Boolean(pendingDeleteQuoteSnapshotId), deleteQuoteSnapshotOrigin, deleteQuoteSnapshotModalPanelRef);
+  const deleteQuoteSnapshotOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderDeleteQuoteSnapshotModal = useGlassModalPopOrigin(
+    Boolean(pendingDeleteQuoteSnapshotId),
+    deleteQuoteSnapshotOrigin,
+    deleteQuoteSnapshotModalPanelRef,
+    undefined,
+    deleteQuoteSnapshotOriginElRef,
+  );
   const quoteProjectTextEditorRef = useRef<HTMLDivElement | null>(null);
   const quoteProjectTextSelectionRef = useRef<Range | null>(null);
   const quoteProjectTextCkEditorRefs = useRef<Record<string, any>>({});
@@ -6817,17 +7014,23 @@ export default function ProjectDetailsPage() {
   const [contractorsToolbarHost, setContractorsToolbarHost] = useState<HTMLDivElement | null>(null);
   const [productionNotesModalOrigin, setProductionNotesModalOrigin] = useState<GlassModalOrigin>(null);
   const productionNotesModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const productionNotesModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderProductionNotesModal = useGlassModalPopOrigin(
     isProductionNotesPanelOpen,
     productionNotesModalOrigin,
     productionNotesModalPanelRef,
+    undefined,
+    productionNotesModalOriginElRef,
   );
   const [contractorsModalOrigin, setContractorsModalOrigin] = useState<GlassModalOrigin>(null);
   const contractorsModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const contractorsModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderContractorsModal = useGlassModalPopOrigin(
     isContractorsPanelOpen,
     contractorsModalOrigin,
     contractorsModalPanelRef,
+    undefined,
+    contractorsModalOriginElRef,
   );
   // Remedials — same standalone glass-popup pattern as Contractors above, just a single project-
   // wide text field (no per-contractor tabs) saved through saveGeneralDetailsPatch like Notes.
@@ -6837,10 +7040,13 @@ export default function ProjectDetailsPage() {
   const [remedialsToolbarHost, setRemedialsToolbarHost] = useState<HTMLDivElement | null>(null);
   const [remedialsModalOrigin, setRemedialsModalOrigin] = useState<GlassModalOrigin>(null);
   const remedialsModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const remedialsModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderRemedialsModal = useGlassModalPopOrigin(
     isRemedialsPanelOpen,
     remedialsModalOrigin,
     remedialsModalPanelRef,
+    undefined,
+    remedialsModalOriginElRef,
   );
   // Ids of draft rows created via "Add sub part" — purely a UI marker so the
   // Cutlist Entry list can show them indented/tagged under their main row;
@@ -6850,11 +7056,13 @@ export default function ProjectDetailsPage() {
   const [subPartTypePickerMainRowId, setSubPartTypePickerMainRowId] = useState("");
   const [subPartTypePickerOrigin, setSubPartTypePickerOrigin] = useState<GlassModalOrigin>(null);
   const subPartTypePickerPanelRef = useRef<HTMLDivElement | null>(null);
+  const subPartTypePickerModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderSubPartTypePickerModal = useGlassModalPopOrigin(
     Boolean(subPartTypePickerMainRowId),
     subPartTypePickerOrigin,
     subPartTypePickerPanelRef,
     { duration: 220 },
+    subPartTypePickerModalOriginElRef,
   );
   // "Doors or Drawers?" picker shown when a door-category quick-add pill is
   // clicked. Both choices ask for a front count and create ONE row with that
@@ -6875,11 +7083,13 @@ export default function ProjectDetailsPage() {
   const [doorDrawerPickerStep, setDoorDrawerPickerStep] = useState<"choose" | "drawerCount" | "doorCount">("choose");
   const [doorDrawerPickerOrigin, setDoorDrawerPickerOrigin] = useState<GlassModalOrigin>(null);
   const doorDrawerPickerPanelRef = useRef<HTMLDivElement | null>(null);
+  const doorDrawerPickerModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderDoorDrawerPickerModal = useGlassModalPopOrigin(
     Boolean(doorDrawerPickerPartType),
     doorDrawerPickerOrigin,
     doorDrawerPickerPanelRef,
     { duration: 220 },
+    doorDrawerPickerModalOriginElRef,
   );
   const [drawerBankCountDraft, setDrawerBankCountDraft] = useState("3");
   // Which single gap bubble (top or a specific between-gap seam) is currently
@@ -6938,7 +7148,8 @@ export default function ProjectDetailsPage() {
   const [boardRowDeleteBlocked, setBoardRowDeleteBlocked] = useState<{ colour: string } | null>(null);
   const [boardRowModalOrigin, setBoardRowModalOrigin] = useState<GlassModalOrigin>(null);
   const boardRowDeleteBlockedPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderBoardRowDeleteBlockedModal = useGlassModalPopOrigin(Boolean(boardRowDeleteBlocked), boardRowModalOrigin, boardRowDeleteBlockedPanelRef);
+  const boardRowDeleteBlockedOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderBoardRowDeleteBlockedModal = useGlassModalPopOrigin(Boolean(boardRowDeleteBlocked), boardRowModalOrigin, boardRowDeleteBlockedPanelRef, undefined, boardRowDeleteBlockedOriginElRef);
   const lastBoardRowDeleteBlockedRef = useRef<{ colour: string } | null>(null);
   if (boardRowDeleteBlocked) lastBoardRowDeleteBlockedRef.current = boardRowDeleteBlocked;
   const displayBoardRowDeleteBlocked = boardRowDeleteBlocked ?? lastBoardRowDeleteBlockedRef.current;
@@ -6948,7 +7159,8 @@ export default function ProjectDetailsPage() {
   const [isBoardRowDetailOpen, setIsBoardRowDetailOpen] = useState(false);
   const [boardRowDetailOrigin, setBoardRowDetailOrigin] = useState<GlassModalOrigin>(null);
   const boardRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderBoardRowDetail = useGlassModalPopOrigin(isBoardRowDetailOpen, boardRowDetailOrigin, boardRowDetailPanelRef);
+  const boardRowDetailOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderBoardRowDetail = useGlassModalPopOrigin(isBoardRowDetailOpen, boardRowDetailOrigin, boardRowDetailPanelRef, undefined, boardRowDetailOriginElRef);
   const [isSavingSalesRooms, setIsSavingSalesRooms] = useState(false);
   const [editingSalesRoomName, setEditingSalesRoomName] = useState("");
   const [editingSalesRoomDraftName, setEditingSalesRoomDraftName] = useState("");
@@ -6962,12 +7174,15 @@ export default function ProjectDetailsPage() {
   const addRoomPilotPanelRef = useRef<HTMLDivElement | null>(null);
   const addRoomFullscreenPanelRef = useRef<HTMLDivElement | null>(null);
   const roomDeleteBlockedPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderRoomDeleteBlockedModal = useGlassModalPopOrigin(Boolean(salesRoomDeleteBlocked), roomModalOrigin, roomDeleteBlockedPanelRef);
+  const roomDeleteBlockedOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderRoomDeleteBlockedModal = useGlassModalPopOrigin(Boolean(salesRoomDeleteBlocked), roomModalOrigin, roomDeleteBlockedPanelRef, undefined, roomDeleteBlockedOriginElRef);
   const lastSalesRoomDeleteBlockedRef = useRef<{ roomName: string; reason: "value" | "parts" } | null>(null);
   if (salesRoomDeleteBlocked) lastSalesRoomDeleteBlockedRef.current = salesRoomDeleteBlocked;
   const displaySalesRoomDeleteBlocked = salesRoomDeleteBlocked ?? lastSalesRoomDeleteBlockedRef.current;
-  const shouldRenderAddRoomPilotModal = useGlassModalPopOrigin(isAddRoomModalOpen, roomModalOrigin, addRoomPilotPanelRef);
-  const shouldRenderAddRoomFullscreenModal = useGlassModalPopOrigin(isAddRoomModalOpen, roomModalOrigin, addRoomFullscreenPanelRef);
+  const addRoomPilotOriginElRef = useRef<HTMLElement | null>(null);
+  const addRoomFullscreenOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderAddRoomPilotModal = useGlassModalPopOrigin(isAddRoomModalOpen, roomModalOrigin, addRoomPilotPanelRef, undefined, addRoomPilotOriginElRef);
+  const shouldRenderAddRoomFullscreenModal = useGlassModalPopOrigin(isAddRoomModalOpen, roomModalOrigin, addRoomFullscreenPanelRef, undefined, addRoomFullscreenOriginElRef);
   const [salesItemsBoardRooms, setSalesItemsBoardRooms] = useState<SalesItemsRoomBoardRow[]>([]);
   const [activeSalesItemsRoomId, setActiveSalesItemsRoomId] = useState("");
   const [salesItemsSearch, setSalesItemsSearch] = useState("");
@@ -6977,24 +7192,28 @@ export default function ProjectDetailsPage() {
   const [isItemsAddRoomModalOpen, setIsItemsAddRoomModalOpen] = useState(false);
   const [itemsAddRoomName, setItemsAddRoomName] = useState("");
   const itemsAddRoomPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderItemsAddRoomModal = useGlassModalPopOrigin(isItemsAddRoomModalOpen, roomModalOrigin, itemsAddRoomPanelRef);
+  const itemsAddRoomOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderItemsAddRoomModal = useGlassModalPopOrigin(isItemsAddRoomModalOpen, roomModalOrigin, itemsAddRoomPanelRef, undefined, itemsAddRoomOriginElRef);
   const [editingItemsRoomId, setEditingItemsRoomId] = useState("");
   const [editingItemsRoomDraftName, setEditingItemsRoomDraftName] = useState("");
   const [isItemsLibraryModalOpen, setIsItemsLibraryModalOpen] = useState(false);
   const [itemsLibraryModalOrigin, setItemsLibraryModalOrigin] = useState<GlassModalOrigin>(null);
   const itemsLibraryModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderItemsLibraryModal = useGlassModalPopOrigin(isItemsLibraryModalOpen, itemsLibraryModalOrigin, itemsLibraryModalPanelRef);
+  const itemsLibraryModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderItemsLibraryModal = useGlassModalPopOrigin(isItemsLibraryModalOpen, itemsLibraryModalOrigin, itemsLibraryModalPanelRef, undefined, itemsLibraryModalOriginElRef);
   const [itemsRoomPendingDeleteId, setItemsRoomPendingDeleteId] = useState("");
   const [itemsRoomDeleteOrigin, setItemsRoomDeleteOrigin] = useState<GlassModalOrigin>(null);
   const itemsRoomDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderItemsRoomDeleteModal = useGlassModalPopOrigin(Boolean(itemsRoomPendingDeleteId), itemsRoomDeleteOrigin, itemsRoomDeleteModalPanelRef);
+  const itemsRoomDeleteOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderItemsRoomDeleteModal = useGlassModalPopOrigin(Boolean(itemsRoomPendingDeleteId), itemsRoomDeleteOrigin, itemsRoomDeleteModalPanelRef, undefined, itemsRoomDeleteOriginElRef);
   const [salesItemsDragTargetRoomId, setSalesItemsDragTargetRoomId] = useState("");
   const salesItemsBoardRoomsRef = useRef<SalesItemsRoomBoardRow[]>([]);
   const lastSyncedSalesItemsRoomsRef = useRef<string | null>(null);
   const [clearSalesItemsConfirmKind, setClearSalesItemsConfirmKind] = useState<"room" | "all" | "">("");
   const [clearSalesItemsConfirmOrigin, setClearSalesItemsConfirmOrigin] = useState<GlassModalOrigin>(null);
   const clearSalesItemsConfirmPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderClearSalesItemsConfirmModal = useGlassModalPopOrigin(Boolean(clearSalesItemsConfirmKind), clearSalesItemsConfirmOrigin, clearSalesItemsConfirmPanelRef);
+  const clearSalesItemsConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderClearSalesItemsConfirmModal = useGlassModalPopOrigin(Boolean(clearSalesItemsConfirmKind), clearSalesItemsConfirmOrigin, clearSalesItemsConfirmPanelRef, undefined, clearSalesItemsConfirmOriginElRef);
   const [editingSalesItemsQuantityKey, setEditingSalesItemsQuantityKey] = useState("");
   const [editingSalesItemsQuantityDraft, setEditingSalesItemsQuantityDraft] = useState("");
   const suppressSalesItemsQuantityBlurRef = useRef(false);
@@ -7010,7 +7229,8 @@ export default function ProjectDetailsPage() {
   const [itemsRemovePendingItem, setItemsRemovePendingItem] = useState<{ roomId: string; roomName: string; itemId: string; name: string; quantity: number } | null>(null);
   const [itemsRemoveConfirmOrigin, setItemsRemoveConfirmOrigin] = useState<GlassModalOrigin>(null);
   const itemsRemoveConfirmPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderItemsRemoveConfirmModal = useGlassModalPopOrigin(Boolean(itemsRemovePendingItem), itemsRemoveConfirmOrigin, itemsRemoveConfirmPanelRef);
+  const itemsRemoveConfirmOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderItemsRemoveConfirmModal = useGlassModalPopOrigin(Boolean(itemsRemovePendingItem), itemsRemoveConfirmOrigin, itemsRemoveConfirmPanelRef, undefined, itemsRemoveConfirmOriginElRef);
   const lastItemsRemovePendingItemRef = useRef<{ roomId: string; roomName: string; itemId: string; name: string; quantity: number } | null>(null);
   if (itemsRemovePendingItem) lastItemsRemovePendingItemRef.current = itemsRemovePendingItem;
   const displayItemsRemovePendingItem = itemsRemovePendingItem ?? lastItemsRemovePendingItemRef.current;
@@ -7114,7 +7334,8 @@ export default function ProjectDetailsPage() {
   const [deleteProjectNameInput, setDeleteProjectNameInput] = useState("");
   const [deleteProjectModalOrigin, setDeleteProjectModalOrigin] = useState<GlassModalOrigin>(null);
   const deleteProjectModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderDeleteProjectModal = useGlassModalPopOrigin(isDeleteProjectModalOpen, deleteProjectModalOrigin, deleteProjectModalPanelRef);
+  const deleteProjectModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderDeleteProjectModal = useGlassModalPopOrigin(isDeleteProjectModalOpen, deleteProjectModalOrigin, deleteProjectModalPanelRef, undefined, deleteProjectModalOriginElRef);
   const [isDeleting, setIsDeleting] = useState(false);
   const [lockMessage, setLockMessage] = useState("");
   const [notesToolbarHost, setNotesToolbarHost] = useState<HTMLDivElement | null>(null);
@@ -7122,6 +7343,16 @@ export default function ProjectDetailsPage() {
   const [unlockTick, setUnlockTick] = useState(0);
   const [isGrantingUnlock, setIsGrantingUnlock] = useState(false);
   const [isUnlockEditModalOpen, setIsUnlockEditModalOpen] = useState(false);
+  const [unlockEditModalOrigin, setUnlockEditModalOrigin] = useState<GlassModalOrigin>(null);
+  const unlockEditModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const unlockEditModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderUnlockEditModal = useGlassModalPopOrigin(
+    isUnlockEditModalOpen,
+    unlockEditModalOrigin,
+    unlockEditModalPanelRef,
+    undefined,
+    unlockEditModalOriginElRef,
+  );
   const [unlockEditPassword, setUnlockEditPassword] = useState("");
   const [unlockEditError, setUnlockEditError] = useState("");
   const [savingProjectPermissionUid, setSavingProjectPermissionUid] = useState("");
@@ -7232,7 +7463,8 @@ export default function ProjectDetailsPage() {
   const [isProductionPrintModalOpen, setIsProductionPrintModalOpen] = useState(false);
   const [printModalOrigin, setPrintModalOrigin] = useState<GlassModalOrigin>(null);
   const printModalPanelRef = useRef<HTMLDivElement | null>(null);
-  const shouldRenderPrintModal = useGlassModalPopOrigin(isProductionPrintModalOpen, printModalOrigin, printModalPanelRef);
+  const printModalOriginElRef = useRef<HTMLElement | null>(null);
+  const shouldRenderPrintModal = useGlassModalPopOrigin(isProductionPrintModalOpen, printModalOrigin, printModalPanelRef, undefined, printModalOriginElRef);
   const [productionPrintSelections, setProductionPrintSelections] = useState<Record<string, boolean>>({
     summary: true,
     nesting: true,
@@ -7313,10 +7545,13 @@ export default function ProjectDetailsPage() {
   const [isProductionMobileRowDetailOpen, setIsProductionMobileRowDetailOpen] = useState(false);
   const [productionMobileRowDetailOrigin, setProductionMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
   const productionMobileRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
+  const productionMobileRowDetailOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderProductionMobileRowDetail = useGlassModalPopOrigin(
     isProductionMobileRowDetailOpen,
     productionMobileRowDetailOrigin,
     productionMobileRowDetailPanelRef,
+    undefined,
+    productionMobileRowDetailOriginElRef,
   );
   const [cutlistCompactDoorHingeEnabledRows, setCutlistCompactDoorHingeEnabledRows] = useState<Record<string, boolean>>({});
   const [cutlistCompactConfiguredEntryPanel, setCutlistCompactConfiguredEntryPanel] = useState<"fields" | "drawing">("fields");
@@ -7337,6 +7572,11 @@ export default function ProjectDetailsPage() {
   // scrolls), and animating toward a stale rect would visibly miss it.
   const [initialMeasureCloseSummaryOrigin, setInitialMeasureCloseSummaryOrigin] = useState<GlassModalOrigin>(null);
   const initialMeasureTabButtonRef = useRef<HTMLButtonElement | null>(null);
+  // Same treatment for the Production Cutlist close-summary popup, shrinking into the Production
+  // sidebar's own "Cutlist" tab button — see the comment above for why origin is re-measured fresh
+  // at close time rather than captured once.
+  const [productionCutlistCloseSummaryOrigin, setProductionCutlistCloseSummaryOrigin] = useState<GlassModalOrigin>(null);
+  const cutlistTabButtonRef = useRef<HTMLButtonElement | null>(null);
   // "+N this session" tracking — a ref (not state) holding the per-partType counts as they stood
   // at the FIRST close of this cutlist this page-visit, so later closes can diff against a stable
   // baseline instead of "since the last close." Null until the first close. The state alongside
@@ -7389,10 +7629,13 @@ export default function ProjectDetailsPage() {
   const [isCncMobileRowDetailOpen, setIsCncMobileRowDetailOpen] = useState(false);
   const [cncMobileRowDetailOrigin, setCncMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
   const cncMobileRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
+  const cncMobileRowDetailOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderCncMobileRowDetail = useGlassModalPopOrigin(
     isCncMobileRowDetailOpen,
     cncMobileRowDetailOrigin,
     cncMobileRowDetailPanelRef,
+    undefined,
+    cncMobileRowDetailOriginElRef,
   );
   // Desktop-only toggle for the floating "Edit Visibility" sidebar — mirrors Quote Extras' own
   // title-in-the-header/chevron toggle AND its full open/close animation sequencing (see
@@ -7501,6 +7744,11 @@ export default function ProjectDetailsPage() {
   const wasNestingFullscreenRef = useRef(false);
   const [isCompactProjectViewport, setIsCompactProjectViewport] = useState(false);
   const [projectViewportWidth, setProjectViewportWidth] = useState(0);
+  // Mobile-only action bars for Quote/Specifications — same slide-up/drag-down bottom sheet as
+  // Nesting's own mobile Visibility overlay (see useMobileBottomSheet's own comment), reached via a
+  // labeled trigger bar instead of a cramped row of icon-only buttons that were hard to tell apart.
+  const quoteMobileActionsSheet = useMobileBottomSheet(isCompactProjectViewport);
+  const specsMobileActionsSheet = useMobileBottomSheet(isCompactProjectViewport);
   const [nestingCompactBoardKey, setNestingCompactBoardKey] = useState("");
   // Mobile-only board-type pager (one board type per page, native horizontal scroll-snap) — same
   // shape as CNC's own cncTableScrollRef/cncBoardSectionRefs, see scrollToNestingBoard's own
@@ -7514,10 +7762,13 @@ export default function ProjectDetailsPage() {
   const [isNestingSheetPreviewOpen, setIsNestingSheetPreviewOpen] = useState(false);
   const [nestingSheetPreviewOrigin, setNestingSheetPreviewOrigin] = useState<GlassModalOrigin>(null);
   const nestingSheetPreviewPanelRef = useRef<HTMLDivElement | null>(null);
+  const nestingSheetPreviewOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderNestingSheetPreview = useGlassModalPopOrigin(
     isNestingSheetPreviewOpen,
     nestingSheetPreviewOrigin,
     nestingSheetPreviewPanelRef,
+    undefined,
+    nestingSheetPreviewOriginElRef,
   );
   const [nestingPreviewHoverPieceId, setNestingPreviewHoverPieceId] = useState<string | null>(null);
   const [nestingPreviewScale, setNestingPreviewScale] = useState(1);
@@ -7628,10 +7879,13 @@ export default function ProjectDetailsPage() {
     const [isInitialMobileRowDetailOpen, setIsInitialMobileRowDetailOpen] = useState(false);
     const [initialMobileRowDetailOrigin, setInitialMobileRowDetailOrigin] = useState<GlassModalOrigin>(null);
     const initialMobileRowDetailPanelRef = useRef<HTMLDivElement | null>(null);
+    const initialMobileRowDetailOriginElRef = useRef<HTMLElement | null>(null);
     const shouldRenderInitialMobileRowDetail = useGlassModalPopOrigin(
       isInitialMobileRowDetailOpen,
       initialMobileRowDetailOrigin,
       initialMobileRowDetailPanelRef,
+      undefined,
+      initialMobileRowDetailOriginElRef,
     );
     const [pendingDeleteRowsByGroup, setPendingDeleteRowsByGroup] = useState<Record<string, string[]>>({});
     const [deleteConfirmArmedGroups, setDeleteConfirmArmedGroups] = useState<Record<string, boolean>>({});
@@ -11119,6 +11373,7 @@ export default function ProjectDetailsPage() {
               type="button"
               disabled={salesReadOnly}
               onClick={(e) => {
+                itemsRoomDeleteOriginElRef.current = e.currentTarget;
                 e.stopPropagation();
                 setItemsRoomDeleteOrigin(captureGlassModalOrigin(e));
                 setItemsRoomPendingDeleteId(room.id);
@@ -11143,6 +11398,7 @@ export default function ProjectDetailsPage() {
           type="button"
           disabled={salesReadOnly}
           onClick={(e) => {
+            itemsLibraryModalOriginElRef.current = e.currentTarget;
             e.stopPropagation();
             setItemsLibraryModalOrigin(captureGlassModalOrigin(e));
             setActiveSalesItemsRoomId(room.id);
@@ -11194,6 +11450,7 @@ export default function ProjectDetailsPage() {
                         type="button"
                         disabled={salesReadOnly}
                         onClick={(e) => {
+                          itemsRemoveConfirmOriginElRef.current = e.currentTarget;
                           e.stopPropagation();
                           if (item.quantity > 1) {
                             setItemsRemoveConfirmOrigin(captureGlassModalOrigin(e));
@@ -12251,8 +12508,10 @@ export default function ProjectDetailsPage() {
     (comparisonNameDraft.trim() !== "" || comparisonSelectedRowIds.size > 0 || Object.keys(comparisonRowProductOverrides).length > 0);
   // "New Comparison" — if there's unsaved draft work, ask before clearing it rather than silently
   // discarding it (see the confirm modal in the JSX below); otherwise just clear straight away.
-  const onClickNewComparison = () => {
+  const onClickNewComparison = (e: ReactMouseEvent<HTMLButtonElement>) => {
     if (isNewComparisonDraftDirty) {
+      newComparisonConfirmOriginElRef.current = e.currentTarget;
+      setNewComparisonConfirmOrigin(captureGlassModalOrigin(e));
       setIsNewComparisonConfirmOpen(true);
     } else {
       startNewProductComparison();
@@ -12605,6 +12864,8 @@ export default function ProjectDetailsPage() {
     Boolean(comparisonApplyModal),
     comparisonApplyModalOrigin,
     comparisonApplyModalPanelRef,
+    undefined,
+    comparisonApplyModalOriginElRef,
   );
   // Commits a saved comparison's per-row product overrides permanently into the real Initial
   // Measure cutlist — this is the ONE place the tool writes back to initialCutlistRows itself,
@@ -26190,7 +26451,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         )
       : null;
   const unlockEditModalPortal =
-    isUnlockEditModalOpen && typeof document !== "undefined"
+    shouldRenderUnlockEditModal && typeof document !== "undefined"
       ? createPortal(
           <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
             <button
@@ -26199,7 +26460,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               onClick={closeUnlockEditModal}
               className="glass-modal-backdrop absolute inset-0"
             />
-            <div className="glass-modal-panel relative w-[min(720px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+            <div ref={unlockEditModalPanelRef} className="glass-modal-panel relative w-[min(720px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
               <div className="glass-modal-header px-5 py-4">
                 <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "#000000" }}>Unlock Edit</p>
               </div>
@@ -27256,10 +27517,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const [specsVersionPendingDeleteId, setSpecsVersionPendingDeleteId] = useState("");
   const [specsVersionDeleteOrigin, setSpecsVersionDeleteOrigin] = useState<GlassModalOrigin>(null);
   const specsVersionDeleteModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const specsVersionDeleteModalOriginElRef = useRef<HTMLElement | null>(null);
   const shouldRenderSpecsVersionDeleteModal = useGlassModalPopOrigin(
     Boolean(specsVersionPendingDeleteId),
     specsVersionDeleteOrigin,
     specsVersionDeleteModalPanelRef,
+    undefined,
+    specsVersionDeleteModalOriginElRef,
   );
   const [isDeletingSpecsVersion, setIsDeletingSpecsVersion] = useState(false);
   const deleteSpecsVersionById = async (versionId: string) => {
@@ -28701,6 +28965,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <button
                       type="button"
                       onClick={(e) => {
+                        deleteQuoteSnapshotOriginElRef.current = e.currentTarget;
                         e.stopPropagation();
                         setDeleteQuoteSnapshotOrigin(captureGlassModalOrigin(e));
                         setPendingDeleteQuoteSnapshotId(snapshot.id);
@@ -29559,7 +29824,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               disabled={salesReadOnly}
-              onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
+              onClick={(e) => { itemsAddRoomOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
               className="inline-flex h-10 items-center gap-2 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
               style={{ borderColor: "var(--success-strong)", backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
             >
@@ -29634,7 +29899,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               disabled={salesReadOnly || !activeSalesItemsRoom}
-              onClick={(e) => { setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
+              onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
               className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
             >
@@ -29643,7 +29908,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               disabled={salesReadOnly}
-              onClick={(e) => { setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
+              onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
               className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
               style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
             >
@@ -29818,7 +30083,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               disabled={salesReadOnly}
-              onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
+              onClick={(e) => { itemsAddRoomOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); setIsItemsAddRoomModalOpen(true); }}
               className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-white hover:brightness-95 disabled:opacity-55"
               style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
               title="Add Room"
@@ -29911,7 +30176,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 disabled={salesReadOnly || !activeSalesItemsRoom}
-                onClick={(e) => { setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
+                onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("room"); }}
                 className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
                 style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
               >
@@ -29920,7 +30185,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 disabled={salesReadOnly}
-                onClick={(e) => { setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
+                onClick={(e) => { clearSalesItemsConfirmOriginElRef.current = e.currentTarget; setClearSalesItemsConfirmOrigin(captureGlassModalOrigin(e)); setClearSalesItemsConfirmKind("all"); }}
                 className="h-10 rounded-[10px] border px-3 text-[12px] font-bold disabled:opacity-60"
                 style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
               >
@@ -30145,7 +30410,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     disabled={!roomCostBreakdownModalBreakdown}
                     onClick={() =>
                       roomCostBreakdownModalBreakdown &&
-                      openHtmlPrintWindow(
+                      triggerCostBreakdownPrint(
                         roomCostBreakdownModalRoomName || "Room",
                         roomCostBreakdownRoomBlockHtml(roomCostBreakdownModalRoomName || "Room", roomCostBreakdownModalBreakdown),
                       )
@@ -30229,7 +30494,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <div class="grand-total"><span>Project Total</span><span>${formatCurrencyValue(displayedSalesQuoteFinalTotal)}</span></div>
                         </div>
                       `;
-                      openHtmlPrintWindow("Project Cost Breakdown", roomsHtml + summaryHtml);
+                      triggerCostBreakdownPrint("Project Cost Breakdown", roomsHtml + summaryHtml);
                     }}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border hover:brightness-95 disabled:opacity-50"
                     style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "#000000" }}
@@ -30520,6 +30785,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             value: formatCurrencyValue(displayedSalesQuoteFinalTotal),
             hero: true,
             onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
+              projectCostBreakdownModalOriginElRef.current = e.currentTarget;
               setProjectCostBreakdownModalOrigin(captureGlassModalOrigin(e));
               setIsProjectCostBreakdownModalOpen(true);
             },
@@ -30530,6 +30796,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             value: String(includedSalesRoomsForQuote.length),
             hero: false,
             onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
+              costByRoomModalOriginElRef.current = e.currentTarget;
               setCostByRoomModalOrigin(captureGlassModalOrigin(e));
               setIsCostByRoomModalOpen(true);
             },
@@ -30540,6 +30807,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             value: String(salesSummaryTotalSheets),
             hero: false,
             onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
+              sheetCountModalOriginElRef.current = e.currentTarget;
               setSheetCountModalOrigin(captureGlassModalOrigin(e));
               setIsSheetCountModalOpen(true);
             },
@@ -30550,6 +30818,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             value: String(salesSummaryPartTypeBreakdown.totalCount),
             hero: false,
             onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
+              partTypeBreakdownModalOriginElRef.current = e.currentTarget;
               setPartTypeBreakdownModalOrigin(captureGlassModalOrigin(e));
               setIsPartTypeBreakdownModalOpen(true);
             },
@@ -30617,7 +30886,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <button
               type="button"
               disabled={salesReadOnly || isSavingSalesRooms}
-              onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
+              onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
               className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-white hover:brightness-95 disabled:opacity-55"
               style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
               title="Add room"
@@ -30655,6 +30924,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   tabIndex={0}
                   title={`View ${room.name} cost breakdown`}
                   onClick={(e) => {
+                    roomCostBreakdownModalOriginElRef.current = e.currentTarget;
                     setRoomCostBreakdownModalOrigin(captureGlassModalOrigin(e));
                     setRoomCostBreakdownModalRoomName(room.name);
                     setIsRoomCostBreakdownModalOpen(true);
@@ -30662,6 +30932,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   onKeyDown={(e) => {
                     if (e.key !== "Enter" && e.key !== " ") return;
                     e.preventDefault();
+                    roomCostBreakdownModalOriginElRef.current = e.currentTarget;
                     setRoomCostBreakdownModalOrigin(captureGlassModalOrigin(e as unknown as ReactMouseEvent<HTMLElement>));
                     setRoomCostBreakdownModalRoomName(room.name);
                     setIsRoomCostBreakdownModalOpen(true);
@@ -30690,7 +30961,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     disabled={salesReadOnly || isSavingSalesRooms}
-                    onClick={(e) => { e.stopPropagation(); setRoomModalOrigin(captureGlassModalOrigin(e)); void onDeleteSalesRoom(room.name); }}
+                    onClick={(e) => { roomDeleteBlockedOriginElRef.current = e.currentTarget; e.stopPropagation(); setRoomModalOrigin(captureGlassModalOrigin(e)); void onDeleteSalesRoom(room.name); }}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-55"
                     style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
                     onMouseEnter={() => setHoveredSalesRoomDeleteName(room.name)}
@@ -30757,7 +31028,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <button
                 type="button"
                 disabled={salesReadOnly || isSavingSalesRooms}
-                onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
+                onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border text-white hover:brightness-95 disabled:opacity-55"
                 style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
                 title="Add room"
@@ -30780,6 +31051,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 disabled={isViewingQuoteSnapshot}
                 title={isViewingQuoteSnapshot ? undefined : "View project cost breakdown"}
                 onClick={(e) => {
+                  projectCostBreakdownModalOriginElRef.current = e.currentTarget;
                   setProjectCostBreakdownModalOrigin(captureGlassModalOrigin(e));
                   setIsProjectCostBreakdownModalOpen(true);
                 }}
@@ -35555,6 +35827,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <button
                                       type="button"
                                       onClick={(e) => {
+                                        initialMobileRowDetailOriginElRef.current = e.currentTarget;
                                         setInitialMobileRowDetailOrigin(captureGlassModalOrigin(e));
                                         setInitialMobileRowDetailKey({ rowId: row.id, partType: group.partType });
                                         setIsInitialMobileRowDetailOpen(true);
@@ -36224,7 +36497,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     disabled={!salesAccess.edit || isSavingSalesRooms}
-                    onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
+                    onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
                     className="relative z-[1] mt-2 w-full rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
                     style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
@@ -37224,6 +37497,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 type="button"
                                 disabled={productionReadOnly}
                                 onClick={(e) => {
+                                  doorDrawerPickerModalOriginElRef.current = e.currentTarget;
                                   if (isDoorPartType(v)) {
                                     setDrawerBankCountDraft("3");
                                     setDoorDrawerPickerStep("choose");
@@ -38259,6 +38533,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     <button
                                       type="button"
                                       onClick={(e) => {
+                                        productionMobileRowDetailOriginElRef.current = e.currentTarget;
                                         setProductionMobileRowDetailOrigin(captureGlassModalOrigin(e));
                                         setProductionMobileRowDetailKey({ rowId: row.id, partType: group.partType });
                                         setIsProductionMobileRowDetailOpen(true);
@@ -39446,7 +39721,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     disabled={!salesAccess.edit || isSavingSalesRooms}
-                    onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
+                    onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
                     className="relative z-[1] mt-2 w-full rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-55"
                     style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                   >
@@ -39456,6 +39731,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     onClick={(e) => {
+                      productionNotesModalOriginElRef.current = e.currentTarget;
                       if (isProductionNotesPanelOpen) {
                         void closeProductionNotesPanel();
                         return;
@@ -39472,6 +39748,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     onClick={(e) => {
+                      contractorsModalOriginElRef.current = e.currentTarget;
                       if (isContractorsPanelOpen) {
                         void closeContractorsPanel();
                         return;
@@ -39508,6 +39785,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               type="button"
                               disabled={productionReadOnly}
                               onClick={(e) => {
+                                doorDrawerPickerModalOriginElRef.current = e.currentTarget;
                                 if (isDoorPartType(v)) {
                                   setDrawerBankCountDraft("3");
                                   setDoorDrawerPickerStep("choose");
@@ -39887,6 +40165,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 type="button"
                                 disabled={productionReadOnly}
                                 onClick={(e) => {
+                                  subPartTypePickerModalOriginElRef.current = e.currentTarget;
                                   setSubPartTypePickerOrigin(captureGlassModalOrigin(e));
                                   setSubPartTypePickerMainRowId(draft.id);
                                 }}
@@ -41780,6 +42059,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   key={v}
                                   type="button"
                                   onClick={(e) => {
+                                    doorDrawerPickerModalOriginElRef.current = e.currentTarget;
                                     const mainRowId = subPartTypePickerMainRowId;
                                     const mainRow = cutlistDraftRows.find((row) => row.id === mainRowId);
                                     if (mainRow && isCabinetryPartType(mainRow.partType) && isDoorPartType(v)) {
@@ -42373,6 +42653,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={`cnc_mobile_row_${group.boardKey}_${row.id}_${idx}`}
                                 type="button"
                                 onClick={(e) => {
+                                  cncMobileRowDetailOriginElRef.current = e.currentTarget;
                                   setCncMobileRowDetailOrigin(captureGlassModalOrigin(e));
                                   setCncMobileRowDetail({
                                     boardLabel: group.boardLabel,
@@ -43729,6 +44010,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               type="button"
               disabled={isReopeningQuoteAcceptance}
               onClick={(e) => {
+                reopenQuoteConfirmOriginElRef.current = e.currentTarget;
                 setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
                 setIsReopenQuoteConfirmOpen(true);
               }}
@@ -43751,6 +44033,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               type="button"
               disabled={isReopeningQuoteAcceptance}
               onClick={(e) => {
+                reopenQuoteConfirmOriginElRef.current = e.currentTarget;
                 setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
                 setIsReopenQuoteConfirmOpen(true);
               }}
@@ -43826,31 +44109,48 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             while a SENT version is what's actually being viewed — Send Quote to Client below is
             the one button that legitimately still needs the broad check (only one version may be
             sent at a time, regardless of what's currently on screen). */}
-        <FloatingBarSlot visible={!isViewingQuoteGridVersion}>
+        <FloatingBarSlot visible={!isViewingQuoteGridVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={!quoteGrid || isSavingQuoteGridVersion}
             onClick={(e) => {
+              quoteMobileActionsSheet.setIsOpen(false);
+              quoteGridSaveVersionModalOriginElRef.current = e.currentTarget;
               setQuoteGridSaveVersionModalOrigin(captureGlassModalOrigin(e));
               setQuoteGridSaveVersionNameDraft(`Version ${quoteGridVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
               setIsQuoteGridSaveVersionModalOpen(true);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            }
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            aria-label="Save"
           >
-            <Save size={14} />
+            <Save size={isCompactProjectViewport ? 16 : 14} />
             Save
           </button>
         </FloatingBarSlot>
-        <FloatingBarSlot visible={!isViewingQuoteGridVersion}>
+        <FloatingBarSlot visible={!isViewingQuoteGridVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={!hasQuoteGridTemplate}
-            onClick={() => setIsQuoteGridResetConfirmOpen(true)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            onClick={(e) => {
+              quoteMobileActionsSheet.setIsOpen(false);
+              quoteGridResetConfirmOriginElRef.current = e.currentTarget;
+              setQuoteGridResetConfirmOrigin(captureGlassModalOrigin(e));
+              setIsQuoteGridResetConfirmOpen(true);
+            }}
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            }
             style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+            aria-label="Reset"
           >
-            <RotateCcw size={14} />
+            <RotateCcw size={isCompactProjectViewport ? 16 : 14} />
             Reset
           </button>
         </FloatingBarSlot>
@@ -43866,21 +44166,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             button) — a button that can never be clicked right now (something else is already
             sent; Reopen for Editing first) reads as clutter, not a real option, so it pops out of
             the pill entirely instead of sitting there greyed out. */}
-        <FloatingBarSlot visible={!isQuoteContentLockedForSending && !isQuoteLockedForSending}>
+        <FloatingBarSlot visible={!isQuoteContentLockedForSending && !isQuoteLockedForSending} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={!displayedQuoteGrid}
             onClick={(e) => {
+              quoteMobileActionsSheet.setIsOpen(false);
+              sendQuoteToClientOriginElRef.current = e.currentTarget;
               setSendQuoteToClientOrigin(captureGlassModalOrigin(e));
               setSendQuoteToClientError("");
               setSendQuoteToClientPreview(null);
               setIsSendQuoteToClientModalOpen(true);
               void sendQuoteToClient();
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            }
             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            aria-label="Send to Client"
           >
-            <Mail size={14} />
+            <Mail size={isCompactProjectViewport ? 16 : 14} />
             Send to Client
           </button>
         </FloatingBarSlot>
@@ -43893,48 +44200,69 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             Deliberately shown WHILE viewing the accepted/sent version itself too (unlike Send,
             which excludes that case) — that's exactly where "reopen this for editing" is most
             useful, not a case to hide it in. */}
-        <FloatingBarSlot visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled}>
+        <FloatingBarSlot visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={isReopeningQuoteAcceptance}
             onClick={(e) => {
+              quoteMobileActionsSheet.setIsOpen(false);
+              reopenQuoteConfirmOriginElRef.current = e.currentTarget;
               setReopenQuoteConfirmOrigin(captureGlassModalOrigin(e));
               setIsReopenQuoteConfirmOpen(true);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            }
             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            aria-label={isReopeningQuoteAcceptance ? "Reopening…" : "Reopen Edit"}
           >
-            <Unlock size={14} />
+            <Unlock size={isCompactProjectViewport ? 16 : 14} />
             {isReopeningQuoteAcceptance ? "Reopening…" : "Reopen Edit"}
           </button>
         </FloatingBarSlot>
         {/* Only when there's actually an accepted version to jump to, and it isn't already
             what's on screen — a quick way back to it from live (or any other version) without
             digging through the Version History sidebar. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId)}>
+        <FloatingBarSlot visible={Boolean(specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
-            onClick={() => openQuoteGridVersion(specsShareStatus?.quoteVersionId as string)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+            onClick={() => {
+              quoteMobileActionsSheet.setIsOpen(false);
+              openQuoteGridVersion(specsShareStatus?.quoteVersionId as string);
+            }}
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+            }
             style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+            aria-label="Accepted Version"
           >
-            <Eye size={14} />
+            <Eye size={isCompactProjectViewport ? 16 : 14} />
             Accepted Version
           </button>
         </FloatingBarSlot>
         {/* Only meaningful once something's actually been sent at least once — before that,
             the hub link exists as a route but there's nothing behind it for the client to see. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)}>
+        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             onClick={() => {
+              quoteMobileActionsSheet.setIsOpen(false);
               if (!project?.id) return;
               openClientHubInNewTab(project.id);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+            }
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            aria-label="Client Portal"
           >
-            <ExternalLink size={14} />
+            <ExternalLink size={isCompactProjectViewport ? 16 : 14} />
             Client Portal
           </button>
         </FloatingBarSlot>
@@ -43975,6 +44303,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div
           ref={salesQuoteScrollRef}
+          data-app-scroll-root="true"
           className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
             () => { if (isQuoteExtrasPanelOpen) toggleQuoteExtrasPanel(); if (!isQuoteHistoryPanelOpen) toggleQuoteHistoryPanel(); },
@@ -43988,8 +44317,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               blurred div, content-only bars on top) is what avoids Chromium's sticky/fixed-blur
               flicker bug. Keep both in sync if that experiment's outcome ever changes. 49, not 48,
               for the toolbar's own share of this height — see PROJECT_TOOLBAR_HEIGHT_PX's own
-              comment in specs-grid-editor.tsx for why its real rendered height is 49px. */}
+              comment in specs-grid-editor.tsx for why its real rendered height is 49px.
+              data-app-top-bar: this fullscreen view has no GlobalAppTabsBar (chromeHidden pages
+              unmount it entirely) but the app-shell's pulldown-nav gesture still runs here — see
+              app-shell.tsx's onMainTouchMove — and without a marked element to grow/fade, it
+              silently no-ops, leaving the pulldown's own icons with no background behind them.
+              This div is the natural match: it's already the one persistent, always-visible
+              backdrop surface behind the title bar, exactly what GlobalAppTabsBar's own
+              data-app-top-bar div is for the normal tab bar. */}
           <div
+            data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: quoteHeaderHeight + 49,
@@ -44015,13 +44352,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
           />
           <div
+            data-app-top-bar-content="true"
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center gap-3 px-4 md:px-5"
             style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-3">
               <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
-                <Quote size={14} />
+                <DollarSign size={14} />
                 <span>Quote</span>
                 <span style={{ color: "var(--text-muted)" }}>|</span>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
@@ -44079,17 +44417,64 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 document.body,
               )
             : null}
-          {/* Mobile only: every OTHER action lives in its own bar fixed to the BOTTOM of the
-              screen instead of squeezing onto the title row — desktop gets its own floating pill,
-              see quoteFloatingActionButtons' desktop render site further down. */}
-          {isCompactProjectViewport && (
+          {/* Mobile only: a labeled trigger bar (tap to open) instead of squeezing every other
+              action onto the title row or showing them as icon-only buttons that were hard to
+              tell apart — opens the same slide-up/drag-down bottom sheet as Nesting's own mobile
+              Visibility overlay (see useMobileBottomSheet), with the actions listed as icon+text
+              rows now that there's room. Desktop gets its own floating pill instead, see
+              quoteFloatingActionButtons' desktop render site further down. */}
+          {isCompactProjectViewport && !quoteMobileActionsSheet.isOpen && (
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
-              className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
+              className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
-              {quoteFloatingActionButtons}
+              <button
+                type="button"
+                onClick={() => quoteMobileActionsSheet.setIsOpen(true)}
+                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
+                style={{ color: "var(--text-main)" }}
+              >
+                Actions
+              </button>
             </div>
+          )}
+          {/* Always mounted (rather than only while open) so it's actually there in the DOM to
+              drag closed — its resting "closed" position is off-screen below the trigger bar
+              above (see useMobileBottomSheet's own layout effect), not unmounted. */}
+          {isCompactProjectViewport && (
+            <aside
+              ref={quoteMobileActionsSheet.panelRef}
+              data-app-gesture-exempt="true"
+              {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
+              className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+              style={{ transform: "translateY(100%)" }}
+            >
+              {/* Same bar (height, glass style) as the closed-state trigger bar above — it
+                  visually IS that bar, now sitting as the open panel's own header, so dragging it
+                  down closes back to that same resting spot instead of a differently-styled
+                  in-panel header. */}
+              <div
+                className="sticky top-0 z-10 flex h-[56px] items-center justify-center border-b px-3"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+                onClick={quoteMobileActionsSheet.onHeaderClick}
+                onTouchStart={quoteMobileActionsSheet.onHeaderTouchStart}
+                onTouchMove={quoteMobileActionsSheet.onHeaderTouchMove}
+                onTouchEnd={quoteMobileActionsSheet.onHeaderTouchEnd}
+                onTouchCancel={quoteMobileActionsSheet.onHeaderTouchEnd}
+              >
+                <div
+                  className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full"
+                  style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
+                />
+                <span className="pointer-events-none text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
+                  Actions
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 p-3">
+                {quoteFloatingActionButtons}
+              </div>
+            </aside>
           )}
           {/* Desktop only: the same buttons as the mobile strip above, in a centered floating
               pill fixed to the bottom of the screen instead of a squeezed-in top row — SpecsGridEditor's
@@ -44165,18 +44550,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </>
           )}
           <div className="flex flex-1" style={{ paddingTop: quoteHeaderHeight }}>
-            {/* No top padding here (only horizontal/bottom) — SpecsGridEditor owns its own vertical
+            {/* No top OR bottom padding on this wrapper — SpecsGridEditor owns its own vertical
                 spacing (its fixed toolbar's reserved flow space, then the canvas's own p-6), and any
                 top padding on this wrapper pushes its canvas further down than the fixed toolbar/
                 backdrop above actually accounts for, opening a real gap — showing this wrapper's own
                 (unstyled, page-background-colored) padding as a visible seam between the toolbar and
                 the canvas below it. The two fallback states below (no template / still cloning)
                 don't need it either — both already have their own py-16 vertical spacing.
-                Same reasoning is why this wrapper has no paddingBottom either — the floating action
-                pill's reserved room lives inside SpecsGridEditor's own canvas instead
-                (canvasBottomInsetPx below), so the pill floats over that canvas's own grey background
-                rather than this wrapper's unstyled one. */}
-            <div className="flex-1 px-3 pb-3 sm:px-4 sm:pb-4 md:px-5 md:pb-5">
+                Same reasoning for the bottom edge — the floating action pill's reserved room lives
+                inside SpecsGridEditor's own canvas instead (canvasBottomInsetPx below), so the pill
+                floats over that canvas's own grey background rather than this wrapper's unstyled one;
+                a pb-* class here used to double up on top of that reserved space instead of leaving
+                it as the single source of truth. */}
+            <div className="flex-1 px-3 sm:px-4 md:px-5">
               {!hasQuoteGridTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
                   <Quote size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
@@ -44245,7 +44631,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     disabled={isQuoteExtrasLockedForSending || !salesAccess.edit}
-                    onClick={() => {
+                    onClick={(e) => {
+                      quoteCustomPriceModalOriginElRef.current = e.currentTarget;
+                      setQuoteCustomPriceModalOrigin(captureGlassModalOrigin(e));
                       setQuoteCustomPriceDraftRows(quoteCustomPriceRows);
                       setIsQuoteCustomPriceModalOpen(true);
                     }}
@@ -44293,7 +44681,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             className="flex items-center justify-between gap-2 rounded-[10px] border px-3 py-2 transition-colors"
                             style={{
                               borderColor: hoveredQuoteExtraGroupId === g.id || previewHoveredQuoteExtraGroupId === g.id ? "#2563EB" : "var(--glass-border)",
-                              backgroundColor: hoveredQuoteExtraGroupId === g.id || previewHoveredQuoteExtraGroupId === g.id ? "rgba(37, 99, 235, 0.12)" : "var(--panel-muted)",
+                              // Solid, not the translucent rgba(37,99,235,0.12) this used to be —
+                              // that let whatever sat behind the panel show straight through the
+                              // highlighted row instead of reading as a normal opaque hover state.
+                              backgroundColor: hoveredQuoteExtraGroupId === g.id || previewHoveredQuoteExtraGroupId === g.id ? "var(--brand-soft)" : "var(--panel-muted)",
                               // No animation property AT ALL outside the panel's own just-opened/
                               // closing windows (see isQuoteExtrasPanelJustOpened's own comment) — a
                               // content change while the panel stays open (switching versions,
@@ -44364,11 +44755,41 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div
                       ref={quoteMobileExtrasPanelRef}
                       {...quoteMobileExtrasSwipe.touchHandlers}
-                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-3 overflow-y-auto p-3"
-                      style={{ backgroundColor: "var(--bg-app)", paddingTop: quoteHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col overflow-hidden"
+                      style={{ backgroundColor: "var(--bg-app)", boxShadow: "var(--shadow-glass)" }}
                     >
-                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Quote Extras</p>
-                      {quoteExtrasListContent}
+                      {/* Stops touch/click here from bubbling up to this panel's OWN drag-to-close
+                          handlers (spread on the wrapper div above) and, since a portal's synthetic
+                          events still bubble through the REACT tree even though this DOM node lives
+                          under <body> — see React's own portal-bubbling behavior — to the main
+                          page's swipe-to-OPEN-a-drawer handlers too. Left un-stopped, a tap here
+                          could be misread as the start of one of those other gestures instead of a
+                          plain "go back" tap. */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeQuoteExtrasPanelMobile();
+                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchMove={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        className="flex h-[56px] w-full shrink-0 items-center justify-center gap-1.5 border-b text-[13px] font-bold uppercase tracking-[0.5px] hover:brightness-95"
+                        style={{
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-modal-bg)",
+                          backdropFilter: "blur(12px) saturate(220%)",
+                          WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                          color: "var(--text-main)",
+                        }}
+                        aria-label="Back"
+                      >
+                        <ChevronLeft size={15} strokeWidth={2.5} />
+                        Quote Extras
+                      </button>
+                      <div className="hide-scrollbar flex flex-1 flex-col gap-3 overflow-y-auto p-3">
+                        {quoteExtrasListContent}
+                      </div>
                     </div>
                   </div>,
                   document.body,
@@ -44384,7 +44805,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               );
             })()}
-            {isQuoteCustomPriceModalOpen && typeof document !== "undefined" &&
+            {shouldRenderQuoteCustomPriceModal && typeof document !== "undefined" &&
               createPortal(
                 <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
                   <button
@@ -44393,7 +44814,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     onClick={() => setIsQuoteCustomPriceModalOpen(false)}
                     className="glass-modal-backdrop absolute inset-0"
                   />
-                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                  <div ref={quoteCustomPriceModalPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                     <div className="glass-modal-header px-5 py-4">
                       <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Custom Prices</p>
                     </div>
@@ -44577,6 +44998,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             aria-label={`Delete "${v.name}"`}
                             title="Delete this version"
                             onClick={(e) => {
+                              quoteVersionDeleteModalOriginElRef.current = e.currentTarget;
                               e.stopPropagation();
                               setQuoteVersionDeleteOrigin(captureGlassModalOrigin(e));
                               setQuoteVersionPendingDeleteId(v.id);
@@ -44679,11 +45101,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div
                       ref={quoteMobileVersionsPanelRef}
                       {...quoteMobileVersionsSwipe.touchHandlers}
-                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-3 overflow-y-auto p-3"
-                      style={{ backgroundColor: "var(--bg-app)", paddingTop: quoteHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col overflow-hidden"
+                      style={{ backgroundColor: "var(--bg-app)", boxShadow: "var(--shadow-glass)" }}
                     >
-                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
-                      {quoteVersionsListContent}
+                      {/* Same stopPropagation reasoning as Quote Extras' own identical back button
+                          above. */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeQuoteHistoryPanelMobile();
+                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchMove={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        className="flex h-[56px] w-full shrink-0 items-center justify-center gap-1.5 border-b text-[13px] font-bold uppercase tracking-[0.5px] hover:brightness-95"
+                        style={{
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-modal-bg)",
+                          backdropFilter: "blur(12px) saturate(220%)",
+                          WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                          color: "var(--text-main)",
+                        }}
+                        aria-label="Back"
+                      >
+                        Version History
+                        <ChevronRight size={15} strokeWidth={2.5} />
+                      </button>
+                      <div className="hide-scrollbar flex flex-1 flex-col gap-3 overflow-y-auto p-3">
+                        {quoteVersionsListContent}
+                      </div>
                     </div>
                   </div>,
                   document.body,
@@ -44757,7 +45204,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 document.body,
               )
             : null}
-          {isQuoteGridResetConfirmOpen && typeof document !== "undefined"
+          {shouldRenderQuoteGridResetConfirmModal && typeof document !== "undefined"
             ? createPortal(
                 <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
                   <button
@@ -44766,7 +45213,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     onClick={() => setIsQuoteGridResetConfirmOpen(false)}
                     className="glass-modal-backdrop absolute inset-0"
                   />
-                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                  <div ref={quoteGridResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                     <div className="glass-modal-header px-5 py-4">
                       <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset to Template</p>
                     </div>
@@ -45073,6 +45520,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               type="button"
               disabled={isReopeningSpecsConfirmation}
               onClick={(e) => {
+                reopenSpecsConfirmOriginElRef.current = e.currentTarget;
                 setReopenSpecsConfirmOrigin(captureGlassModalOrigin(e));
                 setIsReopenSpecsConfirmOpen(true);
               }}
@@ -45145,33 +45593,50 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
     const specsFloatingActionButtons = (
       <>
-        <FloatingBarSlot visible={!isViewingSpecsSheetVersion}>
+        <FloatingBarSlot visible={!isViewingSpecsSheetVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={!specsSheetGrid || isSavingSpecsVersion || isSpecsContentLockedForSending}
             title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
             onClick={(e) => {
+              specsMobileActionsSheet.setIsOpen(false);
+              specsSaveVersionModalOriginElRef.current = e.currentTarget;
               setSpecsSaveVersionModalOrigin(captureGlassModalOrigin(e));
               setSpecsSaveVersionNameDraft(`Version ${specsSheetVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1}`);
               setIsSpecsSaveVersionModalOpen(true);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
+            }
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            aria-label="Save"
           >
-            <Save size={14} />
+            <Save size={isCompactProjectViewport ? 16 : 14} />
             Save
           </button>
         </FloatingBarSlot>
-        <FloatingBarSlot visible={!isViewingSpecsSheetVersion}>
+        <FloatingBarSlot visible={!isViewingSpecsSheetVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={!hasTemplate || isSpecsContentLockedForSending}
             title={isSpecsContentLockedForSending ? "Locked — Reopen for Editing first" : undefined}
-            onClick={() => setIsSpecsSheetResetConfirmOpen(true)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            onClick={(e) => {
+              specsMobileActionsSheet.setIsOpen(false);
+              specsSheetResetConfirmOriginElRef.current = e.currentTarget;
+              setSpecsSheetResetConfirmOrigin(captureGlassModalOrigin(e));
+              setIsSpecsSheetResetConfirmOpen(true);
+            }}
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            }
             style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+            aria-label="Reset"
           >
-            <RotateCcw size={14} />
+            <RotateCcw size={isCompactProjectViewport ? 16 : 14} />
             Reset
           </button>
         </FloatingBarSlot>
@@ -45185,21 +45650,28 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             no sense once it's the very thing already sent. */}
         {/* Same reasoning as the Quote tab's identical treatment above — folded into `visible`
             itself instead of just disabling the button. */}
-        <FloatingBarSlot visible={!isSpecsContentLockedForSending && !specsShareStatus?.versionId}>
+        <FloatingBarSlot visible={!isSpecsContentLockedForSending && !specsShareStatus?.versionId} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={!displayedSpecsSheetGrid}
             onClick={(e) => {
+              specsMobileActionsSheet.setIsOpen(false);
+              sendSpecsToClientOriginElRef.current = e.currentTarget;
               setSendSpecsToClientOrigin(captureGlassModalOrigin(e));
               setSendSpecsToClientError("");
               setSendSpecsToClientPreview(null);
               setIsSendSpecsToClientModalOpen(true);
               void sendSpecsToClient();
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            }
             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            aria-label="Send to Client"
           >
-            <Mail size={14} />
+            <Mail size={isCompactProjectViewport ? 16 : 14} />
             Send to Client
           </button>
         </FloatingBarSlot>
@@ -45207,48 +45679,69 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             because something's already sent, this takes its place instead of leaving nothing
             there, including while viewing the submitted version itself (unlike Send, which
             excludes that case) — that's exactly where "reopen this for editing" is most useful. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus?.versionId) && salesAllowReopenForEditingEnabled}>
+        <FloatingBarSlot visible={Boolean(specsShareStatus?.versionId) && salesAllowReopenForEditingEnabled} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             disabled={isReopeningSpecsConfirmation}
             onClick={(e) => {
+              specsMobileActionsSheet.setIsOpen(false);
+              reopenSpecsConfirmOriginElRef.current = e.currentTarget;
               setReopenSpecsConfirmOrigin(captureGlassModalOrigin(e));
               setIsReopenSpecsConfirmOpen(true);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
+            }
             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            aria-label={isReopeningSpecsConfirmation ? "Reopening…" : "Reopen Edit"}
           >
-            <Unlock size={14} />
+            <Unlock size={isCompactProjectViewport ? 16 : 14} />
             {isReopeningSpecsConfirmation ? "Reopening…" : "Reopen Edit"}
           </button>
         </FloatingBarSlot>
         {/* Only when there's actually a submitted version to jump to, and it isn't already
             what's on screen — a quick way back to it from live (or any other version) without
             digging through the Version History sidebar. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId)}>
+        <FloatingBarSlot visible={Boolean(specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
-            onClick={() => openSpecsSheetVersion(specsShareStatus?.versionId as string)}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+            onClick={() => {
+              specsMobileActionsSheet.setIsOpen(false);
+              openSpecsSheetVersion(specsShareStatus?.versionId as string);
+            }}
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
+            }
             style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+            aria-label="Submitted Version"
           >
-            <Eye size={14} />
+            <Eye size={isCompactProjectViewport ? 16 : 14} />
             Submitted Version
           </button>
         </FloatingBarSlot>
         {/* Only meaningful once something's actually been sent at least once — before that,
             the hub link exists as a route but there's nothing behind it for the client to see. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)}>
+        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
           <button
             type="button"
             onClick={() => {
+              specsMobileActionsSheet.setIsOpen(false);
               if (!project?.id) return;
               openClientHubInNewTab(project.id);
             }}
-            className="inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+            className={
+              isCompactProjectViewport
+                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95"
+                : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
+            }
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            aria-label="Client Portal"
           >
-            <ExternalLink size={14} />
+            <ExternalLink size={isCompactProjectViewport ? 16 : 14} />
             Client Portal
           </button>
         </FloatingBarSlot>
@@ -45280,6 +45773,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div
           ref={salesSpecsScrollRef}
+          data-app-scroll-root="true"
           className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeSpecsQuoteMobileSwipeHandlers(
             () => { if (isSpecsSectionsPanelOpen) toggleSpecsSectionsPanel(); if (!isSpecsVersionsSidebarOpen) toggleSpecsVersionsSidebar(); },
@@ -45305,8 +45799,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               sliver past this height unblurred — an accepted, minor edge case. The editor's own
               toolbar (SpecsGridEditor) uses the matching toolbarFixedTopPx/49 for its own fixed
               top/spacer (49, not 48 — see PROJECT_TOOLBAR_HEIGHT_PX's own comment there) — keep
-              both in sync if changed. */}
+              both in sync if changed.
+              data-app-top-bar: same reasoning as the Quote tab's identical marker — see its
+              comment — this fullscreen view has no GlobalAppTabsBar to grow/fade for the
+              pulldown-nav gesture, so this persistent backdrop surface stands in for it. */}
           <div
+            data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: specsHeaderHeight + 49,
@@ -45324,6 +45822,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               for the sidebar) since the sidebar is hidden for the whole duration of this fullscreen
               takeover anyway. */}
           <div
+            data-app-top-bar-content="true"
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center gap-3 px-4 md:px-5"
             style={{ color: "var(--text-main)" }}
           >
@@ -45388,17 +45887,64 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 document.body,
               )
             : null}
-          {/* Mobile only: every OTHER action lives in its own bar fixed to the BOTTOM of the
-              screen instead of squeezing onto the title row — desktop gets its own floating pill,
-              see specsFloatingActionButtons' desktop render site further down. */}
-          {isCompactProjectViewport && (
+          {/* Mobile only: a labeled trigger bar (tap to open) instead of squeezing every other
+              action onto the title row or showing them as icon-only buttons that were hard to
+              tell apart — opens the same slide-up/drag-down bottom sheet as Nesting's own mobile
+              Visibility overlay (see useMobileBottomSheet), with the actions listed as icon+text
+              rows now that there's room. Desktop gets its own floating pill instead, see
+              specsFloatingActionButtons' desktop render site further down. */}
+          {isCompactProjectViewport && !specsMobileActionsSheet.isOpen && (
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
-              className="hide-native-scrollbar fixed inset-x-0 bottom-0 z-[95] flex h-[56px] items-center gap-2 overflow-x-auto border-t px-4"
+              className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
               style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
             >
-              {specsFloatingActionButtons}
+              <button
+                type="button"
+                onClick={() => specsMobileActionsSheet.setIsOpen(true)}
+                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
+                style={{ color: "var(--text-main)" }}
+              >
+                Actions
+              </button>
             </div>
+          )}
+          {/* Always mounted (rather than only while open) so it's actually there in the DOM to
+              drag closed — its resting "closed" position is off-screen below the trigger bar
+              above (see useMobileBottomSheet's own layout effect), not unmounted. */}
+          {isCompactProjectViewport && (
+            <aside
+              ref={specsMobileActionsSheet.panelRef}
+              data-app-gesture-exempt="true"
+              {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
+              className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
+              style={{ transform: "translateY(100%)" }}
+            >
+              {/* Same bar (height, glass style) as the closed-state trigger bar above — it
+                  visually IS that bar, now sitting as the open panel's own header, so dragging it
+                  down closes back to that same resting spot instead of a differently-styled
+                  in-panel header. */}
+              <div
+                className="sticky top-0 z-10 flex h-[56px] items-center justify-center border-b px-3"
+                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+                onClick={specsMobileActionsSheet.onHeaderClick}
+                onTouchStart={specsMobileActionsSheet.onHeaderTouchStart}
+                onTouchMove={specsMobileActionsSheet.onHeaderTouchMove}
+                onTouchEnd={specsMobileActionsSheet.onHeaderTouchEnd}
+                onTouchCancel={specsMobileActionsSheet.onHeaderTouchEnd}
+              >
+                <div
+                  className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full"
+                  style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
+                />
+                <span className="pointer-events-none text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
+                  Actions
+                </span>
+              </div>
+              <div className="flex flex-col gap-2 p-3">
+                {specsFloatingActionButtons}
+              </div>
+            </aside>
           )}
           {/* Desktop only: the same buttons as the mobile strip above, in a centered floating
               pill fixed to the bottom of the screen instead of a squeezed-in top row — SpecsGridEditor's
@@ -45480,7 +46026,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 wrapper (see its comment): the floating action pill's reserved room lives inside
                 SpecsGridEditor's own canvas instead (canvasBottomInsetPx below), so the pill floats
                 over that canvas's own grey background rather than this wrapper's unstyled one. */}
-            <div className="flex-1 px-3 pb-3 sm:px-4 sm:pb-4 md:px-5 md:pb-5">
+            <div className="flex-1 px-3 sm:px-4 md:px-5">
               {!hasTemplate ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
                   <ClipboardList size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
@@ -45600,6 +46146,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           aria-label={`Delete "${v.name}"`}
                           title="Delete this version"
                           onClick={(e) => {
+                            specsVersionDeleteModalOriginElRef.current = e.currentTarget;
                             e.stopPropagation();
                             setSpecsVersionDeleteOrigin(captureGlassModalOrigin(e));
                             setSpecsVersionPendingDeleteId(v.id);
@@ -45692,11 +46239,35 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div
                       ref={specsMobileVersionsPanelRef}
                       {...specsMobileVersionsSwipe.touchHandlers}
-                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-2 overflow-y-auto p-3"
-                      style={{ backgroundColor: "var(--bg-app)", paddingTop: specsHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col overflow-hidden"
+                      style={{ backgroundColor: "var(--bg-app)", boxShadow: "var(--shadow-glass)" }}
                     >
-                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Version History</p>
-                      {specsVersionsListContent}
+                      {/* Same stopPropagation reasoning as Quote Extras' own identical back button. */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeSpecsVersionsSidebarMobile();
+                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchMove={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        className="flex h-[56px] w-full shrink-0 items-center justify-center gap-1.5 border-b text-[13px] font-bold uppercase tracking-[0.5px] hover:brightness-95"
+                        style={{
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-modal-bg)",
+                          backdropFilter: "blur(12px) saturate(220%)",
+                          WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                          color: "var(--text-main)",
+                        }}
+                        aria-label="Back"
+                      >
+                        Version History
+                        <ChevronRight size={15} strokeWidth={2.5} />
+                      </button>
+                      <div className="hide-scrollbar flex flex-1 flex-col gap-2 overflow-y-auto p-3">
+                        {specsVersionsListContent}
+                      </div>
                     </div>
                   </div>,
                   document.body,
@@ -45734,7 +46305,9 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       className="flex items-center justify-between gap-2 rounded-[10px] border px-3 py-2 transition-colors"
                       style={{
                         borderColor: hoveredSpecsSectionGroupId === g.id || previewHoveredSpecsSectionGroupId === g.id ? "#2563EB" : "var(--glass-border)",
-                        backgroundColor: hoveredSpecsSectionGroupId === g.id || previewHoveredSpecsSectionGroupId === g.id ? "rgba(37, 99, 235, 0.12)" : "var(--panel-muted)",
+                        // Solid, not the translucent rgba(37,99,235,0.12) this used to be — see
+                        // Quote Extras' own identical row's comment for why.
+                        backgroundColor: hoveredSpecsSectionGroupId === g.id || previewHoveredSpecsSectionGroupId === g.id ? "var(--brand-soft)" : "var(--panel-muted)",
                         ...(isSpecsSectionsPanelClosing
                           ? { animation: "glass-bubble-slide-out-right 280ms ease both", animationDelay: "0ms" }
                           : isSpecsSectionsPanelJustOpened
@@ -45788,11 +46361,35 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div
                       ref={specsMobileSectionsPanelRef}
                       {...specsMobileSectionsSwipe.touchHandlers}
-                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col gap-2 overflow-y-auto p-3"
-                      style={{ backgroundColor: "var(--bg-app)", paddingTop: specsHeaderHeight + 16, boxShadow: "var(--shadow-glass)" }}
+                      className="hide-scrollbar relative z-[1] flex h-full w-full flex-col overflow-hidden"
+                      style={{ backgroundColor: "var(--bg-app)", boxShadow: "var(--shadow-glass)" }}
                     >
-                      <p className="mb-1 text-[13px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-main)" }}>Sections</p>
-                      {specsSectionsListContent}
+                      {/* Same stopPropagation reasoning as Quote Extras' own identical back button. */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeSpecsSectionsPanelMobile();
+                        }}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchMove={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        className="flex h-[56px] w-full shrink-0 items-center justify-center gap-1.5 border-b text-[13px] font-bold uppercase tracking-[0.5px] hover:brightness-95"
+                        style={{
+                          borderColor: "var(--glass-border)",
+                          backgroundColor: "var(--glass-modal-bg)",
+                          backdropFilter: "blur(12px) saturate(220%)",
+                          WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                          color: "var(--text-main)",
+                        }}
+                        aria-label="Back"
+                      >
+                        <ChevronLeft size={15} strokeWidth={2.5} />
+                        Sections
+                      </button>
+                      <div className="hide-scrollbar flex flex-1 flex-col gap-2 overflow-y-auto p-3">
+                        {specsSectionsListContent}
+                      </div>
                     </div>
                   </div>,
                   document.body,
@@ -45983,7 +46580,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 document.body,
               )
             : null}
-          {isSpecsSheetResetConfirmOpen && typeof document !== "undefined"
+          {shouldRenderSpecsSheetResetConfirmModal && typeof document !== "undefined"
             ? createPortal(
                 <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
                   <button
@@ -45992,7 +46589,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     onClick={() => setIsSpecsSheetResetConfirmOpen(false)}
                     className="glass-modal-backdrop absolute inset-0"
                   />
-                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                  <div ref={specsSheetResetConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                     <div className="glass-modal-header px-5 py-4">
                       <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Reset to Template</p>
                     </div>
@@ -46257,6 +46854,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             aria-label={`Apply "${c.name}" to cutlist`}
                             title="Apply to Cutlist"
                             onClick={(e) => {
+                              comparisonApplyModalOriginElRef.current = e.currentTarget;
                               e.stopPropagation();
                               setComparisonApplyModalOrigin(captureGlassModalOrigin(e));
                               setComparisonApplyModal(buildComparisonApplyPreview(c));
@@ -46270,6 +46868,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             type="button"
                             aria-label={`Delete "${c.name}"`}
                             onClick={(e) => {
+                              comparisonDeleteModalOriginElRef.current = e.currentTarget;
                               e.stopPropagation();
                               setComparisonDeleteModalOrigin(captureGlassModalOrigin(e));
                               setComparisonPendingDeleteId(c.id);
@@ -46739,7 +47338,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </div>
             </div>
           ) : null}
-          {isNewComparisonConfirmOpen && typeof document !== "undefined"
+          {shouldRenderNewComparisonConfirmModal && typeof document !== "undefined"
             ? createPortal(
                 <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
                   <button
@@ -46748,7 +47347,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     onClick={() => setIsNewComparisonConfirmOpen(false)}
                     className="glass-modal-backdrop absolute inset-0"
                   />
-                  <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                  <div ref={newComparisonConfirmPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                     <div className="glass-modal-header px-5 py-4">
                       <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>Save Before Starting New?</p>
                     </div>
@@ -47129,6 +47728,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                     className="relative z-0 isolate w-full cursor-pointer overflow-hidden rounded-[4px] border border-[#D4DCE8] bg-white"
                                     style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}`, minHeight: 120 }}
                                     onClick={(e) => {
+                                      nestingSheetPreviewOriginElRef.current = e.currentTarget;
                                       setNestingSheetPreviewOrigin(captureGlassModalOrigin(e));
                                       setNestingSheetPreview({ boardKey: group.boardKey, sheetIndex: sheet.index });
                                       setIsNestingSheetPreviewOpen(true);
@@ -47496,6 +48096,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   className="relative z-0 isolate w-full cursor-pointer overflow-hidden rounded-[4px] border border-[#D4DCE8] bg-white"
                                   style={{ aspectRatio: `${group.sheetWidth}/${group.sheetHeight}`, minHeight: 120 }}
                                   onClick={(e) => {
+                                    nestingSheetPreviewOriginElRef.current = e.currentTarget;
                                     setNestingSheetPreviewOrigin(captureGlassModalOrigin(e));
                                     setNestingSheetPreview({ boardKey: group.boardKey, sheetIndex: sheet.index });
                                     setIsNestingSheetPreviewOpen(true);
@@ -48396,6 +48997,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     onClick={(e) => {
+                      deleteProjectModalOriginElRef.current = e.currentTarget;
                       setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
                       setDeleteProjectNameInput("");
                       setIsDeleteProjectModalOpen(true);
@@ -49521,6 +50123,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       disabled={salesReadOnly}
                       onClick={(e) => {
                         if (item.key === "projectManagement") {
+                          projectManagementModalOriginElRef.current = e.currentTarget;
                           setProjectManagementModalOrigin(captureGlassModalOrigin(e));
                           setIsProjectManagementModalOpen(true);
                           return;
@@ -49604,7 +50207,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <button
                             type="button"
                             disabled={!salesAccess.edit || isSavingSalesRooms}
-                            onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
+                            onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
                             className="mt-2 w-full rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white disabled:opacity-55"
                             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                           >
@@ -49918,17 +50521,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     <div key={item.label} className="w-full sm:w-auto xl:w-full">
                       <button
                         type="button"
+                        ref={item.key === "cutlist" ? cutlistTabButtonRef : undefined}
                         onClick={(e) => {
                           if (item.key === "unlock") {
+                            unlockEditModalOriginElRef.current = e.currentTarget;
+                            setUnlockEditModalOrigin(captureGlassModalOrigin(e));
                             openUnlockEditModal();
                             return;
                           }
                           if (item.key === "print") {
+                            printModalOriginElRef.current = e.currentTarget;
                             setPrintModalOrigin(captureGlassModalOrigin(e));
                             openProductionPrintModal();
                             return;
                           }
                           if (item.key === "remedials") {
+                            remedialsModalOriginElRef.current = e.currentTarget;
                             if (isRemedialsPanelOpen) {
                               void closeRemedialsPanel();
                               return;
@@ -50341,7 +50949,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           <button
                             type="button"
                             disabled={!salesAccess.edit || isSavingSalesRooms}
-                            onClick={(e) => { setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
+                            onClick={(e) => { addRoomPilotOriginElRef.current = e.currentTarget; addRoomFullscreenOriginElRef.current = e.currentTarget; setRoomModalOrigin(captureGlassModalOrigin(e)); void onAddCutlistRoom(); }}
                             className="mt-2 w-full rounded-[9px] border px-2 py-2 text-left text-[12px] font-bold text-white disabled:opacity-55"
                             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                           >
@@ -52167,6 +52775,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 key={row.id}
                                 type="button"
                                 onClick={(e) => {
+                                  boardRowDetailOriginElRef.current = e.currentTarget;
                                   setBoardRowDetailOrigin(captureGlassModalOrigin(e));
                                   setBoardRowDetailId(row.id);
                                   setIsBoardRowDetailOpen(true);
@@ -52218,7 +52827,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                   <>
                               <button
                                 disabled={productionReadOnly}
-                                onClick={(e) => { setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
+                                onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
                                 onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
                                 onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
                                 className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
@@ -52520,7 +53129,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               <button
                                 type="button"
                                 disabled={productionReadOnly}
-                                onClick={(e) => { setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
+                                onClick={(e) => { boardRowDeleteBlockedOriginElRef.current = e.currentTarget; setBoardRowModalOrigin(captureGlassModalOrigin(e)); void onRemoveBoardRow(row.id); }}
                                 onMouseEnter={() => setHoveredBoardRemoveRowId(row.id)}
                                 onMouseLeave={() => setHoveredBoardRemoveRowId((prev) => (prev === row.id ? "" : prev))}
                                 className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border text-white hover:brightness-95 disabled:opacity-55"
@@ -52847,6 +53456,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <button
                   type="button"
                   onClick={(e) => {
+                    deleteProjectModalOriginElRef.current = e.currentTarget;
                     setDeleteProjectModalOrigin(captureGlassModalOrigin(e));
                     setDeleteProjectNameInput("");
                     setIsDeleteProjectModalOpen(true);
@@ -54227,6 +54837,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                 setProjectImageViewerDraftAnnotation(null);
                                 setProjectImageViewerHighlightedAnnotationId("");
                                 setProjectImageViewerEditingAnnotation(null);
+                                projectImageViewerPinPopupOriginElRef.current = event.currentTarget;
                                 setProjectImageViewerPinPopupOrigin(captureGlassModalOrigin(event));
                                 setProjectImageViewerActiveAnnotationId((current) => (current === annotation.id ? "" : annotation.id));
                               }}
@@ -54619,17 +55230,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               );
               setShowInitialMeasureCloseSummary(false);
             }}
+            originElRef={initialMeasureTabButtonRef}
           />
-          {showProductionCutlistCloseSummary && (
-            <ProductionCutlistCloseSummaryModal
-              productionRows={cutlistRows}
-              initialRows={initialCutlistRows}
-              partTypeColors={partTypeColors}
-              sheetCounts={productionBoardSheetCounts}
-              sessionBaseline={productionSummaryBaseline}
-              onClose={() => setShowProductionCutlistCloseSummary(false)}
-            />
-          )}
+          {/* Always rendered now (not gated on showProductionCutlistCloseSummary here) — same
+              reasoning as InitialMeasureCloseSummaryModal's own identical comment above. */}
+          <ProductionCutlistCloseSummaryModal
+            isOpen={showProductionCutlistCloseSummary}
+            origin={productionCutlistCloseSummaryOrigin}
+            productionRows={cutlistRows}
+            initialRows={initialCutlistRows}
+            partTypeColors={partTypeColors}
+            sheetCounts={productionBoardSheetCounts}
+            sessionBaseline={productionSummaryBaseline}
+            onClose={() => {
+              // Measured fresh right here, not reused from whenever this opened — same reasoning
+              // as InitialMeasureCloseSummaryModal's own identical onClose above.
+              const rect = cutlistTabButtonRef.current?.getBoundingClientRect();
+              setProductionCutlistCloseSummaryOrigin(
+                rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null,
+              );
+              setShowProductionCutlistCloseSummary(false);
+            }}
+            originElRef={cutlistTabButtonRef}
+          />
         </div>
   );
 }
