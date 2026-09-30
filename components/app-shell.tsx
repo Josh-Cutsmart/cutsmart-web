@@ -337,7 +337,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode, membershipStatus } = useAuth();
-  const { chromeHidden, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen, saveAndBackHandler } = useAppTabs();
+  const { chromeHidden, ownsMobileScroll, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen, saveAndBackHandler } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -3399,7 +3399,13 @@ export function AppShell({
                   : "auto"
                 : "calc(100svh - 48px)", // mobile now reserves only the one GlobalAppTabsBar (h-12)
             overflowX: isDesktopViewport ? "visible" : "clip",
-            overflowY: isDesktopViewport ? "visible" : "auto",
+            // ownsMobileScroll: Quote/Specifications specifically — see this flag's own comment in
+            // app-tabs-context.tsx. Their own data-app-scroll-root wrapper is sized to exactly
+            // match <main>'s height and handles all scrolling itself; leaving <main> ALSO
+            // independently scrollable at that point is a redundant, identically-sized nested
+            // scroll container with nothing legitimate to ever scroll, which is what risked a
+            // sub-pixel rounding mismatch turning into a real (if tiny) scroll range here.
+            overflowY: isDesktopViewport ? "visible" : ownsMobileScroll ? "hidden" : "auto",
             paddingLeft: chromeHidden ? 0 : "max(12px, env(safe-area-inset-left))",
             paddingRight: chromeHidden ? 0 : "max(12px, env(safe-area-inset-right))",
             paddingBottom: chromeHidden || isDesktopViewport ? 0 : "max(12px, env(safe-area-inset-bottom))",

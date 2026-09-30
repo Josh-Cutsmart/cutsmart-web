@@ -35,6 +35,19 @@ type AppTabsContextValue = {
   suppressTab: (key: string) => void;
   chromeHidden: boolean;
   setChromeHidden: (hidden: boolean) => void;
+  // A chromeHidden mobile page that owns its own internal scroll container (currently just Quote
+  // and Specifications — see their own `data-app-scroll-root` wrapper in
+  // projects/[projectId]/page.tsx) sets this so <main> (app-shell.tsx) can turn off its OWN
+  // overflow-y for the duration. Two independently-scrollable elements stacked directly on top of
+  // each other, each sized to the exact same viewport height, is one sub-pixel rounding mismatch
+  // away from the OUTER one (<main>) picking up a sliver of genuine (if invisible) scroll range —
+  // enough for iOS to engage its own scroll/elastic machinery on it, which showed up on real
+  // devices as a blank flash at the very bottom of the screen while scrolling the page's own
+  // content. Every OTHER chromeHidden view (Nesting, CNC, Production Cutlist, etc.) has no scroll
+  // wrapper of its own and genuinely depends on <main> to scroll, so this defaults to false rather
+  // than being folded into chromeHidden itself.
+  ownsMobileScroll: boolean;
+  setOwnsMobileScroll: (owns: boolean) => void;
   fillMainViewport: boolean;
   setFillMainViewport: (fill: boolean) => void;
   reduceMainTopPadding: boolean;
@@ -93,6 +106,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [tabs, setTabs] = useState<AppWorkspaceTab[]>([]);
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
+  const [ownsMobileScroll, setOwnsMobileScroll] = useState(false);
   const [fillMainViewport, setFillMainViewport] = useState(false);
   const [reduceMainTopPadding, setReduceMainTopPadding] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -436,6 +450,8 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       suppressTab,
       chromeHidden,
       setChromeHidden,
+      ownsMobileScroll,
+      setOwnsMobileScroll,
       fillMainViewport,
       setFillMainViewport,
       reduceMainTopPadding,
@@ -451,6 +467,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       actionsByKey,
       chromeHidden,
       closeTab,
+      ownsMobileScroll,
       fillMainViewport,
       reduceMainTopPadding,
       mobileNavOpen,

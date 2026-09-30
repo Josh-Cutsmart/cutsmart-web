@@ -6171,6 +6171,7 @@ export default function ProjectDetailsPage() {
     suppressScope,
     tabs: globalWorkspaceTabs,
     setChromeHidden,
+    setOwnsMobileScroll,
     setReduceMainTopPadding,
     setSaveAndBackHandler,
   } = useAppTabs();
@@ -26397,6 +26398,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     isSalesCompareFullscreen,
     setChromeHidden,
   ]);
+  // Only Quote and Specifications have their own internal mobile scroll container
+  // (data-app-scroll-root, below) — see ownsMobileScroll's own comment in app-tabs-context.tsx for
+  // why <main> needs to know that, separately from chromeHidden (which every OTHER fullscreen view
+  // above also sets, but none of THOSE have a scroll wrapper of their own).
+  useEffect(() => {
+    setOwnsMobileScroll(isSalesQuoteFullscreen || isSalesSpecificationsFullscreen);
+    return () => setOwnsMobileScroll(false);
+  }, [isSalesQuoteFullscreen, isSalesSpecificationsFullscreen, setOwnsMobileScroll]);
   // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — mirrors whichever of this
   // page's own "Save & Back" buttons is currently on screen (Cutlist/Nesting/CNC/Order/Initial
   // Measure/Items/Quote each have one). The actual save functions (onSaveAndBackFromCutlist etc.)
