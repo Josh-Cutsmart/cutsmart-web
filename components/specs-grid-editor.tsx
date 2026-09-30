@@ -1582,7 +1582,17 @@ export default function SpecsGridEditor({
   })();
 
   return (
-    <div className={className ?? "flex h-full w-full flex-col"}>
+    <div
+      // fitToViewportOnMobile: appended regardless of the passed className (both Quote/Specs call
+      // sites pass a plain "flex w-full flex-col" with no height of its own) — without a definite
+      // height here, the grey canvas below can't flex-1 to fill the REST of it (see the canvas's
+      // own flex-1 in its fitToViewportOnMobile className) and instead only grows to its own A4-
+      // page-driven content height. Whatever's left over below that (down to the docked mobile
+      // Actions bar) then falls through to the host scroll container's own background, which reads
+      // as a visible seam — a different, near-but-not-quite-matching grey — against this canvas's
+      // own hardcoded color right where the two meet.
+      className={`${className ?? "flex h-full w-full flex-col"}${fitToViewportOnMobile ? " h-full" : ""}`}
+    >
       {isProjectSheetView ? (
         // Reserves the fixed toolbar's own flow space (see its own comment below for why it's
         // `position: fixed`) — without this, the canvas below would render up underneath it, since a
@@ -2196,7 +2206,17 @@ export default function SpecsGridEditor({
               // screen edges with no grey canvas showing on either side, instead of sitting inset
               // inside two stacked paddings that don't belong to this component's own asked-for
               // "edge to edge" mobile layout.
-              "relative py-6 -mx-3 sm:-mx-4 md:-mx-5"
+              //
+              // flex-1: grows to consume whatever's left of the root's own now-full height (see the
+              // root div's own comment) below the fixed toolbar's flow spacer, instead of stopping
+              // at its own A4-page-driven content height — on a phone taller than an A4 page scaled
+              // to its width, that used to leave a gap of the host scroll container's OWN background
+              // exposed between this canvas's real bottom edge and the docked mobile Actions bar, a
+              // few shades off from this canvas's own hardcoded grey and reading as an out-of-place
+              // seam right where they met. The mock page inside stays anchored to the TOP of this
+              // now-taller canvas (mx-auto with no vertical centering) — only the grey backdrop
+              // grows, the page itself is unaffected.
+              "relative flex-1 py-6 -mx-3 sm:-mx-4 md:-mx-5"
             : isProjectSheetView
               ? "relative p-6"
               : "relative min-h-0 flex-1 overflow-auto p-6"

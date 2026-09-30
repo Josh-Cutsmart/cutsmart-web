@@ -110,7 +110,17 @@ html {
 
 body {
   margin: 0;
-  min-height: 100vh;
+  /* 100svh, not 100vh: on iOS Safari, 100vh is the viewport height with the browser's own
+   * toolbar fully COLLAPSED (the tallest it ever gets) — taller than what's actually visible
+   * whenever that toolbar is showing, its resting state. That left body itself genuinely
+   * scrollable by a few dozen px, independent of every view's own internal overflow-y
+   * container, and scrolling the real document is exactly what makes Safari's toolbar animate
+   * in response — reading as an extra bar sliding up from the bottom and the page shifting
+   * under it. 100svh (the SMALL viewport height, i.e. the safe height that's always already
+   * visible) can never exceed the visible area, so there's nothing left for body to scroll.
+   * Matches the convention every fullscreen view in this app already uses for its own root
+   * (e.g. the Quote/Specifications mobile view's own `h-[100svh]`). */
+  min-height: 100svh;
   overflow-x: hidden;
   overscroll-behavior-y: none;
   background:
@@ -121,7 +131,6 @@ body {
   background-attachment: fixed;
   font-family: "SF Pro Text", "SF Pro Display", "Segoe UI", "Trebuchet MS", "Tahoma", sans-serif;
   color: var(--text-main);
-  min-height: 100vh;
 }
 
 h1,
