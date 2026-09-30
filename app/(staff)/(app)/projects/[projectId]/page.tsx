@@ -23,6 +23,7 @@ import { useAuth } from "@/lib/auth-context";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useMobileBottomSheet } from "@/lib/use-mobile-bottom-sheet";
+import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor from "@/components/specs-grid-editor";
@@ -7749,6 +7750,11 @@ export default function ProjectDetailsPage() {
   // labeled trigger bar instead of a cramped row of icon-only buttons that were hard to tell apart.
   const quoteMobileActionsSheet = useMobileBottomSheet(isCompactProjectViewport);
   const specsMobileActionsSheet = useMobileBottomSheet(isCompactProjectViewport);
+  // Mobile-only long-press-to-delete for Quote/Specs' own Version History rows — see
+  // useLongPress's own comment for why desktop's hover-revealed delete icon doesn't carry over to
+  // touch, and why one hook call per list (not per row) is safe here.
+  const quoteVersionLongPress = useLongPress();
+  const specsVersionLongPress = useLongPress();
   const [nestingCompactBoardKey, setNestingCompactBoardKey] = useState("");
   // Mobile-only board-type pager (one board type per page, native horizontal scroll-snap) — same
   // shape as CNC's own cncTableScrollRef/cncBoardSectionRefs, see scrollToNestingBoard's own
@@ -8008,10 +8014,33 @@ export default function ProjectDetailsPage() {
   // still up and the pushed content still off-screen, reading as "goes grey with nothing on it"
   // before it finally caught up. Closing immediately here lets useSwipeToClose drive its own
   // animation on its own proper timeline instead.
-  const closeSpecsVersionsSidebarMobile = useCallback(() => setIsSpecsVersionsSidebarOpen(false), []);
-  const closeSpecsSectionsPanelMobile = useCallback(() => setIsSpecsSectionsPanelOpen(false), []);
-  const closeQuoteHistoryPanelMobile = useCallback(() => setIsQuoteHistoryPanelOpen(false), []);
-  const closeQuoteExtrasPanelMobile = useCallback(() => setIsQuoteExtrasPanelOpen(false), []);
+  // Each also closes its OWN sibling drawer (Sections/Extras vs. Version History), not just
+  // itself — desktop's own toggle buttons (toggleSpecsVersionsSidebar etc.) can leave BOTH true at
+  // once with no conflict there (they're independent, non-overlapping side panels on a wide
+  // screen), and that state carries over as-is if the window is then narrowed to mobile width
+  // without either ever having been explicitly closed. Mobile treats each as a full-screen
+  // takeover, not a side panel, so having both "open" at once stacks one portalled overlay on top
+  // of the other — closing whichever one happens to be on top (via this button, its own backdrop
+  // tap, or a swipe-to-close drag) then just revealed the other one still sitting there
+  // underneath, reading as "closing this one opens that one" instead of returning to the sheet.
+  // Closing either one here now always guarantees BOTH end up closed, regardless of how they got
+  // out of sync in the first place — same fix mirrored across all four mobile close handlers.
+  const closeSpecsVersionsSidebarMobile = useCallback(() => {
+    setIsSpecsVersionsSidebarOpen(false);
+    setIsSpecsSectionsPanelOpen(false);
+  }, []);
+  const closeSpecsSectionsPanelMobile = useCallback(() => {
+    setIsSpecsSectionsPanelOpen(false);
+    setIsSpecsVersionsSidebarOpen(false);
+  }, []);
+  const closeQuoteHistoryPanelMobile = useCallback(() => {
+    setIsQuoteHistoryPanelOpen(false);
+    setIsQuoteExtrasPanelOpen(false);
+  }, []);
+  const closeQuoteExtrasPanelMobile = useCallback(() => {
+    setIsQuoteExtrasPanelOpen(false);
+    setIsQuoteHistoryPanelOpen(false);
+  }, []);
   const specsMobileVersionsSwipe = useSwipeToClose(
     isCompactProjectViewport && isSpecsVersionsSidebarOpen,
     closeSpecsVersionsSidebarMobile,
@@ -30551,11 +30580,33 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             </span>
                             <span className="text-[13px] font-bold" style={{ color: "#000000" }}>{row.totalPrice}</span>
                           </button>
-                          {isExpanded ? (
-                            <div className="border-t px-3 py-3" style={{ borderTopColor: "var(--glass-border)" }}>
-                              {breakdown ? <RoomCostBreakdownTables breakdown={breakdown} /> : null}
+                          {/* Grid-rows 0fr/1fr trick, not a plain conditional mount — animating to
+                              "height: auto" isn't something CSS transitions can do directly, and a
+                              JS-measured pixel height would need a ResizeObserver just to stay
+                              correct if the breakdown's own content ever changes size. A CSS grid
+                              track CAN animate all the way to its content's own natural size for
+                              free. The content stays mounted (not conditionally rendered) at all
+                              times so there's nothing to newly mount/fetch the instant this starts
+                              opening — min-h-0 on the inner wrapper is required for the 0fr row to
+                              actually reach zero height (grid items default to min-height:auto,
+                              which would otherwise floor it at the content's own height). The modal
+                              panel itself has no explicit height of its own (sized to its content,
+                              capped by max-h-[85vh] with internal scroll beyond that) — growing this
+                              track is what makes the WHOLE popup visibly grow in lockstep, with no
+                              separate animation needed on the panel. */}
+                          <div
+                            className="grid transition-[grid-template-rows] duration-300 ease-in-out"
+                            style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
+                          >
+                            <div className="min-h-0 overflow-hidden">
+                              <div
+                                className="border-t px-3 py-3 transition-opacity duration-200"
+                                style={{ borderTopColor: "var(--glass-border)", opacity: isExpanded ? 1 : 0 }}
+                              >
+                                {breakdown ? <RoomCostBreakdownTables breakdown={breakdown} /> : null}
+                              </div>
                             </div>
-                          ) : null}
+                          </div>
                         </div>
                       );
                     })}
@@ -34938,7 +34989,32 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between border-b px-4 md:px-5" style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.sectionBg }}>
+          {/* data-app-top-bar/-content: this fullscreen view has no GlobalAppTabsBar (chromeHidden
+              pages unmount it entirely) but the app-shell's pulldown-nav gesture still runs here —
+              see Quote's own identical comment for the full reasoning. Split into a fixed backdrop
+              + content pair (was a single sticky div) because the gesture grows the backdrop's own
+              height live — a sticky element would reflow the content below it as it grows; a fixed
+              one just overlays. Backdrop matches this page's own previous solid
+              projectPalette.sectionBg exactly (no blur, unlike Quote/Specs' generic glass tint) so
+              pulling down reveals a seamless extension of the same bar. The content div below now
+              needs an explicit paddingTop matching this bar's resting height, to make up for the
+              flow space a sticky div used to reserve on its own. */}
+          <div
+            data-app-top-bar="true"
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            style={{
+              height: 56,
+              backgroundColor: projectPalette.sectionBg,
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
+            }}
+          />
+          <div
+            data-app-top-bar-content="true"
+            className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5"
+            style={{ borderColor: projectPalette.border }}
+          >
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ShoppingCart size={14} />
               <span>Order</span>
@@ -34966,7 +35042,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4">
+          <div className="min-h-0 flex-1 overflow-auto p-3 md:p-4" style={{ paddingTop: 56 }}>
             <div className="flex h-full min-h-[calc(100svh-120px)] flex-col gap-3">
               <div className="grid min-h-0 flex-1 gap-3">
                 <div className="grid min-h-0 gap-3 xl:grid-cols-3">
@@ -35251,7 +35327,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return (
         <ProtectedRoute>
           <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-            <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-3">
+            {/* Split into a fixed backdrop + content pair (was a single "glass-page-header sticky"
+                div) so the app-shell's pulldown-nav gesture — which needs a marked element to
+                grow/fade, see Quote's own identical data-app-top-bar comment — can find something
+                here; a sticky element would also reflow the content below it as the gesture grows
+                the bar's height, where a fixed one just overlays. Same var(--glass-modal-bg)/
+                blur(12px) saturate(220%) look .glass-page-header already gave this bar. The plain
+                h-[56px] spacer right after it stands in for the flow space the sticky div used to
+                reserve on its own — simpler than adding paddingTop to the (several) stacked bars
+                that used to sit directly below it in normal flow. */}
+            <div
+              data-app-top-bar="true"
+              className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+              style={{
+                height: 56,
+                backgroundColor: "var(--glass-modal-bg)",
+                backdropFilter: "blur(12px) saturate(220%)",
+                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                transform: "translateZ(0)",
+                WebkitTransform: "translateZ(0)",
+                willChange: "transform",
+              }}
+            />
+            <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)" }}>
               <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Ruler size={14} />
                 <span>Initial Measure</span>
@@ -35269,6 +35367,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
               </button>
             </div>
+            <div className="h-[56px] shrink-0" />
             <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
               <div
                 ref={cutlistActivityScrollRef}
@@ -36236,7 +36335,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
+          {/* Split into a fixed backdrop + content pair — see the mobile branch's own identical
+              comment above for the full reasoning. */}
+          <div
+            data-app-top-bar="true"
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            style={{
+              height: 56,
+              backgroundColor: "var(--glass-modal-bg)",
+              backdropFilter: "blur(12px) saturate(220%)",
+              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
+            }}
+          />
+          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
               <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>{String(initialCutlistRoomFilter || "Project Cutlist").trim() || "Project Cutlist"}</span>
@@ -36270,6 +36384,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             )}
           </div>
+          <div className="h-[56px] shrink-0" />
           <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
             <div
               ref={cutlistActivityScrollRef}
@@ -37266,7 +37381,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       return (
         <ProtectedRoute>
           <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-            <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-3">
+            {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
+                mobile-branch comment for the full reasoning. */}
+            <div
+              data-app-top-bar="true"
+              className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+              style={{
+                height: 56,
+                backgroundColor: "var(--glass-modal-bg)",
+                backdropFilter: "blur(12px) saturate(220%)",
+                WebkitBackdropFilter: "blur(12px) saturate(220%)",
+                transform: "translateZ(0)",
+                WebkitTransform: "translateZ(0)",
+                willChange: "transform",
+              }}
+            />
+            <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-3" style={{ borderColor: "var(--glass-border)" }}>
               <div className="inline-flex min-w-0 items-center gap-2 text-[13px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <Scissors size={14} />
                 <span>Cutlist</span>
@@ -37284,6 +37414,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 <ChevronLeft size={18} color="#ffffff" strokeWidth={2.5} />
               </button>
             </div>
+            <div className="h-[56px] shrink-0" />
             <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
               <div
                 ref={cutlistActivityScrollRef}
@@ -39470,7 +39601,25 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
           <div ref={productionCutlistFullscreenScrollRef} className="min-h-0 flex-1 overflow-y-auto hide-native-scrollbar">
-          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5">
+          {/* Split into a fixed backdrop + content pair — see Initial Measure's own identical
+              mobile-branch comment for the full reasoning. Still fine to leave nested inside this
+              view's own overflow-y-auto scroll wrapper — position:fixed always anchors to the
+              viewport regardless of an ancestor's own scrolling, ignoring this wrapper's scroll
+              entirely, same as it already does for the mobile branch's own equivalent pair above. */}
+          <div
+            data-app-top-bar="true"
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            style={{
+              height: 56,
+              backgroundColor: "var(--glass-modal-bg)",
+              backdropFilter: "blur(12px) saturate(220%)",
+              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
+            }}
+          />
+          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
             <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24">
               <div className="inline-flex min-w-0 items-center justify-center gap-2 text-[20px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                 <span className="truncate" style={{ color: "var(--text-main)" }}>
@@ -39494,6 +39643,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               Save & Back
             </button>
           </div>
+          <div className="h-[56px] shrink-0" />
           <div className="overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
             <div
               ref={cutlistActivityScrollRef}
@@ -42251,20 +42401,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       <ProtectedRoute>
         <div className="h-[100svh] overflow-hidden bg-[var(--bg-app)]">
           {/* Same shared-backdrop-behind-a-fixed-bar treatment as the Quote/Specifications
-              fullscreen views — one static-height blurred div, content-only bars on top. Desktop
-              gets a second 49px band below the 56px header for the "Edit Visibility" toggle (see
-              below) — same as Quote Extras' own toolbar-row toggle; mobile has no equivalent (its
-              own Visibility overlay covers the full screen instead), so stays just 56px. */}
+              fullscreen views — one static-height blurred div, content-only bars on top. Both
+              mobile and desktop get a second 49px band below the 56px header (mobile: the
+              board-type pager bar further down; desktop: the "Edit Visibility" toggle) — height
+              stays 56+49 unconditionally, matching Nesting's own identical bar, so the pulldown
+              backdrop always covers the mobile pager bar too instead of stopping short at 56.
+              data-app-top-bar/-content: this fullscreen view has no GlobalAppTabsBar (chromeHidden
+              pages unmount it entirely) but the app-shell's pulldown-nav gesture still runs here —
+              see Quote's own identical comment for the full reasoning. */}
           <div
+            data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
-              height: isCompactProjectViewport ? 56 : 56 + 49,
+              height: 56 + 49,
               backgroundColor: "var(--glass-modal-bg)",
               backdropFilter: "blur(12px) saturate(220%)",
               WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
             }}
           />
           <div
+            data-app-top-bar-content="true"
             // z-[100]: strictly above the mobile board-type pager bar below (z-[95], fixed at
             // top:56/height:49) — this header is also fixed, its own separate stacking context, so
             // the Export button's dropdown (opening downward from near the bottom of this 56px
@@ -43911,7 +44070,29 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     return (
       <ProtectedRoute>
         <div className="flex h-[100svh] min-h-0 flex-col overflow-hidden bg-[var(--bg-app)]">
-          <div className="glass-page-header sticky top-0 z-[95] flex h-[56px] shrink-0 items-center justify-between px-4 md:px-5">
+          {/* Split into a fixed backdrop + content pair (was a single "glass-page-header sticky"
+              div) so the app-shell's pulldown-nav gesture — which needs a marked element to grow/
+              fade, see Quote's own identical data-app-top-bar comment — can find something here; a
+              sticky element would also reflow the content below it as the gesture grows the bar's
+              height, where a fixed one just overlays. Same var(--glass-modal-bg)/blur(12px)
+              saturate(220%) look .glass-page-header already gave this bar, just split across two
+              elements and pinned instead of one sticky one. The content div below now needs an
+              explicit paddingTop matching this bar's height, to make up for the flow space the
+              sticky div used to reserve on its own. */}
+          <div
+            data-app-top-bar="true"
+            className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
+            style={{
+              height: 56,
+              backgroundColor: "var(--glass-modal-bg)",
+              backdropFilter: "blur(12px) saturate(220%)",
+              WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
+            }}
+          />
+          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between border-b px-4 md:px-5" style={{ borderColor: "var(--glass-border)" }}>
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ClipboardList size={14} />
               <span>Items</span>
@@ -43947,7 +44128,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               )}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4 md:p-5">
+          <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4 md:p-5" style={{ paddingTop: 56 }}>
             {salesItemsBoardContent}
           </div>
         </div>
@@ -44375,8 +44556,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 centered in this same 56px bar, via TopBarStatusChip so it fades in/pops away when
                 appearing/disappearing, or morphs in place when switching directly from one to the
                 other, instead of snapping. This wrapper stays mounted unconditionally (unlike
-                before) so that chip can track the visible/hidden edge itself. */}
-            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                before) so that chip can track the visible/hidden edge itself. Hidden on mobile
+                specifically once isQuoteContentLockedForSending (Accepted/Pending — the one case
+                quoteAcceptedOrPendingChipData ever fires, per its own comment) — the chip below,
+                floated into the formatting toolbar's own space instead, takes over there. On a
+                narrow screen this 56px bar has no real spare room once the title and the
+                mobile-only "Save & Back" icon are both in it; the chip was landing squeezed behind
+                them, effectively invisible, rather than genuinely readable the way it is on
+                desktop's much wider bar. */}
+            <div
+              className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+              style={isCompactProjectViewport && isQuoteContentLockedForSending ? { display: "none" } : undefined}
+            >
               <div className="pointer-events-auto">
                 <TopBarStatusChip data={quoteGridOutdatedChipData || quoteAcceptedOrPendingChipData} />
               </div>
@@ -44386,6 +44577,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {quoteBackButton}
             </div>
           </div>
+          {/* Mobile-only relocation of the chip hidden just above — floated into the formatting
+              toolbar's own 49px band (top: quoteHeaderHeight, matching SpecsGridEditor's own
+              toolbarFixedTopPx/PROJECT_TOOLBAR_HEIGHT_PX exactly) instead of the title bar's own
+              cramped centered slot. Only ever mounted while isQuoteContentLockedForSending, which
+              is also exactly when that toolbar's own buttons are hidden (see its own !isSentToClient
+              comment in specs-grid-editor.tsx) — this never has real buttons to collide with. */}
+          {isCompactProjectViewport && isQuoteContentLockedForSending ? (
+            <div
+              className="pointer-events-none fixed inset-x-0 z-[95] flex items-center justify-center px-3"
+              style={{ top: quoteHeaderHeight, height: 49 }}
+            >
+              <div className="pointer-events-auto">
+                <TopBarStatusChip data={quoteGridOutdatedChipData || quoteAcceptedOrPendingChipData} />
+              </div>
+            </div>
+          ) : null}
           {quoteDownloadMenuAnchor && typeof document !== "undefined"
             ? createPortal(
                 <div
@@ -44427,13 +44634,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+              style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
             >
               <button
                 type="button"
                 onClick={() => quoteMobileActionsSheet.setIsOpen(true)}
                 className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
-                style={{ color: "var(--text-main)" }}
+                style={{ color: projectPalette.text }}
               >
                 Actions
               </button>
@@ -44908,8 +45115,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       the one entry that's never locked. */}
                   <button
                     type="button"
-                    onClick={returnToLiveQuoteGrid}
-                    className="relative mr-[42px] rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                    onClick={() => {
+                      returnToLiveQuoteGrid();
+                      // Mobile only — slides the drawer back to the main page so the newly-selected
+                      // grid is immediately visible, instead of leaving the user staring at the
+                      // still-open sidebar with no indication anything changed. Desktop's own
+                      // floating panel is meant to stay open across selections (it sits alongside
+                      // the sheet, not over it), so this is deliberately scoped to mobile only.
+                      if (isCompactProjectViewport) closeQuoteHistoryPanelMobile();
+                    }}
+                    className={`relative rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 ${isCompactProjectViewport ? "" : "mr-[42px]"}`}
                     style={{
                       borderColor: "var(--success-strong)",
                       backgroundColor: "var(--success-soft)",
@@ -44965,34 +45180,36 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                               : {}),
                         }}
                       >
-                        {/* Delete icon — docked in a 42px gutter to the right of the bubble. That
-                            42px is genuinely NEW room: the whole Version History panel (its toggle
-                            bar, this scroll container, and the canvas's own toolbarFixedLeftPx
-                            offset — see the three "302" values above/below) was widened by exactly
-                            42px over its original 260px, and the bubble reserves that same 42px of
-                            margin (below), so the bubble itself renders at its ORIGINAL width, never
-                            narrower. At rest it sits translated -42px — exactly over the bubble,
-                            hidden behind it (opacity 0) — then slides right into its gutter on
-                            hover with a "back" easing that slightly overshoots past 0 and springs
-                            back, reading as coming out from behind the bubble rather than just
-                            fading in. Driven by real hover state (hoveredQuoteVersionId) rather than
-                            a Tailwind group-hover translate class — Tailwind composes `transform`
-                            out of an unregistered `--tw-translate-x` custom property, which doesn't
-                            interpolate smoothly (it jumps discretely mid-transition), which is
-                            exactly the "doesn't animate, flashes then fades" bug this replaced. Kept
-                            WITHIN the row's own flex width rather than positioned past it — the
-                            panel's scroll container has overflow-y set with no explicit overflow-x,
-                            which the CSS spec forces to "auto" (i.e. clipped) too, so anything
-                            positioned past the row's own box would get cut off. Never rendered for a
-                            version that's been sent to the client at all — accepted or still
-                            pending, a client could be looking at it right now, and an accepted one
-                            is a permanent record (see acceptedAtIso's own comment in
+                        {/* Delete icon — docked in a 42px gutter to the right of the bubble, desktop
+                            only. That 42px is genuinely NEW room: the whole Version History panel
+                            (its toggle bar, this scroll container, and the canvas's own
+                            toolbarFixedLeftPx offset — see the three "302" values above/below) was
+                            widened by exactly 42px over its original 260px, and the bubble reserves
+                            that same 42px of margin (below, desktop only) so the bubble itself
+                            renders at its ORIGINAL width, never narrower. At rest it sits translated
+                            -42px — exactly over the bubble, hidden behind it (opacity 0) — then
+                            slides right into its gutter on hover with a "back" easing that slightly
+                            overshoots past 0 and springs back, reading as coming out from behind the
+                            bubble rather than just fading in. Driven by real hover state
+                            (hoveredQuoteVersionId) rather than a Tailwind group-hover translate
+                            class — Tailwind composes `transform` out of an unregistered
+                            `--tw-translate-x` custom property, which doesn't interpolate smoothly
+                            (it jumps discretely mid-transition), which is exactly the "doesn't
+                            animate, flashes then fades" bug this replaced. Kept WITHIN the row's own
+                            flex width rather than positioned past it — the panel's scroll container
+                            has overflow-y set with no explicit overflow-x, which the CSS spec forces
+                            to "auto" (i.e. clipped) too, so anything positioned past the row's own
+                            box would get cut off. Mobile has no hover state to reveal this at all —
+                            see the row button's own long-press handlers below for its equivalent.
+                            Never rendered for a version that's been sent to the client at all —
+                            accepted or still pending, a client could be looking at it right now, and
+                            an accepted one is a permanent record (see acceptedAtIso's own comment in
                             lib/specs-grid-types.ts) — either way it must never be deletable, not
                             even with a confirmation (also enforced a second time inside
                             deleteQuoteVersionById itself). The bubble below still reserves its 42px
-                            margin regardless, so row widths stay uniform whether or not a given row
-                            happens to have a delete icon at all. */}
-                        {v.acceptedAtIso || v.sentToClient ? null : (
+                            margin regardless (desktop only), so row widths stay uniform whether or
+                            not a given row happens to have a delete icon at all. */}
+                        {isCompactProjectViewport || v.acceptedAtIso || v.sentToClient ? null : (
                           <button
                             type="button"
                             aria-label={`Delete "${v.name}"`}
@@ -45020,8 +45237,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         )}
                         <button
                           type="button"
-                          onClick={() => openQuoteGridVersion(v.id)}
-                          className="relative z-[1] mr-[42px] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                          onClick={() => {
+                            openQuoteGridVersion(v.id);
+                            // Mobile only — see the "Live Quote" bubble's own identical comment
+                            // above for the full reasoning.
+                            if (isCompactProjectViewport) closeQuoteHistoryPanelMobile();
+                          }}
+                          {...(isCompactProjectViewport && !v.acceptedAtIso && !v.sentToClient
+                            ? quoteVersionLongPress.makeHandlers((origin, el) => {
+                                quoteVersionDeleteModalOriginElRef.current = el;
+                                setQuoteVersionDeleteOrigin(origin);
+                                setQuoteVersionPendingDeleteId(v.id);
+                              })
+                            : {})}
+                          className={`relative z-[1] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 ${isCompactProjectViewport ? "" : "mr-[42px]"}`}
                           style={{
                             // Each state's color is constant regardless of selection — accepted
                             // stays green, sent-but-unaccepted stays blue, plain stays grey — a
@@ -45845,8 +46074,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 centered in this same 56px bar, via TopBarStatusChip so it fades in/pops away when
                 appearing/disappearing, or morphs in place when switching directly from one to the
                 other, instead of snapping. This wrapper stays mounted unconditionally (unlike
-                before) so that chip can track the visible/hidden edge itself. */}
-            <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                before) so that chip can track the visible/hidden edge itself. Hidden on mobile
+                once isSpecsContentLockedForSending — see Quote's own identical chip comment for
+                the full reasoning; the chip below, floated into the formatting toolbar's own
+                space instead, takes over there. */}
+            <div
+              className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+              style={isCompactProjectViewport && isSpecsContentLockedForSending ? { display: "none" } : undefined}
+            >
               <div className="pointer-events-auto">
                 <TopBarStatusChip data={specsSheetVersionChipData || specsSubmittedOrPendingChipData} />
               </div>
@@ -45856,6 +46091,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               {specsBackButton}
             </div>
           </div>
+          {/* Mobile-only relocation of the chip hidden just above — see Quote's own identical
+              overlay's comment for the full reasoning. */}
+          {isCompactProjectViewport && isSpecsContentLockedForSending ? (
+            <div
+              className="pointer-events-none fixed inset-x-0 z-[95] flex items-center justify-center px-3"
+              style={{ top: specsHeaderHeight, height: 49 }}
+            >
+              <div className="pointer-events-auto">
+                <TopBarStatusChip data={specsSheetVersionChipData || specsSubmittedOrPendingChipData} />
+              </div>
+            </div>
+          ) : null}
           {specsDownloadMenuAnchor && typeof document !== "undefined"
             ? createPortal(
                 <div
@@ -45897,13 +46144,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+              style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
             >
               <button
                 type="button"
                 onClick={() => specsMobileActionsSheet.setIsOpen(true)}
                 className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
-                style={{ color: "var(--text-main)" }}
+                style={{ color: projectPalette.text }}
               >
                 Actions
               </button>
@@ -46087,8 +46334,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     Quote" bubble exactly (green, pulsing dot, same mr-[42px] width match). */}
                 <button
                   type="button"
-                  onClick={returnToLiveSpecsSheet}
-                  className="relative mr-[42px] rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                  onClick={() => {
+                    returnToLiveSpecsSheet();
+                    // Mobile only — see Quote's own "Live Quote" bubble's identical comment for
+                    // the full reasoning.
+                    if (isCompactProjectViewport) closeSpecsVersionsSidebarMobile();
+                  }}
+                  className={`relative rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 ${isCompactProjectViewport ? "" : "mr-[42px]"}`}
                   style={{
                     borderColor: "var(--success-strong)",
                     backgroundColor: "var(--success-soft)",
@@ -46138,9 +46390,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     >
                       {/* Same hover-reveal delete icon as the Quote sheet's own Version History —
                           see that sidebar's own comment for the reserved-42px-gutter/clipping/
-                          bounce-animation reasoning, all identical here. Never rendered once sent —
-                          a client could be looking at it, and it's a record of what was sent. */}
-                      {v.sentToClient || v.submittedAtIso ? null : (
+                          bounce-animation reasoning, all identical here (desktop only — mobile has
+                          no hover state to reveal this at all, see the row button's own long-press
+                          handlers below for its equivalent). Never rendered once sent — a client
+                          could be looking at it, and it's a record of what was sent. */}
+                      {isCompactProjectViewport || v.sentToClient || v.submittedAtIso ? null : (
                         <button
                           type="button"
                           aria-label={`Delete "${v.name}"`}
@@ -46168,8 +46422,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       )}
                       <button
                         type="button"
-                        onClick={() => openSpecsSheetVersion(v.id)}
-                        className="relative z-[1] mr-[42px] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95"
+                        onClick={() => {
+                          openSpecsSheetVersion(v.id);
+                          // Mobile only — see Quote's own "Live Quote" bubble's identical comment
+                          // for the full reasoning.
+                          if (isCompactProjectViewport) closeSpecsVersionsSidebarMobile();
+                        }}
+                        {...(isCompactProjectViewport && !v.sentToClient && !v.submittedAtIso
+                          ? specsVersionLongPress.makeHandlers((origin, el) => {
+                              specsVersionDeleteModalOriginElRef.current = el;
+                              setSpecsVersionDeleteOrigin(origin);
+                              setSpecsVersionPendingDeleteId(v.id);
+                            })
+                          : {})}
+                        className={`relative z-[1] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 ${isCompactProjectViewport ? "" : "mr-[42px]"}`}
                         style={{
                           // Each state's color is constant regardless of selection — submitted
                           // stays green, sent-but-unsubmitted stays blue, plain stays grey — a
@@ -46727,16 +46993,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           className="flex h-[100svh] flex-col overflow-y-auto overflow-x-hidden hide-native-scrollbar bg-[var(--bg-app)]"
           {...(isCompactProjectViewport ? makeCompareMobileSwipeHandlers() : {})}
         >
+          {/* data-app-top-bar/-content: this fullscreen view has no GlobalAppTabsBar (chromeHidden
+              pages unmount it entirely) but the app-shell's pulldown-nav gesture still runs here —
+              see Quote's own identical comment for the full reasoning. */}
           <div
+            data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56,
               backgroundColor: "var(--glass-modal-bg)",
               backdropFilter: "blur(12px) saturate(220%)",
               WebkitBackdropFilter: "blur(12px) saturate(220%)",
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
             }}
           />
-          <div className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5" style={{ color: "var(--text-main)" }}>
+          <div data-app-top-bar-content="true" className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between px-4 md:px-5" style={{ color: "var(--text-main)" }}>
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
               <ArrowLeftRight size={14} />
@@ -47517,8 +47790,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           {/* Same shared-backdrop-behind-a-fixed-bar treatment as CNC's own — one static-height
               blurred div, content-only bars on top. Desktop gets a second 49px band below the 56px
               header for the "Edit Visibility" toggle (see below); mobile now has its own equivalent
-              second band (the board-type prev/next bar further down), so both stay 56+49. */}
+              second band (the board-type prev/next bar further down), so both stay 56+49.
+              data-app-top-bar/-content: this fullscreen view has no GlobalAppTabsBar (chromeHidden
+              pages unmount it entirely) but the app-shell's pulldown-nav gesture still runs here —
+              see Quote's own identical comment (app/(staff)/(app)/projects/[projectId]/page.tsx,
+              its own data-app-top-bar div) for the full reasoning. */}
           <div
+            data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56 + 49,
@@ -47531,6 +47809,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
           />
           <div
+            data-app-top-bar-content="true"
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between gap-3 px-3 md:px-5"
             // Mobile-only plain white — desktop keeps relying solely on the shared backdrop div
             // above (untouched).

@@ -2208,11 +2208,18 @@ export default function SpecsGridEditor({
         // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
         style={{
           backgroundColor: "#EDEFF4",
-          // Added on top of the base 24px (p-6/py-6 above) rather than replacing it, so the host's
+          // Added on top of the base 24px (p-6 above) rather than replacing it, so the host's
           // floating action bar gets its own reserved room INSIDE this grey canvas — its background
           // — instead of the host page reserving that space itself further down, past this canvas's
           // own bottom edge, where the page's own (differently-colored) background would show through.
-          ...(canvasBottomInsetPx ? { paddingBottom: 24 + canvasBottomInsetPx } : {}),
+          // On mobile (fitToViewportOnMobile), the caller's own canvasBottomInsetPx value already
+          // IS the full reserved amount (matching the docked mobile action bar's own height exactly,
+          // "no extra gap" — see its own comment in projects/[projectId]/page.tsx) — adding the base
+          // 24 on top of that here double-counted it, opening an extra 24px gap between the sheet's
+          // real content and the action bar that shouldn't have been there.
+          ...(canvasBottomInsetPx
+            ? { paddingBottom: fitToViewportOnMobile ? canvasBottomInsetPx : 24 + canvasBottomInsetPx }
+            : {}),
         }}
       >
         {/* fitToViewportOnMobile: a fixed-height, overflow-hidden viewport the page below is scaled
