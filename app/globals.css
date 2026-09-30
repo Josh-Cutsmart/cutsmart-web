@@ -97,6 +97,18 @@
 
 * {
   box-sizing: border-box;
+  /* WebKit's own default tap-highlight flash (a translucent tint, close to this app's own
+   * --brand-soft blue on a light background) — every touch/click-capable element gets it
+   * unless disabled, including buttons whose own custom hover/active styling this app already
+   * fully handles itself. A scroll gesture that starts with a finger down on/near a button (the
+   * mobile Actions bar is nothing BUT buttons) still registers that initial touchstart before
+   * the browser resolves it as a scroll rather than a tap, flashing this highlight across
+   * that whole button — reading as a flat, blank, unexplained bar appearing then clearing,
+   * right over whatever button it landed on. Set globally rather than per-component: nothing in
+   * this app relies on the native flash for feedback (everything already has its own explicit
+   * hover/active/pressed styles), so there's no tradeoff to disabling it everywhere at once.
+   */
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Stops the browser's own native rubber-band/bounce scroll on the page as a whole — without this,
