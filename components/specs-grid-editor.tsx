@@ -199,15 +199,6 @@ export type SpecsGridEditorProps = {
   // separate, unstyled section of the host page's background — which reads as a visible seam
   // where the two backgrounds don't match. Only the two project-sheet callers set this.
   canvasBottomInsetPx?: number;
-  // fitToViewportOnMobile only: the host page's own fixed title bar height ABOVE this component
-  // (quoteHeaderHeight/specsHeaderHeight, currently 56 for both) — this component has no way to
-  // know that on its own, since the host reserves that space itself (paddingTop on the wrapper
-  // around this whole component), not inside anything rendered here. Used, together with
-  // PROJECT_TOOLBAR_HEIGHT_PX/canvasBottomInsetPx (both already known inside this component), to
-  // work out how much real vertical room the sheet has to fit in — see sheetFitScale's own comment
-  // for why that matters. A missing/undefined value just means "assume there's no host header,"
-  // which for every caller that also doesn't set fitToViewportOnMobile is already correct (unused).
-  mobileTopOffsetPx?: number;
   // Hover sync with the host page's own "Sections" bubble list (only the two project-sheet callers
   // set either of these — every other caller leaves both undefined, a no-op on both sides).
   // Deliberately ASYMMETRIC, not a plain two-way mirror: hovering a bubble highlights BOTH the
@@ -537,7 +528,6 @@ export default function SpecsGridEditor({
   isViewingSavedVersion,
   fitToViewportOnMobile,
   canvasBottomInsetPx,
-  mobileTopOffsetPx,
   highlightedGroupId,
   onHoveredGroupChange,
 }: SpecsGridEditorProps) {
@@ -1335,19 +1325,15 @@ export default function SpecsGridEditor({
   // own nesting sheet-preview pinch/pan (clampNestingPreviewOffset etc.) but scoped to this canvas
   // and self-contained here rather than driven by the host page.
   const sheetFitViewportRef = useRef<HTMLDivElement | null>(null);
-  // Driven directly by window.innerWidth/innerHeight (always synchronously correct) rather than a
-  // ResizeObserver reading sheetFitViewportRef's own clientWidth/Height — the ref version measured
+  // Driven directly by window.innerWidth (always synchronously correct) rather than a
+  // ResizeObserver reading sheetFitViewportRef's own clientWidth — the ref version measured
   // unreliably early (before the table had finished its own width measurement/layout pass one
   // render up, in mockPageBoxWidthPx), leaving the scale stuck at whatever it read on that first,
   // sometimes-wrong pass with nothing to ever correct it.
   const [viewportInnerWidthPx, setViewportInnerWidthPx] = useState(typeof window === "undefined" ? 0 : window.innerWidth);
-  const [viewportInnerHeightPx, setViewportInnerHeightPx] = useState(typeof window === "undefined" ? 0 : window.innerHeight);
   useEffect(() => {
     if (!fitToViewportOnMobile || typeof window === "undefined") return;
-    const onResize = () => {
-      setViewportInnerWidthPx(window.innerWidth);
-      setViewportInnerHeightPx(window.innerHeight);
-    };
+    const onResize = () => setViewportInnerWidthPx(window.innerWidth);
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -1358,25 +1344,10 @@ export default function SpecsGridEditor({
   // rounding, since erring toward a hair smaller is harmless but erring the other way reintroduces
   // the "clipped off the right edge" bug this whole calculation exists to avoid.
   const SHEET_FIT_HORIZONTAL_INSET_PX = 4;
-  const widthFitScale = mockPageBoxWidthPx > 0 ? (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx : 1;
-  // Also bounding by HEIGHT, not just width: a page whose own template is narrower (fewer/shorter
-  // columns, so a smaller mockPageBoxWidthPx) needs much less width-based shrinking to fit — for a
-  // small enough template, widthFitScale alone can land close to (or at) 1, i.e. close to true
-  // print size. At that scale the page's real height can easily exceed the actual room available
-  // for it on a phone screen — the host's own title bar (mobileTopOffsetPx) plus this component's
-  // own toolbar spacer (PROJECT_TOOLBAR_HEIGHT_PX) and canvas padding (the 24px top py-6 plus
-  // canvasBottomInsetPx) all eat into that before the sheet ever gets a look at it. Genuine
-  // overflow past that room is what was making the WHOLE PAGE (not just this canvas) tall enough to
-  // scroll on mobile Safari — which is what let its own dynamic toolbar animate in response,
-  // showing as an unrelated bar rising from the bottom while a template small enough to stay under
-  // that available height never triggered it. Math.min with widthFitScale below guarantees the
-  // sheet always fits BOTH dimensions, regardless of the template's own proportions.
-  const sheetFitAvailableHeightPx =
-    viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - 24 - (canvasBottomInsetPx ?? 0);
-  const heightFitScale =
-    mockPageBoxHeightPx > 0 && sheetFitAvailableHeightPx > 0 ? sheetFitAvailableHeightPx / mockPageBoxHeightPx : 1;
   const sheetFitScale =
-    fitToViewportOnMobile && mockPageBoxWidthPx > 0 ? Math.max(0.1, Math.min(1, widthFitScale, heightFitScale)) : 1;
+    fitToViewportOnMobile && mockPageBoxWidthPx > 0
+      ? Math.max(0.1, Math.min(1, (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx))
+      : 1;
   const [sheetZoom, setSheetZoom] = useState(1);
   const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
   const sheetGestureRef = useRef<{
@@ -1611,17 +1582,7 @@ export default function SpecsGridEditor({
   })();
 
   return (
-    <div
-      // fitToViewportOnMobile: appended regardless of the passed className (both Quote/Specs call
-      // sites pass a plain "flex w-full flex-col" with no height of its own) — without a definite
-      // height here, the grey canvas below can't flex-1 to fill the REST of it (see the canvas's
-      // own flex-1 in its fitToViewportOnMobile className) and instead only grows to its own A4-
-      // page-driven content height. Whatever's left over below that (down to the docked mobile
-      // Actions bar) then falls through to the host scroll container's own background, which reads
-      // as a visible seam — a different, near-but-not-quite-matching grey — against this canvas's
-      // own hardcoded color right where the two meet.
-      className={`${className ?? "flex h-full w-full flex-col"}${fitToViewportOnMobile ? " h-full" : ""}`}
-    >
+    <div className={className ?? "flex h-full w-full flex-col"}>
       {isProjectSheetView ? (
         // Reserves the fixed toolbar's own flow space (see its own comment below for why it's
         // `position: fixed`) — without this, the canvas below would render up underneath it, since a
@@ -2235,17 +2196,7 @@ export default function SpecsGridEditor({
               // screen edges with no grey canvas showing on either side, instead of sitting inset
               // inside two stacked paddings that don't belong to this component's own asked-for
               // "edge to edge" mobile layout.
-              //
-              // flex-1: grows to consume whatever's left of the root's own now-full height (see the
-              // root div's own comment) below the fixed toolbar's flow spacer, instead of stopping
-              // at its own A4-page-driven content height — on a phone taller than an A4 page scaled
-              // to its width, that used to leave a gap of the host scroll container's OWN background
-              // exposed between this canvas's real bottom edge and the docked mobile Actions bar, a
-              // few shades off from this canvas's own hardcoded grey and reading as an out-of-place
-              // seam right where they met. The mock page inside stays anchored to the TOP of this
-              // now-taller canvas (mx-auto with no vertical centering) — only the grey backdrop
-              // grows, the page itself is unaffected.
-              "relative flex-1 py-6 -mx-3 sm:-mx-4 md:-mx-5"
+              "relative py-6 -mx-3 sm:-mx-4 md:-mx-5"
             : isProjectSheetView
               ? "relative p-6"
               : "relative min-h-0 flex-1 overflow-auto p-6"
@@ -2256,7 +2207,15 @@ export default function SpecsGridEditor({
         // its own natural width; any floating bubble the host page renders alongside it sits OVER
         // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
         style={{
-          backgroundColor: "#EDEFF4",
+          // #eef1f8, not a "close enough" grey: on fitToViewportOnMobile, this canvas doesn't
+          // stretch to fill the full screen (see the comment block above — it deliberately stays
+          // sized to its own content, not flex-1, so the grey gap below a short page doesn't grow
+          // disproportionately large). Whatever's left over below its real bottom edge falls
+          // through to the host scroll container's own background instead (--bg-app). This hex is
+          // that token's own light-mode value, copied verbatim rather than referencing var(--bg-app)
+          // directly (this canvas is hardcoded/theme-independent on purpose, see above) — the two
+          // used to be a few shades apart, which read as a visible seam exactly where they met.
+          backgroundColor: "#eef1f8",
           // Added on top of the base 24px (p-6 above) rather than replacing it, so the host's
           // floating action bar gets its own reserved room INSIDE this grey canvas — its background
           // — instead of the host page reserving that space itself further down, past this canvas's
@@ -2315,6 +2274,17 @@ export default function SpecsGridEditor({
                   // the shrunk result flush there too, filling the viewport from x=0.
                   transform: `scale(${sheetFitScale * sheetZoom}) translate(${sheetPan.x / (sheetFitScale * sheetZoom)}px, ${sheetPan.y / (sheetFitScale * sheetZoom)}px)`,
                   transformOrigin: "top left",
+                  // Forces this whole subtree (the table plus every absolutely-positioned overlay on
+                  // top of it — borders, selection rings, the row/column headers) onto its own GPU
+                  // compositing layer, rasterized ONCE at native resolution and then scaled as a
+                  // single bitmap — rather than leaving mobile Safari free to hint/snap text and
+                  // border overlays independently post-transform, which is what let them drift apart
+                  // from each other (a border ending up visibly offset from the text it's meant to
+                  // wrap) at the fractional scale factors mobile actually uses to fit a physical page
+                  // to a phone's width. Only shows up scaled down — at 1:1 (desktop, no transform)
+                  // there's nothing for the two to independently round away from each other.
+                  willChange: "transform",
+                  WebkitBackfaceVisibility: "hidden",
                 }
               : {}),
           }}
