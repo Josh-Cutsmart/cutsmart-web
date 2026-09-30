@@ -48,6 +48,7 @@ export function useSwipeToClose(
     onTouchStart: (e: ReactTouchEvent<HTMLElement>) => void;
     onTouchMove: (e: ReactTouchEvent<HTMLElement>) => void;
     onTouchEnd: () => void;
+    onTouchCancel: () => void;
   };
   // A second, externally-driven drag for the OPPOSITE gesture — some other element entirely (e.g.
   // the main sheet behind this panel) swiping this panel open, rather than the panel's own header
@@ -238,6 +239,18 @@ export function useSwipeToClose(
     panel.style.transform = "translateX(0px)";
     applyPush(1, transition, drag.width);
   };
+  // Same recovery as onTouchEnd (snap back open, or commit to closing, based on how far the drag
+  // already got) — every OTHER drag-gesture hook in this codebase wires its own onTouchEnd to
+  // onTouchCancel too (see e.g. the Nesting/CNC mobile Visibility panels' own header handlers),
+  // but this hook's touchHandlers never included one. Without it, a touch sequence the browser
+  // cancels instead of ending normally — an incoming call, a system gesture taking over, anything
+  // that interrupts mid-drag — left dragRef.current.dragging stuck true and, if applyPush had
+  // already pushed the page content, pushRef's own transform stuck at that partial value forever:
+  // nothing ever clears it without a real touchend. Since a transform establishes a containing
+  // block for its position:fixed descendants (per spec), a stuck push could visibly carry the
+  // WHOLE pushed view (the docked mobile Actions bar included) off to the side — reading as "the
+  // Actions button is just gone" until a full reload recreated the DOM from scratch.
+  const onTouchCancel = onTouchEnd;
 
   // Called once, right when some OTHER element's touchmove first confirms a drag toward this
   // panel's open direction (see updateOpenDrag) — flips openDragRef so the isOpen effect above
@@ -328,7 +341,7 @@ export function useSwipeToClose(
 
   return {
     shouldRender,
-    touchHandlers: { onTouchStart, onTouchMove, onTouchEnd },
+    touchHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel },
     beginOpenDrag,
     updateOpenDrag,
     endOpenDrag,

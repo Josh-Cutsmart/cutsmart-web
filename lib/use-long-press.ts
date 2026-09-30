@@ -32,6 +32,15 @@ export function useLongPress() {
   };
 
   const makeHandlers = (onLongPress: (origin: LongPressOrigin, target: HTMLElement) => void) => ({
+    // Spread onto the same row alongside the touch handlers below — without it, holding a row
+    // long enough to fire onLongPress ALSO crosses iOS/Android's own native long-press threshold,
+    // which (since this hook never calls preventDefault on touchstart, to stay out of the way of
+    // ordinary scrolling) is free to kick in on its own: the row's text goes into native selection
+    // mode (highlighted, drag handles, a Copy/Look Up callout bubble) at the same time this hook's
+    // OWN action fires, reading as the press "highlighting the entire page" even though only this
+    // one row's text was ever actually selected — WebkitUserSelect alone stops the highlight;
+    // WebkitTouchCallout is the separate property that stops iOS's own callout bubble specifically.
+    style: { WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" } as const,
     onTouchStart: (e: ReactTouchEvent<HTMLElement>) => {
       const touch = e.touches[0];
       if (!touch) return;

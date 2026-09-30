@@ -23,6 +23,7 @@ import { useAuth } from "@/lib/auth-context";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useMobileBottomSheet } from "@/lib/use-mobile-bottom-sheet";
+import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
 import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
@@ -1662,6 +1663,19 @@ function stableBubbleAnimationDelayMs(id: string): number {
   let hash = 0;
   for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
   return hash % 280;
+}
+
+// A full glass-bubble-rise-in animation shorthand for the mobile Actions sheet's own buttons —
+// same stable-per-id-hash idea as stableBubbleAnimationDelayMs above (not Math.random(), for the
+// same reason: see that function's own comment), but varying BOTH the delay and the duration per
+// button (hashing id and `${id}-duration` separately, so the two don't move in lockstep with each
+// other) rather than just the delay — different buttons bouncing in with the exact same motion,
+// just offset in time, still read as one mechanical wave; varying the duration too (420-539ms) is
+// what makes each button's own bounce feel like its own, distinct little motion.
+function mobileActionsBubbleAnimation(id: string): string {
+  const delay = stableBubbleAnimationDelayMs(id);
+  const duration = 420 + (stableBubbleAnimationDelayMs(`${id}-duration`) % 120);
+  return `glass-bubble-rise-in ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`;
 }
 
 // Compact on/off switch for the Quote Extras lists (both the Sales tab overview and the Quote
@@ -7746,11 +7760,17 @@ export default function ProjectDetailsPage() {
   const wasNestingFullscreenRef = useRef(false);
   const [isCompactProjectViewport, setIsCompactProjectViewport] = useState(false);
   const [projectViewportWidth, setProjectViewportWidth] = useState(0);
-  // Mobile-only action bars for Quote/Specifications — same slide-up/drag-down bottom sheet as
-  // Nesting's own mobile Visibility overlay (see useMobileBottomSheet's own comment), reached via a
-  // labeled trigger bar instead of a cramped row of icon-only buttons that were hard to tell apart.
-  const quoteMobileActionsSheet = useMobileBottomSheet(isCompactProjectViewport);
-  const specsMobileActionsSheet = useMobileBottomSheet(isCompactProjectViewport);
+  // Mobile-only action bars for Quote/Specifications — a small floating card of buttons that rises
+  // above a fixed "Actions" trigger (see useMobileFloatingActionSheet's own comment for why this
+  // isn't the same full-screen slide-up Nesting/CNC's own mobile Visibility overlay uses). The
+  // floating card is positioned `bottom: MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX` in its own JSX
+  // (below) rather than flush at its container's true bottom, so it floats just above the docked
+  // 56px trigger bar with a small gap instead of touching it — the SAME constant is threaded into
+  // the hook call here so its "closed" math knows about that extra offset too (see the hook's own
+  // closedOffsetPx comment for what goes wrong if these two ever drift apart).
+  const MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX = 68;
+  const quoteMobileActionsSheet = useMobileFloatingActionSheet(isCompactProjectViewport, MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX);
+  const specsMobileActionsSheet = useMobileFloatingActionSheet(isCompactProjectViewport, MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX);
   // Mobile-only long-press-to-delete for Quote/Specs' own Version History rows — see
   // useLongPress's own comment for why desktop's hover-revealed delete icon doesn't carry over to
   // touch, and why one hook call per list (not per row) is safe here.
@@ -44368,10 +44388,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
             }
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            style={{
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--panel-bg)",
+              color: "var(--text-main)",
+              // Bounces in on open, staggered against the sheet's other buttons — see
+              // glass-bubble-rise-in's own comment. Re-keyed off isOpen itself (absent when
+              // closed, a real animation value once it flips true) so it replays every time the
+              // sheet opens, not just once on this button's own first mount.
+              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-save")}ms both` }
+                : {}),
+            }}
             aria-label="Save"
           >
             <Save size={isCompactProjectViewport ? 16 : 14} />
@@ -44390,10 +44421,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
-            style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
+            style={{
+              backgroundImage: "var(--danger-gradient)",
+              borderColor: "var(--danger-strong)",
+              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-reset")}ms both` }
+                : {}),
+            }}
             aria-label="Reset"
           >
             <RotateCcw size={isCompactProjectViewport ? 16 : 14} />
@@ -44427,10 +44464,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
-            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            style={{
+              backgroundImage: "var(--brand-gradient)",
+              borderColor: "var(--brand-strong)",
+              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-send")}ms both` }
+                : {}),
+            }}
             aria-label="Send to Client"
           >
             <Mail size={isCompactProjectViewport ? 16 : 14} />
@@ -44458,10 +44501,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
-            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
+            style={{
+              backgroundImage: "var(--brand-gradient)",
+              borderColor: "var(--brand-strong)",
+              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-reopen")}ms both` }
+                : {}),
+            }}
             aria-label={isReopeningQuoteAcceptance ? "Reopening…" : "Reopen Edit"}
           >
             <Unlock size={isCompactProjectViewport ? 16 : 14} />
@@ -44480,10 +44529,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
             }
-            style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
+            style={{
+              backgroundImage: "var(--success-gradient)",
+              borderColor: "var(--success-strong)",
+              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-accepted")}ms both` }
+                : {}),
+            }}
             aria-label="Accepted Version"
           >
             <Eye size={isCompactProjectViewport ? 16 : 14} />
@@ -44502,10 +44557,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             }
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            style={{
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--panel-bg)",
+              color: "var(--text-main)",
+              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-portal")}ms both` }
+                : {}),
+            }}
             aria-label="Client Portal"
           >
             <ExternalLink size={isCompactProjectViewport ? 16 : 14} />
@@ -44707,63 +44769,96 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             : null}
           {/* Mobile only: a labeled trigger bar (tap to open) instead of squeezing every other
               action onto the title row or showing them as icon-only buttons that were hard to
-              tell apart — opens the same slide-up/drag-down bottom sheet as Nesting's own mobile
-              Visibility overlay (see useMobileBottomSheet), with the actions listed as icon+text
-              rows now that there's room. Desktop gets its own floating pill instead, see
-              quoteFloatingActionButtons' desktop render site further down. */}
-          {isCompactProjectViewport && !quoteMobileActionsSheet.isOpen && (
+              tell apart — opens a small floating card of the same actions as icon+text rows now
+              that there's room. Desktop gets its own floating pill instead, see
+              quoteFloatingActionButtons' desktop render site further down. Always rendered
+              (not gated on isOpen) — this trigger stays fixed in place regardless of the floating
+              panel's own open/closed state; only the panel itself (below, portalled) animates. */}
+          {isCompactProjectViewport && (
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
-              style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
+              // Matches the header's own Back button exactly (same brand-gradient + brand-strong
+              // border), rather than this bar's previous plain white.
+              style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
             >
               <button
                 type="button"
-                onClick={() => quoteMobileActionsSheet.setIsOpen(true)}
-                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
-                style={{ color: projectPalette.text }}
+                onClick={() => quoteMobileActionsSheet.setIsOpen(!quoteMobileActionsSheet.isOpen)}
+                className="flex h-full w-full items-center justify-center text-[18px] font-medium hover:brightness-95"
+                style={{ color: "#ffffff" }}
               >
                 Actions
               </button>
             </div>
           )}
-          {/* Always mounted (rather than only while open) so it's actually there in the DOM to
-              drag closed — its resting "closed" position is off-screen below the trigger bar
-              above (see useMobileBottomSheet's own layout effect), not unmounted. */}
-          {isCompactProjectViewport && (
-            <aside
-              ref={quoteMobileActionsSheet.panelRef}
-              data-app-gesture-exempt="true"
-              {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
-              className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
-              style={{ transform: "translateY(100%)" }}
-            >
-              {/* Same bar (height, glass style) as the closed-state trigger bar above — it
-                  visually IS that bar, now sitting as the open panel's own header, so dragging it
-                  down closes back to that same resting spot instead of a differently-styled
-                  in-panel header. */}
-              <div
-                className="sticky top-0 z-10 flex h-[56px] items-center justify-center border-b px-3"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
-                onClick={quoteMobileActionsSheet.onHeaderClick}
-                onTouchStart={quoteMobileActionsSheet.onHeaderTouchStart}
-                onTouchMove={quoteMobileActionsSheet.onHeaderTouchMove}
-                onTouchEnd={quoteMobileActionsSheet.onHeaderTouchEnd}
-                onTouchCancel={quoteMobileActionsSheet.onHeaderTouchEnd}
-              >
-                <div
-                  className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full"
-                  style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
-                />
-                <span className="pointer-events-none text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
-                  Actions
-                </span>
-              </div>
-              <div className="flex flex-col gap-2 p-3">
-                {quoteFloatingActionButtons}
-              </div>
-            </aside>
-          )}
+          {/* Portalled to <body>, same reasoning as the Version History/Quote Extras drawers
+              further down — salesQuoteScrollRef can get a live push transform written to it, which
+              would make it this panel's own containing block instead of the true viewport if left
+              nested in place. data-app-gesture-exempt: this floating sheet owns its own touch
+              handling (the close-drag) entirely, same as the Nesting/CNC mobile Visibility panels'
+              own use of this attribute. */}
+          {isCompactProjectViewport && typeof document !== "undefined"
+            ? createPortal(
+                // pointer-events: none on this wrapper — it's a plain div spanning the ENTIRE
+                // screen (fixed inset-0) at a very high z-index, with nothing of its own to click;
+                // without this, it silently captured every tap across the whole app regardless of
+                // the panel/backdrop's own visibility, since pointer-events defaults to auto and a
+                // transparent box still intercepts clicks. The backdrop and panel below each
+                // explicitly set their OWN pointer-events back to auto (pointer-events is
+                // inherited, so they'd otherwise inherit this none too), re-enabling clicks only
+                // where something's actually meant to be clickable.
+                <div className="pointer-events-none fixed inset-0 z-[130]" data-app-gesture-exempt="true" {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}>
+                  {/* Blurred/dimmed backdrop behind the floating buttons — covers everything BELOW
+                      the panel (down to, and including, the fixed trigger bar's own strip, which
+                      stays visible/clickable underneath since a second tap on it just re-closes
+                      this the same as the backdrop would) so the rest of the screen reads as
+                      pushed back while the buttons are up. Fades in/out in lockstep with the
+                      panel's own slide via the SAME opacity value, driven by
+                      useMobileFloatingActionSheet directly — not a separate CSS animation — so a
+                      mid-drag release fades from exactly wherever the drag left it rather than
+                      snapping. pointerEvents here is the hook's own — auto only while open — so a
+                      closed backdrop lets clicks straight through to the page underneath it too. */}
+                  <div
+                    ref={quoteMobileActionsSheet.backdropRef}
+                    onClick={quoteMobileActionsSheet.onBackdropClick}
+                    {...quoteMobileActionsSheet.dragHandlers}
+                    className="absolute inset-0"
+                    style={{ opacity: 0, pointerEvents: "none", backgroundColor: "rgba(15, 23, 42, 0.14)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
+                  />
+                  {/* The floating card itself — height:auto (only as tall as its own buttons need,
+                      never full screen), sitting just above the fixed trigger bar's own 56px strip
+                      so the two never overlap. Resting "closed" position is translateY(100%) of
+                      its OWN height (not a pixel value), which is what lets this work before its
+                      real height is even known — see the hook's own comment. pointerEvents: auto
+                      unconditionally (not gated on isOpen like the backdrop above) — even while
+                      closed/off-screen this stays clickable in principle, which is harmless since
+                      its translateY already moved its actual box fully out of the viewport; what it
+                      DOES need is to opt back into auto at all, overriding the wrapper's none. */}
+                  {/* No background/border/shadow of its own — just a plain positioning box for the
+                      buttons, which float directly on the blurred backdrop behind them rather than
+                      sitting inside a separate white card on top of it. */}
+                  <div
+                    ref={quoteMobileActionsSheet.panelRef}
+                    {...quoteMobileActionsSheet.dragHandlers}
+                    className="pointer-events-auto absolute inset-x-3 flex flex-col gap-2 p-3"
+                    style={{
+                      // bottom: an inline style here (not a bottom-* class), specifically so it's the
+                      // SAME MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX constant the hook call above was
+                      // given — see that constant's own comment for why a mismatch between the two
+                      // left the "closed" panel still visibly poking up above the trigger bar.
+                      bottom: MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX,
+                      // Fallback only — overwritten by the hook's own useLayoutEffect (a real pixel
+                      // value, accounting for this same offset) before the browser ever paints.
+                      transform: "translateY(100%)",
+                    }}
+                  >
+                    {quoteFloatingActionButtons}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
           {/* Desktop only: the same buttons as the mobile strip above, in a centered floating
               pill fixed to the bottom of the screen instead of a squeezed-in top row — SpecsGridEditor's
               own canvas reserves the matching bottom inset for this (canvasBottomInsetPx below) so the
@@ -45339,6 +45434,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             : {})}
                           className={`relative z-[1] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 ${isCompactProjectViewport ? "" : "mr-[42px]"}`}
                           style={{
+                            // Long-press-to-delete's own style (WebkitTouchCallout/userSelect —
+                            // see useLongPress's own comment) — spread here, not via the handlers
+                            // spread above, since a later `style` prop in JSX replaces an earlier
+                            // one outright rather than merging with it. makeHandlers is a pure
+                            // factory (no side effect from just calling it), so calling it again
+                            // here for its .style alone is safe.
+                            ...(isCompactProjectViewport && !v.acceptedAtIso && !v.sentToClient
+                              ? quoteVersionLongPress.makeHandlers(() => {}).style
+                              : {}),
                             // Each state's color is constant regardless of selection — accepted
                             // stays green, sent-but-unaccepted stays blue, plain stays grey — a
                             // settled/in-progress status shouldn't fade the moment staff click onto
@@ -45923,10 +46027,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
             }
-            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+            style={{
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--panel-bg)",
+              color: "var(--text-main)",
+              // Bounces in on open, staggered against the sheet's other buttons — see
+              // glass-bubble-rise-in's own comment. Re-keyed off isOpen itself (absent when
+              // closed, a real animation value once it flips true) so it replays every time the
+              // sheet opens, not just once on this button's own first mount.
+              ...(isCompactProjectViewport && specsMobileActionsSheet.isOpen
+                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-save")}ms both` }
+                : {}),
+            }}
             aria-label="Save"
           >
             <Save size={isCompactProjectViewport ? 16 : 14} />
@@ -45946,7 +46061,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
             style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
@@ -45981,7 +46096,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
@@ -46007,7 +46122,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95 disabled:opacity-40"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
             style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
@@ -46029,7 +46144,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold text-white transition hover:brightness-95"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
             }
             style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
@@ -46051,7 +46166,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             }}
             className={
               isCompactProjectViewport
-                ? "flex w-full items-center gap-3 rounded-[10px] border px-3 py-3 text-left text-[13px] font-bold transition hover:brightness-95"
+                ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             }
             style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
@@ -46230,63 +46345,58 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             : null}
           {/* Mobile only: a labeled trigger bar (tap to open) instead of squeezing every other
               action onto the title row or showing them as icon-only buttons that were hard to
-              tell apart — opens the same slide-up/drag-down bottom sheet as Nesting's own mobile
-              Visibility overlay (see useMobileBottomSheet), with the actions listed as icon+text
-              rows now that there's room. Desktop gets its own floating pill instead, see
-              specsFloatingActionButtons' desktop render site further down. */}
-          {isCompactProjectViewport && !specsMobileActionsSheet.isOpen && (
+              tell apart — opens a small floating card of the same actions as icon+text rows now
+              that there's room. Desktop gets its own floating pill instead, see
+              specsFloatingActionButtons' desktop render site further down. Always rendered (not
+              gated on isOpen) — this trigger stays fixed in place regardless of the floating
+              panel's own open/closed state; only the panel itself (below, portalled) animates. */}
+          {isCompactProjectViewport && (
             <div
               {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
-              style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
+              // Same reasoning as the Quote tab's own identical trigger — see its comment.
+              style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
             >
               <button
                 type="button"
-                onClick={() => specsMobileActionsSheet.setIsOpen(true)}
-                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
-                style={{ color: projectPalette.text }}
+                onClick={() => specsMobileActionsSheet.setIsOpen(!specsMobileActionsSheet.isOpen)}
+                className="flex h-full w-full items-center justify-center text-[18px] font-medium hover:brightness-95"
+                style={{ color: "#ffffff" }}
               >
                 Actions
               </button>
             </div>
           )}
-          {/* Always mounted (rather than only while open) so it's actually there in the DOM to
-              drag closed — its resting "closed" position is off-screen below the trigger bar
-              above (see useMobileBottomSheet's own layout effect), not unmounted. */}
-          {isCompactProjectViewport && (
-            <aside
-              ref={specsMobileActionsSheet.panelRef}
-              data-app-gesture-exempt="true"
-              {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}
-              className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
-              style={{ transform: "translateY(100%)" }}
-            >
-              {/* Same bar (height, glass style) as the closed-state trigger bar above — it
-                  visually IS that bar, now sitting as the open panel's own header, so dragging it
-                  down closes back to that same resting spot instead of a differently-styled
-                  in-panel header. */}
-              <div
-                className="sticky top-0 z-10 flex h-[56px] items-center justify-center border-b px-3"
-                style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
-                onClick={specsMobileActionsSheet.onHeaderClick}
-                onTouchStart={specsMobileActionsSheet.onHeaderTouchStart}
-                onTouchMove={specsMobileActionsSheet.onHeaderTouchMove}
-                onTouchEnd={specsMobileActionsSheet.onHeaderTouchEnd}
-                onTouchCancel={specsMobileActionsSheet.onHeaderTouchEnd}
-              >
-                <div
-                  className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full"
-                  style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
-                />
-                <span className="pointer-events-none text-[13px] font-bold" style={{ color: "var(--text-main)" }}>
-                  Actions
-                </span>
-              </div>
-              <div className="flex flex-col gap-2 p-3">
-                {specsFloatingActionButtons}
-              </div>
-            </aside>
-          )}
+          {/* Portalled to <body> — same reasoning as the Quote tab's own identical panel. */}
+          {isCompactProjectViewport && typeof document !== "undefined"
+            ? createPortal(
+                // pointer-events: none on this wrapper — see the Quote tab's identical wrapper for
+                // why (it silently captured every tap across the whole app otherwise).
+                <div className="pointer-events-none fixed inset-0 z-[130]" data-app-gesture-exempt="true" {...{ [SPECS_QUOTE_SWIPE_EXCLUDE_ATTR]: "true" }}>
+                  <div
+                    ref={specsMobileActionsSheet.backdropRef}
+                    onClick={specsMobileActionsSheet.onBackdropClick}
+                    {...specsMobileActionsSheet.dragHandlers}
+                    className="absolute inset-0"
+                    style={{ opacity: 0, pointerEvents: "none", backgroundColor: "rgba(15, 23, 42, 0.14)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
+                  />
+                  {/* No background/border/shadow — see the Quote tab's own identical panel. */}
+                  <div
+                    ref={specsMobileActionsSheet.panelRef}
+                    {...specsMobileActionsSheet.dragHandlers}
+                    className="pointer-events-auto absolute inset-x-3 flex flex-col gap-2 p-3"
+                    style={{
+                      // Same reasoning as the Quote tab's own identical panel — see its comment.
+                      bottom: MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX,
+                      transform: "translateY(100%)",
+                    }}
+                  >
+                    {specsFloatingActionButtons}
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
           {/* Desktop only: the same buttons as the mobile strip above, in a centered floating
               pill fixed to the bottom of the screen instead of a squeezed-in top row — SpecsGridEditor's
               own canvas reserves the matching bottom inset for this (canvasBottomInsetPx below) so the
@@ -46533,6 +46643,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                           : {})}
                         className={`relative z-[1] min-w-0 flex-1 rounded-[10px] border px-3 py-2 text-left transition hover:brightness-95 ${isCompactProjectViewport ? "" : "mr-[42px]"}`}
                         style={{
+                          // Long-press-to-delete's own style — see the Quote tab's identical
+                          // spread for why it's merged in here rather than via the handlers
+                          // spread above.
+                          ...(isCompactProjectViewport && !v.sentToClient && !v.submittedAtIso
+                            ? specsVersionLongPress.makeHandlers(() => {}).style
+                            : {}),
                           // Each state's color is constant regardless of selection — submitted
                           // stays green, sent-but-unsubmitted stays blue, plain stays grey — a
                           // settled/in-progress status shouldn't fade the moment staff click onto a

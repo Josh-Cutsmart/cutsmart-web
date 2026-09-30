@@ -1,0 +1,144 @@
+"use client";
+
+import { useLayoutEffect, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
+
+const SHEET_DURATION_MS = 280;
+const SHEET_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
+
+type DragState = {
+  startY: number;
+  dragging: boolean;
+  // Total travel distance (px) from fully open to fully closed — the panel's own measured height
+  // PLUS closedOffsetPx (see the hook's own param comment), not just the panel's height alone.
+  // Using this (not a raw % of the panel's own box) is what makes closedOffsetPx correct for a
+  // live drag too, not just the resting open/closed states the layout effect sets.
+  travelPx: number;
+  lastY: number;
+  lastT: number;
+  velocity: number;
+};
+
+// A floating action sheet for mobile: a small, auto-height card of stacked buttons that rises up
+// from just above a FIXED trigger bar (the trigger itself never moves or hides — see the host's
+// own JSX), backed by a blurred/dimmed backdrop that fades in and out with it. Deliberately NOT
+// useMobileBottomSheet (the full-screen slide-up this replaces for Quote/Specs' own "Actions"
+// trigger, still used as-is by Nesting/CNC's own Visibility panel) — every dimension of the
+// mechanics differs: height is auto (however tall the button list needs, never full screen), there
+// IS a real backdrop (useMobileBottomSheet has none), and the close-drag works from anywhere across
+// the open sheet's whole surface (backdrop included) rather than being scoped to one drag handle —
+// this panel has no header to scope it to, just its list of buttons.
+//
+// closedOffsetPx: how far ABOVE the sheet's own positioned container's bottom edge the panel sits
+// at rest (e.g. the host positions it with `bottom: 68px` so it floats just above a docked trigger
+// bar, instead of flush at the container's true bottom). A plain translateY(100%) only ever moves
+// an element by its OWN height — it has no idea the panel was already offset upward by another
+// 68px before that, so "closed" left it still 68px short of actually being off-screen, visibly
+// poking up above the trigger bar even at rest. Every pixel math in this hook adds this offset to
+// the panel's own measured height to get the TRUE closed travel distance. Defaults to 0 (flush at
+// the container's bottom — plain translateY(100%) is already exactly correct in that case).
+export function useMobileFloatingActionSheet(
+  isCompactViewport: boolean,
+  closedOffsetPx = 0,
+): {
+  isOpen: boolean;
+  setIsOpen: (open: boolean) => void;
+  panelRef: React.RefObject<HTMLDivElement | null>;
+  backdropRef: React.RefObject<HTMLDivElement | null>;
+  onBackdropClick: () => void;
+  dragHandlers: {
+    onTouchStart: (e: ReactTouchEvent<HTMLElement>) => void;
+    onTouchMove: (e: ReactTouchEvent<HTMLElement>) => void;
+    onTouchEnd: () => void;
+    onTouchCancel: () => void;
+  };
+} {
+  const [isOpen, setIsOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<DragState>({ startY: 0, dragging: false, travelPx: 0, lastY: 0, lastT: 0, velocity: 0 });
+
+  // Runs before paint, same reasoning as useMobileBottomSheet's own identical effect — the panel's
+  // very first render is already off-screen, not a visible flash of "open" before this gets a
+  // chance to hide it. Measures the panel's OWN current height fresh every time (its content, and
+  // so its height, can change between opens) rather than caching it once.
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const backdrop = backdropRef.current;
+    if (!panel) return;
+    const travelPx = panel.getBoundingClientRect().height + closedOffsetPx;
+    panel.style.transition = `transform ${SHEET_DURATION_MS}ms ${SHEET_EASING}`;
+    panel.style.transform = isOpen ? "translateY(0px)" : `translateY(${travelPx}px)`;
+    if (backdrop) {
+      backdrop.style.transition = `opacity ${SHEET_DURATION_MS}ms ease`;
+      backdrop.style.opacity = isOpen ? "1" : "0";
+      backdrop.style.pointerEvents = isOpen ? "auto" : "none";
+    }
+  }, [isOpen, isCompactViewport, closedOffsetPx]);
+
+  const onBackdropClick = () => setIsOpen(false);
+
+  // Starts tracking a close-drag from ANY touch within the open sheet — backdrop or panel alike,
+  // matching "sliding down anywhere on the screen" closes it. The 6px-of-movement gate in
+  // onTouchMove below (before anything actually happens) is what keeps this from swallowing a
+  // plain tap on one of the panel's own buttons.
+  const onTouchStart = (e: ReactTouchEvent<HTMLElement>) => {
+    const touch = e.touches[0];
+    const panel = panelRef.current;
+    if (!touch || !panel || !isOpen) return;
+    dragRef.current = {
+      startY: touch.clientY,
+      dragging: true,
+      travelPx: panel.getBoundingClientRect().height + closedOffsetPx || 1,
+      lastY: touch.clientY,
+      lastT: e.timeStamp,
+      velocity: 0,
+    };
+  };
+
+  const onTouchMove = (e: ReactTouchEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    const touch = e.touches[0];
+    const panel = panelRef.current;
+    if (!drag.dragging || !touch || !panel) return;
+    const dy = touch.clientY - drag.startY;
+    if (dy <= 0) return;
+    if (dy < 6) return;
+    e.preventDefault();
+    const clampedDy = Math.min(dy, drag.travelPx);
+    panel.style.transition = "none";
+    panel.style.transform = `translateY(${clampedDy}px)`;
+    const backdrop = backdropRef.current;
+    if (backdrop) {
+      backdrop.style.transition = "none";
+      backdrop.style.opacity = String(1 - clampedDy / drag.travelPx);
+    }
+    const dt = e.timeStamp - drag.lastT;
+    if (dt > 0) drag.velocity = (touch.clientY - drag.lastY) / dt;
+    drag.lastY = touch.clientY;
+    drag.lastT = e.timeStamp;
+  };
+
+  const onTouchEnd = () => {
+    const drag = dragRef.current;
+    const panel = panelRef.current;
+    if (!drag.dragging) return;
+    drag.dragging = false;
+    if (!panel) return;
+    const match = /translateY\(([-\d.]+)px\)/.exec(panel.style.transform);
+    const currentPx = match ? Number.parseFloat(match[1]) : 0;
+    const progress = drag.travelPx > 0 ? currentPx / drag.travelPx : 0;
+    if (progress > 0.35 || drag.velocity > 0.5) {
+      setIsOpen(false);
+      return;
+    }
+    panel.style.transition = `transform ${SHEET_DURATION_MS}ms ${SHEET_EASING}`;
+    panel.style.transform = "translateY(0px)";
+    const backdrop = backdropRef.current;
+    if (backdrop) {
+      backdrop.style.transition = `opacity ${SHEET_DURATION_MS}ms ease`;
+      backdrop.style.opacity = "1";
+    }
+  };
+
+  return { isOpen, setIsOpen, panelRef, backdropRef, onBackdropClick, dragHandlers: { onTouchStart, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd } };
+}

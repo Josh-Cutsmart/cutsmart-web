@@ -604,6 +604,26 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
+/* Same springy overshoot-then-settle character as glass-comment-drop-in, just RISING from BELOW
+ * instead of dropping from above — for the mobile Quote/Specifications Actions sheet's own
+ * buttons, each staggered with its own stableBubbleAnimationDelayMs the same way the Version
+ * History/Quote Extras bubbles are (see that function's own comment for why a stable per-item hash
+ * is used instead of Math.random()). */
+@keyframes glass-bubble-rise-in {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Reverse of glass-comment-drop-in — dips down slightly then floats back up
  * and fades out, for closing the comment strip the same way it opened. */
 @keyframes glass-comment-drop-out {
