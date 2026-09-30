@@ -44875,6 +44875,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // actually look even — tuned down from 72 per visual feedback; coincidentally lands
                   // on the same 56 as mobile's own value, unrelated to it).
                   canvasBottomInsetPx={56}
+                  mobileTopOffsetPx={quoteHeaderHeight}
                   highlightedGroupId={hoveredQuoteExtraGroupId}
                   onHoveredGroupChange={setPreviewHoveredQuoteExtraGroupId}
                 />
@@ -46378,6 +46379,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   fitToViewportOnMobile={isCompactProjectViewport}
                   // Same reasoning as the Quote tab's own identical prop — see its comment.
                   canvasBottomInsetPx={56}
+                  mobileTopOffsetPx={specsHeaderHeight}
                   highlightedGroupId={hoveredSpecsSectionGroupId}
                   onHoveredGroupChange={setPreviewHoveredSpecsSectionGroupId}
                 />

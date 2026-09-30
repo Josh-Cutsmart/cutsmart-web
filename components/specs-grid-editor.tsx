@@ -199,6 +199,15 @@ export type SpecsGridEditorProps = {
   // separate, unstyled section of the host page's background — which reads as a visible seam
   // where the two backgrounds don't match. Only the two project-sheet callers set this.
   canvasBottomInsetPx?: number;
+  // fitToViewportOnMobile only: the host page's own fixed title bar height ABOVE this component
+  // (quoteHeaderHeight/specsHeaderHeight, currently 56 for both) — this component has no way to
+  // know that on its own, since the host reserves that space itself (paddingTop on the wrapper
+  // around this whole component), not inside anything rendered here. Used, together with
+  // PROJECT_TOOLBAR_HEIGHT_PX/canvasBottomInsetPx (both already known inside this component), to
+  // work out how much real vertical room the sheet has to fit in — see sheetFitScale's own comment
+  // for why that matters. A missing/undefined value just means "assume there's no host header,"
+  // which for every caller that also doesn't set fitToViewportOnMobile is already correct (unused).
+  mobileTopOffsetPx?: number;
   // Hover sync with the host page's own "Sections" bubble list (only the two project-sheet callers
   // set either of these — every other caller leaves both undefined, a no-op on both sides).
   // Deliberately ASYMMETRIC, not a plain two-way mirror: hovering a bubble highlights BOTH the
@@ -528,6 +537,7 @@ export default function SpecsGridEditor({
   isViewingSavedVersion,
   fitToViewportOnMobile,
   canvasBottomInsetPx,
+  mobileTopOffsetPx,
   highlightedGroupId,
   onHoveredGroupChange,
 }: SpecsGridEditorProps) {
@@ -1325,15 +1335,19 @@ export default function SpecsGridEditor({
   // own nesting sheet-preview pinch/pan (clampNestingPreviewOffset etc.) but scoped to this canvas
   // and self-contained here rather than driven by the host page.
   const sheetFitViewportRef = useRef<HTMLDivElement | null>(null);
-  // Driven directly by window.innerWidth (always synchronously correct) rather than a
-  // ResizeObserver reading sheetFitViewportRef's own clientWidth — the ref version measured
+  // Driven directly by window.innerWidth/innerHeight (always synchronously correct) rather than a
+  // ResizeObserver reading sheetFitViewportRef's own clientWidth/Height — the ref version measured
   // unreliably early (before the table had finished its own width measurement/layout pass one
   // render up, in mockPageBoxWidthPx), leaving the scale stuck at whatever it read on that first,
   // sometimes-wrong pass with nothing to ever correct it.
   const [viewportInnerWidthPx, setViewportInnerWidthPx] = useState(typeof window === "undefined" ? 0 : window.innerWidth);
+  const [viewportInnerHeightPx, setViewportInnerHeightPx] = useState(typeof window === "undefined" ? 0 : window.innerHeight);
   useEffect(() => {
     if (!fitToViewportOnMobile || typeof window === "undefined") return;
-    const onResize = () => setViewportInnerWidthPx(window.innerWidth);
+    const onResize = () => {
+      setViewportInnerWidthPx(window.innerWidth);
+      setViewportInnerHeightPx(window.innerHeight);
+    };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -1344,10 +1358,25 @@ export default function SpecsGridEditor({
   // rounding, since erring toward a hair smaller is harmless but erring the other way reintroduces
   // the "clipped off the right edge" bug this whole calculation exists to avoid.
   const SHEET_FIT_HORIZONTAL_INSET_PX = 4;
+  const widthFitScale = mockPageBoxWidthPx > 0 ? (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx : 1;
+  // Also bounding by HEIGHT, not just width: a page whose own template is narrower (fewer/shorter
+  // columns, so a smaller mockPageBoxWidthPx) needs much less width-based shrinking to fit — for a
+  // small enough template, widthFitScale alone can land close to (or at) 1, i.e. close to true
+  // print size. At that scale the page's real height can easily exceed the actual room available
+  // for it on a phone screen — the host's own title bar (mobileTopOffsetPx) plus this component's
+  // own toolbar spacer (PROJECT_TOOLBAR_HEIGHT_PX) and canvas padding (the 24px top py-6 plus
+  // canvasBottomInsetPx) all eat into that before the sheet ever gets a look at it. Genuine
+  // overflow past that room is what was making the WHOLE PAGE (not just this canvas) tall enough to
+  // scroll on mobile Safari — which is what let its own dynamic toolbar animate in response,
+  // showing as an unrelated bar rising from the bottom while a template small enough to stay under
+  // that available height never triggered it. Math.min with widthFitScale below guarantees the
+  // sheet always fits BOTH dimensions, regardless of the template's own proportions.
+  const sheetFitAvailableHeightPx =
+    viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - 24 - (canvasBottomInsetPx ?? 0);
+  const heightFitScale =
+    mockPageBoxHeightPx > 0 && sheetFitAvailableHeightPx > 0 ? sheetFitAvailableHeightPx / mockPageBoxHeightPx : 1;
   const sheetFitScale =
-    fitToViewportOnMobile && mockPageBoxWidthPx > 0
-      ? Math.max(0.1, Math.min(1, (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx))
-      : 1;
+    fitToViewportOnMobile && mockPageBoxWidthPx > 0 ? Math.max(0.1, Math.min(1, widthFitScale, heightFitScale)) : 1;
   const [sheetZoom, setSheetZoom] = useState(1);
   const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
   const sheetGestureRef = useRef<{
