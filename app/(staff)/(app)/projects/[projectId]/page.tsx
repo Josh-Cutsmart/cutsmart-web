@@ -8155,10 +8155,14 @@ export default function ProjectDetailsPage() {
         return;
       }
       const target = event.target as HTMLElement | null;
-      // data-app-gesture-exempt: the sheet preview's own pinch/pan viewport (specs-grid-editor.tsx)
-      // — same attribute and reasoning as app-shell.tsx's onMainTouchStart, which this gesture
-      // otherwise mirrors exactly. Checked in addition to (not instead of) SPECS_QUOTE_SWIPE_EXCLUDE_ATTR
-      // below, which covers a different pair of surfaces (the toolbar/action bar).
+      // data-app-gesture-exempt: surfaces that own their own full-screen touch handling, like the
+      // mobile Actions bottom sheet — same attribute and reasoning as app-shell.tsx's own
+      // onMainTouchStart. Deliberately NOT marked on the sheet preview itself (see that div's own
+      // comment in specs-grid-editor.tsx) — a pinch starting there is instead caught by the
+      // event.touches.length > 1 check in this same handler's onTouchMove below, which doesn't
+      // also block an ordinary single-finger drag on the sheet from opening a drawer. Checked in
+      // addition to (not instead of) SPECS_QUOTE_SWIPE_EXCLUDE_ATTR below, which covers a
+      // different pair of surfaces (the toolbar/action bar).
       if (target?.closest(`[${SPECS_QUOTE_SWIPE_EXCLUDE_ATTR}], [data-app-gesture-exempt="true"]`)) {
         specsQuoteMobileSwipeStartRef.current = null;
         return;

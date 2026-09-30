@@ -2241,15 +2241,14 @@ export default function SpecsGridEditor({
           onTouchStart={fitToViewportOnMobile ? onSheetViewportTouchStart : undefined}
           onTouchMove={fitToViewportOnMobile ? onSheetViewportTouchMove : undefined}
           onTouchEnd={fitToViewportOnMobile ? onSheetViewportTouchEnd : undefined}
-          // Tells the host page's own page-wide gesture systems (app-shell.tsx's pulldown-to-
-          // reveal-nav, and the Quote/Specs host's own swipe-open-a-drawer handlers) to leave a
-          // touch starting here alone entirely — a pinch-to-zoom naturally has one finger moving
-          // in a direction that can look just like a page-level pull-down or side-drawer swipe, and
-          // those page-level gestures only ever look at a single touch point, so without this they
-          // could fire alongside (and fight) the pinch/pan handling directly above. See
-          // app-shell.tsx's own onMainTouchStart comment on data-app-gesture-exempt for the other
-          // documented use of this same attribute.
-          data-app-gesture-exempt={fitToViewportOnMobile ? "true" : undefined}
+          // Deliberately NOT data-app-gesture-exempt: that marker blocks a touch starting here from
+          // ever arming the host page's own pulldown-to-reveal-nav or swipe-open-a-drawer gestures
+          // AT ALL, single-finger drags included — which also blocked a genuine single-finger
+          // drag-down on the sheet preview from ever revealing the pulldown nav bar. A pinch's two
+          // fingers reading as a page-level swipe is instead handled more precisely by the
+          // event.touches.length > 1 checks already in app-shell.tsx's onMainTouchStart/Move and
+          // this page's own makeSpecsQuoteMobileSwipeHandlers — those only bail out for an actual
+          // multi-touch gesture, leaving an ordinary one-finger drag here free to reach them.
           style={
             fitToViewportOnMobile
               ? { overflow: "hidden", height: mockPageBoxHeightPx * sheetFitScale, touchAction: sheetZoom > 1 ? "none" : "pan-y" }
@@ -2661,6 +2660,7 @@ export default function SpecsGridEditor({
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
                             onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, cell, px)}
+                            remeasureSignal={mockPageBoxWidthPx}
                             readOnly={!isCellTextEditableHere}
                             readOnlyReason={
                               isRowAnsweredByClient
@@ -3545,6 +3545,7 @@ function SpecsCellTextArea({
   onLiveCommitRuns,
   onToggleWholeCellFormat,
   onNaturalHeightChange,
+  remeasureSignal,
   readOnly,
   readOnlyReason,
   dimmed = true,
@@ -3567,6 +3568,16 @@ function SpecsCellTextArea({
   // the committed `runs` (re)sync in from outside. The parent grows the row to fit whenever this
   // exceeds its current height (never shrinks it back down on its own).
   onNaturalHeightChange?: (px: number) => void;
+  // fitToViewportOnMobile only: the caller passes mockPageBoxWidthPx, which — like sheetFitScale
+  // itself (see its own comment) — can still be settling one render after this cell first mounts,
+  // wide enough to let text that will end up wrapping onto more lines measure short on that very
+  // first pass. onNaturalHeightChange only ever GROWS a row, never shrinks it, so a too-small first
+  // measurement stuck permanently once the width later narrowed to its real value — the row (and
+  // the border/group overlay computed from that same stuck height) stopped matching how much room
+  // the text actually needed, worst for multi-paragraph cells with the most lines to under-count.
+  // Included in the measuring effect's own deps below purely so a real width change re-runs it —
+  // its actual value is never read.
+  remeasureSignal?: number;
   // True when the current viewer's role isn't in this cell's group's editableByRoleIds (see
   // SpecsGridEditorProps.canEditSpecsGroup's own comment) OR when it's a blank cell outside any
   // group with lockUngroupedBlankCells on (see that prop's own comment) — either way, renders the
@@ -3592,7 +3603,7 @@ function SpecsCellTextArea({
     }
     if (ref.current) onNaturalHeightChange?.(ref.current.scrollHeight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs, isFocused]);
+  }, [runs, isFocused, remeasureSignal]);
 
   if (readOnly) {
     return (

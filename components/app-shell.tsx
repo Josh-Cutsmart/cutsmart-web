@@ -969,9 +969,13 @@ export function AppShell({
   };
   const onMainTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
     // data-app-gesture-exempt is a page surface that owns BOTH axes of its own touch handling
-    // entirely (e.g. Nesting/CNC's mobile Visibility slide-up panel, or the sheet preview's
-    // pinch-zoom) — without it, tapping into that panel's search box, or pinching the preview,
-    // could get swept into this page-level pull-to-reveal/nav-swipe system.
+    // entirely (e.g. Nesting/CNC's mobile Visibility slide-up panel) — without it, tapping into
+    // that panel's search box could get swept into this page-level pull-to-reveal/nav-swipe
+    // system. Deliberately NOT used for Quote/Specifications' own sheet preview (pinch-zoom) —
+    // that would ALSO block a genuine single-finger drag-down there from ever reaching this
+    // gesture; a pinch's two fingers are instead caught more precisely by the
+    // event.touches.length > 1 check just below, which only bails out for an actual multi-touch
+    // start.
     //
     // data-horizontal-swipe-scroll is narrower: a page's own horizontal swiper (e.g. the
     // dashboard's board-view columns) needs the same left/right drag gesture for its own
@@ -3309,11 +3313,17 @@ export function AppShell({
           (PULL_BANNER_MIN_HEIGHT_PX) and growing in lockstep with it as you keep pulling (see
           PULL_BANNER_MAX_HEIGHT_PX) — "it should be able to stretch higher, not stop at the tab
           bar's normal height." Sits above the tab bar (z-[150] against its z-[95]) in the exact
-          same position/width, invisible (opacity 0, pointer-events none) at rest. Has NO background
-          of its own — the tab bar's own outer div is the one persistent bar surface (see
-          resetPullBanner's own comment); this only ever holds the pulldown icons, which fade IN as
-          the tab bar's own CONTENT (not its background) fades OUT, over a short PULL_FADE_DISTANCE_PX
-          so the switch reads as near-instant. */}
+          same position/width, invisible (opacity 0, pointer-events none) at rest. Solid
+          --panel-bg (the same base colour the tab bar's own translucent glass backdrop is built
+          from, just fully opaque) rather than transparent — a genuinely see-through pulldown surface
+          let whatever sits underneath it at a lower z-index (a chromeHidden view's own fixed title
+          bar backdrop, or Quote/Specifications' own formatting toolbar, both z-[95]) show straight
+          through despite being behind it, reading as "in front of" the pulldown rather than safely
+          covered by it. This only ever holds the pulldown icons on top of that background, which
+          fade IN as the tab bar's own CONTENT (not its background) fades OUT, over a short
+          PULL_FADE_DISTANCE_PX so the switch reads as near-instant — the same opacity transition now
+          carries this solid background in at the same rate, so the covered-up effect ramps in
+          together with the icons rather than snapping in abruptly. */}
       {!isDesktopViewport && mobileTopBarEnabled && (
         <div
           ref={pullBannerRef}
@@ -3323,7 +3333,7 @@ export function AppShell({
             height: PULL_BANNER_MIN_HEIGHT_PX,
             opacity: 0,
             pointerEvents: "none",
-            backgroundColor: "transparent",
+            backgroundColor: "var(--panel-bg)",
           }}
         >
           {/* One shared circle (not one per zone) that lives under whichever zone is selected —
