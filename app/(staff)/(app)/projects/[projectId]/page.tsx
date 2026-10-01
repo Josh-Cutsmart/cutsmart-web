@@ -1665,39 +1665,38 @@ function stableBubbleAnimationDelayMs(id: string): number {
   return hash % 280;
 }
 
-// Style for one mobile Actions sheet button's entrance bounce (glass-bubble-rise-in — see its own
-// comment in globals.css for the keyframe shape itself and why the timing function below is plain
-// `ease-out`, not a back-ease curve) — same stable-per-id-hash idea as stableBubbleAnimationDelayMs
-// above (not Math.random(), for the same reason: see that function's own comment), but varying the
-// delay, duration, starting distance, AND wobble distance per button (hashing id, `${id}-duration`,
-// `${id}-distance`, and `${id}-wobble` separately, so none of the four move in lockstep with each
-// other) rather than just the delay — different buttons bouncing with the exact same motion, just
-// offset in time, still reads as one mechanical wave; varying the duration (380-519ms), how far
-// below rest each one starts (3-4px), and how far its own wobble swings past rest (2-3px) is what
-// makes each button's bounce feel like its own, distinct little motion rather than a uniform pulse.
+// Style for one mobile Actions sheet button's entrance bounce (glass-bubble-rise-in, see its own
+// comment in globals.css for why it's a plain two-stop translateY tween rather than a manually
+// overshooting multi-stop one) — same stable-per-id-hash idea as stableBubbleAnimationDelayMs above
+// (not Math.random(), for the same reason: see that function's own comment), but varying the delay,
+// duration, AND starting distance per button (hashing id, `${id}-duration`, and `${id}-distance`
+// separately, so none of the three move in lockstep with each other) rather than just the delay —
+// different buttons bouncing with the exact same motion, just offset in time, still reads as one
+// mechanical wave; varying the duration (380-519ms) and how far below rest each one starts (4-6px)
+// is what makes each button's bounce feel like its own, distinct little motion rather than a
+// uniform pulse.
 //
-// Both distances kept modest, deliberately — this sheet's buttons sit only `gap-2` (8px) apart, and
-// each one's own starting offset is held at its full distance (via the keyframe's 0% + this
-// animation's own fill-mode "both") for its whole random delay before it even starts rising,
-// completely independently of its neighbors' own delay/duration/wobble. Two buttons can therefore
-// be at ANY two points in their own cycles at once — worst case, the button ABOVE is still sitting
-// at its own full starting distance (its own closest approach to the one below) at the exact
-// instant the button BELOW is at its own peak wobble overshoot (translateY = -wobbleDistance, i.e.
-// moving UP toward the one above it — see the keyframe's own 58% stop). Capping starting distance
-// at 4px and wobble at 3px keeps that worst-case combined encroachment (4 + 3 = 7px) safely under
-// the 8px gap no matter how the two buttons' independent timings happen to line up, so two buttons
-// can never actually touch, let alone overlap. Returns a full style object (not just the animation
-// shorthand) since both distances travel as CSS custom properties the keyframe itself reads, rather
-// than needing a separate keyframe per combination.
+// 4-6px, not bigger — this sheet's buttons sit only `gap-2` (8px) apart, and each one's own
+// starting offset is held at that full distance (via the keyframe's 0% + this animation's own
+// fill-mode "both") for its whole random delay before it even starts rising, completely
+// independently of its neighbors' own delay/duration. Two buttons can therefore be at ANY two
+// points in their own cycles at once — worst case, the button ABOVE is still sitting at its full
+// starting distance (its own closest approach to the one below) at the exact instant the button
+// BELOW is at its own peak overshoot (cubic-bezier(0.34, 1.56, 0.64, 1) overshoots a translateY
+// tween by about 10% of its own starting distance — see glass-bubble-rise-in's own comment), i.e.
+// moving UP toward the one above it. Capping the starting distance at 6px keeps that worst-case
+// combined encroachment (6 + 10% of 6 ≈ 6.6px) safely under the 8px gap no matter how the two
+// buttons' independent timings happen to line up, so two buttons can never actually touch, let
+// alone overlap. Returns a full style object (not just the animation shorthand) since the distance
+// travels as a CSS custom property the keyframe itself reads, rather than needing a separate
+// keyframe per possible distance.
 function mobileActionsBubbleStyle(id: string): React.CSSProperties {
   const delay = stableBubbleAnimationDelayMs(id);
   const duration = 380 + (stableBubbleAnimationDelayMs(`${id}-duration`) % 140);
-  const distance = 3 + (stableBubbleAnimationDelayMs(`${id}-distance`) % 2);
-  const wobble = 2 + (stableBubbleAnimationDelayMs(`${id}-wobble`) % 2);
+  const distance = 4 + (stableBubbleAnimationDelayMs(`${id}-distance`) % 3);
   return {
-    animation: `glass-bubble-rise-in ${duration}ms ease-out ${delay}ms both`,
+    animation: `glass-bubble-rise-in ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`,
     ["--bubble-bounce-distance" as string]: `${distance}px`,
-    ["--bubble-wobble-distance" as string]: `${wobble}px`,
   } as React.CSSProperties;
 }
 
