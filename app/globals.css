@@ -604,23 +604,59 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
-/* Same springy overshoot-then-settle character as glass-comment-drop-in, just RISING from BELOW
- * instead of dropping from above — for the mobile Quote/Specifications Actions sheet's own
- * buttons, each staggered with its own stableBubbleAnimationDelayMs the same way the Version
- * History/Quote Extras bubbles are (see that function's own comment for why a stable per-item hash
- * is used instead of Math.random()). */
+/* For the mobile Quote/Specifications Actions sheet's own buttons — rise from just below their own
+ * resting spot, bounce PAST it, then settle, each staggered with its own
+ * stableBubbleAnimationDelayMs-derived delay/duration/distance the same way the Version History/
+ * Quote Extras bubbles use a stable hash instead of Math.random() (see that function's own comment
+ * for why).
+ *
+ * Exactly TWO keyframe stops, deliberately — earlier versions of this both used a 0%→55%→100% shape
+ * (an explicit manual dip/overshoot value at 55%) and both felt wrong in their own way: one scaled
+ * instead of moved, which visibly bulged these `w-full` buttons' LEFT/RIGHT edges in and out (no
+ * horizontal slack to grow into); the position-based one before that read as stiff, because the SAME
+ * animation-timing-function applies independently to EACH segment between keyframe stops (per the
+ * CSS animations spec) — a back/overshoot curve like cubic-bezier(0.34, 1.56, 0.64, 1) used across
+ * 0%→55%→100% overshoots TWICE (once past the 55% stop on the way down, again past 0 settling back
+ * in), a small fast two-direction correction that reads as a jerky snap rather than one soft bounce.
+ * With only a start and an end, that SAME back-ease curve is being used exactly the way it's
+ * designed for — easing a single A→B tween — so its own built-in characteristic of sailing slightly
+ * past the target before easing back onto it (same reason glass-bubble-pop-in/floating-bar-slot-pop
+ * already use this exact curve) is what produces the "bounce past and come back to sit" on its own,
+ * in one continuous motion, without a second, independently-eased overshoot stacked on top of it.
+ * --bubble-bounce-distance (how far below rest each button starts, see mobileActionsBubbleStyle for
+ * both its value — capped well under the sheet's own 8px gap-2 between buttons so two independently
+ * timed neighbors can never actually touch — and the full worst-case math behind that cap) is a CSS
+ * custom property set per-button via inline style rather than needing a separate keyframe per
+ * distance. */
 @keyframes glass-bubble-rise-in {
   0% {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-  55% {
-    opacity: 1;
-    transform: translateY(-4px);
+    transform: translateY(var(--bubble-bounce-distance, 5px));
   }
   100% {
-    opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Same bulge-then-shrink-and-fade shape as floating-bar-slot-pop below (desktop's own pop-away for a
+ * button leaving the bar), for the mobile Actions sheet's own buttons popping away together when the
+ * WHOLE sheet closes (see useMobileFloatingActionSheet's own isClosing) rather than one button's own
+ * visibility flipping off. Not literally floating-bar-slot-pop itself — that one scales both axes,
+ * which bulges a `w-full` mobile button's LEFT/RIGHT edges the same way plain `scale()` did on
+ * glass-bubble-rise-in above (see its own comment); scaleY keeps this one's edges fixed too. Fixed
+ * 180ms, no per-button stagger — this plays all at once, matching the single, un-staggered timing
+ * floating-bar-slot-pop itself already uses for one button leaving the desktop bar. */
+@keyframes glass-bubble-pop-away {
+  0% {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+  40% {
+    opacity: 1;
+    transform: scaleY(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleY(0.4);
   }
 }
 

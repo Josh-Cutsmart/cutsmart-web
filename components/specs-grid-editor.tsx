@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type TouchEvent as ReactTouchEvent } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
 import { createPortal } from "react-dom";
 import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
@@ -8,6 +8,7 @@ import {
   Bold,
   Underline,
   CheckSquare,
+  Check,
   AlignLeft,
   AlignCenter,
   AlignRight,
@@ -28,6 +29,7 @@ import {
   Eye,
   EyeOff,
   GripVertical,
+  RefreshCw,
   Redo2,
   TableCellsMerge,
   TableCellsSplit,
@@ -43,7 +45,10 @@ import {
   type SpecsTextRun,
   type SpecsRowGroupEditableFields,
   type SpecsGroupRule,
+  type SpecsGroupZone,
   genSpecsGroupRuleId,
+  genSpecsZoneId,
+  isRowWithinGroupZone,
   getCellRuns,
   runsToPlainText,
   normalizeTextRuns,
@@ -66,6 +71,8 @@ import {
   renameRowGroup,
   setRowGroupHidden,
   removeRowGroup,
+  importLinkedQuoteTextIntoZone,
+  getEditableZoneText,
   getExpandedRowGroups,
   findRowGroupForRow,
   SPECS_PAGE_SIZES,
@@ -210,6 +217,48 @@ export type SpecsGridEditorProps = {
   // bubble-hover-only value back in as `highlightedGroupId`, not this same one echoed back.
   highlightedGroupId?: string | null;
   onHoveredGroupChange?: (groupId: string | null) => void;
+  // The Quote TEMPLATE grid — passed ONLY by Company Settings' Specs template call site. Its mere
+  // presence is what gates the zone right-click "Link to Quote Groups" menu/picker (see
+  // zoneContextMenu below and SpecsGroupZone.linkedQuoteGroups' own comment on why name and not id):
+  // links are deliberately only ever authored here, in the template builder, never inside a live
+  // project. Read from, never written to — linking is strictly one-way.
+  linkedQuoteSourceGrid?: SpecsGrid;
+  // The project's own LIVE Quote grid — passed ONLY by the project page's Specs call site. Its mere
+  // presence is what gates the on-sheet "Import from Quote" button next to any group whose editable
+  // zone already has linkedQuoteGroups set (inherited from the template at clone time) — this is the
+  // ONLY thing that happens per-project: refreshing a zone's content from its already-configured
+  // links' current text, never changing which groups/zones are linked.
+  quoteGridForLinkedPull?: SpecsGrid;
+  // Marks this instance as the Group Settings modal's own embedded, cropped preview of a single
+  // group's rows (used for marking "zones" — see SpecsGroupZone) rather than a normal sheet. Nothing
+  // typed/edited here is ever meant to persist on its own (the host always passes a no-op onChange),
+  // so this: (1) forces every cell read-only regardless of any other editability logic, (2) skips
+  // mounting the global Ctrl+C/V/Z/Y keydown listener entirely — safe to do since there's nothing of
+  // this instance's own to undo/copy/paste, and necessary because that listener isn't scoped to its
+  // own instance, so a SECOND one mounted (this preview, nested inside the first/outer instance's own
+  // render tree) would otherwise also fire on keystrokes meant for the outer sheet, (3) strips every
+  // bit of chrome that doesn't matter for a tiny, throwaway, read-only crop (toolbar, row/column
+  // headers, physical-page sizing floor, resize handles) so the preview shows only the group's own
+  // cells, not a page-sized canvas around a handful of rows.
+  zonePreviewMode?: boolean;
+  // Only meaningful alongside zonePreviewMode: reports the row range of the CURRENT selection inside
+  // this instance (or null once nothing's selected) every time it changes — row-only, same shape as
+  // SpecsGroupZone itself, and already relative to THIS instance's own `value` grid, which is already
+  // cropped to one group's rows. The host uses this to drive its own "Mark Selection as Editable
+  // Zone" button rendered ABOVE the preview (not a context-menu item inside it, since the row-header
+  // gutter itself is hidden in this mode along with everything else in point (3) above).
+  onSelectionRangeChange?: (range: { minRow: number; maxRow: number } | null) => void;
+  // Only meaningful alongside zonePreviewMode: zones to render as a labeled outline overlay (same
+  // visual treatment as the template builder's own groupOutlines), so an already-marked zone is
+  // visible in the preview even though zones aren't SpecsRowGroup entries in `value.groups`.
+  previewZones?: SpecsGroupZone[];
+  // Only meaningful alongside zonePreviewMode: called with (zoneId, screen x, screen y) when the user
+  // right-clicks a cell that falls inside one of `previewZones` — a row OUTSIDE any zone does nothing
+  // (there's nothing to configure there in this mode). The host uses this to open its own "Link to
+  // Quote Groups" menu/picker for that specific zone, anchored at the click position — this instance
+  // never renders that menu itself, since the picker needs `linkedQuoteSourceGrid` (a prop of the
+  // OUTER/host instance, not this cropped nested one).
+  onZoneContextMenu?: (zoneId: string, x: number, y: number) => void;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -504,6 +553,111 @@ const VALIGN_OPTIONS = [
   { value: "bottom" as const, label: "Align bottom", Icon: AlignVerticalJustifyEnd },
 ];
 
+// A small floating pill-shaped button pinned outside the sheet's own right edge — shared by
+// "Import from Quote" (next to a selected linked editable zone) and "Mark for Confirmation" (next
+// to whatever cell(s) are currently selected). Only one instance is ever shown per caller at a time
+// (driven by `target` going null when there's nothing to anchor it to), and needs to animate OUT
+// with the same "pop away" ghost-portal technique the desktop floating action pill uses for a
+// button leaving the bar (FloatingBarSlot, defined in the project page, and its own
+// .floating-bar-slot-pop class in globals.css — reused here as-is) rather than just vanishing the
+// instant the target disappears. A plain conditional render can't animate its own removal (React
+// deletes the node the instant it's gone), so this keeps rendering the OUTGOING button's last known
+// on-screen box/content as a position:fixed portal snapshot for exactly as long as the pop-away
+// animation needs, while the REAL button swaps straight to wherever `target` points next (or
+// disappears, if null) underneath it.
+type FloatingSideButtonTarget = {
+  // Identity used to tell "the same button, just repositioning/updating its own content" (no pop —
+  // e.g. Mark for Confirmation tracking the selection from cell to cell) apart from "a genuinely
+  // different button taking its place, or nothing at all" (pops away then in — e.g. Import from
+  // Quote switching between two different zones). Callers with only ever one possible button (Mark
+  // for Confirmation) can just pass a constant.
+  id: string;
+  leftPx: number;
+  // The button's own TOP edge — a caller wanting it vertically centered over some span (e.g. Mark
+  // for Confirmation, across a multi-row selection) must bake that offset into this value itself
+  // (topPx - half the button's own height), NOT via a CSS transform: the glass-bubble-pop entrance
+  // class below animates `transform` (scale) for its first 380ms, which would otherwise clobber a
+  // separate transform applied here for centering — the button would render unshifted (sitting low)
+  // for the whole pop-in, then visibly snap up into place the instant it finishes.
+  topPx: number;
+  content: ReactNode;
+};
+
+function FloatingSideButton({ target }: { target: FloatingSideButtonTarget | null }) {
+  const [rendered, setRendered] = useState(target);
+  const [poppingGhost, setPoppingGhost] = useState<{
+    rect: { left: number; top: number; width: number; height: number };
+    content: ReactNode;
+  } | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const prevIdRef = useRef<string | null>(target?.id ?? null);
+
+  useEffect(() => {
+    const nextId = target?.id ?? null;
+    if (nextId === prevIdRef.current) {
+      // Same button still targeted (or still nothing targeted) — just let its position/content
+      // re-render normally, no pop involved.
+      if (target) setRendered(target);
+      return;
+    }
+    prevIdRef.current = nextId;
+    if (!rendered) {
+      // Nothing currently shown — mount directly; its own glass-bubble-pop entrance (below) handles
+      // the appearance.
+      setRendered(target);
+      return;
+    }
+    const rect = wrapperRef.current?.getBoundingClientRect();
+    if (rect) setPoppingGhost({ rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }, content: rendered.content });
+    setRendered(target);
+    const timeout = window.setTimeout(() => setPoppingGhost(null), 180);
+    return () => window.clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+
+  return (
+    <>
+      {rendered ? (
+        <div
+          ref={wrapperRef}
+          className="glass-bubble-pop absolute z-10 flex items-center gap-1.5"
+          style={{
+            left: rendered.leftPx,
+            top: rendered.topPx,
+            // Slides smoothly to a new position while the SAME button stays targeted (e.g. Mark for
+            // Confirmation tracking the selection from row to row — it shows on most rows, so this
+            // is its common case, not the rarer true appear/disappear). Suppressed (snaps instantly)
+            // while a pop is in flight: the id just changed and this div already jumped straight to
+            // the NEW target's position in the same tick the ghost above started popping away at the
+            // OLD one (see the effect above) — animating this real div's own move at the same time
+            // would visibly slide a second copy underneath the popping ghost.
+            transition: poppingGhost ? "none" : "top 200ms ease, left 200ms ease",
+          }}
+        >
+          {rendered.content}
+        </div>
+      ) : null}
+      {poppingGhost && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="floating-bar-slot-pop pointer-events-none fixed flex items-center gap-1.5"
+              style={{
+                left: poppingGhost.rect.left,
+                top: poppingGhost.rect.top,
+                width: poppingGhost.rect.width,
+                height: poppingGhost.rect.height,
+                zIndex: 2000,
+              }}
+            >
+              {poppingGhost.content}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 export default function SpecsGridEditor({
   value,
   onChange,
@@ -530,6 +684,12 @@ export default function SpecsGridEditor({
   canvasBottomInsetPx,
   highlightedGroupId,
   onHoveredGroupChange,
+  linkedQuoteSourceGrid,
+  quoteGridForLinkedPull,
+  zonePreviewMode,
+  onSelectionRangeChange,
+  previewZones,
+  onZoneContextMenu,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -548,6 +708,18 @@ export default function SpecsGridEditor({
   useEffect(() => {
     selectionRef.current = selection;
   }, [selection]);
+  // zonePreviewMode's own selection-reporting — see onSelectionRangeChange's comment on
+  // SpecsGridEditorProps for why the host needs this (its "Mark Selection as Editable Zone" button
+  // lives outside this instance entirely, above the preview, not in a context menu inside it).
+  useEffect(() => {
+    if (!onSelectionRangeChange) return;
+    if (!selection) {
+      onSelectionRangeChange(null);
+      return;
+    }
+    const rect = normalizeRect(selection);
+    onSelectionRangeChange({ minRow: rect.minRow, maxRow: rect.maxRow });
+  }, [selection, onSelectionRangeChange]);
   // A separate, non-contiguous selection built via Ctrl/Cmd+click — used ONLY by the "Mark for
   // Confirmation" toolbar button (project view), so staff can mark many scattered cells across the
   // sheet as one bulk action instead of one cell at a time. Deliberately independent of `selection`
@@ -699,7 +871,6 @@ export default function SpecsGridEditor({
   useEffect(() => {
     if (isDraggingRef.current) return;
     liveGridRef.current = value;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLiveGrid(value);
   }, [value]);
 
@@ -821,26 +992,37 @@ export default function SpecsGridEditor({
     applyChange(mapSelectedCellsRunFormat(liveGrid, selection, key), true);
   };
 
-  // Grows a row LIVE (no undo entry, no onChange/persist — same "cheap local-only preview, commit
-  // later" pattern already used for column/row drag-resize) whenever a cell's text needs more room
-  // than the row currently has, i.e. it's wrapped onto another line past the cell's right edge. Never
-  // shrinks a row back down on its own — only ever grows, same one-directional convention already used
-  // elsewhere in this editor (a row also never auto-shrinks just because text was deleted). Only
-  // applies to single-row cells: a merged (rowSpan > 1) cell's rendered height is the SUM of several
-  // rows, and there's no single one of them that's obviously "the" row to grow, so merges keep their
-  // existing fixed-height/clipped behavior rather than guessing which row should take the extra space.
-  // The actual persisted commit happens separately, on blur (commitCellRuns → applyChange), which
-  // naturally carries whatever height this already grew `liveGrid` to, since it preserves the row's
-  // existing heightPx via its own `{ ...r, cells }` spread.
-  const growRowForCellHeight = (row: number, cell: SpecsCell | null, naturalHeightPx: number) => {
+  // Grows a row (or, for a merged cell, the LAST row in its span — see below) to fit a cell's own
+  // natural content height whenever it needs more room than currently available. Never shrinks a row
+  // back down on its own — only ever grows, same one-directional convention already used elsewhere in
+  // this editor (a row also never auto-shrinks just because text was deleted).
+  //
+  // A merged (rowSpan > 1) cell's rendered height is the SUM of every row it spans — there's no single
+  // one of them that's obviously "the" row to grow, so the extra all goes onto the LAST row in the
+  // span, leaving whatever's ABOVE it (e.g. a deliberately short header row merged together with a
+  // taller content row) at its own configured height. For a plain single-row cell this is the exact
+  // same math as before — rowSpan 1 just means "sum of one row", i.e. that row's own height.
+  //
+  // Persistence: while the cell being grown is the one CURRENTLY FOCUSED (actively being typed into),
+  // this only updates `liveGrid` locally (no undo entry, no onChange/persist yet — same "cheap
+  // local-only preview, commit later" pattern already used for column/row drag-resize) — the actual
+  // persisted commit happens separately, on blur (commitCellRuns → applyChange), which naturally
+  // carries whatever height this already grew `liveGrid` to, since it preserves the row's existing
+  // heightPx via its own `{ ...r, cells }` spread. But a NON-interactive content change — e.g.
+  // "Import from Quote" calling applyChange directly, with nothing focused — has no later blur to
+  // rely on, so for that case this persists the grown height immediately via `onChange` directly
+  // (not a second applyChange call, deliberately: Ctrl+Z on the import should undo the text AND its
+  // own height growth together as one action, not need a second undo for the height alone).
+  const growRowForCellHeight = (row: number, col: number, cell: SpecsCell | null, naturalHeightPx: number) => {
     const { rowSpan } = getCellSpan(cell);
-    if (rowSpan !== 1) return;
-    const current = liveGridRef.current.rows[row];
-    if (!current) return;
-    const currentHeight =
-      typeof current.heightPx === "number" && Number.isFinite(current.heightPx) && current.heightPx > 0
-        ? current.heightPx
-        : DEFAULT_ROW_HEIGHT_PX;
+    const rows = liveGridRef.current.rows;
+    const lastRow = row + Math.max(1, rowSpan) - 1;
+    const readHeightPx = (ri: number): number => {
+      const h = rows[ri]?.heightPx;
+      return typeof h === "number" && Number.isFinite(h) && h > 0 ? h : DEFAULT_ROW_HEIGHT_PX;
+    };
+    let currentHeight = 0;
+    for (let r = row; r <= lastRow; r += 1) currentHeight += readHeightPx(r);
     // A few px of slack absorbs ordinary browser measurement noise (sub-pixel layout rounding,
     // slightly different rendering while focused vs. not) — without it, merely clicking into a cell
     // (which re-measures the PREVIOUSLY-focused cell as it loses focus) could nudge a row a pixel or
@@ -848,28 +1030,34 @@ export default function SpecsGridEditor({
     // room. A genuinely wrapped extra line is a much bigger jump than this (a full line height, easily
     // 14px+), so real wrapping still grows the row correctly.
     if (naturalHeightPx <= currentHeight + GROW_ROW_TOLERANCE_PX) return;
-    const rows = liveGridRef.current.rows.map((r, ri) => (ri === row ? { ...r, heightPx: Math.ceil(naturalHeightPx) } : r));
+    const extra = naturalHeightPx - currentHeight;
+    const nextRows = rows.map((r, ri) => (ri === lastRow ? { ...r, heightPx: Math.ceil(readHeightPx(lastRow) + extra) } : r));
     const next: SpecsGrid = {
       pageSize: liveGridRef.current.pageSize,
       columnWidths: liveGridRef.current.columnWidths,
       groups: liveGridRef.current.groups,
       deletedGroups: liveGridRef.current.deletedGroups,
-      rows,
+      rows: nextRows,
     };
     liveGridRef.current = next;
     setLiveGrid(next);
+    if (focusedKey !== `${row}:${col}`) onChange(next);
   };
 
   // True when ANY row touched by `sel` belongs to a group the current viewer isn't allowed to edit
-  // (see SpecsGridEditorProps.canEditSpecsGroup) — guards the toolbar's own style/format toggles the
-  // same way SpecsCellTextArea's own readOnly rendering guards direct typing, so "read-only for
-  // restricted rows" isn't just typing being blocked while formatting still goes through.
+  // (see SpecsGridEditorProps.canEditSpecsGroup), OR falls outside a zone on a group that HAS zones
+  // defined (see SpecsRowGroup.zones) — guards the toolbar's own style/format toggles the same way
+  // SpecsCellTextArea's own readOnly rendering guards direct typing, so "read-only" isn't just typing
+  // being blocked while formatting still goes through. The zone check is isProjectSheetView-gated —
+  // it only applies in a live project's actual Quote/Specifications window, never in the Company
+  // Settings template builder, where the whole group stays freely editable even though zones are
+  // still defined/linked there (via the Group Preview).
   const isSelectionLocked = (sel: SpecsGridSelection): boolean => {
-    if (!canEditSpecsGroup) return false;
     const rect = normalizeRect(sel);
     for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
       const g = findRowGroupForRow(expandedGroups, r);
-      if (g?.editableByRoleIds && g.editableByRoleIds.length > 0 && !canEditSpecsGroup(g)) return true;
+      if (canEditSpecsGroup && g?.editableByRoleIds && g.editableByRoleIds.length > 0 && !canEditSpecsGroup(g)) return true;
+      if (isProjectSheetView && g?.zones?.length && !isRowWithinGroupZone(g, r)) return true;
     }
     return false;
   };
@@ -951,6 +1139,12 @@ export default function SpecsGridEditor({
   // listener on every render — including every tick of a drag-select or drag-resize, both of which
   // already re-render frequently — which was visible as stutter/"glitching" while editing.
   useEffect(() => {
+    // zonePreviewMode: this instance is a throwaway, read-only, nested preview — it has nothing of
+    // its own to undo/copy/paste, and since this listener isn't scoped to its own DOM subtree (it's
+    // attached to `window`), leaving it mounted here would ALSO fire on keystrokes meant for the
+    // outer sheet this preview is nested inside (see zonePreviewMode's own comment on
+    // SpecsGridEditorProps).
+    if (zonePreviewMode) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement | null)?.isContentEditable) return;
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -974,6 +1168,10 @@ export default function SpecsGridEditor({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+    // zonePreviewMode is a one-time mount flag for this instance (never toggles later in practice —
+    // see its own comment on SpecsGridEditorProps), so intentionally left out here the same way this
+    // effect was already deliberately dependency-free before zonePreviewMode existed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Images target a single (or merged) cell, not every cell in a dragged selection — inserting a
@@ -998,46 +1196,145 @@ export default function SpecsGridEditor({
     applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
   };
 
-  // "Mark for Client Confirmation" — flags a single cell as one the external client-confirmation
-  // flow (app/client/hub/[shareId]) should render as a Yes/No toggle. Turning it off also clears
-  // any prior answer, since an unmarked cell shouldn't keep showing a stale Yes/No.
-  const toggleCellConfirmable = (row: number, col: number) => {
-    const cell = liveGrid.rows[row]?.cells[col];
-    if (!cell) return;
-    const nextConfirmable = !cell.confirmable;
-    const rows = liveGrid.rows.map((r, ri) => {
-      if (ri !== row) return r;
-      const cells = r.cells.map((c, ci) => {
-        if (ci !== col) return c;
-        if (nextConfirmable) return { ...c!, confirmable: true };
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const { confirmable: _removedConfirmable, confirmedYes: _removedYes, confirmedAt: _removedAt, ...rest } = c!;
-        return rest;
-      });
-      return { ...r, cells };
-    });
-    applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
-  };
-
-  // Bulk version of the above — applies the same field add/remove logic across every cell in
-  // `targets` as ONE undo step, driven by the Ctrl/Cmd+click multi-select (ctrlMarkedCells). Every
-  // targeted cell ends up in the SAME `nextConfirmable` state (a plain "select all / deselect all"
-  // convention) rather than each cell independently toggling its own current state, which would be
-  // ambiguous for a mixed selection.
-  const setCellsConfirmable = (targets: { row: number; col: number }[], nextConfirmable: boolean) => {
+  // Shared bulk setter for either of SpecsCell's two confirmation-related boolean fields — applies
+  // the same add/remove logic across every cell in `targets` as ONE undo step. Every targeted cell
+  // ends up in the SAME `value` (a plain "select all / deselect all" convention) rather than each
+  // cell independently toggling its own current state, which would be ambiguous for a mixed
+  // selection. Turning OFF "confirmable" (the LIVE project's own active-question flag) also clears
+  // any prior answer — a cell that's no longer this round's question shouldn't keep showing a stale
+  // Yes/No. "confirmableAllowed" (the TEMPLATE BUILDER's own eligibility flag — see its own comment
+  // on SpecsCell) has no such side effect; turning it off just removes the one field.
+  const setCellsConfirmField = (targets: { row: number; col: number }[], field: "confirmable" | "confirmableAllowed", value: boolean) => {
     const targetSet = new Set(targets.map((t) => `${t.row}:${t.col}`));
     const rows = liveGrid.rows.map((r, ri) => {
       const cells = r.cells.map((c, ci) => {
         if (!c || !targetSet.has(`${ri}:${ci}`)) return c;
-        if (nextConfirmable) return { ...c, confirmable: true };
+        if (value) return { ...c, [field]: true };
+        if (field === "confirmable") {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { confirmable: _removedConfirmable, confirmedYes: _removedYes, confirmedAt: _removedAt, ...rest } = c;
+          return rest;
+        }
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const { confirmable: _removedConfirmable, confirmedYes: _removedYes, confirmedAt: _removedAt, ...rest } = c;
+        const { confirmableAllowed: _removedAllowed, ...rest } = c;
         return rest;
       });
       return { ...r, cells };
     });
     applyChange({ pageSize: liveGrid.pageSize, columnWidths: liveGrid.columnWidths, groups: liveGrid.groups, deletedGroups: liveGrid.deletedGroups, rows }, true);
   };
+  const setCellsConfirmable = (targets: { row: number; col: number }[], nextConfirmable: boolean) =>
+    setCellsConfirmField(targets, "confirmable", nextConfirmable);
+  const setCellsConfirmableAllowed = (targets: { row: number; col: number }[], nextAllowed: boolean) =>
+    setCellsConfirmField(targets, "confirmableAllowed", nextAllowed);
+  const toggleCellConfirmable = (row: number, col: number) => {
+    const cell = liveGrid.rows[row]?.cells[col];
+    if (!cell) return;
+    setCellsConfirmable([{ row, col }], !cell.confirmable);
+  };
+  const toggleCellConfirmableAllowed = (row: number, col: number) => {
+    const cell = liveGrid.rows[row]?.cells[col];
+    if (!cell) return;
+    setCellsConfirmableAllowed([{ row, col }], !cell.confirmableAllowed);
+  };
+  // Shared by the desktop floating "Mark for Confirmation" button AND mobile's own long-press
+  // version of it (the data cell's onTouchStart handlers, further down) — computes which cell(s)
+  // the action would currently act on and returns everything a caller needs to show it (label/
+  // title/onClick), or null when nothing confirmableAllowed is currently selected/pressed. Only
+  // ever targets cells the TEMPLATE marked confirmableAllowed (see that field's own comment on
+  // SpecsCell) — silently dropping any other cell out of whatever's currently selected, rather than
+  // letting staff turn an arbitrary cell into a question the template author never set up for that.
+  // Ctrl/Cmd+click multi-select (ctrlMarkedCells) takes precedence over a drag-highlighted range
+  // whenever it's non-empty; a single remaining eligible cell (whichever way it got there) toggles
+  // directly instead of going through the bulk "mark/unmark all" path.
+  const computeMarkForConfirmationTarget = (): {
+    allTargets: { row: number; col: number }[];
+    isMultiple: boolean;
+    isActive: boolean;
+    label: string;
+    title: string;
+    onClick: () => void;
+  } | null => {
+    const isCellAllowed = (r: number, c: number) => Boolean(liveGrid.rows[r]?.cells[c]?.confirmableAllowed);
+    const ctrlMarkedTargets = Array.from(ctrlMarkedCells)
+      .map((k) => {
+        const [r, c] = k.split(":").map(Number);
+        return { row: r, col: c };
+      })
+      .filter((t) => isCellAllowed(t.row, t.col));
+    // Every real (non-null), confirmableAllowed cell inside the current drag-highlighted rectangle
+    // — NOT just its top-left slot, which is all `activeCell` itself ever points at (see its own
+    // comment: it's always rect.minRow/minCol).
+    const dragRangeTargets = (() => {
+      if (!selection) return [];
+      const rect = normalizeRect(selection);
+      const out: { row: number; col: number }[] = [];
+      for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
+        for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
+          if (isCellAllowed(r, c)) out.push({ row: r, col: c });
+        }
+      }
+      return out;
+    })();
+    // Whenever a Ctrl/Cmd+click multi-select is active at all, it's the one source of truth for the
+    // target list — even if every cell in it turns out ineligible (returns null below), rather than
+    // silently falling back to an unrelated drag-highlighted range the user didn't actually pick
+    // via this gesture.
+    const usingCtrlMarked = ctrlMarkedCells.size > 0;
+    const allTargets = usingCtrlMarked ? ctrlMarkedTargets : dragRangeTargets;
+    if (allTargets.length === 0) return null;
+
+    const isMultiple = allTargets.length > 1;
+    const isActive = !isMultiple && Boolean(liveGrid.rows[allTargets[0].row]?.cells[allTargets[0].col]?.confirmable);
+    const label = isMultiple ? `Mark ${allTargets.length} Cells` : isActive ? "Confirmable ✓" : "Mark for Confirmation";
+    const title = isMultiple
+      ? `Mark or unmark all ${allTargets.length} selected cells for client confirmation`
+      : "Mark this cell for the client to confirm with Yes/No — Ctrl/Cmd+click other cells to select several at once";
+    const onClick = () => {
+      if (isMultiple) {
+        const allAlreadyConfirmable = allTargets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
+        setCellsConfirmable(allTargets, !allAlreadyConfirmable);
+      } else {
+        toggleCellConfirmable(allTargets[0].row, allTargets[0].col);
+      }
+      // Cleared after acting on it either way — a plain "select all / deselect all" gesture that
+      // shouldn't linger and get reused unintentionally by a later, unrelated click.
+      if (usingCtrlMarked) setCtrlMarkedCells(new Set());
+    };
+    return { allTargets, isMultiple, isActive, label, title, onClick };
+  };
+  // Mobile's own equivalent of the desktop floating button: a long-press on an eligible (
+  // confirmableAllowed) cell opens a small anchored dropdown with the same Mark for Confirmation
+  // action, instead of the floating pill (see its own render further down, gated !fitToViewportOnMobile,
+  // for why — mirrors FloatingBarSlot/useLongPress's own established desktop-hover vs mobile-hold
+  // split elsewhere in this app). A plain tap still just selects the cell as normal; only a
+  // sustained hold opens the menu. Tracked as a ref (not state) since it's pure interaction
+  // bookkeeping for one in-progress touch gesture, not anything that should ever trigger a
+  // re-render on its own.
+  const mobileConfirmPressRef = useRef<{ row: number; col: number; x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(
+    null,
+  );
+  const MOBILE_CONFIRM_PRESS_MS = 500;
+  const MOBILE_CONFIRM_MOVE_CANCEL_PX = 10;
+  // Position + the already-resolved action (label/title/onClick from computeMarkForConfirmationTarget)
+  // for the currently-open mobile dropdown — null when closed.
+  const [mobileConfirmMenu, setMobileConfirmMenu] = useState<{ x: number; y: number; label: string; title: string; onConfirm: () => void } | null>(
+    null,
+  );
+  const mobileConfirmMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!mobileConfirmMenu) return;
+    const onPointerDown = (e: Event) => {
+      if (mobileConfirmMenuRef.current?.contains(e.target as Node)) return;
+      setMobileConfirmMenu(null);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [mobileConfirmMenu]);
 
   // The group-editor modal — a single controlled form (Name/Default/Anchor/roles/Cost all at once)
   // replacing the old inline "Link Rows as Group"/"Rename Group" popover, which built its result up
@@ -1062,7 +1359,29 @@ export default function SpecsGridEditor({
     editableByRoleIds: [],
     category: "",
     rules: [],
+    zones: [],
   });
+  // Index being dragged within the zone-link popup's own "currently linked" list (see
+  // zoneContextMenu below) — a plain native HTML5 drag-and-drop reorder, deliberately NOT the
+  // sheet's own coordinate-based group-row dragging (onSheetDragOver/onSheetDrop further down) which
+  // exists to drag a block of REAL rows around the actual sheet; this just swaps two entries in one
+  // zone's small linkedQuoteGroups array.
+  const [draggingZoneLinkIndex, setDraggingZoneLinkIndex] = useState<number | null>(null);
+  // The CURRENT selection's row range inside the Group Preview below (null once nothing's
+  // selected there) — reported live by that nested zonePreviewMode instance via
+  // onSelectionRangeChange, since its own internal `selection` state is otherwise private to it.
+  // Drives the "Mark Selection as Editable Zone" button rendered above the preview.
+  const [previewSelectedRowRange, setPreviewSelectedRowRange] = useState<{ minRow: number; maxRow: number } | null>(null);
+  // Right-clicking an editable zone in the preview opens this — a small, custom menu (deliberately
+  // NOT the sheet's own row-header "Group" menu, which makes no sense for a throwaway crop with no
+  // real SpecsRowGroup entries): "view: menu" shows one "Link to Quote Groups" action; clicking it
+  // switches to "view: picker", a list of linkable Quote groups (each with an expand arrow revealing
+  // that group's OWN editable zone as a sub-choice) plus whatever's already linked. x/y position it
+  // at the right-click's own screen coordinates, same as headerContextMenu already does.
+  const [zoneContextMenu, setZoneContextMenu] = useState<{ zoneId: string; x: number; y: number; view: "menu" | "picker" } | null>(null);
+  // Which quote group ROWS are currently expanded in the picker to reveal their own editable zone as
+  // a selectable sub-item — keyed by quote group name, reset whenever the picker itself closes.
+  const [expandedQuoteGroupNamesInPicker, setExpandedQuoteGroupNamesInPicker] = useState<Set<string>>(new Set());
   const openGroupModal = (groupId: string | null, startRow: number, endRow: number, existingGroup: SpecsRowGroup | undefined) => {
     setGroupDraft({
       name: existingGroup?.name ?? "",
@@ -1074,7 +1393,11 @@ export default function SpecsGridEditor({
       editableByRoleIds: existingGroup?.editableByRoleIds ?? [],
       category: existingGroup?.category ?? "",
       rules: existingGroup?.rules ?? [],
+      zones: existingGroup?.zones ?? [],
     });
+    setPreviewSelectedRowRange(null);
+    setZoneContextMenu(null);
+    setExpandedQuoteGroupNamesInPicker(new Set());
     setGroupModalTarget({ groupId, startRow, endRow });
   };
   const saveGroupModal = () => {
@@ -1088,6 +1411,98 @@ export default function SpecsGridEditor({
       applyChange(createRowGroup(liveGrid, groupModalTarget.startRow, groupModalTarget.endRow, fields), true);
     }
     setGroupModalTarget(null);
+  };
+  // Recomputed every render off groupDraft/linkedQuoteSourceGrid — this is a settings-modal list,
+  // not a hot path, so a plain const (no memo) is simplest and matches how the modal's other
+  // derived-for-render values (productOptions, companyRoleOptions, etc.) are already just used
+  // directly rather than memoized.
+  const linkableQuoteGroups = linkedQuoteSourceGrid ? getExpandedRowGroups(linkedQuoteSourceGrid) : [];
+  // The zone currently open in the link picker, if any — looked up fresh every render (not cached in
+  // zoneContextMenu itself) so the picker always reflects groupDraft's own latest edits.
+  const zoneContextMenuZone = zoneContextMenu ? groupDraft.zones.find((z) => z.id === zoneContextMenu.zoneId) : undefined;
+  const zoneContextMenuLinkedRefs = zoneContextMenuZone?.linkedQuoteGroups ?? [];
+  const isRefLinked = (quoteGroupName: string, source: "group" | "zone") =>
+    zoneContextMenuLinkedRefs.some((r) => r.quoteGroupName === quoteGroupName && r.source === source);
+  const toggleZoneLinkRef = (quoteGroupName: string, source: "group" | "zone") => {
+    if (!zoneContextMenu) return;
+    setGroupDraft((d) => ({
+      ...d,
+      zones: d.zones.map((z) => {
+        if (z.id !== zoneContextMenu.zoneId) return z;
+        const existing = z.linkedQuoteGroups ?? [];
+        const already = existing.some((r) => r.quoteGroupName === quoteGroupName && r.source === source);
+        return {
+          ...z,
+          linkedQuoteGroups: already
+            ? existing.filter((r) => !(r.quoteGroupName === quoteGroupName && r.source === source))
+            : [...existing, { quoteGroupName, source }],
+        };
+      }),
+    }));
+  };
+  // The Group Settings modal's own embedded "Group Preview" (for marking zones) — a throwaway,
+  // read-only, cropped SpecsGrid built from the REAL group's own current rows. Only buildable once
+  // the group actually exists (groupModalTarget.groupId set): a brand-new group has no committed row
+  // range yet to crop. Rebuilt fresh every render off `liveGrid` itself (not a snapshot taken once
+  // when the modal opened), so it always reflects the group's current content even if it changed
+  // (e.g. a prior "Import from Quote") while this modal happens to be open.
+  const previewSourceGroup = groupModalTarget?.groupId
+    ? getExpandedRowGroups(liveGrid).find((g) => g.id === groupModalTarget.groupId)
+    : null;
+  const previewGrid: SpecsGrid | null = previewSourceGroup
+    ? {
+        pageSize: liveGrid.pageSize,
+        columnWidths: liveGrid.columnWidths,
+        rows: liveGrid.rows.slice(previewSourceGroup.startRow, previewSourceGroup.endRow + 1),
+        groups: [],
+      }
+    : null;
+  // "Import from Quote" — rendered as a small button directly on the sheet next to any group whose
+  // "editable" zone has linkedQuoteGroups set (see the expandedGroups render further down), not
+  // inside this modal: the link itself is configured ONCE, in the Company Settings
+  // template builder, and is read-only once cloned into a project — only the IMPORT (writing the
+  // linked Quote groups' current text into the zone) happens per-project, since quotes get
+  // customized per client. Feedback is the button itself flashing green with an "Imported" label for
+  // a few seconds (see recentlyImportedGroupIds below), not a separate tooltip/status pill — simpler,
+  // and it can't be missed since it's right where the user just clicked.
+  const [recentlyImportedGroupIds, setRecentlyImportedGroupIds] = useState<Record<string, boolean>>({});
+  const pullStatusTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // What was actually written into each group's zone by the most recent import THIS SESSION — "" (or
+  // absent) for a group never imported into yet. Compared against the zone's own CURRENT text (see
+  // requestImportLinkedQuoteTextIntoZoneForGroup below) to tell "unedited since the last import, a
+  // plain refresh" apart from "hand-edited since — importing again would silently throw that away,"
+  // confirming only in the second case. Session-only (not persisted onto the grid itself) is fine
+  // here — reloading the page simply makes the very next import ask once more, same as if it were
+  // never imported at all, which is the safe default anyway.
+  const [lastImportedTextByGroupId, setLastImportedTextByGroupId] = useState<Record<string, string>>({});
+  // Set while the confirm popup below ("Replace zone content?") is open for a group whose zone text
+  // doesn't match what was last imported into it.
+  const [pendingImportGroupId, setPendingImportGroupId] = useState<string | null>(null);
+  const importLinkedQuoteTextIntoZoneForGroup = (groupId: string) => {
+    if (!quoteGridForLinkedPull) return;
+    const { grid: pulled, pulledCount, importedText } = importLinkedQuoteTextIntoZone(liveGrid, quoteGridForLinkedPull, groupId);
+    applyChange(pulled, true);
+    if (pulledCount === 0) return;
+    setLastImportedTextByGroupId((prev) => ({ ...prev, [groupId]: importedText }));
+    setRecentlyImportedGroupIds((prev) => ({ ...prev, [groupId]: true }));
+    if (pullStatusTimeoutsRef.current[groupId]) clearTimeout(pullStatusTimeoutsRef.current[groupId]);
+    pullStatusTimeoutsRef.current[groupId] = setTimeout(() => {
+      setRecentlyImportedGroupIds((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => id !== groupId)));
+      delete pullStatusTimeoutsRef.current[groupId];
+    }, 2500);
+  };
+  // What the on-sheet button actually calls — importLinkedQuoteTextIntoZoneForGroup above only ever
+  // runs once this either finds nothing at risk, or the user's confirmed the popup. A zone that's
+  // still empty, or whose current text exactly matches what was last imported into it (a plain
+  // refresh — nothing of the user's own would be lost), goes straight through with no popup.
+  const requestImportLinkedQuoteTextIntoZoneForGroup = (groupId: string) => {
+    const currentZoneText = getEditableZoneText(liveGrid, groupId);
+    const lastImportedText = lastImportedTextByGroupId[groupId] ?? "";
+    if (currentZoneText && currentZoneText !== lastImportedText) {
+      setPendingImportGroupId(groupId);
+      return;
+    }
+    importLinkedQuoteTextIntoZoneForGroup(groupId);
   };
 
   const unlinkGroup = (groupId: string) => {
@@ -1179,11 +1594,17 @@ export default function SpecsGridEditor({
   // drew, not an editing grid). The company template builder (showGroupVisibilityPanel unset) keeps
   // all of this since it's actively being laid out, not read.
   const isProjectSheetView = Boolean(showGroupVisibilityPanel);
+  // Cosmetic-only union with zonePreviewMode (the Group Settings modal's own embedded crop) — this
+  // and isProjectSheetView agree on everything PURELY about chrome/layout (row/col headers, resize
+  // handles below), but deliberately NOT on real behavioral differences (hidden-row collapsing, the
+  // Sections bar, anchorFirstPageBottom, drag/drop, confirmation-marking UI), which stay keyed off
+  // isProjectSheetView alone — zonePreviewMode never touches those.
+  const isCompactPreview = isProjectSheetView || zonePreviewMode;
   // Project view reserves NO table width for a row header at all — the hover "+ add row"/"- remove
   // row" buttons live in a floating overlay outside the table instead (see the render body), so data
   // columns start flush at x=0 and line up with the mock page's own edge.
-  const rowHeaderWidthPx = isProjectSheetView ? 0 : ROW_HEADER_WIDTH_PX;
-  const colHeaderHeightPx = isProjectSheetView ? 0 : COL_HEADER_HEIGHT_PX;
+  const rowHeaderWidthPx = isCompactPreview ? 0 : ROW_HEADER_WIDTH_PX;
+  const colHeaderHeightPx = isCompactPreview ? 0 : COL_HEADER_HEIGHT_PX;
 
   // Computed once per render and reused everywhere a group's bounds matter (outline, per-row
   // hide-check, the row header context menu's "already grouped?" check) — see getExpandedRowGroups'
@@ -1276,6 +1697,18 @@ export default function SpecsGridEditor({
 
   const borderSegments = computeBorderSegments(liveGrid, colPrefixSums, rowPrefixSums, rowBottomEdgeSums, hiddenRowIndexes);
   const groupOutlines = computeGroupOutlines(expandedGroups, rowPrefixSums, rowBottomEdgeSums);
+  // Reuses computeGroupOutlines' own row-range-to-pixel-rect math (zonePreviewMode's `value` is
+  // already cropped to start at the parent group's own row 0, same coordinate space a zone's own
+  // startRow/endRow are stored in — see SpecsGroupZone's own comment) by shaping each zone as a
+  // throwaway SpecsRowGroup-like object just for this calculation; nothing here is a real group.
+  const previewZoneOutlines =
+    zonePreviewMode && previewZones && previewZones.length > 0
+      ? computeGroupOutlines(
+          previewZones.map((z) => ({ id: z.id, name: "Editable Zone", startRow: z.startRow, endRow: z.endRow })),
+          rowPrefixSums,
+          rowBottomEdgeSums,
+        )
+      : [];
   // Same visible-group outlines, filtered down to the ones showEditableGroupBorders actually wants
   // drawn: hidden groups have no rows on screen at all in a project's own view already (nothing to
   // box), and a group the viewer can't edit (same check as isRowLockedForViewer, just per-group here
@@ -1315,8 +1748,12 @@ export default function SpecsGridEditor({
   const mockPageTargetWidthPx = isProjectSheetView
     ? mockPageWidthPx
     : getSpecsPageUsableWidthPx(liveGrid.pageSize) + rowHeaderWidthPx;
-  const mockPageBoxWidthPx = Math.max(mockPageTargetWidthPx, tableRenderedWidthPx);
-  const mockPageBoxHeightPx = Math.max(mockPageHeightPx, tableRenderedHeightPx);
+  // zonePreviewMode never applies the physical-page floor at all — it's a throwaway crop of just one
+  // group's own rows, not a document meant to visualize print layout, so sizing it to a REAL page
+  // (e.g. ~1122px tall for A4) would leave a huge blank area below a 2-10 row group. Using the
+  // rendered content size directly is exactly "show only the cells that are part of the group."
+  const mockPageBoxWidthPx = zonePreviewMode ? tableRenderedWidthPx : Math.max(mockPageTargetWidthPx, tableRenderedWidthPx);
+  const mockPageBoxHeightPx = zonePreviewMode ? tableRenderedHeightPx : Math.max(mockPageHeightPx, tableRenderedHeightPx);
 
   // fitToViewportOnMobile: the page above is sized to real physical mm dimensions (mockPageBoxWidthPx
   // routinely exceeds a phone's own width), so it's wrapped in a scale-to-fit viewport instead of
@@ -1607,8 +2044,13 @@ export default function SpecsGridEditor({
             ? "hide-native-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto p-2"
             : "flex flex-wrap items-center justify-center gap-1.5 p-2"
         }
+        // zonePreviewMode: forced hidden via display:none rather than restructuring this whole
+        // deeply-nested block's own conditional tree — the formatting toolbar is meaningless for a
+        // throwaway, forced-read-only crop with a no-op onChange, and the user asked for it gone.
         style={
-          isProjectSheetView
+          zonePreviewMode
+            ? { display: "none" }
+            : isProjectSheetView
             ? {
                 // No background/blur of its own — the host page renders ONE shared blurred backdrop
                 // spanning from its own header down through this toolbar's own bottom edge, so the two
@@ -1892,79 +2334,51 @@ export default function SpecsGridEditor({
           {canUnmerge ? <TableCellsSplit size={14} /> : <TableCellsMerge size={14} />}
           {canUnmerge ? "Unmerge" : "Merge"}
         </button>
-        {isProjectSheetView && allowConfirmationMarking ? (
-          <>
-            <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
-            {(() => {
-              // Every real (non-null) cell inside the current drag-highlighted rectangle — NOT just
-              // its top-left slot, which is all `activeCell` itself ever points at (see its own
-              // comment: it's always rect.minRow/minCol). Without this, highlighting a whole range
-              // and clicking this button silently marked only that one corner cell.
-              const dragRangeTargets = (() => {
-                if (!selection) return [];
-                const rect = normalizeRect(selection);
-                const out: { row: number; col: number }[] = [];
-                for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
-                  for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
-                    if (liveGrid.rows[r]?.cells[c]) out.push({ row: r, col: c });
-                  }
-                }
-                return out;
-              })();
-              const isBulkRange = ctrlMarkedCells.size === 0 && dragRangeTargets.length > 1;
-              return (
-                <button
-                  type="button"
-                  disabled={!activeCell && ctrlMarkedCells.size === 0}
-                  onClick={() => {
-                    // Ctrl/Cmd+click multi-select takes priority when it's non-empty — a plain
-                    // "select all / deselect all" toggle across every marked cell, applied as one
-                    // undo step (see setCellsConfirmable's own comment), then the multi-select is
-                    // cleared so it doesn't linger and get reused unintentionally by a later,
-                    // unrelated click. Otherwise, a drag-highlighted range of more than one cell
-                    // gets the same bulk treatment; a plain single-cell selection still just toggles
-                    // that one cell.
-                    if (ctrlMarkedCells.size > 0) {
-                      const targets = Array.from(ctrlMarkedCells).map((k) => {
-                        const [r, c] = k.split(":").map(Number);
-                        return { row: r, col: c };
-                      });
-                      const allAlreadyConfirmable = targets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
-                      setCellsConfirmable(targets, !allAlreadyConfirmable);
-                      setCtrlMarkedCells(new Set());
-                    } else if (isBulkRange) {
-                      const allAlreadyConfirmable = dragRangeTargets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmable));
-                      setCellsConfirmable(dragRangeTargets, !allAlreadyConfirmable);
-                    } else if (activeCell) {
-                      toggleCellConfirmable(activeCell.row, activeCell.col);
-                    }
-                  }}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
-                  style={!isBulkRange && ctrlMarkedCells.size === 0 && activeCell?.cell?.confirmable ? toolbarButtonActiveStyle : toolbarButtonStyle}
-                  title={
-                    ctrlMarkedCells.size > 0
-                      ? `Mark or unmark all ${ctrlMarkedCells.size} selected cells for client confirmation`
-                      : isBulkRange
-                        ? `Mark or unmark all ${dragRangeTargets.length} highlighted cells for client confirmation`
-                        : "Mark this cell for the client to confirm with Yes/No — Ctrl/Cmd+click other cells to select several at once"
-                  }
-                >
-                  <CheckSquare size={14} />
-                  {ctrlMarkedCells.size > 0
-                    ? `Mark ${ctrlMarkedCells.size} Cells`
-                    : isBulkRange
-                      ? `Mark ${dragRangeTargets.length} Cells`
-                      : activeCell?.cell?.confirmable
-                        ? "Confirmable ✓"
-                        : "Mark for Confirmation"}
-                </button>
-              );
-            })()}
-          </>
-        ) : null}
+        {/* "Mark for Confirmation" used to live here as a plain toolbar button (for the live project
+            view) — moved out to a floating side button (see the FloatingSideButton render further
+            down, next to the "Import from Quote" one) so it sits right next to whatever's actually
+            selected instead of a fixed toolbar slot. The TEMPLATE builder's own "Mark Confirmable"
+            button below is a different thing: it pre-sets cell.confirmable on the template itself
+            (see toggleCellConfirmable's own comment on what that field means), so every project
+            cloned from it already has that cell ready as a Yes/No question — no need for staff to
+            re-mark it by hand in every single project. */}
         {isProjectSheetView ? null : (
           <>
             <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
+            {allowConfirmationMarking ? (
+              <button
+                type="button"
+                disabled={!activeCell}
+                onClick={() => {
+                  // Every real (non-null) cell inside the current drag-highlighted rectangle — NOT
+                  // just its top-left slot (activeCell), same reasoning as the live view's own
+                  // former toolbar button (now the FloatingSideButton further down) used.
+                  const dragRangeTargets = (() => {
+                    if (!selection) return [];
+                    const rect = normalizeRect(selection);
+                    const out: { row: number; col: number }[] = [];
+                    for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
+                      for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
+                        if (liveGrid.rows[r]?.cells[c]) out.push({ row: r, col: c });
+                      }
+                    }
+                    return out;
+                  })();
+                  if (dragRangeTargets.length > 1) {
+                    const allAlreadyAllowed = dragRangeTargets.every((t) => Boolean(liveGrid.rows[t.row]?.cells[t.col]?.confirmableAllowed));
+                    setCellsConfirmableAllowed(dragRangeTargets, !allAlreadyAllowed);
+                  } else if (activeCell) {
+                    toggleCellConfirmableAllowed(activeCell.row, activeCell.col);
+                  }
+                }}
+                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+                style={activeCell?.cell?.confirmableAllowed ? toolbarButtonActiveStyle : toolbarButtonStyle}
+                title="Mark this cell confirmable — staff can then use that project's own 'Mark for Confirmation' button to actually turn it into a client Yes/No question, per project, per round"
+              >
+                <CheckSquare size={14} />
+                {activeCell?.cell?.confirmableAllowed ? "Confirmable ✓" : "Mark Confirmable"}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => applyChange(insertRow(liveGrid, (activeCell?.row ?? liveGrid.rows.length - 1) + 1), true)}
@@ -2197,9 +2611,14 @@ export default function SpecsGridEditor({
               // inside two stacked paddings that don't belong to this component's own asked-for
               // "edge to edge" mobile layout.
               "relative py-6 -mx-3 sm:-mx-4 md:-mx-5"
-            : isProjectSheetView
-              ? "relative p-6"
-              : "relative min-h-0 flex-1 overflow-auto p-6"
+            : zonePreviewMode
+              ? // No flex-1 (nothing to stretch to fill — the host's own wrapper div already sizes
+                // and scrolls this), and barely any padding — the whole point is showing only the
+                // group's own cells, not a page-sized canvas around a handful of rows.
+                "relative p-2"
+              : isProjectSheetView
+                ? "relative p-6"
+                : "relative min-h-0 flex-1 overflow-auto p-6"
         }
         // Deliberately NOT inset by toolbarFixedLeftPx/RightPx — those two only steer the fixed
         // TOOLBAR's own bounds now (so its buttons stay clear of the host page's title labels/
@@ -2305,12 +2724,12 @@ export default function SpecsGridEditor({
         >
         <table ref={tableRef} style={{ tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, width: rowHeaderWidthPx + colPrefixSums[colPrefixSums.length - 1] }}>
           <colgroup>
-            {isProjectSheetView ? null : <col style={{ width: rowHeaderWidthPx }} />}
+            {isCompactPreview ? null : <col style={{ width: rowHeaderWidthPx }} />}
             {safeColumnWidths.map((w, i) => (
               <col key={i} style={{ width: w }} />
             ))}
           </colgroup>
-          {isProjectSheetView ? null : (
+          {isCompactPreview ? null : (
             <thead>
               <tr style={{ height: COL_HEADER_HEIGHT_PX }}>
                 <th style={{ backgroundColor: HEADER_BG, boxShadow: gridlineBoxShadow(true, true) }} />
@@ -2350,6 +2769,14 @@ export default function SpecsGridEditor({
               const isRowLockedForViewer = Boolean(
                 canEditSpecsGroup && rowGroupForRow?.editableByRoleIds && rowGroupForRow.editableByRoleIds.length > 0 && !canEditSpecsGroup(rowGroupForRow),
               );
+              // Once a group has ANY zones defined, only rows inside one of them stay editable — see
+              // SpecsRowGroup.zones' own comment. A group with no zones is unaffected (opt-in).
+              // isProjectSheetView-gated: the zone lock only ever applies in a live project's actual
+              // Quote/Specifications window, never in the Company Settings template builder, where
+              // the whole group stays freely editable (even though zones are still defined/linked
+              // there, via the Group Preview — authoring a zone and being RESTRICTED to it are
+              // deliberately different things here).
+              const isRowOutsideZone = Boolean(isProjectSheetView && rowGroupForRow?.zones?.length && !isRowWithinGroupZone(rowGroupForRow, rowIdx));
               // Same protection as the left-hand delete button above (see removeRowAt's own
               // disabled state) — a row containing a cell the client has actually answered
               // (Yes or No) can't have its text edited either, for the same reason: changing what
@@ -2379,7 +2806,7 @@ export default function SpecsGridEditor({
                   onMouseEnter={isProjectSheetView ? () => setHoveredRowIndex(rowIdx) : undefined}
                   onMouseLeave={isProjectSheetView ? () => setHoveredRowIndex((prev) => (prev === rowIdx ? null : prev)) : undefined}
                 >
-                {isProjectSheetView ? null : (
+                {isCompactPreview ? null : (
                 <td
                   onMouseDown={(e) => {
                     // Right-click is a mousedown too — preserve an existing selection if this row is
@@ -2452,12 +2879,32 @@ export default function SpecsGridEditor({
                   // Single source of truth for "can this specific cell's text actually be edited" —
                   // feeds both SpecsCellTextArea's own readOnly prop and the wrapper's cursor below,
                   // so the mouse cursor never promises editability the cell doesn't actually have.
-                  const isCellTextEditableHere = !(isRowLockedForViewer || isUngroupedBlankCell || isRowAnsweredByClient);
+                  // zonePreviewMode forces this false unconditionally — this instance is a throwaway
+                  // preview for marking zones, never a place to actually type (see its own comment).
+                  const isCellTextEditableHere =
+                    !zonePreviewMode && !(isRowLockedForViewer || isUngroupedBlankCell || isRowAnsweredByClient || isRowOutsideZone);
+                  // Gates the mobile long-press-to-confirm gesture below — only a cell the TEMPLATE
+                  // actually marked confirmableAllowed gets it, same restriction the desktop floating
+                  // button already enforces (see computeMarkForConfirmationTarget's own comment).
+                  const isMobileConfirmEligible =
+                    fitToViewportOnMobile && isProjectSheetView && allowConfirmationMarking && Boolean(cell.confirmableAllowed);
                   return (
                     <td
                       key={key}
                       colSpan={colSpan > 1 ? colSpan : undefined}
                       rowSpan={rowSpan > 1 ? rowSpan : undefined}
+                      // Capture phase, same node as the plain onMouseDown below — fires FIRST and, if
+                      // a touch-originated press on THIS cell is still pending a long-press decision
+                      // (mobileConfirmPressRef set, not yet resolved), swallows the mousedown outright
+                      // via stopImmediatePropagation so the normal select/focus logic below never
+                      // runs for it. stopPropagation alone would NOT be enough here — it only stops
+                      // the event reaching OTHER nodes, not a second listener already registered on
+                      // this SAME node. Only ever relevant on mobile (a real mouse never leaves a
+                      // pending ref behind, since only onTouchStart below ever creates one) — see
+                      // mobileConfirmPressRef's own comment on why this exists at all.
+                      onMouseDownCapture={(e) => {
+                        if (mobileConfirmPressRef.current) e.nativeEvent.stopImmediatePropagation();
+                      }}
                       onMouseDown={(e) => {
                         if (isUngroupedBlankCell) return;
                         // Ctrl/Cmd+click is its own, entirely separate interaction — toggles this
@@ -2504,9 +2951,84 @@ export default function SpecsGridEditor({
                         if (!isSelectingRef.current) return;
                         setSelection((prev) => (prev ? { ...prev, focusRow: rowIdx, focusCol: colIdx } : prev));
                       }}
+                      {...(isMobileConfirmEligible
+                        ? {
+                            // A touch sequence that MIGHT become a long-press — nothing is selected
+                            // yet (see mobileConfirmPressRef/onMouseDownCapture above for why the
+                            // normal tap-to-select/edit is deliberately deferred, not run immediately
+                            // here). If held past MOBILE_CONFIRM_PRESS_MS without enough movement to
+                            // cancel, selects just this cell (mirrors the one relevant branch of the
+                            // suppressed mousedown — a plain, no-modifier single-cell select) so
+                            // computeMarkForConfirmationTarget sees it, then opens the dropdown.
+                            onTouchStart: (e: ReactTouchEvent<HTMLTableCellElement>) => {
+                              const touch = e.touches[0];
+                              if (!touch) return;
+                              const timer = setTimeout(() => {
+                                const pending = mobileConfirmPressRef.current;
+                                if (!pending) return;
+                                pending.fired = true;
+                                setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
+                                const target = computeMarkForConfirmationTarget();
+                                if (target) {
+                                  setMobileConfirmMenu({ x: touch.clientX, y: touch.clientY, label: target.label, title: target.title, onConfirm: target.onClick });
+                                }
+                              }, MOBILE_CONFIRM_PRESS_MS);
+                              mobileConfirmPressRef.current = { row: rowIdx, col: colIdx, x: touch.clientX, y: touch.clientY, timer, fired: false };
+                            },
+                            // Moving far enough reads as the start of a scroll, not a hold — cancel
+                            // outright rather than guessing; see mobileConfirmPressRef's own comment
+                            // for why a short tap's own select still correctly happens on touchend
+                            // either way (this only ever cancels a press that hasn't fired yet).
+                            onTouchMove: (e: ReactTouchEvent<HTMLTableCellElement>) => {
+                              const pending = mobileConfirmPressRef.current;
+                              const touch = e.touches[0];
+                              if (!pending || !touch) return;
+                              if (Math.abs(touch.clientX - pending.x) > MOBILE_CONFIRM_MOVE_CANCEL_PX || Math.abs(touch.clientY - pending.y) > MOBILE_CONFIRM_MOVE_CANCEL_PX) {
+                                clearTimeout(pending.timer);
+                                mobileConfirmPressRef.current = null;
+                              }
+                            },
+                            onTouchEnd: () => {
+                              const pending = mobileConfirmPressRef.current;
+                              if (!pending) return;
+                              clearTimeout(pending.timer);
+                              mobileConfirmPressRef.current = null;
+                              // Finger lifted before the long-press threshold — a short tap, not a
+                              // hold. Replay the plain single-cell select the suppressed mousedown
+                              // would have done (the deferred half of this gesture's own deal).
+                              if (!pending.fired) {
+                                setSelection({ anchorRow: pending.row, anchorCol: pending.col, focusRow: pending.row, focusCol: pending.col });
+                              }
+                            },
+                            onTouchCancel: () => {
+                              const pending = mobileConfirmPressRef.current;
+                              if (pending) clearTimeout(pending.timer);
+                              mobileConfirmPressRef.current = null;
+                            },
+                          }
+                        : {})}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         if (isUngroupedBlankCell) return;
+                        // zonePreviewMode gets its own, completely different right-click: there are
+                        // no real SpecsRowGroup entries in this cropped grid to open the normal
+                        // "Group" menu against, so right-clicking a row inside one of the host's
+                        // previewZones instead reports it up via onZoneContextMenu — the host (which
+                        // owns linkedQuoteSourceGrid) renders its own "Link to Quote Groups" menu for
+                        // that zone. A row outside any zone does nothing; there's nothing to
+                        // configure there in this mode.
+                        if (zonePreviewMode) {
+                          const zone = (previewZones ?? []).find((z) => rowIdx >= z.startRow && rowIdx <= z.endRow);
+                          if (zone) onZoneContextMenu?.(zone.id, e.clientX, e.clientY);
+                          return;
+                        }
+                        // Group management (create/add-to/remove a group) is a TEMPLATE-authoring
+                        // concern now — groups, zones, and Quote links are all configured in the
+                        // Company Settings template builder, never inside a live project's own
+                        // Quote/Specifications window. Right-click there does nothing at all (not
+                        // even the browser's own native menu, already suppressed above) rather than
+                        // exposing group management staff were never meant to touch per-project.
+                        if (isProjectSheetView) return;
                         // Right-clicking a data cell opens the exact same row-grouping menu as
                         // right-clicking the row number — "highlight any row OR individual cell and
                         // add it to a group" — reusing headerContextMenu's row-axis rendering, which
@@ -2659,7 +3181,7 @@ export default function SpecsGridEditor({
                             }}
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
-                            onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, cell, px)}
+                            onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, colIdx, cell, px)}
                             remeasureSignal={mockPageBoxWidthPx}
                             readOnly={!isCellTextEditableHere}
                             readOnlyReason={
@@ -2675,8 +3197,11 @@ export default function SpecsGridEditor({
                             // just a normal, fully-readable snapshot of what the client is seeing —
                             // not a permission restriction — so it stays full-opacity black text
                             // instead of the dimmed treatment used for an actual permission lock or
-                            // an ungrouped blank cell.
-                            dimmed={!isSentToClient}
+                            // an ungrouped blank cell. Also skipped for a cell locked purely for being
+                            // outside the group's editable zone — that's not a permission restriction
+                            // either, just a non-editable PART of an otherwise normal group, so its
+                            // text should read exactly as authored rather than looking greyed-out.
+                            dimmed={!isSentToClient && !isRowOutsideZone}
                           />
                         </div>
                       )}
@@ -2724,6 +3249,22 @@ export default function SpecsGridEditor({
                             {cell.confirmedYes ? "Yes" : "No"}
                           </div>
                         )
+                      ) : null}
+                      {/* Template-builder-only equivalent of the live sheet's own Pending/Yes/No fill
+                          just above — a confirmable cell has no such overlay to show here (nothing's
+                          actually been sent/answered yet, and a project hasn't even been cloned from
+                          this template), so without SOME indicator, "Mark Confirmable" would read as
+                          doing nothing at all once clicked. Centered in the cell (both axes), same as
+                          Pending/Yes/No above, rather than a corner tag. */}
+                      {!isProjectSheetView && !zonePreviewMode && allowConfirmationMarking && cell.confirmableAllowed ? (
+                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                          <span
+                            className="whitespace-nowrap rounded-[4px] px-1 text-[9px] font-bold"
+                            style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                          >
+                            Confirmable
+                          </span>
+                        </div>
                       ) : null}
                     </td>
                   );
@@ -2868,6 +3409,103 @@ export default function SpecsGridEditor({
             })
           : null}
 
+        {/* "Import from Quote" — a small floating button, its own normal fixed size, kept entirely
+            OUTSIDE the table's right edge (never overlapping the zone or any of its content),
+            sitting level with the linked editable zone's own top row. Only shown while that exact
+            zone is the current selection (clicked/tapped into) — not permanently floating for every
+            linked zone on screen at once, which read as clutter and, on mobile, a button sitting
+            half off-screen with nothing to anchor it to until you'd already found the zone some
+            other way. Pops in (glass-bubble-pop) the moment a zone becomes selected, and pops away
+            (the same ghost-portal pop the desktop floating action pill uses for a button leaving the
+            bar) the moment it's deselected, rather than just vanishing — see FloatingSideButton's own
+            comment. Shown whenever that zone has a Quote link pre-configured in the Company Settings
+            template builder (right-click the zone there — see linkedQuoteSourceGrid's own comment on
+            SpecsGridEditorProps for why the link itself is never editable here). */}
+        {isProjectSheetView && !isSentToClient && quoteGridForLinkedPull ? (
+          <FloatingSideButton
+            target={(() => {
+              if (!selection) return null;
+              const selectedRect = normalizeRect(selection);
+              for (const g of expandedGroups) {
+                const zone = g.zones?.find((z) => z.kind === "editable" && (z.linkedQuoteGroups?.length ?? 0) > 0);
+                if (!zone) continue;
+                const topRow = g.startRow + zone.startRow;
+                const bottomRow = g.startRow + zone.endRow;
+                if (selectedRect.minRow > bottomRow || selectedRect.maxRow < topRow) continue;
+                const justImported = Boolean(recentlyImportedGroupIds[g.id]);
+                return {
+                  id: g.id,
+                  leftPx: rowHeaderWidthPx + tableTotalWidthPx + 8,
+                  topPx: colHeaderHeightPx + rowPrefixSums[topRow] + 6,
+                  content: (
+                    <button
+                      type="button"
+                      onClick={() => requestImportLinkedQuoteTextIntoZoneForGroup(g.id)}
+                      title={`Import "${g.name}" from its editable zone's linked Quote group(s)`}
+                      className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] border px-2 text-[11px] font-bold shadow-sm transition hover:brightness-95"
+                      style={
+                        justImported
+                          ? { borderColor: "var(--success-strong)", backgroundImage: "var(--success-gradient)", color: "#ffffff" }
+                          : { borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)", color: "#ffffff" }
+                      }
+                    >
+                      {justImported ? <Check size={12} /> : <RefreshCw size={12} />}
+                      {justImported ? "Imported" : "Import from Quote"}
+                    </button>
+                  ),
+                };
+              }
+              return null;
+            })()}
+          />
+        ) : null}
+
+        {/* "Mark for Confirmation" — same floating-pill treatment as "Import from Quote" above
+            (right down to the component), moved out of the fixed toolbar so it sits right next to
+            whatever's actually selected instead of a static slot staff had to look away to find.
+            Desktop only (!fitToViewportOnMobile) — mobile gets its own long-press dropdown instead,
+            further down, for the same reason useLongPress's own doc comment gives for the Version
+            History rows' identical desktop-hover/mobile-hold split: this is a hover-revealed-on-
+            desktop interaction with no touch equivalent. Positioned level with a single cell's own
+            row; for a multi-cell target, vertically CENTERED across the full span from the target's
+            own first to last row (baked into topPx — see computeMarkForConfirmationTarget for the
+            target selection logic itself, shared with the mobile dropdown). */}
+        {isProjectSheetView && allowConfirmationMarking && !fitToViewportOnMobile ? (
+          <FloatingSideButton
+            target={(() => {
+              const result = computeMarkForConfirmationTarget();
+              if (!result) return null;
+              const rows = result.allTargets.map((t) => t.row);
+              const minRow = Math.min(...rows);
+              const maxRow = Math.max(...rows);
+              const midpointPx = (rowPrefixSums[minRow] + rowPrefixSums[maxRow + 1]) / 2;
+              return {
+                id: "mark-for-confirmation",
+                leftPx: rowHeaderWidthPx + tableTotalWidthPx + 8,
+                // Vertically CENTERS the button on the span's own midpoint — baked directly into
+                // topPx (see FloatingSideButtonTarget.topPx's own comment for why this can't be a
+                // CSS transform) by subtracting half this h-7 (28px) button's own height.
+                topPx: colHeaderHeightPx + midpointPx - 14,
+                content: (
+                  <button
+                    type="button"
+                    onClick={result.onClick}
+                    title={result.title}
+                    className="flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] border px-2 text-[11px] font-bold shadow-sm transition hover:brightness-95"
+                    // Always the same green as the "Submitted Version" button (var(--success-gradient)/
+                    // var(--success-strong)) regardless of isActive — that one only still drives the
+                    // label text (below), not the color anymore.
+                    style={{ borderColor: "var(--success-strong)", backgroundImage: "var(--success-gradient)", color: "#ffffff" }}
+                  >
+                    <CheckSquare size={12} />
+                    {result.label}
+                  </button>
+                ),
+              };
+            })()}
+          />
+        ) : null}
+
         {/* Dragging an EXISTING group needs no separate indicator — its own rows are already
             reflowing (via rowShiftOffsetById on each <tr>, above) to sit right where they'll land,
             which shows "where it'll actually sit" more directly than a thin line ever could.
@@ -2932,6 +3570,33 @@ export default function SpecsGridEditor({
                 </span>
               </div>
             ))}
+
+        {/* The zone-marking preview's own equivalent of groupOutlines just above — a solid
+            success-colored outline (rather than groupOutlines' own dashed brand-strong one) so an
+            already-marked zone reads as visually distinct from an ordinary group boundary. */}
+        {previewZoneOutlines.map((z) => (
+          <div
+            key={z.id}
+            className="pointer-events-none absolute"
+            style={{
+              left: rowHeaderWidthPx,
+              top: colHeaderHeightPx + z.top,
+              width: tableTotalWidthPx,
+              height: z.height,
+              border: "2px dotted var(--success-strong)",
+            }}
+          >
+            {/* Top-right, INSIDE the zone's own border (unlike groupOutlines' label above, which
+                straddles the top edge from outside) — the user specifically wants this label read as
+                a badge sitting inside the zone it's labeling, not as an external tag on the box. */}
+            <span
+              className="absolute right-1 top-1 whitespace-nowrap rounded-[4px] px-1 text-[9px] font-bold"
+              style={{ backgroundColor: "var(--success-soft)", color: "var(--success-strong)" }}
+            >
+              {z.name}
+            </span>
+          </div>
+        ))}
 
         {/* showEditableGroupBorders' own overlay — see its comment on SpecsGridEditorProps. A plain
             inset border (no label, no dashing) rather than reusing groupOutlines' own look: this is
@@ -3280,7 +3945,7 @@ export default function SpecsGridEditor({
                 onClick={() => setGroupModalTarget(null)}
                 className="glass-modal-backdrop absolute inset-0"
               />
-              <div ref={groupModalPanelRef} className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+              <div ref={groupModalPanelRef} className="glass-modal-panel relative w-[min(880px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
                 <div className="glass-modal-header px-5 py-4">
                   <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
                     {groupModalTarget?.groupId ? "Group Settings" : "New Group"}
@@ -3504,6 +4169,96 @@ export default function SpecsGridEditor({
                       />
                     </div>
                   ) : null}
+                  {/* Not gated behind groupsSupportPricing/linkedQuoteSourceGrid — shown for any
+                      group, in both the Quote and Specs template builders (and any live project
+                      editor this same modal appears in), since a zone is a general group concept,
+                      not a Quote-pricing or Specs-linking one. */}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <label className="block text-[11px] font-bold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                        Group Preview
+                      </label>
+                      {previewGrid ? (
+                        <button
+                          type="button"
+                          disabled={!previewSelectedRowRange}
+                          onClick={() => {
+                            if (!previewSelectedRowRange) return;
+                            // Replaces any existing editable zone — only one makes sense per group
+                            // right now, since importLinkedQuoteTextIntoZone only ever targets the
+                            // first "editable" zone it finds.
+                            setGroupDraft((d) => ({
+                              ...d,
+                              zones: [{ id: genSpecsZoneId(), kind: "editable", startRow: previewSelectedRowRange.minRow, endRow: previewSelectedRowRange.maxRow }],
+                            }));
+                          }}
+                          className="inline-flex h-7 items-center gap-1 rounded-[7px] border px-2 text-[11px] font-bold transition hover:brightness-95 disabled:opacity-50"
+                          style={{ borderColor: "var(--brand-strong)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+                        >
+                          <Link2 size={12} />
+                          Mark Selection as Editable Zone
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="mb-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      Select rows below, then use the button above to mark this group&apos;s editable
+                      zone. In an actual project&apos;s Quote/Specifications window, only that zone
+                      stays editable — everything else in the group becomes read-only there. Here in
+                      the template builder, the whole group stays freely editable either way.
+                    </p>
+                    {previewGrid ? (
+                      <div className="overflow-auto rounded-[9px] border" style={{ maxHeight: 380, borderColor: "var(--glass-border)" }}>
+                        <SpecsGridEditor
+                          value={previewGrid}
+                          onChange={() => {}}
+                          zonePreviewMode
+                          previewZones={groupDraft.zones}
+                          onSelectionRangeChange={setPreviewSelectedRowRange}
+                          onZoneContextMenu={(zoneId, x, y) => {
+                            setExpandedQuoteGroupNamesInPicker(new Set());
+                            setZoneContextMenu({ zoneId, x, y, view: "menu" });
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <p
+                        className="rounded-[9px] border px-3 py-2 text-[11px]"
+                        style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-muted)" }}
+                      >
+                        Save this group once to preview it and define zones.
+                      </p>
+                    )}
+                    {groupDraft.zones.length > 0 ? (
+                      <div className="mt-1.5 space-y-1">
+                        {groupDraft.zones.map((zone) => {
+                          const linkedCount = zone.linkedQuoteGroups?.length ?? 0;
+                          return (
+                            <div
+                              key={zone.id}
+                              className="flex items-center gap-1.5 rounded-[9px] border p-2"
+                              style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                            >
+                              <span className="flex-1 truncate text-[12px]" style={{ color: "var(--text-main)" }}>
+                                Editable Zone
+                                {linkedCount > 0 ? (
+                                  <span style={{ color: "var(--text-muted)" }}> — {linkedCount} Quote group{linkedCount === 1 ? "" : "s"} linked (right-click it above to manage)</span>
+                                ) : null}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setGroupDraft((d) => ({ ...d, zones: d.zones.filter((z) => z.id !== zone.id) }))}
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[7px] transition hover:bg-[var(--danger-soft)]"
+                                style={{ color: "var(--danger-strong)" }}
+                                aria-label="Remove zone"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                   <div className="flex items-center justify-end gap-2">
                     <button
                       type="button"
@@ -3523,6 +4278,265 @@ export default function SpecsGridEditor({
                   </div>
                 </form>
               </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* Right-click an editable zone in the Group Preview above opens this — see onZoneContextMenu's
+          own comment on SpecsGridEditorProps and zoneContextMenu's own comment near its useState for
+          the full two-step "menu then picker" flow. Portaled the same way headerContextMenu/the
+          Group Settings modal itself already are. */}
+      {zoneContextMenu && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0" style={{ zIndex: 2147483647 }}>
+              <button
+                type="button"
+                aria-label="Close zone link menu"
+                onClick={() => setZoneContextMenu(null)}
+                className="absolute inset-0 cursor-default"
+                style={{ background: "transparent" }}
+              />
+              <div
+                className="glass-modal-panel absolute overflow-hidden"
+                style={{
+                  left: Math.min(zoneContextMenu.x, (typeof window !== "undefined" ? window.innerWidth : 1000) - 300),
+                  top: zoneContextMenu.y,
+                  width: zoneContextMenu.view === "menu" ? 220 : 300,
+                }}
+              >
+                {zoneContextMenu.view === "menu" ? (
+                  <button
+                    type="button"
+                    onClick={() => setZoneContextMenu((m) => (m ? { ...m, view: "picker" } : m))}
+                    className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-left text-[12px] hover:brightness-95"
+                    style={{ color: "var(--text-main)" }}
+                  >
+                    <Link2 size={13} />
+                    Link to Quote Groups
+                  </button>
+                ) : (
+                  <div className="max-h-[320px] overflow-y-auto p-2">
+                    <div className="mb-1.5 flex items-center justify-between px-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                        Link to Quote Groups
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setZoneContextMenu(null)}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] hover:bg-[var(--danger-soft)]"
+                        style={{ color: "var(--text-muted)" }}
+                        aria-label="Close"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                    {/* Currently linked, in concatenation order — drag to reorder, same native HTML5
+                        DnD convention used elsewhere in this file for a short in-modal list. */}
+                    {zoneContextMenuLinkedRefs.length > 0 ? (
+                      <div className="mb-1.5 space-y-1">
+                        {zoneContextMenuLinkedRefs.map((ref, idx) => (
+                          <div
+                            key={`${ref.quoteGroupName}:${ref.source}`}
+                            draggable
+                            onDragStart={() => setDraggingZoneLinkIndex(idx)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const fromIdx = draggingZoneLinkIndex;
+                              setDraggingZoneLinkIndex(null);
+                              const targetZoneId = zoneContextMenu.zoneId;
+                              if (fromIdx === null || fromIdx === idx) return;
+                              setGroupDraft((d) => ({
+                                ...d,
+                                zones: d.zones.map((z) => {
+                                  if (z.id !== targetZoneId) return z;
+                                  const next = [...(z.linkedQuoteGroups ?? [])];
+                                  const [moved] = next.splice(fromIdx, 1);
+                                  next.splice(idx, 0, moved);
+                                  return { ...z, linkedQuoteGroups: next };
+                                }),
+                              }));
+                            }}
+                            onDragEnd={() => setDraggingZoneLinkIndex(null)}
+                            className="flex items-center gap-1.5 rounded-[7px] border p-1.5"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                          >
+                            <GripVertical size={12} className="shrink-0 cursor-grab" style={{ color: "var(--text-muted)" }} />
+                            <span className="flex-1 truncate text-[11px]" style={{ color: "var(--text-main)" }}>
+                              {ref.quoteGroupName}
+                              {ref.source === "zone" ? " → Editable Zone" : ""}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleZoneLinkRef(ref.quoteGroupName, ref.source)}
+                              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition hover:bg-[var(--danger-soft)]"
+                              style={{ color: "var(--danger-strong)" }}
+                              aria-label="Remove link"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="my-1 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
+                    {/* Every linkable Quote group — clicking the name itself toggles linking the
+                        WHOLE group; the chevron (only shown when that group has its own editable
+                        zone) expands a second, indented choice to link just that zone instead. */}
+                    {linkableQuoteGroups.length === 0 ? (
+                      <p className="px-1 py-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                        No Quote groups available.
+                      </p>
+                    ) : (
+                      linkableQuoteGroups.map((g) => {
+                        const hasOwnZone = g.zones?.some((z) => z.kind === "editable");
+                        const expanded = expandedQuoteGroupNamesInPicker.has(g.name);
+                        const groupLinked = isRefLinked(g.name, "group");
+                        const zoneLinked = isRefLinked(g.name, "zone");
+                        return (
+                          <div key={g.id}>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => toggleZoneLinkRef(g.name, "group")}
+                                className="flex flex-1 items-center gap-1.5 truncate rounded-[6px] px-1.5 py-1 text-left text-[11px] hover:brightness-95"
+                                style={{ color: groupLinked ? "var(--brand-strong)" : "var(--text-main)", fontWeight: groupLinked ? 700 : 400 }}
+                              >
+                                {groupLinked ? <Check size={12} className="shrink-0" /> : null}
+                                <span className="truncate">{g.name}</span>
+                              </button>
+                              {hasOwnZone ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedQuoteGroupNamesInPicker((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(g.name)) next.delete(g.name);
+                                      else next.add(g.name);
+                                      return next;
+                                    })
+                                  }
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] hover:brightness-95"
+                                  style={{ color: "var(--text-muted)" }}
+                                  aria-label="Show this group's own editable zone"
+                                >
+                                  <ChevronDown size={13} style={{ transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 140ms ease" }} />
+                                </button>
+                              ) : null}
+                            </div>
+                            {expanded ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleZoneLinkRef(g.name, "zone")}
+                                className="ml-4 flex items-center gap-1.5 truncate rounded-[6px] px-1.5 py-1 text-left text-[11px] hover:brightness-95"
+                                style={{ color: zoneLinked ? "var(--brand-strong)" : "var(--text-main)", fontWeight: zoneLinked ? 700 : 400 }}
+                              >
+                                {zoneLinked ? <Check size={12} className="shrink-0" /> : null}
+                                <span className="truncate">↳ Editable Zone</span>
+                              </button>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* "Replace Zone Content?" — gates requestImportLinkedQuoteTextIntoZoneForGroup's own confirm
+          path (see its comment): only shown when the zone's current text doesn't match what was
+          last imported into it, i.e. it's been hand-edited (or hand-typed in the first place) since.
+          A zone that's still empty, or whose text exactly matches the last import, skips this
+          entirely and imports straight away — see that function. */}
+      {pendingImportGroupId && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 flex items-center justify-center px-4 py-4" style={{ zIndex: 2147483647 }}>
+              <button
+                type="button"
+                aria-label="Close replace zone content confirmation backdrop"
+                onClick={() => setPendingImportGroupId(null)}
+                className="glass-modal-backdrop absolute inset-0"
+              />
+              <div className="glass-modal-panel relative w-[min(420px,96vw)] overflow-hidden" style={{ zIndex: 2147483647 }}>
+                <div className="glass-modal-header px-5 py-4">
+                  <p className="text-[14px] font-bold uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
+                    Replace Zone Content?
+                  </p>
+                </div>
+                <div className="space-y-4 px-5 py-4">
+                  <p className="text-[12px]" style={{ color: "var(--text-main)" }}>
+                    This zone&apos;s text doesn&apos;t match the last import — it looks like it&apos;s been edited since. Importing now will
+                    replace the entire thing with the linked Quote group&apos;s current text. (Ctrl+Z afterward will undo it.)
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPendingImportGroupId(null)}
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const groupId = pendingImportGroupId;
+                        setPendingImportGroupId(null);
+                        if (groupId) importLinkedQuoteTextIntoZoneForGroup(groupId);
+                      }}
+                      className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
+                      style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
+                    >
+                      Replace
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* Mobile's own long-press dropdown for "Mark for Confirmation" — see
+          computeMarkForConfirmationTarget/mobileConfirmPressRef's own comments for the gesture
+          itself. A small anchored menu (same visual convention as headerContextMenu/zoneContextMenu
+          elsewhere in this file), not the heavier grow-from-origin glass modal treatment — this is a
+          quick single-action dropdown, not a real dialog. Dismissed by tapping/clicking outside it
+          (the effect wiring mobileConfirmMenuRef), or by using the action itself. */}
+      {mobileConfirmMenu && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={mobileConfirmMenuRef}
+              className="glass-bubble-pop fixed z-[2000] w-[200px] overflow-hidden rounded-[8px] border py-1"
+              style={{
+                // Centered (translate -50%) on the press point, but clamped so neither edge of this
+                // 200px-wide box ever runs off-screen on a narrow phone — 108 = half the width (100)
+                // plus a small 8px gutter.
+                left: Math.min(Math.max(mobileConfirmMenu.x, 108), window.innerWidth - 108),
+                top: mobileConfirmMenu.y,
+                transform: "translate(-50%, -110%)",
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(24px) saturate(180%)",
+                WebkitBackdropFilter: "blur(24px) saturate(180%)",
+                boxShadow: "var(--shadow-glass)",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  mobileConfirmMenu.onConfirm();
+                  setMobileConfirmMenu(null);
+                }}
+                title={mobileConfirmMenu.title}
+                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-left text-[12px] font-bold hover:brightness-95"
+                style={{ color: "var(--success-strong)" }}
+              >
+                <CheckSquare size={14} />
+                {mobileConfirmMenu.label}
+              </button>
             </div>,
             document.body,
           )

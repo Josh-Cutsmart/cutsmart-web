@@ -5749,6 +5749,15 @@ export default function CompanySettingsPage() {
                               companyColor={/^#[0-9A-Fa-f]{6}$/.test(form.themeColor) ? form.themeColor : undefined}
                               companyRoleOptions={specsGroupRoleOptions}
                               productOptions={specsGroupProductOptions}
+                              // Lets a Specs group's "Link to Quote Groups" section pick from the
+                              // Quote template's own current groups — see linkedQuoteSourceGrid's
+                              // own comment on SpecsGridEditorProps. quoteGridTemplate is already a
+                              // sibling state in this same component, so no extra fetch is needed.
+                              linkedQuoteSourceGrid={quoteGridTemplate ?? undefined}
+                              // Enables the template builder's own "Mark Confirmable" toolbar button
+                              // — a client-confirmation concept that only makes sense on
+                              // Specifications, same as the live project view's identical gate.
+                              allowConfirmationMarking
                             />
                           </div>
                           <div

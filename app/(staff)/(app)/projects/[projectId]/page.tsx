@@ -1665,17 +1665,55 @@ function stableBubbleAnimationDelayMs(id: string): number {
   return hash % 280;
 }
 
-// A full glass-bubble-rise-in animation shorthand for the mobile Actions sheet's own buttons —
-// same stable-per-id-hash idea as stableBubbleAnimationDelayMs above (not Math.random(), for the
-// same reason: see that function's own comment), but varying BOTH the delay and the duration per
-// button (hashing id and `${id}-duration` separately, so the two don't move in lockstep with each
-// other) rather than just the delay — different buttons bouncing in with the exact same motion,
-// just offset in time, still read as one mechanical wave; varying the duration too (420-539ms) is
-// what makes each button's own bounce feel like its own, distinct little motion.
-function mobileActionsBubbleAnimation(id: string): string {
+// Style for one mobile Actions sheet button's entrance bounce (glass-bubble-rise-in, see its own
+// comment in globals.css for why it's a plain two-stop translateY tween rather than a manually
+// overshooting multi-stop one) — same stable-per-id-hash idea as stableBubbleAnimationDelayMs above
+// (not Math.random(), for the same reason: see that function's own comment), but varying the delay,
+// duration, AND starting distance per button (hashing id, `${id}-duration`, and `${id}-distance`
+// separately, so none of the three move in lockstep with each other) rather than just the delay —
+// different buttons bouncing with the exact same motion, just offset in time, still reads as one
+// mechanical wave; varying the duration (380-519ms) and how far below rest each one starts (4-6px)
+// is what makes each button's bounce feel like its own, distinct little motion rather than a
+// uniform pulse.
+//
+// 4-6px, not bigger — this sheet's buttons sit only `gap-2` (8px) apart, and each one's own
+// starting offset is held at that full distance (via the keyframe's 0% + this animation's own
+// fill-mode "both") for its whole random delay before it even starts rising, completely
+// independently of its neighbors' own delay/duration. Two buttons can therefore be at ANY two
+// points in their own cycles at once — worst case, the button ABOVE is still sitting at its full
+// starting distance (its own closest approach to the one below) at the exact instant the button
+// BELOW is at its own peak overshoot (cubic-bezier(0.34, 1.56, 0.64, 1) overshoots a translateY
+// tween by about 10% of its own starting distance — see glass-bubble-rise-in's own comment), i.e.
+// moving UP toward the one above it. Capping the starting distance at 6px keeps that worst-case
+// combined encroachment (6 + 10% of 6 ≈ 6.6px) safely under the 8px gap no matter how the two
+// buttons' independent timings happen to line up, so two buttons can never actually touch, let
+// alone overlap. Returns a full style object (not just the animation shorthand) since the distance
+// travels as a CSS custom property the keyframe itself reads, rather than needing a separate
+// keyframe per possible distance.
+function mobileActionsBubbleStyle(id: string): React.CSSProperties {
   const delay = stableBubbleAnimationDelayMs(id);
-  const duration = 420 + (stableBubbleAnimationDelayMs(`${id}-duration`) % 120);
-  return `glass-bubble-rise-in ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`;
+  const duration = 380 + (stableBubbleAnimationDelayMs(`${id}-duration`) % 140);
+  const distance = 4 + (stableBubbleAnimationDelayMs(`${id}-distance`) % 3);
+  return {
+    animation: `glass-bubble-rise-in ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`,
+    ["--bubble-bounce-distance" as string]: `${distance}px`,
+  } as React.CSSProperties;
+}
+
+// Fixed, un-staggered pop-away (glass-bubble-pop-away, see its own comment in globals.css) for every
+// currently-visible Actions sheet button at once, played while useMobileFloatingActionSheet's own
+// isClosing window is open — matching how a button leaving the DESKTOP bar already pops away
+// (FloatingBarSlot's own floating-bar-slot-pop ghost) rather than just going slack as the sheet's
+// panel carries it off-screen underneath.
+function mobileActionsButtonBounceStyle(
+  isCompactViewport: boolean,
+  sheet: { isOpen: boolean; isClosing: boolean },
+  id: string,
+): React.CSSProperties | undefined {
+  if (!isCompactViewport) return undefined;
+  if (sheet.isOpen) return mobileActionsBubbleStyle(id);
+  if (sheet.isClosing) return { animation: "glass-bubble-pop-away 180ms ease-in both" };
+  return undefined;
 }
 
 // Compact on/off switch for the Quote Extras lists (both the Sales tab overview and the Quote
@@ -1730,12 +1768,27 @@ function FloatingBarSlot({
   visible,
   children,
   orientation = "horizontal",
+  bounceStyle,
 }: {
   visible: boolean;
   children: ReactNode;
   // "vertical" collapses maxHeight instead of maxWidth — used when this slot sits in a stacked
   // list (Quote/Specifications' own mobile action sheet) instead of the default horizontal pill.
   orientation?: "horizontal" | "vertical";
+  // Optional entrance bounce (mobileActionsBubbleStyle's own return value) for the mobile Actions
+  // sheet's own buttons. Applied to the OUTERMOST div below (the one `removedFromFlow` toggles
+  // `display: none` on), never to `wrapperRef`'s own overflow:hidden box one level in — that box is
+  // sized tightly to the content's natural (untransformed) height/width to drive its OWN collapse/
+  // expand transition, so any transform-based animation applied directly to it (or to a child inside
+  // it) gets clipped the instant it moves past that box's own edge. An earlier version of this
+  // instead wrapped a whole separate `<div>` AROUND `<FloatingBarSlot>` from the outside to dodge
+  // that clipping — which avoided the clip, but that wrapper had no idea about `removedFromFlow` and
+  // so never left flex layout the way THIS slot's own root div does, leaving a zero-height-but-
+  // still-gap-contributing ghost item behind for every OTHER currently-hidden button and visibly
+  // uneven gaps between whichever buttons happened to be visible. Taking the prop here instead keeps
+  // `removedFromFlow` as the one, single source of truth for whether this slot participates in the
+  // flex row/column's layout at all.
+  bounceStyle?: React.CSSProperties;
 }) {
   const [collapsed, setCollapsed] = useState(!visible);
   // Once a slot has FULLY collapsed (maxWidth finished animating to 0 — not the same moment
@@ -1761,6 +1814,16 @@ function FloatingBarSlot({
   // is what briefly flashed a scrollbar on the mobile bottom strip's own overflow-x-auto in an
   // even earlier version of this).
   const [poppingRect, setPoppingRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  // The entrance's own equivalent of poppingRect above, for exactly the same reason: `wrapperRef`
+  // below is overflow:hidden (needed to clip the width/height SLIDE itself), so a scale(1.12) bounce
+  // played in-place there gets its edges cut off the instant the real button's own natural size gets
+  // anywhere close to the wrapper's generous-but-finite 260px/200px ceiling (worst for a vertical
+  // w-full mobile button, which has zero horizontal slack at all). Portaled to <body> for the same
+  // "escapes every ancestor's box/overflow" reason poppingRect's own comment explains, and measured
+  // from `contentRef` (the real button's own natural box), not the wrapper, so the pop plays at
+  // EXACTLY the same size as it would un-clipped — matching Import from Quote/Mark for Confirmation's
+  // own identical pop-in (specs-grid-editor.tsx), not a scaled-to-fit stand-in.
+  const [poppingInRect, setPoppingInRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   // Drives the child's own opacity, deliberately SEPARATE from `collapsed` above even though it
   // moves in lockstep with it — see the render below for why the actual fade needs a transition
   // rule that's constant across renders (never toggled to "none"), which in turn means its target
@@ -1768,6 +1831,7 @@ function FloatingBarSlot({
   // directly as that value.
   const [contentVisible, setContentVisible] = useState(visible);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const prevVisibleRef = useRef(visible);
 
   useEffect(() => {
@@ -1783,14 +1847,48 @@ function FloatingBarSlot({
       // brand-new element wouldn't — the browser needs an actual PAINTED frame of "now in the
       // layout, still at maxWidth 0" to interpolate the following change from, and nothing about a
       // plain millisecond delay guarantees a real paint happened in between (this is what was
-      // making the bar jump straight to its open width instead of sliding open). Content becomes
-      // visible 300ms after that — a real elapsed-time wait for the width transition's own known
-      // duration to finish, not a "did this paint yet" concern, so a plain setTimeout is fine here.
+      // making the bar jump straight to its open width instead of sliding open). 300ms after that —
+      // a real elapsed-time wait for the width transition's own known duration to finish, not a
+      // "did this paint yet" concern, so a plain setTimeout is fine here — the content div is
+      // already laid out at its own real, natural size (still opacity:0), safe to measure for the
+      // pop-in ghost exactly like the shrink branch below measures wrapperRef before anything moves.
+      // The real content only actually becomes visible once that ghost's own pop has finished
+      // playing, same staggering the shrink branch already uses in reverse.
       rafs.push(requestAnimationFrame(() => {
         setRemovedFromFlow(false);
         rafs.push(requestAnimationFrame(() => {
           setCollapsed(false);
-          timers.push(window.setTimeout(() => setContentVisible(true), 300));
+          timers.push(window.setTimeout(() => {
+            const rect = contentRef.current?.getBoundingClientRect();
+            if (!rect) {
+              setContentVisible(true);
+              return;
+            }
+            setPoppingInRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+            timers.push(window.setTimeout(() => {
+              setPoppingInRect(null);
+              // The ghost is ALREADY sitting at opacity:1/scale:1 (its own keyframe's end state) the
+              // instant before it disappears — handing off to the real content via the normal
+              // React-driven opacity:0 -> 1 + "opacity 200ms ease" transition (same rule the hide
+              // path uses) would restart a fresh 200ms fade from 0, i.e. a real, visible dip back to
+              // invisible right after the pop finishes, then a slower fade back in — the "flash away
+              // and back" this is fixing. Snapping the real element to fully opaque with its
+              // transition briefly disabled (classic "transition: none -> change -> force reflow ->
+              // restore transition" sequence, same technique useGlassModalPopOrigin already uses
+              // elsewhere in this file) makes the handoff invisible instead: by the time React's own
+              // re-render applies contentVisible's normal opacity:1/transition style a moment later,
+              // the DOM is already sitting at those exact same values, so it's a no-op repaint, not a
+              // second animation.
+              const el = contentRef.current;
+              if (el) {
+                el.style.transition = "none";
+                el.style.opacity = "1";
+                void el.offsetWidth;
+                el.style.transition = "opacity 200ms ease";
+              }
+              setContentVisible(true);
+            }, 380));
+          }, 300));
         }));
       }));
     } else {
@@ -1821,29 +1919,48 @@ function FloatingBarSlot({
   return (
     <>
       <div
-        ref={wrapperRef}
-        className={
-          orientation === "vertical"
-            ? "w-full overflow-hidden transition-[max-height] duration-300 ease-in-out"
-            : "overflow-hidden transition-[max-width] duration-300 ease-in-out"
-        }
-        style={
-          orientation === "vertical"
-            ? { maxHeight: collapsed ? 0 : 200, display: removedFromFlow ? "none" : "block" }
-            : { maxWidth: collapsed ? 0 : 260, display: removedFromFlow ? "none" : "block" }
-        }
+        className={orientation === "vertical" ? "w-full" : undefined}
+        style={{ display: removedFromFlow ? "none" : "block", ...(bounceStyle ?? {}) }}
       >
-        {/* transition is a CONSTANT rule here (never toggled to/from "none", unlike an earlier
-            version of this) — changing transition-property in the exact same style update as the
-            value it's supposed to cover is a well-known case where browsers skip the animation
-            outright, since there's no prior painted frame under the NEW rule to interpolate from;
-            that was silently turning the "fade in" into an instant snap. With the rule always
-            active, only WHEN contentVisible itself flips (fully independent of this) needs to be
-            timed right — see the effect above. */}
-        <div style={{ opacity: contentVisible ? 1 : 0, transition: "opacity 200ms ease" }}>
-          {children}
+        <div
+          ref={wrapperRef}
+          className={
+            orientation === "vertical"
+              ? "w-full overflow-hidden transition-[max-height] duration-300 ease-in-out"
+              : "overflow-hidden transition-[max-width] duration-300 ease-in-out"
+          }
+          style={orientation === "vertical" ? { maxHeight: collapsed ? 0 : 200 } : { maxWidth: collapsed ? 0 : 260 }}
+        >
+          {/* Plain opacity fade, unchanged from before the pop-in existed — still a CONSTANT
+              transition rule (never toggled to/from "none") for the reason explained below. The
+              actual POP (both directions) plays entirely on the separate portaled ghosts further
+              down (poppingInRect/poppingRect) instead of on this in-flow div: it sits inside
+              wrapperRef's own overflow:hidden box (needed to clip the width/height SLIDE itself),
+              so a scale(1.12) bounce played directly here would get its own edges cut off — see
+              poppingInRect's own comment. This div just needs to be invisible while its ghost plays,
+              then plainly fade to/from visible around that. transition is a CONSTANT rule here
+              (never toggled to/from "none", unlike an earlier version of this) — changing
+              transition-property in the exact same style update as the value it's supposed to cover
+              is a well-known case where browsers skip the animation outright, since there's no prior
+              painted frame under the NEW rule to interpolate from; that was silently turning the
+              fade into an instant snap. With the rule always active, only WHEN contentVisible itself
+              flips (fully independent of this) needs to be timed right — see the effect above. */}
+          <div ref={contentRef} style={{ opacity: contentVisible ? 1 : 0, transition: "opacity 200ms ease" }}>
+            {children}
+          </div>
         </div>
       </div>
+      {poppingInRect && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="glass-bubble-pop pointer-events-none fixed"
+              style={{ left: poppingInRect.left, top: poppingInRect.top, width: poppingInRect.width, height: poppingInRect.height, zIndex: 2000 }}
+            >
+              {children}
+            </div>,
+            document.body,
+          )
+        : null}
       {poppingRect && typeof document !== "undefined"
         ? createPortal(
             <div
@@ -27743,7 +27860,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // Quote sheet, just without that one's price/category concepts (groupsSupportPricing is never on
   // for Specs, so those fields are never populated here). Reads from whichever grid is currently
   // displayed (live, or a historical version being viewed/edited), same as Quote's own extras.
-  const specsSheetGroups = useMemo(() => (displayedSpecsSheetGrid ? getExpandedRowGroups(displayedSpecsSheetGrid) : []), [displayedSpecsSheetGrid]);
+  // Sorted by startRow — getExpandedRowGroups itself preserves grid.groups' own array order, which
+  // is CREATION order (createRowGroup always appends), not necessarily top-to-bottom sheet order
+  // once a group's been dragged elsewhere — so this list would otherwise drift out of sync with how
+  // the groups actually read top to bottom on the real sheet.
+  const specsSheetGroups = useMemo(
+    () => (displayedSpecsSheetGrid ? [...getExpandedRowGroups(displayedSpecsSheetGrid)].sort((a, b) => a.startRow - b.startRow) : []),
+    [displayedSpecsSheetGrid],
+  );
   // A group whose rows contain ANY cell the client has actually answered (Yes or No, not just
   // marked confirmable) can't be hidden via the toggle below — hiding it would pull those rows
   // out of what anyone (client or staff) ever sees again, effectively burying a real client
@@ -28176,9 +28300,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // Specifications sheet's own "Sections" checklist, which shows/hides any group regardless of
   // price — this is the same idea, just surfaced as a sidebar with a running total of whichever
   // groups also happen to carry a price). Reads from whichever grid is currently displayed (live, or
-  // a historical version being viewed/edited), same as totals below.
+  // a historical version being viewed/edited), same as totals below. Sorted by startRow — same
+  // reasoning as specsSheetGroups' own identical sort (its comment has the full explanation) — and
+  // sorting HERE, before groupQuoteExtrasByCategory below ever sees this list, is also what makes
+  // ITS OWN category buckets land in top-to-bottom order too: that function clusters by category in
+  // plain first-seen order (both for which category heading appears first, and for each item's
+  // position within its own bucket), so a pre-sorted input is enough to get a top-to-bottom result
+  // on both levels with no changes needed to the clustering function itself.
   const displayedQuoteGridExtras = useMemo(
-    () => (displayedQuoteGrid ? getExpandedRowGroups(displayedQuoteGrid) : []),
+    () => (displayedQuoteGrid ? [...getExpandedRowGroups(displayedQuoteGrid)].sort((a, b) => a.startRow - b.startRow) : []),
     [displayedQuoteGrid],
   );
   // Same lock condition as SpecsGridEditor's own isSentToClient prop on the Quote fullscreen view
@@ -43837,14 +43967,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
                 style={{ transform: "translateY(100%)" }}
               >
-                {/* Same bar (height, glass style) as the closed-state trigger bar below — it
-                    visually IS that bar, now sitting as the open panel's own header, so dragging
-                    it down closes back to that same resting spot. Search (left) expands over the
-                    "Visibility" label on focus exactly like the dashboard's own mobile search;
-                    Show All (right) only fades in once the panel is actually open. */}
+                {/* Same bar (height, blue brand gradient) as the closed-state trigger bar below —
+                    it visually IS that bar, now sitting as the open panel's own header, so dragging
+                    it down closes back to that same resting spot, with no color change across the
+                    transition. Search (left) expands over the "Visibility" label on focus exactly
+                    like the dashboard's own mobile search; Show All (right) only fades in once the
+                    panel is actually open. */}
                 <div
                   className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
-                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+                  style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
                   onClick={(e) => {
                     // Only closes for a tap on the header's own background — see Nesting's
                     // identical comment for why this replaced a closest()-based exclusion check.
@@ -43874,11 +44005,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       matches siblings that follow the .peer element. */}
                   <div
                     className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full transition-opacity duration-200 peer-focus-within:opacity-0"
-                    style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
+                    style={{ backgroundColor: "rgba(255,255,255,0.45)" }}
                   />
                   <span
-                    className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[13px] font-bold transition-opacity duration-200 peer-focus-within:opacity-0"
-                    style={{ color: "var(--text-main)" }}
+                    className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[18px] font-medium transition-opacity duration-200 peer-focus-within:opacity-0"
+                    style={{ color: "#ffffff" }}
                   >
                     Visibility
                   </span>
@@ -44002,21 +44133,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </aside>
             )}
           </div>
-          {/* Mobile only, same design as Nesting's own bottom trigger bar: plain white, unmounts
-              entirely (not just faded) the instant the panel commits open, so it reads as having
-              slid up rather than lingering underneath. Tap-only — see the touch handlers' own
-              comment on why there's no drag-to-open here. */}
+          {/* Mobile only, same design as Nesting's own bottom trigger bar — and now the same blue
+              brand-gradient treatment as Quote/Specs' own mobile "Actions" bar, rather than this
+              bar's previous plain white. Unmounts entirely (not just faded) the instant the panel
+              commits open, so it reads as having slid up rather than lingering underneath; the open
+              panel's own sticky header below carries the exact same blue so the color never changes
+              across that transition. Tap-only — see the touch handlers' own comment on why there's
+              no drag-to-open here. */}
           {isCompactProjectViewport && !isCncMobileVisibilityOpen && (
             <div
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
-              style={{ borderColor: "var(--glass-border)", backgroundColor: "#FFFFFF" }}
+              style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
             >
               <button
                 type="button"
                 onClick={() => setIsCncMobileVisibilityOpen(true)}
-                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
-                style={{ color: "var(--text-main)" }}
+                className="flex h-full w-full items-center justify-center text-[18px] font-medium hover:brightness-95"
+                style={{ color: "#ffffff" }}
               >
                 Visibility
               </button>
@@ -44375,7 +44509,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             while a SENT version is what's actually being viewed — Send Quote to Client below is
             the one button that legitimately still needs the broad check (only one version may be
             sent at a time, regardless of what's currently on screen). */}
-        <FloatingBarSlot visible={!isViewingQuoteGridVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        {/* The bounce is passed in as FloatingBarSlot's own `animation` prop (applied to ITS
+            outermost div, alongside the SAME `removedFromFlow` display:none this slot already
+            manages) rather than wrapped around it from the outside — an outside wrapper has no
+            way to also leave flex layout when a button's hidden, leaving a zero-height ghost item
+            behind that still ate its own `gap` on both sides, unevenly widening the visible space
+            around whichever OTHER buttons happened to be hidden. Re-keyed off isOpen itself (absent
+            when closed, a real animation value once it flips true) so it replays every open, not
+            just once on first mount. */}
+        <FloatingBarSlot
+          visible={!isViewingQuoteGridVersion}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-save")}
+        >
           <button
             type="button"
             disabled={!quoteGrid || isSavingQuoteGridVersion}
@@ -44391,25 +44537,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
             }
-            style={{
-              borderColor: "var(--glass-border)",
-              backgroundColor: "var(--panel-bg)",
-              color: "var(--text-main)",
-              // Bounces in on open, staggered against the sheet's other buttons — see
-              // glass-bubble-rise-in's own comment. Re-keyed off isOpen itself (absent when
-              // closed, a real animation value once it flips true) so it replays every time the
-              // sheet opens, not just once on this button's own first mount.
-              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-save")}ms both` }
-                : {}),
-            }}
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
             aria-label="Save"
           >
             <Save size={isCompactProjectViewport ? 16 : 14} />
             Save
           </button>
         </FloatingBarSlot>
-        <FloatingBarSlot visible={!isViewingQuoteGridVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={!isViewingQuoteGridVersion}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-reset")}
+        >
           <button
             type="button"
             disabled={!hasQuoteGridTemplate}
@@ -44424,13 +44563,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
-            style={{
-              backgroundImage: "var(--danger-gradient)",
-              borderColor: "var(--danger-strong)",
-              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-reset")}ms both` }
-                : {}),
-            }}
+            style={{ backgroundImage: "var(--danger-gradient)", borderColor: "var(--danger-strong)" }}
             aria-label="Reset"
           >
             <RotateCcw size={isCompactProjectViewport ? 16 : 14} />
@@ -44449,7 +44582,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             button) — a button that can never be clicked right now (something else is already
             sent; Reopen for Editing first) reads as clutter, not a real option, so it pops out of
             the pill entirely instead of sitting there greyed out. */}
-        <FloatingBarSlot visible={!isQuoteContentLockedForSending && !isQuoteLockedForSending} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={!isQuoteContentLockedForSending && !isQuoteLockedForSending}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-send")}
+        >
           <button
             type="button"
             disabled={!displayedQuoteGrid}
@@ -44467,13 +44604,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
-            style={{
-              backgroundImage: "var(--brand-gradient)",
-              borderColor: "var(--brand-strong)",
-              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-send")}ms both` }
-                : {}),
-            }}
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
             aria-label="Send to Client"
           >
             <Mail size={isCompactProjectViewport ? 16 : 14} />
@@ -44489,7 +44620,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             Deliberately shown WHILE viewing the accepted/sent version itself too (unlike Send,
             which excludes that case) — that's exactly where "reopen this for editing" is most
             useful, not a case to hide it in. */}
-        <FloatingBarSlot visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={isQuoteLockedForSending && salesAllowReopenForEditingEnabled}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-reopen")}
+        >
           <button
             type="button"
             disabled={isReopeningQuoteAcceptance}
@@ -44504,13 +44639,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95 disabled:opacity-60"
             }
-            style={{
-              backgroundImage: "var(--brand-gradient)",
-              borderColor: "var(--brand-strong)",
-              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-reopen")}ms both` }
-                : {}),
-            }}
+            style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
             aria-label={isReopeningQuoteAcceptance ? "Reopening…" : "Reopen Edit"}
           >
             <Unlock size={isCompactProjectViewport ? 16 : 14} />
@@ -44520,7 +44649,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         {/* Only when there's actually an accepted version to jump to, and it isn't already
             what's on screen — a quick way back to it from live (or any other version) without
             digging through the Version History sidebar. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={Boolean(specsShareStatus?.quoteAcceptedAt && specsShareStatus?.quoteVersionId && activeQuoteGridVersionId !== specsShareStatus.quoteVersionId)}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-accepted")}
+        >
           <button
             type="button"
             onClick={() => {
@@ -44532,13 +44665,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium text-white transition hover:brightness-95"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold text-white hover:brightness-95"
             }
-            style={{
-              backgroundImage: "var(--success-gradient)",
-              borderColor: "var(--success-strong)",
-              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-accepted")}ms both` }
-                : {}),
-            }}
+            style={{ backgroundImage: "var(--success-gradient)", borderColor: "var(--success-strong)" }}
             aria-label="Accepted Version"
           >
             <Eye size={isCompactProjectViewport ? 16 : 14} />
@@ -44547,7 +44674,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </FloatingBarSlot>
         {/* Only meaningful once something's actually been sent at least once — before that,
             the hub link exists as a route but there's nothing behind it for the client to see. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={Boolean(specsShareStatus && project?.id)}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, quoteMobileActionsSheet, "actions-portal")}
+        >
           <button
             type="button"
             onClick={() => {
@@ -44560,14 +44691,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95"
             }
-            style={{
-              borderColor: "var(--glass-border)",
-              backgroundColor: "var(--panel-bg)",
-              color: "var(--text-main)",
-              ...(isCompactProjectViewport && quoteMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-portal")}ms both` }
-                : {}),
-            }}
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
             aria-label="Client Portal"
           >
             <ExternalLink size={isCompactProjectViewport ? 16 : 14} />
@@ -44851,6 +44975,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       // Fallback only — overwritten by the hook's own useLayoutEffect (a real pixel
                       // value, accounting for this same offset) before the browser ever paints.
                       transform: "translateY(100%)",
+                      // Same fallback reasoning — the hook flips this to "visible" the instant it's
+                      // actually open. See applyFloatingSheetVisibility's own comment for why this
+                      // exists at all (a backstop for a real-device-only mismeasured-travelPx bug).
+                      visibility: "hidden",
                     }}
                   >
                     {quoteFloatingActionButtons}
@@ -46013,7 +46141,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
     const specsFloatingActionButtons = (
       <>
-        <FloatingBarSlot visible={!isViewingSpecsSheetVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        {/* Bounce passed in as FloatingBarSlot's own `animation` prop — see the Quote tab's
+            identical "Save" slot above for why this can't be a wrapper div around the outside. */}
+        <FloatingBarSlot
+          visible={!isViewingSpecsSheetVersion}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-save")}
+        >
           <button
             type="button"
             disabled={!specsSheetGrid || isSavingSpecsVersion || isSpecsContentLockedForSending}
@@ -46030,25 +46164,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 ? "flex w-full items-center justify-center gap-3 rounded-[10px] border px-3 py-3 text-center text-[15px] font-medium transition hover:brightness-95 disabled:opacity-40"
                 : "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-[12px] font-bold hover:brightness-95 disabled:opacity-60"
             }
-            style={{
-              borderColor: "var(--glass-border)",
-              backgroundColor: "var(--panel-bg)",
-              color: "var(--text-main)",
-              // Bounces in on open, staggered against the sheet's other buttons — see
-              // glass-bubble-rise-in's own comment. Re-keyed off isOpen itself (absent when
-              // closed, a real animation value once it flips true) so it replays every time the
-              // sheet opens, not just once on this button's own first mount.
-              ...(isCompactProjectViewport && specsMobileActionsSheet.isOpen
-                ? { animation: `glass-bubble-rise-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1) ${stableBubbleAnimationDelayMs("actions-save")}ms both` }
-                : {}),
-            }}
+            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
             aria-label="Save"
           >
             <Save size={isCompactProjectViewport ? 16 : 14} />
             Save
           </button>
         </FloatingBarSlot>
-        <FloatingBarSlot visible={!isViewingSpecsSheetVersion} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={!isViewingSpecsSheetVersion}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-reset")}
+        >
           <button
             type="button"
             disabled={!hasTemplate || isSpecsContentLockedForSending}
@@ -46081,7 +46208,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             no sense once it's the very thing already sent. */}
         {/* Same reasoning as the Quote tab's identical treatment above — folded into `visible`
             itself instead of just disabling the button. */}
-        <FloatingBarSlot visible={!isSpecsContentLockedForSending && !specsShareStatus?.versionId} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={!isSpecsContentLockedForSending && !specsShareStatus?.versionId}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-send")}
+        >
           <button
             type="button"
             disabled={!displayedSpecsSheetGrid}
@@ -46110,7 +46241,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             because something's already sent, this takes its place instead of leaving nothing
             there, including while viewing the submitted version itself (unlike Send, which
             excludes that case) — that's exactly where "reopen this for editing" is most useful. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus?.versionId) && salesAllowReopenForEditingEnabled} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={Boolean(specsShareStatus?.versionId) && salesAllowReopenForEditingEnabled}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-reopen")}
+        >
           <button
             type="button"
             disabled={isReopeningSpecsConfirmation}
@@ -46135,7 +46270,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         {/* Only when there's actually a submitted version to jump to, and it isn't already
             what's on screen — a quick way back to it from live (or any other version) without
             digging through the Version History sidebar. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={Boolean(specsShareStatus?.submittedAt && specsShareStatus?.versionId && activeSpecsSheetVersionId !== specsShareStatus.versionId)}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-submitted")}
+        >
           <button
             type="button"
             onClick={() => {
@@ -46156,7 +46295,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         </FloatingBarSlot>
         {/* Only meaningful once something's actually been sent at least once — before that,
             the hub link exists as a route but there's nothing behind it for the client to see. */}
-        <FloatingBarSlot visible={Boolean(specsShareStatus && project?.id)} orientation={isCompactProjectViewport ? "vertical" : "horizontal"}>
+        <FloatingBarSlot
+          visible={Boolean(specsShareStatus && project?.id)}
+          orientation={isCompactProjectViewport ? "vertical" : "horizontal"}
+          bounceStyle={mobileActionsButtonBounceStyle(isCompactProjectViewport, specsMobileActionsSheet, "specs-actions-portal")}
+        >
           <button
             type="button"
             onClick={() => {
@@ -46389,6 +46532,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       // Same reasoning as the Quote tab's own identical panel — see its comment.
                       bottom: MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX,
                       transform: "translateY(100%)",
+                      visibility: "hidden",
                     }}
                   >
                     {specsFloatingActionButtons}
@@ -46518,6 +46662,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   canvasBottomInsetPx={56}
                   highlightedGroupId={hoveredSpecsSectionGroupId}
                   onHoveredGroupChange={setPreviewHoveredSpecsSectionGroupId}
+                  // Enables the on-sheet "Import from Quote" button for any group whose link was
+                  // pre-configured in the Company Settings template builder — see
+                  // quoteGridForLinkedPull's own comment on SpecsGridEditorProps. The LIVE quote
+                  // grid, not displayedQuoteGrid — a pull should always mean pulling the current
+                  // quote, never whatever historical version happens to be on screen elsewhere.
+                  quoteGridForLinkedPull={quoteGrid ?? undefined}
                 />
               ) : (
                 <div className="flex items-center justify-center py-16 text-[12px]" style={{ color: "var(--text-muted)" }}>
@@ -48355,16 +48505,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   className="fixed inset-x-0 top-[56px] bottom-0 z-[130] overflow-y-auto overscroll-contain bg-white"
                   style={{ transform: "translateY(100%)" }}
                 >
-                  {/* Same bar (height, glass style) as the closed-state trigger bar below — it
-                      visually IS that bar, now sitting as the open panel's own header, so
-                      dragging it down closes back to that same resting spot instead of a
-                      differently-styled in-panel header. Search (left) expands over the
-                      "Visibility" label on focus exactly like the dashboard's own mobile search
-                      (peer + focus-within, see its own comment there); Show All (right) only
-                      fades in once the panel is actually open. */}
+                  {/* Same bar (height, blue brand gradient) as the closed-state trigger bar below —
+                      it visually IS that bar, now sitting as the open panel's own header, so
+                      dragging it down closes back to that same resting spot, with no color change
+                      across the transition. Search (left) expands over the "Visibility" label on
+                      focus exactly like the dashboard's own mobile search (peer + focus-within, see
+                      its own comment there); Show All (right) only fades in once the panel is
+                      actually open. */}
                   <div
                     className="sticky top-0 z-10 flex h-[56px] items-center gap-2 border-b px-3"
-                    style={{ borderColor: projectPalette.border, backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(12px) saturate(220%)", WebkitBackdropFilter: "blur(12px) saturate(220%)" }}
+                    style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
                     onClick={(e) => {
                       // Only closes for a tap on the header's own background — e.target ===
                       // e.currentTarget is true only when nothing else (search box, input, Show
@@ -48399,7 +48549,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         matches siblings that follow the .peer element. */}
                     <div
                       className="pointer-events-none absolute left-1/2 top-1.5 h-1 w-16 -translate-x-1/2 rounded-full transition-opacity duration-200 peer-focus-within:opacity-0"
-                      style={{ backgroundColor: "rgba(0,0,0,0.22)" }}
+                      style={{ backgroundColor: "rgba(255,255,255,0.45)" }}
                     />
                     {/* Absolutely centered on the BAR, not on the leftover space between the
                         search box and Show All — those two are different widths, so a flex-1
@@ -48407,8 +48557,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         now (not its own button): the whole bar closes on tap/drag-down, this no
                         longer needs to be the one specific hit target for that. */}
                     <span
-                      className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[13px] font-bold transition-opacity duration-200 peer-focus-within:opacity-0"
-                      style={{ color: projectPalette.text }}
+                      className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-[18px] font-medium transition-opacity duration-200 peer-focus-within:opacity-0"
+                      style={{ color: "#ffffff" }}
                     >
                       Visibility
                     </span>
@@ -49008,22 +49158,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <pre className="m-0 whitespace-pre font-mono leading-[1.35]">{nestingTooltip.text}</pre>
             </div>
           )}
-          {/* Mobile only: same fixed-bottom-bar treatment as Quote's own mobile action bar —
-              Visibility opens as a full-screen overlay from here instead of being a second top tab
-              that replaced the sheet pager. Tap-only (no drag handle/drag-to-open) — on iPhone
+          {/* Mobile only: same blue brand-gradient treatment as Quote/Specs' own mobile "Actions"
+              bar, rather than this bar's previous plain white — Visibility opens as a full-screen
+              overlay from here instead of being a second top tab that replaced the sheet pager. The
+              open panel's own sticky header below carries the exact same blue so the color never
+              changes across that transition. Tap-only (no drag handle/drag-to-open) — on iPhone
               this bar sits right where the OS's own "swipe up from the bottom edge" leave-the-app
               gesture lives, and a drag-up here kept getting eaten by iOS instead. */}
           {isCompactProjectViewport && !isNestingMobileVisibilityOpen && (
             <div
               data-horizontal-swipe-scroll="true"
               className="fixed inset-x-0 bottom-0 z-[95] h-[56px] border-t"
-              style={{ borderColor: projectPalette.border, backgroundColor: "#FFFFFF" }}
+              style={{ borderColor: "var(--brand-strong)", backgroundImage: "var(--brand-gradient)" }}
             >
               <button
                 type="button"
                 onClick={() => setIsNestingMobileVisibilityOpen(true)}
-                className="flex h-full w-full items-center justify-center text-[13px] font-bold hover:brightness-95"
-                style={{ color: projectPalette.text }}
+                className="flex h-full w-full items-center justify-center text-[18px] font-medium hover:brightness-95"
+                style={{ color: "#ffffff" }}
               >
                 Visibility
               </button>

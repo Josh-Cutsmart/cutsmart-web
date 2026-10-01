@@ -50,13 +50,27 @@ export type SpecsCell = {
   // width/height instead of its text — the underlying `text` is kept untouched so removing the
   // image restores whatever text was there before.
   imageUrl?: string;
-  // Set via the editor's "Mark for Client Confirmation" toolbar toggle — marks this cell as one
-  // the external client-confirmation flow (app/client/hub/[shareId]) should render as a Yes/No
-  // toggle instead of (alongside) its plain text. See salesPayload.specsConfirmationSubmittedAt
-  // (app/(app)/projects/[projectId]/page.tsx) for the sheet-wide lock these per-cell answers
-  // freeze under once the client submits — deliberately NOT a field on SpecsGrid itself, see that
-  // type's own comment for why.
+  // Set via a LIVE PROJECT'S OWN "Mark for Confirmation" floating button (specs-grid-editor.tsx) —
+  // marks this cell as one the external client-confirmation flow (app/client/hub/[shareId]) should
+  // render as a Yes/No toggle instead of (alongside) its plain text THIS round. See
+  // salesPayload.specsConfirmationSubmittedAt (app/(app)/projects/[projectId]/page.tsx) for the
+  // sheet-wide lock these per-cell answers freeze under once the client submits — deliberately NOT
+  // a field on SpecsGrid itself, see that type's own comment for why. Staff can only turn this on
+  // for a cell where confirmableAllowed (below) is already true — see that field's own comment for
+  // why the two are separate.
   confirmable?: boolean;
+  // Set via the COMPANY SETTINGS TEMPLATE BUILDER's own "Mark Confirmable" toolbar button — purely
+  // an ELIGIBILITY flag, not an active question. Marking a cell confirmableAllowed in the template
+  // does NOT, by itself, turn it into a live Yes/No question the moment a project is cloned from
+  // that template (that would mean every new project starts with questions staff never actually
+  // chose to ask this round) — it only makes the cell a candidate staff CAN then activate, per
+  // project, per round, via that project's own "Mark for Confirmation" button (which only shows up
+  // at all for a cell where this is true — see that button's own target-computation comment in
+  // specs-grid-editor.tsx). Carries through template cloning and row duplication like any other
+  // cell trait; unlike `confirmable`/`confirmedYes`/`confirmedAt`, clearAllConfirmableMarks (sending
+  // to a client) never touches this — eligibility is permanent, only THIS ROUND's active questions
+  // reset.
+  confirmableAllowed?: boolean;
   // Absent = unanswered. Freely overwritable by the client on every visit until the sheet is
   // submitted — never written by the internal editor itself, only by the public answer route.
   confirmedYes?: boolean;
@@ -148,6 +162,56 @@ export type SpecsRowGroup = {
   // Specs grid is first cloned from the company's template (or reset back to it), NOT on every
   // later live group toggle in a project.
   rules?: SpecsGroupRule[];
+  // Named sub-regions within this group's own row range — for now the only kind is "editable" (see
+  // SpecsGroupZoneKind), which restricts live editing to ONLY that zone's rows; the rest of the
+  // group locks, even for someone who could otherwise edit it (see isRowWithinGroupZone and
+  // isCellTextEditableHere in specs-grid-editor.tsx). That restriction only ever applies in a live
+  // project's actual Quote/Specifications window — the Company Settings template builder (where
+  // zones are authored/linked in the first place, via the Group Settings modal's own embedded
+  // preview) always keeps the whole group freely editable, zones or not. A group with no zones
+  // behaves exactly as before this field existed — zones are opt-in per group, not a new restriction
+  // on every group. Marked by selecting rows in the preview, then the "Mark Selection as Editable
+  // Zone" button above it. Row range is relative to THIS group's own startRow (0 = the group's own
+  // first row), not the grid's absolute indices, so a zone never needs to move if the group itself is
+  // later moved elsewhere in the sheet.
+  zones?: SpecsGroupZone[];
+};
+
+export type SpecsGroupZoneKind = "editable";
+
+export type SpecsGroupZone = {
+  id: string;
+  kind: SpecsGroupZoneKind;
+  startRow: number;
+  endRow: number;
+  // Quote groups this ZONE (not the whole group it lives in) pulls combined text from — configured
+  // by right-clicking the zone in the Group Settings modal's own preview, not a group-level field
+  // anymore: the import only ever writes into a zone, so the link belongs on the zone itself. See
+  // importLinkedQuoteTextIntoZone for how this is actually used. Strictly one-way: editing the
+  // zone's content never writes anything back to Quote.
+  linkedQuoteGroups?: LinkedQuoteGroupRef[];
+};
+
+export type LinkedQuoteGroupRef = {
+  // Matched by NAME, deliberately not by id: resolveSpecsGridTokens regenerates every group's id on
+  // every template clone (a brand-new project, or an existing project's own "Reset to Template"), so
+  // an id captured in the template would already be stale the moment the very first project was
+  // created from it — there's no stable id a template-level reference could even point at. A group's
+  // NAME survives a clone untouched, and is the same thing an actual person picks it by in the
+  // link-editor UI. A referenced name with no match in the Quote grid currently being imported from
+  // (renamed, deleted, or just not created yet) is silently skipped at import time, the same way a
+  // dangling SpecsGroupRule.ifProductName is already handled above; a duplicate name matches
+  // whichever same-named Quote group comes first.
+  quoteGroupName: string;
+  // "group" pulls every real cell's text from across the Quote group's ENTIRE row range (its
+  // original, and still default, behavior). "zone" pulls text ONLY from that QUOTE group's OWN
+  // "editable" zone, if it has one — lets a Quote group carry fixed/boilerplate rows alongside a
+  // free-text area, and have Specs pull just the free-text part rather than everything. If "zone" is
+  // chosen but that Quote group turns out to have no editable zone of its own, this reference
+  // contributes nothing (silently skipped, same as a name with no match at all) rather than quietly
+  // falling back to the whole group — a misconfiguration should read as "nothing came through", not
+  // as an unexplained wrong result.
+  source: "group" | "zone";
 };
 
 // "IF this Sales Product (by name — see Company Settings > Sales > PRODUCT) is selected/not
@@ -279,6 +343,10 @@ export function genSpecsGroupId(): string {
 
 export function genSpecsGroupRuleId(): string {
   return `rule_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+export function genSpecsZoneId(): string {
+  return `zone_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
 export function createEmptyCell(): SpecsCell {
@@ -558,6 +626,7 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
         : null;
       const sanitizedRuns = validRuns && validRuns.length > 0 ? validRuns : undefined;
       const confirmable = typeof cell.confirmable === "boolean" ? cell.confirmable : undefined;
+      const confirmableAllowed = typeof cell.confirmableAllowed === "boolean" ? cell.confirmableAllowed : undefined;
       const confirmedYes = typeof cell.confirmedYes === "boolean" ? cell.confirmedYes : undefined;
       const confirmedAt = typeof cell.confirmedAt === "string" && cell.confirmedAt ? cell.confirmedAt : undefined;
       if (
@@ -565,6 +634,7 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
         clampedColSpan !== cell.colSpan ||
         sanitizedRuns !== cell.runs ||
         confirmable !== cell.confirmable ||
+        confirmableAllowed !== cell.confirmableAllowed ||
         confirmedYes !== cell.confirmedYes ||
         confirmedAt !== cell.confirmedAt
       ) {
@@ -580,6 +650,7 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
           ...(cell.imageUrl ? { imageUrl: cell.imageUrl } : {}),
           ...(sanitizedRuns ? { runs: sanitizedRuns } : {}),
           ...(typeof confirmable === "boolean" ? { confirmable } : {}),
+          ...(typeof confirmableAllowed === "boolean" ? { confirmableAllowed } : {}),
           ...(typeof confirmedYes === "boolean" ? { confirmedYes } : {}),
           ...(confirmedAt ? { confirmedAt } : {}),
         });
@@ -637,6 +708,42 @@ export function normalizeSpecsGrid(raw: unknown): SpecsGrid | null {
                 (rule.thenState === "on" || rule.thenState === "off")
               );
             }),
+          }
+        : {}),
+      ...(Array.isArray(group.zones)
+        ? {
+            zones: group.zones
+              .filter((z): z is Record<string, unknown> => {
+                if (!z || typeof z !== "object") return false;
+                const zone = z as Record<string, unknown>;
+                return (
+                  typeof zone.id === "string" &&
+                  zone.kind === "editable" &&
+                  typeof zone.startRow === "number" && Number.isFinite(zone.startRow) &&
+                  typeof zone.endRow === "number" && Number.isFinite(zone.endRow)
+                );
+              })
+              .map(
+                (zone): SpecsGroupZone => ({
+                  id: zone.id as string,
+                  kind: "editable",
+                  startRow: zone.startRow as number,
+                  endRow: zone.endRow as number,
+                  ...(Array.isArray(zone.linkedQuoteGroups)
+                    ? {
+                        linkedQuoteGroups: zone.linkedQuoteGroups.filter((r): r is LinkedQuoteGroupRef => {
+                          if (!r || typeof r !== "object") return false;
+                          const ref = r as Record<string, unknown>;
+                          return (
+                            typeof ref.quoteGroupName === "string" &&
+                            ref.quoteGroupName.length > 0 &&
+                            (ref.source === "group" || ref.source === "zone")
+                          );
+                        }),
+                      }
+                    : {}),
+                }),
+              ),
           }
         : {}),
     });
@@ -814,6 +921,20 @@ export function resolveSpecsGridTokens(template: SpecsGrid, replacements: Record
       if (cell.runs) {
         cell.runs = cell.runs.map((run) => ({ ...run, text: interpolateQuoteTemplateText(run.text, replacements) }));
       }
+      // A brand-new project should never start with a cell already marked `confirmable` (an ACTIVE
+      // question this round) — that's inherently a per-project, staff-chosen, per-round state, never
+      // something a template should hand down. `confirmableAllowed` (the template's own eligibility
+      // flag — see its own comment on SpecsCell) is deliberately left untouched; it's the one
+      // confirmation-related trait that SHOULD carry over. Defensive even though the template
+      // builder's own "Mark Confirmable" button only ever sets confirmableAllowed now — guards
+      // against a template cell that somehow still has a stale confirmable/confirmedYes/confirmedAt
+      // sitting on it (e.g. from before that button was split into two fields) silently carrying an
+      // already-"Pending" or already-answered cell into every future project cloned from it.
+      if (cell.confirmable || cell.confirmedYes !== undefined || cell.confirmedAt !== undefined) {
+        delete cell.confirmable;
+        delete cell.confirmedYes;
+        delete cell.confirmedAt;
+      }
     }
   }
   for (const group of cloned.groups ?? []) {
@@ -929,6 +1050,9 @@ export type SpecsRowGroupEditableFields = {
   editableByRoleIds: string[]; // [] = unrestricted
   category: string; // "" = uncategorized
   rules: SpecsGroupRule[]; // [] = no dependency rules
+  // Quote links now live PER-ZONE (SpecsGroupZone.linkedQuoteGroups), not here — each zone object
+  // inside this array already carries its own, so no separate group-level field is needed.
+  zones: SpecsGroupZone[]; // [] = no zones — every cell in the group stays freely editable
 };
 
 export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number, fields: SpecsRowGroupEditableFields): SpecsGrid {
@@ -949,6 +1073,7 @@ export function createRowGroup(grid: SpecsGrid, startRow: number, endRow: number
     ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
     ...(fields.category ? { category: fields.category } : {}),
     ...(fields.rules.length > 0 ? { rules: fields.rules } : {}),
+    ...(fields.zones.length > 0 ? { zones: fields.zones } : {}),
   };
   return { ...grid, groups: [...grid.groups, group] };
 }
@@ -989,6 +1114,7 @@ export function renameRowGroup(grid: SpecsGrid, groupId: string, fields: SpecsRo
         ...(fields.editableByRoleIds.length > 0 ? { editableByRoleIds: fields.editableByRoleIds } : {}),
         ...(fields.category ? { category: fields.category } : {}),
         ...(fields.rules.length > 0 ? { rules: fields.rules } : {}),
+        ...(fields.zones.length > 0 ? { zones: fields.zones } : {}),
       };
     }),
   };
@@ -1038,6 +1164,16 @@ export function getExpandedRowGroups(grid: SpecsGrid): SpecsRowGroup[] {
 
 export function findRowGroupForRow(groups: SpecsRowGroup[], row: number): SpecsRowGroup | undefined {
   return groups.find((g) => row >= g.startRow && row <= g.endRow);
+}
+
+// True if `absoluteRow` (a real row index into the grid, same coordinate space as group.startRow
+// itself) falls inside one of this group's own zones — each zone's own startRow/endRow is relative
+// to the group's startRow (0 = the group's own first row), not the grid's absolute indices, so this
+// is the one place that translation happens; nothing else needs to know about it.
+export function isRowWithinGroupZone(group: SpecsRowGroup, absoluteRow: number): boolean {
+  return (group.zones ?? []).some(
+    (z) => absoluteRow >= group.startRow + z.startRow && absoluteRow <= group.startRow + z.endRow,
+  );
 }
 
 // Keeps a group's range aligned with a row insert or removal, the same way a merged cell's own span
@@ -1090,7 +1226,15 @@ export function insertRow(grid: SpecsGrid, atIndex: number): SpecsGrid {
 // data happened to be typed into the row it came from. Reuses insertRow's own span-crossing-the-
 // insertion-point handling (a merge reaching down from an earlier row correctly grows and covers the
 // new row too) rather than duplicating that logic here — this only decides what goes into the new
-// row's OWN previously-empty cells once insertRow has placed it.
+// row's OWN previously-empty cells once insertRow has placed it. The one exception to "never the
+// source's own data": `confirmableAllowed` and `confirmable` DO carry over — a row whose cell is
+// already eligible (or already actively set up as a client Yes/No question this round) is almost
+// always being duplicated specifically to add ANOTHER line item of the exact same kind (e.g. a
+// repeatable "include this option? Yes/No" row), and without this the new row would silently lose
+// its own "Mark for Confirmation" button (confirmableAllowed) or stop being an active question
+// (confirmable) entirely, undoing the whole point of duplicating it. `confirmedYes`/`confirmedAt`
+// never carry over regardless — those are a specific CLIENT'S answer to the source row, not
+// something a brand-new, not-yet-asked row could possibly already have.
 export function duplicateRowAsBlankTemplate(grid: SpecsGrid, index: number): SpecsGrid {
   const source = grid.rows[index];
   if (!source) return grid;
@@ -1111,7 +1255,14 @@ export function duplicateRowAsBlankTemplate(grid: SpecsGrid, index: number): Spe
       // produce a plain, unmerged template of its style, not try to continue that merge one row
       // further down into content that has nothing to do with it. Text and any image are dropped
       // entirely — only the LOOK of the row (style) is a "template" here, not its data.
-      return { text: "", style: sourceCell.style, rowSpan: 1, colSpan };
+      return {
+        text: "",
+        style: sourceCell.style,
+        rowSpan: 1,
+        colSpan,
+        ...(sourceCell.confirmableAllowed ? { confirmableAllowed: true as const } : {}),
+        ...(sourceCell.confirmable ? { confirmable: true as const } : {}),
+      };
     });
     return { ...r, heightPx: source.heightPx, cells };
   });
@@ -1231,6 +1382,164 @@ export function moveRowGroup(grid: SpecsGrid, groupId: string, targetIndex: numb
   // special-casing needed here.
   const groups = grid.groups.map((g) => ({ ...g, startRow: mapIndex(g.startRow), endRow: mapIndex(g.endRow) }));
   return { ...grid, rows, groups };
+}
+
+// Trims leading whitespace off the first run's text and trailing whitespace off the last run's text
+// (dropping any run left fully empty at either end) WITHOUT touching bold/underline on any run or
+// any internal whitespace — the per-run equivalent of plain string .trim(), used so importing a
+// Quote cell's formatted text doesn't also drag in the stray surrounding newline/space a staff
+// member's own line breaks between cells would otherwise leave behind.
+function trimCellRuns(runs: SpecsTextRun[]): SpecsTextRun[] {
+  const trimmed = runs.map((r) => ({ ...r }));
+  while (trimmed.length > 0 && !trimmed[0].text.trim()) trimmed.shift();
+  while (trimmed.length > 0 && !trimmed[trimmed.length - 1].text.trim()) trimmed.pop();
+  if (trimmed.length > 0) {
+    trimmed[0].text = trimmed[0].text.replace(/^\s+/, "");
+    trimmed[trimmed.length - 1].text = trimmed[trimmed.length - 1].text.replace(/\s+$/, "");
+  }
+  return trimmed;
+}
+
+// Concatenates run blocks (e.g. one per source cell, or one per source group) with a plain,
+// unformatted separator run between each pair — used to join cell-level and group-level text
+// together the same way the plain-text version of this used to join with "\n"/"\n\n" strings, just
+// keeping each block's own bold/underline runs intact instead of flattening to plain text first.
+function joinRunBlocks(blocks: SpecsTextRun[][], separator: string): SpecsTextRun[] {
+  const joined: SpecsTextRun[] = [];
+  blocks.forEach((block, i) => {
+    if (i > 0) joined.push({ text: separator });
+    joined.push(...block);
+  });
+  return joined;
+}
+
+// Every real (non-null) cell's own text RUNS (preserving bold/underline) within an ABSOLUTE row
+// range of `grid`, in reading order — shared by importLinkedQuoteTextIntoZone below for both a
+// LinkedQuoteGroupRef's "group" source (the ref's own full startRow..endRow) and its "zone" source
+// (that same quote group's own editable zone's absolute range, computed by the caller). A null cell
+// is covered by an earlier cell's own merge, not real content, and is skipped the same way the rest
+// of this file already treats one. A cell that's blank once trimmed (no real text, formatted or not)
+// is skipped too, same as the plain-text version this replaced.
+function collectCellRunsInRowRange(grid: SpecsGrid, startRow: number, endRow: number): SpecsTextRun[][] {
+  const blocks: SpecsTextRun[][] = [];
+  for (let r = startRow; r <= endRow; r += 1) {
+    for (const cell of grid.rows[r]?.cells ?? []) {
+      if (!cell) continue;
+      const trimmed = trimCellRuns(getCellRuns(cell));
+      if (trimmed.some((run) => run.text)) blocks.push(trimmed);
+    }
+  }
+  return blocks;
+}
+
+// Fills a SPECS group's own "editable" zone (see SpecsGroupZone) with the combined text of that
+// zone's OWN `linkedQuoteGroups` (see LinkedQuoteGroupRef) — deliberately NOT the row-structure-
+// replacing splice an earlier version of this did. That version transplanted Quote's own row/cell
+// structure wholesale into Specs, destroying any Specs-specific formatting or hand-added content
+// every time. This version instead leaves the Specs group's own layout, borders, and merges exactly
+// as authored, and only ever overwrites the TEXT of the zone's one real (anchor) cell — "leave the
+// cell how it is if merged and just combine the imported text into 1 cell," per the user's own
+// description. The imported text's own RUN-level formatting (bold/underline) carries over from the
+// Quote cells it came from — only the anchor cell's whole-cell style (font size/color, fill,
+// borders, alignment) stays exactly as authored in Specs, untouched by the import. A manual,
+// one-shot REPLACE of that cell's text (not a merge): any hand-edit to the zone since the last
+// import is discarded, same as any other undoable edit in this editor (Ctrl+Z recovers it, there's
+// no separate confirm step here).
+//
+// Finds the one real (non-null) anchor cell within a SPECS group's own "editable" zone — shared by
+// importLinkedQuoteTextIntoZone below (to know where to write imported text) and
+// getEditableZoneText below it (to read the zone's CURRENT content, e.g. to detect a manual edit
+// since the last import, before silently overwriting it again).
+function findEditableZoneAnchor(grid: SpecsGrid, groupId: string): { row: number; col: number; zone: SpecsGroupZone } | null {
+  const target = getExpandedRowGroups(grid).find((g) => g.id === groupId);
+  const zone = target?.zones?.find((z) => z.kind === "editable");
+  if (!target || !zone) return null;
+  const absStart = target.startRow + zone.startRow;
+  const absEnd = target.startRow + zone.endRow;
+  for (let r = absStart; r <= absEnd; r += 1) {
+    const row = grid.rows[r];
+    if (!row) continue;
+    for (let c = 0; c < row.cells.length; c += 1) {
+      if (row.cells[c]) return { row: r, col: c, zone };
+    }
+  }
+  return null;
+}
+
+// Current plain text of a Specs group's own editable zone anchor cell — "" if the group, its
+// editable zone, or a real anchor cell within it don't exist. The caller (specs-grid-editor.tsx)
+// compares this against what it last wrote via importLinkedQuoteTextIntoZone to decide whether the
+// zone has been hand-edited since, and if so, confirm before the next import silently replaces it.
+export function getEditableZoneText(grid: SpecsGrid, groupId: string): string {
+  const anchor = findEditableZoneAnchor(grid, groupId);
+  if (!anchor) return "";
+  const cell = grid.rows[anchor.row]?.cells[anchor.col];
+  return cell ? runsToPlainText(getCellRuns(cell)).trim() : "";
+}
+
+// No group, no `editable` zone, or no linked refs that resolve to anything → a safe no-op (the
+// zone's content is left completely untouched, never emptied). Returns how many linked refs actually
+// resolved to real content and how many didn't (name renamed/deleted, or a "zone" source pointing at
+// a Quote group with no editable zone of its own), purely so the caller's UI can report something
+// like "Imported 2 — 1 group no longer exists and was skipped." `importedText` is the plain text
+// actually written (`""` on a no-op), likewise for the caller — see getEditableZoneText's own
+// comment above.
+export function importLinkedQuoteTextIntoZone(
+  specsGrid: SpecsGrid,
+  quoteGrid: SpecsGrid,
+  specsGroupId: string,
+): { grid: SpecsGrid; pulledCount: number; skippedCount: number; importedText: string } {
+  const target = getExpandedRowGroups(specsGrid).find((g) => g.id === specsGroupId);
+  const zone = target?.zones?.find((z) => z.kind === "editable");
+  if (!target || !zone) return { grid: specsGrid, pulledCount: 0, skippedCount: 0, importedText: "" };
+  const linkedRefs = zone.linkedQuoteGroups ?? [];
+  // First match wins on a duplicate name — same tolerant-but-simple convention as
+  // SpecsGroupRule.ifProductName matching elsewhere in this file.
+  const quoteGroupsByName = new Map<string, SpecsRowGroup>();
+  for (const g of getExpandedRowGroups(quoteGrid)) {
+    if (!quoteGroupsByName.has(g.name)) quoteGroupsByName.set(g.name, g);
+  }
+  const groupRunBlocks: SpecsTextRun[][] = [];
+  let pulledCount = 0;
+  let skippedCount = 0;
+  for (const ref of linkedRefs) {
+    const quoteGroup = quoteGroupsByName.get(ref.quoteGroupName);
+    if (!quoteGroup) {
+      skippedCount += 1;
+      continue;
+    }
+    let cellRunBlocks: SpecsTextRun[][];
+    if (ref.source === "zone") {
+      const quoteZone = quoteGroup.zones?.find((z) => z.kind === "editable");
+      if (!quoteZone) {
+        // Explicitly skipped, not silently falling back to the whole group — see this function's
+        // own comment and LinkedQuoteGroupRef.source's own comment for why.
+        skippedCount += 1;
+        continue;
+      }
+      cellRunBlocks = collectCellRunsInRowRange(quoteGrid, quoteGroup.startRow + quoteZone.startRow, quoteGroup.startRow + quoteZone.endRow);
+    } else {
+      cellRunBlocks = collectCellRunsInRowRange(quoteGrid, quoteGroup.startRow, quoteGroup.endRow);
+    }
+    pulledCount += 1;
+    if (cellRunBlocks.length > 0) groupRunBlocks.push(joinRunBlocks(cellRunBlocks, "\n"));
+  }
+  if (pulledCount === 0) return { grid: specsGrid, pulledCount, skippedCount, importedText: "" };
+  const combinedRuns = normalizeTextRuns(joinRunBlocks(groupRunBlocks, "\n\n"));
+  const importedText = runsToPlainText(combinedRuns);
+  const anchor = findEditableZoneAnchor(specsGrid, specsGroupId);
+  // No real cell found in the zone's own range (shouldn't normally happen — a zone is meant to be
+  // marked over a cell that already exists) — nothing safe to write the text into.
+  if (!anchor) return { grid: specsGrid, pulledCount, skippedCount, importedText: "" };
+  const rows = specsGrid.rows.map((row, r) => {
+    if (r !== anchor.row) return row;
+    const cells = row.cells.map((cell, c) => {
+      if (c !== anchor.col || !cell) return cell;
+      return { ...cell, text: importedText, runs: combinedRuns };
+    });
+    return { ...row, cells };
+  });
+  return { grid: { ...specsGrid, rows }, pulledCount, skippedCount, importedText };
 }
 
 export function insertColumn(grid: SpecsGrid, atIndex: number): SpecsGrid {
