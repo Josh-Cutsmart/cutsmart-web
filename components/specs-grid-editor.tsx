@@ -2240,13 +2240,25 @@ export default function SpecsGridEditor({
   const [viewportInnerHeightPx, setViewportInnerHeightPx] = useState(typeof window === "undefined" ? 0 : window.innerHeight);
   useEffect(() => {
     if (!fitToViewportOnMobile || typeof window === "undefined") return;
+    setViewportInnerWidthPx(window.innerWidth);
+    setViewportInnerHeightPx(window.innerHeight);
+    // iOS Safari fires a burst of `resize` events while its address bar collapses/expands during
+    // scroll — reacting to every one thrashes sheetFitMinHeightPx's container height, which can
+    // itself retrigger the same toolbar animation (visible as the sheet preview flashing up and
+    // down). Debounce to the quiet point once the burst settles instead of chasing the animation.
+    let debounceId: ReturnType<typeof setTimeout> | null = null;
     const onResize = () => {
-      setViewportInnerWidthPx(window.innerWidth);
-      setViewportInnerHeightPx(window.innerHeight);
+      if (debounceId) clearTimeout(debounceId);
+      debounceId = setTimeout(() => {
+        setViewportInnerWidthPx(window.innerWidth);
+        setViewportInnerHeightPx(window.innerHeight);
+      }, 200);
     };
-    onResize();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (debounceId) clearTimeout(debounceId);
+    };
   }, [fitToViewportOnMobile]);
   // Many sheets use a custom @font-face (e.g. a signature font) whose font-display: swap means a
   // fallback font renders immediately while the real one loads in the background — the same risk
@@ -5260,7 +5272,17 @@ function SpecsCellTextArea({
     if (ref.current && ref.current.innerHTML !== html) {
       ref.current.innerHTML = html;
     }
-    if (ref.current) onNaturalHeightChange?.(ref.current.scrollHeight);
+    // Reading scrollHeight synchronously, right after setting innerHTML, relies on the browser
+    // having already finished laying out the new content — reliable in Chromium (confirmed live
+    // against this exact cell), but Safari on at least one real device measured this same cell
+    // short, leaving its row permanently under-grown (remeasureSignal only changes again for a
+    // genuinely new cause, so a bad first reading never gets a second chance to correct itself).
+    // One rAF defers the read to after the browser's next paint, by which point layout is
+    // guaranteed settled everywhere.
+    const rafId = requestAnimationFrame(() => {
+      if (ref.current) onNaturalHeightChange?.(ref.current.scrollHeight);
+    });
+    return () => cancelAnimationFrame(rafId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runs, isFocused, remeasureSignal]);
 
