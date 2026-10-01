@@ -1346,9 +1346,19 @@ export default function SpecsGridEditor({
   // sustained hold opens the menu. Tracked as a ref (not state) since it's pure interaction
   // bookkeeping for one in-progress touch gesture, not anything that should ever trigger a
   // re-render on its own.
-  const mobileConfirmPressRef = useRef<{ row: number; col: number; x: number; y: number; timer: ReturnType<typeof setTimeout>; fired: boolean } | null>(
-    null,
-  );
+  const mobileConfirmPressRef = useRef<{
+    row: number;
+    col: number;
+    x: number;
+    y: number;
+    timer: ReturnType<typeof setTimeout>;
+    fired: boolean;
+    // The cell's own real contentEditable div (if it has one) — see onTouchStart's own comment for
+    // why its native magnifier/callout gets suppressed directly on THIS element, separately from
+    // the ancestor <td>'s own user-select/touch-callout suppression. Restored (removed) in
+    // onTouchEnd/onTouchCancel regardless of outcome.
+    editableEl: HTMLElement | null;
+  } | null>(null);
   const MOBILE_CONFIRM_PRESS_MS = 500;
   const MOBILE_CONFIRM_MOVE_CANCEL_PX = 10;
   // Position + the already-resolved action (label/title/onClick from computeMarkForConfirmationTarget)
@@ -3114,6 +3124,23 @@ export default function SpecsGridEditor({
                               const touch = e.touches[0];
                               if (!touch) return;
                               const cellEl = e.currentTarget;
+                              // iOS's native magnifier loupe (shown for precise caret placement
+                              // during a hold) triggers directly off the contentEditable element
+                              // itself, independent of the ANCESTOR <td>'s own WebkitUserSelect/
+                              // WebkitTouchCallout suppression (its own style above) — that covers
+                              // TEXT SELECTION and the copy/look-up CALLOUT MENU, but caret-placement
+                              // magnification is tied to the editable element's own identity, not
+                              // inherited selection behavior, so without this too the magnifier (and
+                              // the keyboard/text-cursor UI underneath it) visually swallowed the
+                              // whole hold, making the dropdown underneath it read as "nothing
+                              // happens." Suppressed directly on the real div for the duration of
+                              // THIS press only (restored in onTouchEnd/onTouchCancel below), so a
+                              // plain short tap's own normal typing/caret placement is unaffected.
+                              const editableEl = cellEl.querySelector<HTMLElement>('[contenteditable="true"]');
+                              if (editableEl) {
+                                editableEl.style.setProperty("-webkit-user-select", "none");
+                                editableEl.style.setProperty("-webkit-touch-callout", "none");
+                              }
                               const timer = setTimeout(() => {
                                 const pending = mobileConfirmPressRef.current;
                                 if (!pending) return;
@@ -3153,7 +3180,7 @@ export default function SpecsGridEditor({
                                   setMobileConfirmMenu({ x: touch.clientX, y: touch.clientY, label: target.label, title: target.title, onConfirm: target.onClick });
                                 }
                               }, MOBILE_CONFIRM_PRESS_MS);
-                              mobileConfirmPressRef.current = { row: rowIdx, col: colIdx, x: touch.clientX, y: touch.clientY, timer, fired: false };
+                              mobileConfirmPressRef.current = { row: rowIdx, col: colIdx, x: touch.clientX, y: touch.clientY, timer, fired: false, editableEl };
                             },
                             // Moving far enough reads as the start of a scroll, not a hold — cancel
                             // outright rather than guessing; see mobileConfirmPressRef's own comment
@@ -3173,6 +3200,11 @@ export default function SpecsGridEditor({
                               if (!pending) return;
                               clearTimeout(pending.timer);
                               mobileConfirmPressRef.current = null;
+                              // Restores the magnifier/callout suppression set in onTouchStart —
+                              // this one press is over either way, so normal typing/caret placement
+                              // on the NEXT tap needs it gone again.
+                              pending.editableEl?.style.removeProperty("-webkit-user-select");
+                              pending.editableEl?.style.removeProperty("-webkit-touch-callout");
                               if (!pending.fired) {
                                 // Finger lifted before the long-press threshold — a short tap, not a
                                 // hold. Replay the plain single-cell select the suppressed mousedown
@@ -3188,7 +3220,11 @@ export default function SpecsGridEditor({
                             },
                             onTouchCancel: () => {
                               const pending = mobileConfirmPressRef.current;
-                              if (pending) clearTimeout(pending.timer);
+                              if (pending) {
+                                clearTimeout(pending.timer);
+                                pending.editableEl?.style.removeProperty("-webkit-user-select");
+                                pending.editableEl?.style.removeProperty("-webkit-touch-callout");
+                              }
                               mobileConfirmPressRef.current = null;
                             },
                           }
