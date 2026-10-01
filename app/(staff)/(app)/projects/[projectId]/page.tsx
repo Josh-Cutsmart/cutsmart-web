@@ -20,7 +20,12 @@ import { QuoteDocumentEditor } from "@/components/quote-document-editor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppTabs } from "@/lib/app-tabs-context";
 import { useAuth } from "@/lib/auth-context";
-import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
+import {
+  captureGlassModalOrigin,
+  useGlassModalPopOrigin,
+  DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS,
+  type GlassModalOrigin,
+} from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
 import { useMobileBottomSheet } from "@/lib/use-mobile-bottom-sheet";
 import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
@@ -6935,11 +6940,17 @@ export default function ProjectDetailsPage() {
     try {
       const ok = await deleteGridVersion(project, "quoteGridVersions", versionId);
       if (!ok) return;
-      setQuoteGridVersions((prev) => prev.filter((v) => v.id !== versionId));
       // Deleting the version currently open in the editor falls back to the live grid — there's
       // nothing left to display for it.
       if (activeQuoteGridVersionId === versionId) returnToLiveQuoteGrid();
       setQuoteVersionPendingDeleteId("");
+      // Actually dropping the row from quoteGridVersions is deferred past the confirm modal's own
+      // shrink-back-into-this-row close animation (see DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS's
+      // own comment) — removing it in the same tick as the line above pulls the row (the close
+      // animation's own landing target) out from under the still-playing shrink.
+      window.setTimeout(() => {
+        setQuoteGridVersions((prev) => prev.filter((v) => v.id !== versionId));
+      }, DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS);
     } finally {
       setIsDeletingQuoteVersion(false);
     }
@@ -27794,9 +27805,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     try {
       const ok = await deleteGridVersion(project, "specificationsVersions", versionId);
       if (!ok) return;
-      setSpecsSheetVersions((prev) => prev.filter((v) => v.id !== versionId));
       if (activeSpecsSheetVersionId === versionId) returnToLiveSpecsSheet();
       setSpecsVersionPendingDeleteId("");
+      // See deleteQuoteVersionById's identical comment — defers actually dropping the row until
+      // the confirm modal's own shrink-back-into-it close animation has had time to use it as its
+      // landing target.
+      window.setTimeout(() => {
+        setSpecsSheetVersions((prev) => prev.filter((v) => v.id !== versionId));
+      }, DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS);
     } finally {
       setIsDeletingSpecsVersion(false);
     }

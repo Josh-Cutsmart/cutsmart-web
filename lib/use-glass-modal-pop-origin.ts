@@ -31,6 +31,21 @@ function findGlassModalBackdrop(panel: HTMLElement): HTMLElement | null {
 // below) to actually be visible for a beat before the panel unmounts, instead of the two happening
 // in the same instant (which would make the z-index drop invisible — nothing to see it happen to).
 const ORIGIN_ARRIVAL_HOLD_MS = 140;
+// useGlassModalPopOrigin's own default `duration` (see its own `options?.duration ?? ...` below) —
+// named here too so DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS below can't silently drift out of sync
+// with it.
+const DEFAULT_DURATION_MS = 320;
+// Total time a useGlassModalPopOrigin instance called with its DEFAULT duration (no
+// options.duration override) and an originElRef stays mounted after `isOpen` goes false. A caller
+// whose origin is a disappearing piece of content (e.g. a list row being deleted, not just hidden)
+// should keep that row around in state for at least this long after starting the close, rather
+// than removing it in the very same tick — removing it immediately pulls the close animation's own
+// landing target out from under it, so the panel still shrinks toward the right on-screen spot but
+// there's nothing left there for it to visually merge into (and by the time it arrives, any rows
+// below may have already reflowed up to fill the gap) — reading as "doesn't animate back into the
+// bubble" even though the mechanism itself ran. Only valid for a call site using the default
+// duration/easing; one passing a custom `options.duration` needs its own matching value instead.
+export const DEFAULT_GLASS_MODAL_ORIGIN_CLOSE_HOLD_MS = DEFAULT_DURATION_MS + ORIGIN_ARRIVAL_HOLD_MS;
 
 // Optional, opt-in effects on/around the origin element itself (the button/tab the panel is
 // shrinking back into), once the panel has fully arrived there — nothing calls this unless a
@@ -155,7 +170,7 @@ export function useGlassModalPopOrigin(
   // it was before this param existed.
   originElRef?: RefObject<HTMLElement | null>,
 ): boolean {
-  const duration = options?.duration ?? 320;
+  const duration = options?.duration ?? DEFAULT_DURATION_MS;
   const easing = options?.easing ?? "cubic-bezier(0.34, 1.56, 0.64, 1)";
   // Same shape/pace as the opening curve (matching x-control-points) but with
   // the overshoot removed (y1 taken back down to 1) — reads as the same speed
@@ -306,7 +321,7 @@ export function useGlassModalShrinkOnClose(
   // `origin` from in its onClose handler, not a value captured once.
   originElRef?: RefObject<HTMLElement | null>,
 ): boolean {
-  const duration = options?.duration ?? 320;
+  const duration = options?.duration ?? DEFAULT_DURATION_MS;
   const closingEasing = options?.closingEasing ?? "cubic-bezier(0.34, 1, 0.64, 1)";
   const [shouldRender, setShouldRender] = useState(isOpen);
 
