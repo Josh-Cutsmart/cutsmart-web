@@ -1672,28 +1672,29 @@ function stableBubbleAnimationDelayMs(id: string): number {
 // duration, AND starting distance per button (hashing id, `${id}-duration`, and `${id}-distance`
 // separately, so none of the three move in lockstep with each other) rather than just the delay —
 // different buttons bouncing with the exact same motion, just offset in time, still reads as one
-// mechanical wave; varying the duration (380-519ms) and how far below rest each one starts (4-6px)
+// mechanical wave; varying the duration (380-519ms) and how far below rest each one starts (6-9px)
 // is what makes each button's bounce feel like its own, distinct little motion rather than a
 // uniform pulse.
 //
-// 4-6px, not bigger — this sheet's buttons sit only `gap-2` (8px) apart, and each one's own
-// starting offset is held at that full distance (via the keyframe's 0% + this animation's own
-// fill-mode "both") for its whole random delay before it even starts rising, completely
-// independently of its neighbors' own delay/duration. Two buttons can therefore be at ANY two
-// points in their own cycles at once — worst case, the button ABOVE is still sitting at its full
-// starting distance (its own closest approach to the one below) at the exact instant the button
-// BELOW is at its own peak overshoot (cubic-bezier(0.34, 1.56, 0.64, 1) overshoots a translateY
-// tween by about 10% of its own starting distance — see glass-bubble-rise-in's own comment), i.e.
-// moving UP toward the one above it. Capping the starting distance at 6px keeps that worst-case
-// combined encroachment (6 + 10% of 6 ≈ 6.6px) safely under the 8px gap no matter how the two
-// buttons' independent timings happen to line up, so two buttons can never actually touch, let
-// alone overlap. Returns a full style object (not just the animation shorthand) since the distance
-// travels as a CSS custom property the keyframe itself reads, rather than needing a separate
-// keyframe per possible distance.
+// 6-9px, not bigger — this sheet's buttons sit `gap-3` (12px) apart (bumped up from the original
+// gap-2/8px specifically to give this bigger distance room — see that className's own comment),
+// and each one's own starting offset is held at that full distance (via the keyframe's 0% + this
+// animation's own fill-mode "both") for its whole random delay before it even starts rising,
+// completely independently of its neighbors' own delay/duration. Two buttons can therefore be at
+// ANY two points in their own cycles at once — worst case, the button ABOVE is still sitting at its
+// full starting distance (its own closest approach to the one below) at the exact instant the
+// button BELOW is at its own peak overshoot (cubic-bezier(0.34, 1.56, 0.64, 1) overshoots a
+// translateY tween by about 10% of its own starting distance — see glass-bubble-rise-in's own
+// comment), i.e. moving UP toward the one above it. Capping the starting distance at 9px keeps that
+// worst-case combined encroachment (9 + 10% of 9 ≈ 9.9px) safely under the 12px gap no matter how
+// the two buttons' independent timings happen to line up, so two buttons can never actually touch,
+// let alone overlap. Returns a full style object (not just the animation shorthand) since the
+// distance travels as a CSS custom property the keyframe itself reads, rather than needing a
+// separate keyframe per possible distance.
 function mobileActionsBubbleStyle(id: string): React.CSSProperties {
   const delay = stableBubbleAnimationDelayMs(id);
   const duration = 380 + (stableBubbleAnimationDelayMs(`${id}-duration`) % 140);
-  const distance = 4 + (stableBubbleAnimationDelayMs(`${id}-distance`) % 3);
+  const distance = 6 + (stableBubbleAnimationDelayMs(`${id}-distance`) % 4);
   return {
     animation: `glass-bubble-rise-in ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`,
     ["--bubble-bounce-distance" as string]: `${distance}px`,
@@ -44977,11 +44978,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       DOES need is to opt back into auto at all, overriding the wrapper's none. */}
                   {/* No background/border/shadow of its own — just a plain positioning box for the
                       buttons, which float directly on the blurred backdrop behind them rather than
-                      sitting inside a separate white card on top of it. */}
+                      sitting inside a separate white card on top of it. gap-3 (12px), not the
+                      smaller gap-2 this used to be — bumped up specifically to give
+                      mobileActionsBubbleStyle's own bigger entrance-bounce distance (6-9px, up from
+                      4-6px) enough room that two independently-timed neighbors still can't visually
+                      touch at their respective worst-case moments — see that function's own comment
+                      for the exact math. */}
                   <div
                     ref={quoteMobileActionsSheet.panelRef}
                     {...quoteMobileActionsSheet.dragHandlers}
-                    className="pointer-events-auto absolute inset-x-3 flex flex-col gap-2 p-3"
+                    className="pointer-events-auto absolute inset-x-3 flex flex-col gap-3 p-3"
                     style={{
                       // bottom: an inline style here (not a bottom-* class), specifically so it's the
                       // SAME MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX constant the hook call above was
@@ -46544,11 +46550,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     className="absolute inset-0"
                     style={{ opacity: 0, pointerEvents: "none", backgroundColor: "rgba(15, 23, 42, 0.14)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)" }}
                   />
-                  {/* No background/border/shadow — see the Quote tab's own identical panel. */}
+                  {/* No background/border/shadow — see the Quote tab's own identical panel, including
+                      why this is gap-3 now, not gap-2. */}
                   <div
                     ref={specsMobileActionsSheet.panelRef}
                     {...specsMobileActionsSheet.dragHandlers}
-                    className="pointer-events-auto absolute inset-x-3 flex flex-col gap-2 p-3"
+                    className="pointer-events-auto absolute inset-x-3 flex flex-col gap-3 p-3"
                     style={{
                       // Same reasoning as the Quote tab's own identical panel — see its comment.
                       bottom: MOBILE_ACTIONS_SHEET_CLOSED_OFFSET_PX,

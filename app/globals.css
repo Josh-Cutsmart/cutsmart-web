@@ -622,13 +622,13 @@ body[data-theme="dark"].cs-app .notes-rich li {
  * floating-bar-slot-pop already use this exact curve) is what produces the "overshoot and land back"
  * on its own, in one continuous fluid motion, without a second, independently-eased overshoot
  * stacked on top of it. --bubble-bounce-distance (how far below rest each button starts, see
- * mobileActionsBubbleStyle for both its value — capped well under the sheet's own 8px gap-2 between
- * buttons so two independently timed neighbors can never actually touch — and the full worst-case
- * math behind that cap) is a CSS custom property set per-button via inline style rather than needing
- * a separate keyframe per distance. */
+ * mobileActionsBubbleStyle for both its value — capped well under the sheet's own 12px gap-3
+ * between buttons so two independently timed neighbors can never actually touch — and the full
+ * worst-case math behind that cap) is a CSS custom property set per-button via inline style rather
+ * than needing a separate keyframe per distance. */
 @keyframes glass-bubble-rise-in {
   0% {
-    transform: translateY(var(--bubble-bounce-distance, 5px));
+    transform: translateY(var(--bubble-bounce-distance, 8px));
   }
   100% {
     transform: translateY(0);

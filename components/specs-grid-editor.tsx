@@ -1263,6 +1263,16 @@ export default function SpecsGridEditor({
     // that call, not the cell just pressed. Passing it straight through sidesteps that entirely
     // rather than relying on timing.
     fallbackCell?: { row: number; col: number },
+    // Mobile's long-press only, same reasoning as fallbackCell but for the OTHER half of the same
+    // staleness problem: if the pressed cell DOESN'T already sit inside a bigger pre-existing
+    // selection, the caller also calls setSelection(...) to replace whatever was selected before —
+    // but `selection`/`ctrlMarkedCells` below would still read that OLD, about-to-be-replaced value
+    // in this same synchronous tick, silently acting on whatever used to be highlighted instead of
+    // the cell actually just pressed. True tells this to skip reading selection/ctrlMarkedCells
+    // entirely and use ONLY fallbackCell — safe exactly when the caller already knows (from its own,
+    // up-to-the-moment check) that fallbackCell IS the whole, correct target, not just a backstop
+    // for "nothing selected at all".
+    forceFallbackCellOnly?: boolean,
   ): {
     allTargets: { row: number; col: number }[];
     isMultiple: boolean;
@@ -1272,34 +1282,40 @@ export default function SpecsGridEditor({
     onClick: () => void;
   } | null => {
     const isCellAllowed = (r: number, c: number) => Boolean(liveGrid.rows[r]?.cells[c]?.confirmableAllowed);
-    const ctrlMarkedTargets = Array.from(ctrlMarkedCells)
-      .map((k) => {
-        const [r, c] = k.split(":").map(Number);
-        return { row: r, col: c };
-      })
-      .filter((t) => isCellAllowed(t.row, t.col));
-    // Every real (non-null), confirmableAllowed cell inside the current drag-highlighted rectangle
-    // — NOT just its top-left slot, which is all `activeCell` itself ever points at (see its own
-    // comment: it's always rect.minRow/minCol).
-    const dragRangeTargets = (() => {
-      if (!selection) return [];
-      const rect = normalizeRect(selection);
-      const out: { row: number; col: number }[] = [];
-      for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
-        for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
-          if (isCellAllowed(r, c)) out.push({ row: r, col: c });
+    let allTargets: { row: number; col: number }[];
+    let usingCtrlMarked = false;
+    if (forceFallbackCellOnly) {
+      allTargets = fallbackCell && isCellAllowed(fallbackCell.row, fallbackCell.col) ? [fallbackCell] : [];
+    } else {
+      const ctrlMarkedTargets = Array.from(ctrlMarkedCells)
+        .map((k) => {
+          const [r, c] = k.split(":").map(Number);
+          return { row: r, col: c };
+        })
+        .filter((t) => isCellAllowed(t.row, t.col));
+      // Every real (non-null), confirmableAllowed cell inside the current drag-highlighted
+      // rectangle — NOT just its top-left slot, which is all `activeCell` itself ever points at
+      // (see its own comment: it's always rect.minRow/minCol).
+      const dragRangeTargets = (() => {
+        if (!selection) return [];
+        const rect = normalizeRect(selection);
+        const out: { row: number; col: number }[] = [];
+        for (let r = rect.minRow; r <= rect.maxRow; r += 1) {
+          for (let c = rect.minCol; c <= rect.maxCol; c += 1) {
+            if (isCellAllowed(r, c)) out.push({ row: r, col: c });
+          }
         }
+        return out;
+      })();
+      // Whenever a Ctrl/Cmd+click multi-select is active at all, it's the one source of truth for
+      // the target list — even if every cell in it turns out ineligible (returns null below),
+      // rather than silently falling back to an unrelated drag-highlighted range the user didn't
+      // actually pick via this gesture.
+      usingCtrlMarked = ctrlMarkedCells.size > 0;
+      allTargets = usingCtrlMarked ? ctrlMarkedTargets : dragRangeTargets;
+      if (allTargets.length === 0 && fallbackCell && isCellAllowed(fallbackCell.row, fallbackCell.col)) {
+        allTargets = [fallbackCell];
       }
-      return out;
-    })();
-    // Whenever a Ctrl/Cmd+click multi-select is active at all, it's the one source of truth for the
-    // target list — even if every cell in it turns out ineligible (returns null below), rather than
-    // silently falling back to an unrelated drag-highlighted range the user didn't actually pick
-    // via this gesture.
-    const usingCtrlMarked = ctrlMarkedCells.size > 0;
-    let allTargets = usingCtrlMarked ? ctrlMarkedTargets : dragRangeTargets;
-    if (allTargets.length === 0 && fallbackCell && isCellAllowed(fallbackCell.row, fallbackCell.col)) {
-      allTargets = [fallbackCell];
     }
     if (allTargets.length === 0) return null;
 
@@ -3125,7 +3141,14 @@ export default function SpecsGridEditor({
                                 if (document.activeElement instanceof HTMLElement && cellEl.contains(document.activeElement)) {
                                   document.activeElement.blur();
                                 }
-                                const target = computeMarkForConfirmationTarget({ row: rowIdx, col: colIdx });
+                                // forceFallbackCellOnly: !pressedCellAlreadyInSelection — when true,
+                                // this is the SAME synchronous tick as the setSelection(...) call
+                                // just above that replaced whatever used to be selected, so reading
+                                // `selection` here directly would still see that stale, about-to-be-
+                                // replaced value (see this param's own comment). When
+                                // pressedCellAlreadyInSelection is true, nothing was just changed —
+                                // `selection` is already accurate, so the normal derivation is used.
+                                const target = computeMarkForConfirmationTarget({ row: rowIdx, col: colIdx }, !pressedCellAlreadyInSelection);
                                 if (target) {
                                   setMobileConfirmMenu({ x: touch.clientX, y: touch.clientY, label: target.label, title: target.title, onConfirm: target.onClick });
                                 }
