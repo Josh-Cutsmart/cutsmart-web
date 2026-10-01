@@ -1358,9 +1358,15 @@ export default function SpecsGridEditor({
     // the ancestor <td>'s own user-select/touch-callout suppression. Restored (removed) in
     // onTouchEnd/onTouchCancel regardless of outcome.
     editableEl: HTMLElement | null;
+    // When this press started (Date.now()) — see onMouseDownCapture's own comment for why this
+    // exists: a safety net against this ref ever getting stuck set forever.
+    startedAt: number;
   } | null>(null);
   const MOBILE_CONFIRM_PRESS_MS = 500;
   const MOBILE_CONFIRM_MOVE_CANCEL_PX = 10;
+  // How long a pending press is ever trusted before onMouseDownCapture starts treating it as
+  // abandoned — see that handler's own comment.
+  const MOBILE_CONFIRM_PRESS_STALE_MS = MOBILE_CONFIRM_PRESS_MS + 1000;
   // Position + the already-resolved action (label/title/onClick from computeMarkForConfirmationTarget)
   // for the currently-open mobile dropdown — null when fully closed.
   const [mobileConfirmMenu, setMobileConfirmMenu] = useState<{ x: number; y: number; label: string; title: string; onConfirm: () => void } | null>(
@@ -3059,7 +3065,24 @@ export default function SpecsGridEditor({
                       // pending ref behind, since only onTouchStart below ever creates one) — see
                       // mobileConfirmPressRef's own comment on why this exists at all.
                       onMouseDownCapture={(e) => {
-                        if (mobileConfirmPressRef.current) e.nativeEvent.stopImmediatePropagation();
+                        const pending = mobileConfirmPressRef.current;
+                        if (!pending) return;
+                        // Safety net: this ref is ONLY ever meant to be set for the brief window of
+                        // one in-progress touch gesture, cleared the moment it ends (onTouchEnd/
+                        // onTouchCancel). If those somehow never fired for some rare browser/gesture
+                        // edge case, it would otherwise stay stuck set FOREVER — and since EVERY
+                        // eligible cell shares this exact same capture handler, a stuck ref silently
+                        // blocks normal tap-to-select grid-wide, not just on the one cell that got
+                        // stuck, until the page is reloaded. Treating anything older than
+                        // MOBILE_CONFIRM_PRESS_STALE_MS as abandoned (and clearing it right here)
+                        // means the worst a missed cleanup ever costs is one brief stale window, not
+                        // the rest of the session.
+                        if (Date.now() - pending.startedAt > MOBILE_CONFIRM_PRESS_STALE_MS) {
+                          clearTimeout(pending.timer);
+                          mobileConfirmPressRef.current = null;
+                          return;
+                        }
+                        e.nativeEvent.stopImmediatePropagation();
                       }}
                       onMouseDown={(e) => {
                         if (isUngroupedBlankCell) return;
@@ -3123,6 +3146,16 @@ export default function SpecsGridEditor({
                             onTouchStart: (e: ReactTouchEvent<HTMLTableCellElement>) => {
                               const touch = e.touches[0];
                               if (!touch) return;
+                              // Defensively clears out any PREVIOUS pending press this same ref
+                              // might still be holding onto — belt-and-braces alongside
+                              // onMouseDownCapture's own staleness check above, since this (a brand
+                              // new touch starting) is an even more direct signal that whatever was
+                              // pending before is over, regardless of why its own cleanup never ran.
+                              if (mobileConfirmPressRef.current) {
+                                clearTimeout(mobileConfirmPressRef.current.timer);
+                                mobileConfirmPressRef.current.editableEl?.style.removeProperty("-webkit-user-select");
+                                mobileConfirmPressRef.current.editableEl?.style.removeProperty("-webkit-touch-callout");
+                              }
                               const cellEl = e.currentTarget;
                               // iOS's native magnifier loupe (shown for precise caret placement
                               // during a hold) triggers directly off the contentEditable element
@@ -3180,7 +3213,7 @@ export default function SpecsGridEditor({
                                   setMobileConfirmMenu({ x: touch.clientX, y: touch.clientY, label: target.label, title: target.title, onConfirm: target.onClick });
                                 }
                               }, MOBILE_CONFIRM_PRESS_MS);
-                              mobileConfirmPressRef.current = { row: rowIdx, col: colIdx, x: touch.clientX, y: touch.clientY, timer, fired: false, editableEl };
+                              mobileConfirmPressRef.current = { row: rowIdx, col: colIdx, x: touch.clientX, y: touch.clientY, timer, fired: false, editableEl, startedAt: Date.now() };
                             },
                             // Moving far enough reads as the start of a scroll, not a hold — cancel
                             // outright rather than guessing; see mobileConfirmPressRef's own comment
