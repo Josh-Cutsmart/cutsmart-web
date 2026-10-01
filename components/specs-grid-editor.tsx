@@ -2218,25 +2218,34 @@ export default function SpecsGridEditor({
   // rounding, since erring toward a hair smaller is harmless but erring the other way reintroduces
   // the "clipped off the right edge" bug this whole calculation exists to avoid.
   const SHEET_FIT_HORIZONTAL_INSET_PX = 4;
-  const widthFitScale = mockPageBoxWidthPx > 0 ? (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx : 1;
-  // Also bounding by HEIGHT, not just width: a page whose own template is narrower (fewer/shorter
-  // columns, so a smaller mockPageBoxWidthPx) needs much less width-based shrinking to fit — for a
-  // small enough template, widthFitScale alone can land close to (or at) 1, i.e. close to true
-  // print size. At that scale the page's real height can easily exceed the actual room available
-  // for it on a phone screen — the host's own title bar (mobileTopOffsetPx) plus this component's
-  // own toolbar spacer (PROJECT_TOOLBAR_HEIGHT_PX) and canvas padding (the 24px top py-6 plus
-  // canvasBottomInsetPx) all eat into that before the sheet ever gets a look at it. Genuine
-  // overflow past that room is what was making the WHOLE PAGE (not just this canvas) tall enough to
-  // scroll on mobile Safari — which is what let its own dynamic toolbar animate in response,
-  // showing as an unrelated bar rising from the bottom while a template small enough to stay under
-  // that available height never triggered it. Math.min with widthFitScale below guarantees the
-  // sheet always fits BOTH dimensions, regardless of the template's own proportions.
-  const sheetFitAvailableHeightPx =
-    viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - 24 - (canvasBottomInsetPx ?? 0);
-  const heightFitScale =
-    mockPageBoxHeightPx > 0 && sheetFitAvailableHeightPx > 0 ? sheetFitAvailableHeightPx / mockPageBoxHeightPx : 1;
+  // Width only, deliberately — per explicit feedback, the sheet's own SCALE must never be capped
+  // by available height. A height cap sounds reasonable (keeps the whole page on screen at rest)
+  // but in practice made the height-constrained render path the one that actually triggers the
+  // text/fill-vs-border misalignment bug elsewhere in this file (SpecsCellTextArea's own
+  // scrollHeight measurement, growRowForCellHeight) — a template that's either short enough or
+  // tall enough to hit that second scale factor glitches, while a plain width-only scale (this)
+  // never does. A page taller than the screen at this scale is meant to run past the bottom and
+  // scroll with the rest of the view, same as print-size would on desktop — see the viewport div's
+  // own height below (sheetFitMinHeightPx) for how the zoomable area still gets the FULL available
+  // height to pan into even when the page itself is shorter than that, without this scale caring.
   const sheetFitScale =
-    fitToViewportOnMobile && mockPageBoxWidthPx > 0 ? Math.max(0.1, Math.min(1, widthFitScale, heightFitScale)) : 1;
+    fitToViewportOnMobile && mockPageBoxWidthPx > 0
+      ? Math.max(0.1, Math.min(1, (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx))
+      : 1;
+  // How tall the pinch-zoom/pan viewport (below) should be AT LEAST — the full room actually
+  // available on screen (host title bar + this component's own toolbar spacer + canvas padding all
+  // subtracted out), regardless of whether the scaled page itself is shorter than that. Without
+  // this, a short page's viewport sized to just its own scaled content left genuine, un-zoomable
+  // padding above/below it (the canvas's own flex-1 stretch only grows the grey BACKGROUND, not
+  // this inner overflow:hidden box) — pinching in had nowhere to pan INTO across that gap, reading
+  // as "it's there no matter how much I zoom, and it still cuts the sheet off." The viewport's own
+  // style below takes Math.max of this and the page's real scaled height, so a TALL page still
+  // grows taller than the screen and simply scrolls with the rest of the view, same as
+  // sheetFitScale's own comment describes.
+  const sheetFitMinHeightPx =
+    fitToViewportOnMobile
+      ? Math.max(0, viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - 24 - (canvasBottomInsetPx ?? 0))
+      : 0;
   const [sheetZoom, setSheetZoom] = useState(1);
   const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
   // Reports "is this sheet currently zoomed in at all" up to the host page, purely so ITS OWN
@@ -3149,14 +3158,10 @@ export default function SpecsGridEditor({
         // its own natural width; any floating bubble the host page renders alongside it sits OVER
         // this canvas rather than narrowing it, so a small window doesn't fight the sheet for width.
         style={{
-          // #eef1f8, not a "close enough" grey: on fitToViewportOnMobile, this canvas doesn't
-          // stretch to fill the full screen (see the comment block above — it deliberately stays
-          // sized to its own content, not flex-1, so the grey gap below a short page doesn't grow
-          // disproportionately large). Whatever's left over below its real bottom edge falls
-          // through to the host scroll container's own background instead (--bg-app). This hex is
-          // that token's own light-mode value, copied verbatim rather than referencing var(--bg-app)
-          // directly (this canvas is hardcoded/theme-independent on purpose, see above) — the two
-          // used to be a few shades apart, which read as a visible seam exactly where they met.
+          // #eef1f8: this token's own light-mode value, copied verbatim rather than referencing
+          // var(--bg-app) directly (this canvas is hardcoded/theme-independent on purpose — it
+          // represents a physical sheet's own surrounding mat, not page chrome) — the two used to
+          // be a few shades apart, which read as a visible seam wherever they met.
           backgroundColor: "#eef1f8",
           // Added on top of the base 24px (p-6 above) rather than replacing it, so the host's
           // floating action bar gets its own reserved room INSIDE this grey canvas — its background
@@ -3170,6 +3175,12 @@ export default function SpecsGridEditor({
           ...(canvasBottomInsetPx
             ? { paddingBottom: fitToViewportOnMobile ? canvasBottomInsetPx : 24 + canvasBottomInsetPx }
             : {}),
+          // On mobile, no top padding either — same "edge to edge" reasoning the className's own
+          // comment gives for the horizontal bleed, just applied vertically too: the page starts
+          // immediately below the fixed toolbar's own flow spacer, nothing left for a zoomed-in
+          // pinch to find itself blocked by right at the top the way an un-zoomable, locked-in-
+          // place gap used to read. py-6's own 24px top value only still applies off mobile.
+          ...(fitToViewportOnMobile ? { paddingTop: 0 } : {}),
         }}
       >
         {/* fitToViewportOnMobile: a fixed-height, overflow-hidden viewport the page below is scaled
@@ -3193,7 +3204,16 @@ export default function SpecsGridEditor({
           // multi-touch gesture, leaving an ordinary one-finger drag here free to reach them.
           style={
             fitToViewportOnMobile
-              ? { overflow: "hidden", height: mockPageBoxHeightPx * sheetFitScale, touchAction: sheetZoom > 1 ? "none" : "pan-y" }
+              ? {
+                  overflow: "hidden",
+                  // Math.max, not just the page's own scaled height — see sheetFitMinHeightPx's
+                  // own comment: a short page still gets the FULL available screen height here (so
+                  // pinch-zoom has real room to pan into instead of hitting this box's own edge a
+                  // moment after unscaled padding would have started), while a page taller than
+                  // that genuinely grows past it and scrolls with the rest of the view.
+                  height: Math.max(mockPageBoxHeightPx * sheetFitScale, sheetFitMinHeightPx),
+                  touchAction: sheetZoom > 1 ? "none" : "pan-y",
+                }
               : undefined
           }
         >
