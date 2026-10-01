@@ -3102,7 +3102,20 @@ export default function SpecsGridEditor({
                                 const pending = mobileConfirmPressRef.current;
                                 if (!pending) return;
                                 pending.fired = true;
-                                setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
+                                // Only collapses the selection down to just this one cell when it
+                                // ISN'T already part of a bigger multi-cell selection (e.g. one just
+                                // built via the drag handles above) — holding a cell that's already
+                                // inside a deliberately highlighted range should act on the WHOLE
+                                // range, not shrink the highlight down to whichever single cell the
+                                // hold happened to land on right as the popup opens.
+                                const existingRect = selection ? normalizeRect(selection) : null;
+                                const isExistingMultiCellSelection = Boolean(
+                                  existingRect && (existingRect.minRow !== existingRect.maxRow || existingRect.minCol !== existingRect.maxCol),
+                                );
+                                const pressedCellAlreadyInSelection = isExistingMultiCellSelection && isCellInRect(rowIdx, colIdx, existingRect!);
+                                if (!pressedCellAlreadyInSelection) {
+                                  setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
+                                }
                                 // Belt-and-braces: if the browser went ahead and natively focused this
                                 // cell's own editable text (contentEditable focuses on tap by default,
                                 // independent of the React handlers suppressed above) sometime during
@@ -3192,6 +3205,18 @@ export default function SpecsGridEditor({
                         height: spannedHeightPx,
                         overflow: "hidden",
                         cursor: isUngroupedBlankCell ? "default" : undefined,
+                        // Holding this cell long enough to open the Mark for Confirmation dropdown
+                        // (isMobileConfirmEligible — see its own onTouchStart above) also crosses the
+                        // SAME duration the browser's own native "select this text" hold gesture
+                        // uses, independent of anything React's touch handlers do or don't
+                        // preventDefault — without suppressing it here, the cell's own text shows up
+                        // highlighted (and iOS additionally pops its copy/look-up callout) right as
+                        // the dropdown appears. Same WebkitUserSelect/userSelect/WebkitTouchCallout
+                        // trio useLongPress's own style already applies for its other long-press
+                        // usages elsewhere in this app, for the identical reason.
+                        ...(isMobileConfirmEligible
+                          ? { WebkitUserSelect: "none" as const, userSelect: "none" as const, WebkitTouchCallout: "none" as const }
+                          : {}),
                         // Vertical alignment for TEXT cells is handled by the flex wrapper around
                         // SpecsCellTextArea below, not by this `vertical-align` — a table cell only
                         // hands its content the space it doesn't already claim for itself, and a
@@ -4737,7 +4762,17 @@ export default function SpecsGridEditor({
                 // No hover:brightness-95 (and tap-highlight explicitly killed) — this is a touch-only
                 // menu, and a browser's own sticky :hover/tap-flash on a just-tapped element reads as
                 // the button staying stuck "lit up" after it appears, not a real hover state.
-                style={{ color: "var(--success-strong)", WebkitTapHighlightColor: "transparent" }}
+                // userSelect/WebkitTouchCallout: none for the same reason the cell being held already
+                // gets it (see isMobileConfirmEligible's own style above) — this button renders right
+                // under where the finger's still resting the instant the hold completes, so without
+                // this ITS OWN label text was what ended up visibly highlighted once it appeared.
+                style={{
+                  color: "var(--success-strong)",
+                  WebkitTapHighlightColor: "transparent",
+                  WebkitUserSelect: "none",
+                  userSelect: "none",
+                  WebkitTouchCallout: "none",
+                }}
               >
                 <CheckSquare size={16} />
                 {mobileConfirmMenu.label}
