@@ -2163,6 +2163,31 @@ export default function SpecsGridEditor({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [fitToViewportOnMobile]);
+  // Many sheets use a custom @font-face (e.g. a signature font) whose font-display: swap means a
+  // fallback font renders immediately while the real one loads in the background — the same risk
+  // lib/specs-grid-pdf.ts already has to work around for PDF export (see its own comment on
+  // document.fonts.ready resolving before a never-yet-requested font is actually ready to draw
+  // with). SpecsCellTextArea measures its own scrollHeight on mount to grow its row to fit (see
+  // growRowForCellHeight) — if that first measurement happens against the FALLBACK font's metrics,
+  // it can come out shorter than the real font eventually needs, and since a row's height only
+  // ever grows, never shrinks, that too-short measurement sticks permanently once the real font
+  // swaps in, with nothing left to ever correct it — the text now overflows a row/border sized for
+  // the fallback font's shorter line count. A slow mobile connection/CPU is far more likely to
+  // still be mid-font-load by the time cells first measure themselves than a fast desktop is,
+  // which is why this specifically reads as "text and fill colour not lining up with the group
+  // border" on mobile. Bumping this once fonts finish loading feeds into remeasureSignal below,
+  // forcing every cell to re-measure itself against the REAL font and grow its row if it needs to.
+  const [fontsReadyTick, setFontsReadyTick] = useState(0);
+  useEffect(() => {
+    if (typeof document === "undefined" || !document.fonts?.ready?.then) return;
+    let cancelled = false;
+    document.fonts.ready.then(() => {
+      if (!cancelled) setFontsReadyTick((t) => t + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // The canvas has no horizontal padding of its own on mobile now (it bleeds past the host page's
   // own px-3/sm:px-4/md:px-5 wrapper too — see the canvas div's own className below), so the page
   // is meant to reach the true screen edges exactly — just a few px of safety margin against
@@ -3620,7 +3645,11 @@ export default function SpecsGridEditor({
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
                             onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, colIdx, cell, px)}
-                            remeasureSignal={mockPageBoxWidthPx}
+                            // Summed, not passed separately — remeasureSignal is only ever compared
+                            // for change (see its own comment: "its actual value is never read"),
+                            // so a combined value that changes whenever EITHER input does serves
+                            // the same purpose without widening SpecsCellTextArea's own props.
+                            remeasureSignal={mockPageBoxWidthPx + fontsReadyTick}
                             readOnly={!isCellTextEditableHere}
                             readOnlyReason={
                               isRowAnsweredByClient
@@ -5044,15 +5073,18 @@ function SpecsCellTextArea({
   // the committed `runs` (re)sync in from outside. The parent grows the row to fit whenever this
   // exceeds its current height (never shrinks it back down on its own).
   onNaturalHeightChange?: (px: number) => void;
-  // fitToViewportOnMobile only: the caller passes mockPageBoxWidthPx, which — like sheetFitScale
-  // itself (see its own comment) — can still be settling one render after this cell first mounts,
-  // wide enough to let text that will end up wrapping onto more lines measure short on that very
-  // first pass. onNaturalHeightChange only ever GROWS a row, never shrinks it, so a too-small first
-  // measurement stuck permanently once the width later narrowed to its real value — the row (and
-  // the border/group overlay computed from that same stuck height) stopped matching how much room
-  // the text actually needed, worst for multi-paragraph cells with the most lines to under-count.
-  // Included in the measuring effect's own deps below purely so a real width change re-runs it —
-  // its actual value is never read.
+  // The caller combines two separate things that can each make this cell's very first scrollHeight
+  // measurement too short, with nothing to ever correct it afterward since onNaturalHeightChange
+  // only ever GROWS a row, never shrinks it: fitToViewportOnMobile's own mockPageBoxWidthPx, which
+  // — like sheetFitScale itself (see its own comment) — can still be settling one render after
+  // this cell first mounts, wide enough to let text that will end up wrapping onto more lines
+  // measure short on that very first pass; and fontsReadyTick, for a custom @font-face whose
+  // font-display: swap renders a fallback font (different metrics, different wrapping) until the
+  // real one finishes loading (see its own comment — same risk lib/specs-grid-pdf.ts already works
+  // around for PDF export). Either way the row (and the border/group overlay computed from that
+  // same stuck height) stops matching how much room the text actually needs, worst for multi-
+  // paragraph cells with the most lines to under-count. Included in the measuring effect's own
+  // deps below purely so either one changing re-runs it — its actual value is never read.
   remeasureSignal?: number;
   // True when the current viewer's role isn't in this cell's group's editableByRoleIds (see
   // SpecsGridEditorProps.canEditSpecsGroup's own comment) OR when it's a blank cell outside any
