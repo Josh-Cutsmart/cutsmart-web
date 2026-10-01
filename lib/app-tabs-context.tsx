@@ -48,6 +48,17 @@ type AppTabsContextValue = {
   // than being folded into chromeHidden itself.
   ownsMobileScroll: boolean;
   setOwnsMobileScroll: (owns: boolean) => void;
+  // A chromeHidden mobile page whose own sheet preview is currently pinch-zoomed/panned away from
+  // its true top-left edge (currently just Quote/Specifications — see their own
+  // onSheetZoomedAwayFromEdge prop on SpecsGridEditor) sets this so <main> (app-shell.tsx) can
+  // suppress its OWN vertical pull-down-to-reveal-menu gesture for the duration. That gesture arms
+  // off <main>'s plain DOM scrollTop (always 0 here — the sheet's pan/zoom is a CSS transform on
+  // its own canvas, not real scroll), so without this it has no way to know the user is mid-drag
+  // inside a zoomed sheet and happily arms anyway, fighting the sheet's own pan for the same
+  // vertical touch gesture. Defaults to false rather than folding into chromeHidden itself, same
+  // reasoning as ownsMobileScroll above — every other chromeHidden view has nothing like this.
+  isSheetZoomedAwayFromEdge: boolean;
+  setIsSheetZoomedAwayFromEdge: (zoomedAway: boolean) => void;
   fillMainViewport: boolean;
   setFillMainViewport: (fill: boolean) => void;
   reduceMainTopPadding: boolean;
@@ -107,6 +118,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
   const [ownsMobileScroll, setOwnsMobileScroll] = useState(false);
+  const [isSheetZoomedAwayFromEdge, setIsSheetZoomedAwayFromEdge] = useState(false);
   const [fillMainViewport, setFillMainViewport] = useState(false);
   const [reduceMainTopPadding, setReduceMainTopPadding] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -452,6 +464,8 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setChromeHidden,
       ownsMobileScroll,
       setOwnsMobileScroll,
+      isSheetZoomedAwayFromEdge,
+      setIsSheetZoomedAwayFromEdge,
       fillMainViewport,
       setFillMainViewport,
       reduceMainTopPadding,
@@ -468,6 +482,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       chromeHidden,
       closeTab,
       ownsMobileScroll,
+      isSheetZoomedAwayFromEdge,
       fillMainViewport,
       reduceMainTopPadding,
       mobileNavOpen,

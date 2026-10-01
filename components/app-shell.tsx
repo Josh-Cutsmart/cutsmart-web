@@ -337,7 +337,18 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, isDemoMode, membershipStatus } = useAuth();
-  const { chromeHidden, ownsMobileScroll, fillMainViewport, reduceMainTopPadding, mobileNavOpen, setMobileNavOpen, notifOpen, setNotifOpen, saveAndBackHandler } = useAppTabs();
+  const {
+    chromeHidden,
+    ownsMobileScroll,
+    isSheetZoomedAwayFromEdge,
+    fillMainViewport,
+    reduceMainTopPadding,
+    mobileNavOpen,
+    setMobileNavOpen,
+    notifOpen,
+    setNotifOpen,
+    saveAndBackHandler,
+  } = useAppTabs();
   const effectiveHideSidebar = hideSidebar || chromeHidden;
   const [showNewProject, setShowNewProject] = useState(false);
   const [newProjectOrigin, setNewProjectOrigin] = useState<GlassModalOrigin>(null);
@@ -1040,7 +1051,14 @@ export function AppShell({
       hasScrolledAncestor = true;
     }
     const alreadyAtTop = (mainScrollRef.current?.scrollTop ?? 0) <= 0 && !hasScrolledAncestor;
-    if (alreadyAtTop && mobileTopBarEnabled) {
+    // isSheetZoomedAwayFromEdge: Quote/Specifications' own sheet preview pans/zooms via a CSS
+    // transform on its own canvas, not real scroll — <main>'s scrollTop (and the data-app-scroll-
+    // root cross-check above) both still read "at the top" no matter where inside a zoomed sheet
+    // the user is currently panned to, so without this a one-finger drag to pan around a zoomed-in
+    // sheet gets misread as the start of this pulldown gesture every time, fighting the sheet's own
+    // pan for the same vertical touch (see isSheetZoomedAwayFromEdge's own comment in
+    // lib/app-tabs-context.tsx).
+    if (alreadyAtTop && mobileTopBarEnabled && !isSheetZoomedAwayFromEdge) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
       pullTopBarElRef.current =
         typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar="true"]') : null;

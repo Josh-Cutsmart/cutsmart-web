@@ -6308,6 +6308,7 @@ export default function ProjectDetailsPage() {
     tabs: globalWorkspaceTabs,
     setChromeHidden,
     setOwnsMobileScroll,
+    setIsSheetZoomedAwayFromEdge,
     setReduceMainTopPadding,
     setSaveAndBackHandler,
   } = useAppTabs();
@@ -26588,6 +26589,16 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     setOwnsMobileScroll(isSalesQuoteFullscreen || isSalesSpecificationsFullscreen);
     return () => setOwnsMobileScroll(false);
   }, [isSalesQuoteFullscreen, isSalesSpecificationsFullscreen, setOwnsMobileScroll]);
+  // Mirrors ownsMobileScroll's own effect immediately above, just for isSheetZoomedAwayFromEdge
+  // (see its own comment in lib/app-tabs-context.tsx) — whichever of Quote/Specifications is
+  // actually on screen reports its own zoom state up; the other's is always false while hidden
+  // (isQuoteSheetZoomedAwayFromEdge/isSpecsSheetZoomedAwayFromEdge are reset to false by
+  // SpecsGridEditor's own onSheetZoomedAwayFromEdge effect once a view's sheetZoom returns to 1,
+  // which a hidden view's never leaves anyway).
+  useEffect(() => {
+    setIsSheetZoomedAwayFromEdge(isQuoteSheetZoomedAwayFromEdge || isSpecsSheetZoomedAwayFromEdge);
+    return () => setIsSheetZoomedAwayFromEdge(false);
+  }, [isQuoteSheetZoomedAwayFromEdge, isSpecsSheetZoomedAwayFromEdge, setIsSheetZoomedAwayFromEdge]);
   // Mobile pull-down gesture's "Save & Back" zone (app-shell.tsx) — mirrors whichever of this
   // page's own "Save & Back" buttons is currently on screen (Cutlist/Nesting/CNC/Order/Initial
   // Measure/Items/Quote each have one). The actual save functions (onSaveAndBackFromCutlist etc.)
@@ -45865,7 +45876,23 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     aria-label="Close delete version confirmation backdrop"
-                    onClick={() => setQuoteVersionPendingDeleteId("")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setQuoteVersionPendingDeleteId("");
+                    }}
+                    // This backdrop sits on top of (but isn't DOM-nested inside) the mobile Version
+                    // History panel's own full-page takeover, which has its OWN drag-to-close swipe
+                    // handlers spread on its wrapper. Without this, a tap here that carries even a
+                    // few incidental pixels of movement bubbles up through the REACT tree (portal
+                    // children still bubble through their REACT ancestors regardless of DOM z-index
+                    // — same reasoning as the Version History/Quote Extras "Back" buttons' own
+                    // identical comment elsewhere in this file) and gets picked up as the start of
+                    // that OTHER panel's own close-drag, fighting this modal's own clean shrink-
+                    // into-the-row close animation with a second, competing close happening at the
+                    // same time.
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onTouchMove={(e) => e.stopPropagation()}
+                    onTouchEnd={(e) => e.stopPropagation()}
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={quoteVersionDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
@@ -45884,7 +45911,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <div className="flex items-center justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => setQuoteVersionPendingDeleteId("")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setQuoteVersionPendingDeleteId("");
+                          }}
+                          // Same stopPropagation reasoning as this modal's own backdrop button above.
+                          onTouchStart={(e) => e.stopPropagation()}
+                          onTouchMove={(e) => e.stopPropagation()}
+                          onTouchEnd={(e) => e.stopPropagation()}
                           className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
                           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                         >
@@ -45893,7 +45927,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <button
                           type="button"
                           disabled={isDeletingQuoteVersion}
-                          onClick={() => void deleteQuoteVersionById(quoteVersionPendingDeleteId)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteQuoteVersionById(quoteVersionPendingDeleteId);
+                          }}
+                          // Same stopPropagation reasoning as this modal's own backdrop button above.
+                          onTouchStart={(e) => e.stopPropagation()}
+                          onTouchMove={(e) => e.stopPropagation()}
+                          onTouchEnd={(e) => e.stopPropagation()}
                           className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
                           style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                         >
@@ -47331,7 +47372,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <button
                     type="button"
                     aria-label="Close delete version confirmation backdrop"
-                    onClick={() => setSpecsVersionPendingDeleteId("")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSpecsVersionPendingDeleteId("");
+                    }}
+                    // Same stopPropagation reasoning as deleteQuoteVersionById's own identical
+                    // backdrop button elsewhere in this file.
+                    onTouchStart={(e) => e.stopPropagation()}
+                    onTouchMove={(e) => e.stopPropagation()}
+                    onTouchEnd={(e) => e.stopPropagation()}
                     className="glass-modal-backdrop absolute inset-0"
                   />
                   <div ref={specsVersionDeleteModalPanelRef} className="glass-modal-panel relative z-[2147483647] w-[min(420px,96vw)] overflow-hidden">
@@ -47350,7 +47399,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       <div className="flex items-center justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => setSpecsVersionPendingDeleteId("")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSpecsVersionPendingDeleteId("");
+                          }}
+                          // Same stopPropagation reasoning as this modal's own backdrop button above.
+                          onTouchStart={(e) => e.stopPropagation()}
+                          onTouchMove={(e) => e.stopPropagation()}
+                          onTouchEnd={(e) => e.stopPropagation()}
                           className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95"
                           style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)", color: "var(--text-main)" }}
                         >
@@ -47359,7 +47415,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                         <button
                           type="button"
                           disabled={isDeletingSpecsVersion}
-                          onClick={() => void deleteSpecsVersionById(specsVersionPendingDeleteId)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteSpecsVersionById(specsVersionPendingDeleteId);
+                          }}
+                          // Same stopPropagation reasoning as this modal's own backdrop button above.
+                          onTouchStart={(e) => e.stopPropagation()}
+                          onTouchMove={(e) => e.stopPropagation()}
+                          onTouchEnd={(e) => e.stopPropagation()}
                           className="h-9 rounded-[9px] border px-4 text-[12px] font-bold hover:brightness-95 disabled:opacity-55"
                           style={{ borderColor: "var(--danger-border)", backgroundColor: "var(--danger-soft)", color: "var(--danger-strong)" }}
                         >

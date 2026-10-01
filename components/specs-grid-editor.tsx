@@ -2305,6 +2305,32 @@ export default function SpecsGridEditor({
     }
   };
 
+  // fitToViewportOnMobile only: tapping a cell focuses its contentEditable (SpecsCellTextArea's own
+  // onFocus), and mobile Safari's own "scroll the newly-focused element into view" behavior doesn't
+  // reliably account for an ancestor `transform: scale()` at the fractional values this view
+  // actually uses — it can scroll the page's own scroll container by a wildly wrong distance,
+  // landing on a completely different part of the sheet and reading as "tapping a cell selected a
+  // different row" (this sheet is already fully visible by design — the fit-to-viewport wrapper is
+  // `overflow: hidden` specifically so nothing ever NEEDS scrolling into view — so there's nothing
+  // for the browser to legitimately be correcting for here). Rather than diagnosing the browser's
+  // own miscalculation, this snapshots the scroll position the instant focus fires and keeps
+  // re-asserting it for long enough to outlast even an animated native auto-scroll, canceling out
+  // whatever the browser just did regardless of how it got there. A no-op whenever the browser
+  // doesn't actually scroll (the scrollTop/scrollLeft checks skip the write entirely).
+  const cancelNativeFocusScrollOnMobile = () => {
+    if (typeof document === "undefined") return;
+    const scrollEl: Element | null = document.querySelector('[data-app-scroll-root="true"]') ?? document.scrollingElement;
+    if (!scrollEl) return;
+    const { scrollTop, scrollLeft } = scrollEl;
+    const deadline = performance.now() + 400;
+    const restore = () => {
+      if (scrollEl.scrollTop !== scrollTop) scrollEl.scrollTop = scrollTop;
+      if (scrollEl.scrollLeft !== scrollLeft) scrollEl.scrollLeft = scrollLeft;
+      if (performance.now() < deadline) requestAnimationFrame(restore);
+    };
+    requestAnimationFrame(restore);
+  };
+
   // The grip handle's own hover keeps a group "active" even once the pointer has moved off its rows
   // and onto the handle itself (see manuallyHoveredGroupId's own comment) — falls back to whichever
   // group the currently-hovered ROW belongs to otherwise.
@@ -3583,7 +3609,10 @@ export default function SpecsGridEditor({
                             runs={getCellRuns(cell)}
                             style={style}
                             isFocused={focusedKey === key}
-                            onFocusCell={() => setFocusedKey(key)}
+                            onFocusCell={() => {
+                              setFocusedKey(key);
+                              if (fitToViewportOnMobile) cancelNativeFocusScrollOnMobile();
+                            }}
                             onBlurCommitRuns={(runs) => {
                               setFocusedKey((prev) => (prev === key ? null : prev));
                               commitCellRuns(rowIdx, colIdx, runs);
