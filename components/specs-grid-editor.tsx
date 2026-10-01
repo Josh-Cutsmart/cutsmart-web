@@ -3795,14 +3795,7 @@ export default function SpecsGridEditor({
                             }}
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
-                            // Skipped on mobile: the sheet there should render EXACTLY the row
-                            // heights already stored (same ones the template/desktop view uses),
-                            // never auto-grow/shrink from an on-device measurement — a scaled,
-                            // mobile-rendered textarea's scrollHeight isn't trustworthy enough to
-                            // persist back into the shared grid data.
-                            onNaturalHeightChange={
-                              fitToViewportOnMobile ? undefined : (px) => growRowForCellHeight(rowIdx, colIdx, cell, px)
-                            }
+                            onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, colIdx, cell, px)}
                             // Summed, not passed separately — remeasureSignal is only ever compared
                             // for change (see its own comment: "its actual value is never read"),
                             // so a combined value that changes whenever EITHER input does serves
