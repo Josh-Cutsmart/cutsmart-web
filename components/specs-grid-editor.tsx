@@ -2284,21 +2284,35 @@ export default function SpecsGridEditor({
   // size — cutting the visible page background off right where the calculation expected it to
   // end, with the real content carrying on past that into whatever's behind it. Observing the
   // actual rendered box directly removes the calculation as a point of failure entirely: whatever
-  // the real engine lays out, in ITS OWN unscaled layout units (ResizeObserver's contentRect is
-  // unaffected by this box's own CSS transform), becomes the floor the viewport is clipped to.
+  // the real engine lays out becomes the floor both the page box and its clipping viewport use.
+  //
+  // Observed on contentWrapperRef, NOT pageBoxRef itself — pageBoxRef's own only child (the div
+  // holding the table and every overlay) is position:absolute whenever mockPageMarginPx is set
+  // (i.e. in isProjectSheetView, which every real fitToViewportOnMobile call site also has — see
+  // that prop's own call sites in page.tsx), and an absolutely-positioned child contributes
+  // NOTHING to its ancestor's auto/min height in any browser — plain box model, not an engine
+  // quirk. That made pageBoxRef's own rendered height permanently pinned to mockPageBoxHeightPx,
+  // mathematically incapable of ever disagreeing with the calculation a ResizeObserver placed on
+  // IT would be trying to double-check. contentWrapperRef's own content (the <table>, genuinely
+  // in-flow within it) has no such ceiling, so its contentRect correctly reflects whatever the
+  // real engine actually laid out. The `+ mockPageMarginPx * 2` restores the top+bottom margin
+  // this wrapper itself excludes (applied via its own absolute left/top offset, not padding), so
+  // the result is comparable to mockPageBoxHeightPx, which already includes it (see
+  // tableRenderedHeightPx's own calc above).
   const pageBoxRef = useRef<HTMLDivElement | null>(null);
+  const contentWrapperRef = useRef<HTMLDivElement | null>(null);
   const [measuredPageBoxHeightPx, setMeasuredPageBoxHeightPx] = useState(0);
   useEffect(() => {
     if (!fitToViewportOnMobile || typeof ResizeObserver === "undefined") return;
-    const el = pageBoxRef.current;
+    const el = contentWrapperRef.current;
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) setMeasuredPageBoxHeightPx(entry.contentRect.height);
+      if (entry) setMeasuredPageBoxHeightPx(entry.contentRect.height + mockPageMarginPx * 2);
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [fitToViewportOnMobile]);
+  }, [fitToViewportOnMobile, mockPageMarginPx]);
   // Many sheets use a custom @font-face (e.g. a signature font) whose font-display: swap means a
   // fallback font renders immediately while the real one loads in the background — the same risk
   // lib/specs-grid-pdf.ts already has to work around for PDF export (see its own comment on
@@ -3415,6 +3429,14 @@ export default function SpecsGridEditor({
             boxShadow: "0 1px 4px rgba(16, 24, 40, 0.15)",
             ...(fitToViewportOnMobile
               ? {
+                  // An explicit height, not just the minHeight above — minHeight alone relies on
+                  // this box's own child contributing to its auto-height, which the position:
+                  // absolute content wrapper just below (see its own comment) never does whenever
+                  // mockPageMarginPx is set, i.e. in every real fitToViewportOnMobile call site.
+                  // measuredPageBoxHeightPx (see its own comment near pageBoxRef) is the real
+                  // engine's own rendered content height, so this can never end up shorter than
+                  // what's actually there, regardless of how it compares to the calculation.
+                  height: Math.max(mockPageBoxHeightPx, measuredPageBoxHeightPx),
                   // top left, not top center: with mx-auto's margins collapsing to 0 once the
                   // unscaled box (its real width, mockPageBoxWidthPx, unaffected by transform) is
                   // wider than its container, the box already sits flush at the container's LEFT
@@ -3449,6 +3471,7 @@ export default function SpecsGridEditor({
             containing block the table's sibling overlays resolve their own `left`/`top` against, so
             the same inset applies to all of them as one unit, not just the table. */}
         <div
+          ref={fitToViewportOnMobile ? contentWrapperRef : undefined}
           className="relative"
           style={mockPageMarginPx ? { position: "absolute", left: mockPageMarginPx, top: mockPageMarginPx } : undefined}
           onDragOver={isProjectSheetView ? onSheetDragOver : undefined}
