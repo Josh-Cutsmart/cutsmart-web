@@ -1233,18 +1233,15 @@ export default function ChangelogPage() {
                               type="button"
                               onClick={(e) => {
                                 setOpenMobileVersionKey(`${entry.version}_${entry.capturedAtIso}`);
-                                // Not captureGlassModalOrigin(e) (the whole, full-width card) —
-                                // animating a FLIP from a box that's already nearly screen-width
-                                // barely scales horizontally at all, only vertically, which reads
-                                // as a lopsided "unfurl downward" instead of the Report Issue
-                                // composer's own proportional pop. Using just the small version
-                                // badge inside the card as the origin keeps both axes scaling by a
-                                // comparable amount, matching that feel.
-                                const badge = e.currentTarget.querySelector<HTMLElement>("[data-version-popup-origin]");
-                                const originEl = badge ?? e.currentTarget;
-                                mobileVersionPopupOriginElRef.current = originEl;
-                                const rect = originEl.getBoundingClientRect();
-                                setMobileVersionPopupOrigin({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+                                // The whole card (not just the small version-number badge inside
+                                // it) — an earlier version of this used just the badge specifically
+                                // to avoid a lopsided "unfurl downward" (a box already nearly
+                                // screen-width barely scales horizontally from a FLIP), but per
+                                // feedback that read as the popup growing out of/shrinking back into
+                                // a tiny piece of text rather than the tapped bar itself, which
+                                // matters more here than perfectly proportional scaling.
+                                mobileVersionPopupOriginElRef.current = e.currentTarget;
+                                setMobileVersionPopupOrigin(captureGlassModalOrigin(e));
                                 setIsMobileVersionPopupOpen(true);
                               }}
                               className="flex w-full items-center justify-between gap-3 rounded-[14px] border px-4 py-3 text-left transition hover:brightness-95"
@@ -1257,7 +1254,6 @@ export default function ChangelogPage() {
                               }}
                             >
                               <span
-                                data-version-popup-origin="true"
                                 className="truncate text-[15px] font-bold uppercase tracking-[1px]"
                                 style={{ color: "var(--text-main)" }}
                               >

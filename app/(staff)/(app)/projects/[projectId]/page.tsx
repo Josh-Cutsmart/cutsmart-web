@@ -6921,6 +6921,27 @@ export default function ProjectDetailsPage() {
     undefined,
     quoteVersionDeleteModalOriginElRef,
   );
+  // Shared by this modal and its Specs twin below — see quoteVersionDeleteModalOpenedAtRef's own
+  // comment for why a dismiss this soon after opening is ignored rather than acted on.
+  const BACKDROP_DISMISS_GRACE_MS = 400;
+  // Stamped the instant this modal opens (both the desktop hover-icon click and the mobile
+  // long-press path funnel into the same setQuoteVersionPendingDeleteId(v.id), so one effect here
+  // covers both) — read by the backdrop's own onClick below to ignore a dismiss that lands within
+  // BACKDROP_DISMISS_GRACE_MS of opening. On mobile specifically, the long-press that OPENS this
+  // modal fires while the finger is still down; the backdrop (a full-screen element) mounts right
+  // under wherever that finger already is, and some mobile browsers synthesize their end-of-touch
+  // click against whatever's CURRENTLY under the finger rather than the original long-pressed row
+  // — meaning useLongPress's own preventDefault() on the row's touchend doesn't reliably suppress
+  // it, since by then the click is about to land on a different element entirely. Without this, the
+  // same lift-finger that completes the long-press immediately re-closes the modal it just opened,
+  // so fast that there's no time left for the panel to even finish mounting — reading as "just
+  // disappears" rather than a genuine tap-outside dismiss, which only the backdrop (not Cancel/
+  // Delete, both deliberate second taps a user wouldn't make within this short a window) needs this
+  // guard on.
+  const quoteVersionDeleteModalOpenedAtRef = useRef(0);
+  useEffect(() => {
+    if (quoteVersionPendingDeleteId) quoteVersionDeleteModalOpenedAtRef.current = Date.now();
+  }, [quoteVersionPendingDeleteId]);
   const [isDeletingQuoteVersion, setIsDeletingQuoteVersion] = useState(false);
   // Drives the delete icon's slide/bounce via a literal inline `transform` string toggled by real
   // hover state, rather than Tailwind's group-hover translate utilities — those compose `transform`
@@ -27808,6 +27829,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     undefined,
     specsVersionDeleteModalOriginElRef,
   );
+  // See quoteVersionDeleteModalOpenedAtRef's own comment (BACKDROP_DISMISS_GRACE_MS is declared
+  // once, alongside that ref) — identical reasoning, just for Specs' own version-delete modal.
+  const specsVersionDeleteModalOpenedAtRef = useRef(0);
+  useEffect(() => {
+    if (specsVersionPendingDeleteId) specsVersionDeleteModalOpenedAtRef.current = Date.now();
+  }, [specsVersionPendingDeleteId]);
   const [isDeletingSpecsVersion, setIsDeletingSpecsVersion] = useState(false);
   const deleteSpecsVersionById = async (versionId: string) => {
     if (!project || !versionId || isDeletingSpecsVersion) return;
@@ -35266,17 +35293,19 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               see Quote's own identical comment for the full reasoning. Split into a fixed backdrop
               + content pair (was a single sticky div) because the gesture grows the backdrop's own
               height live — a sticky element would reflow the content below it as it grows; a fixed
-              one just overlays. Backdrop matches this page's own previous solid
-              projectPalette.sectionBg exactly (no blur, unlike Quote/Specs' generic glass tint) so
-              pulling down reveals a seamless extension of the same bar. The content div below now
-              needs an explicit paddingTop matching this bar's resting height, to make up for the
-              flow space a sticky div used to reserve on its own. */}
+              one just overlays. Frosted-glass backdrop, matching every other top bar in the app —
+              used to be a flat projectPalette.sectionBg with no blur at all, the one exception left
+              standing once every other view got this treatment. The content div below now needs an
+              explicit paddingTop matching this bar's resting height, to make up for the flow space
+              a sticky div used to reserve on its own. */}
           <div
             data-app-top-bar="true"
             className="pointer-events-none fixed left-0 right-0 top-0 z-[90]"
             style={{
               height: 56,
-              backgroundColor: projectPalette.sectionBg,
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
               transform: "translateZ(0)",
               WebkitTransform: "translateZ(0)",
               willChange: "transform",
@@ -35640,7 +35669,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             </div>
             <div className="h-[56px] shrink-0" />
-            <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
+            {/* Frosted-glass treatment matching every other top bar in the app — was fully
+                transparent before, one of a handful of secondary bars left out when the rest of
+                the app got this treatment. */}
+            <div
+              className="shrink-0 overflow-hidden border-b px-3 py-1"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px) saturate(220%)",
+                WebkitBackdropFilter: "blur(14px) saturate(220%)",
+              }}
+            >
               <div
                 ref={cutlistActivityScrollRef}
                 className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -35784,7 +35824,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
             </div>
-            <div className="shrink-0 overflow-hidden border-b" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+            {/* Frosted-glass treatment matching every other top bar in the app — was a flat,
+                near-transparent productionContainerHeaderBg with no blur before. */}
+            <div
+              className="shrink-0 overflow-hidden border-b"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px) saturate(220%)",
+                WebkitBackdropFilter: "blur(14px) saturate(220%)",
+              }}
+            >
               <div
                 data-horizontal-swipe-scroll="true"
                 className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
@@ -36657,7 +36707,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             )}
           </div>
           <div className="h-[56px] shrink-0" />
-          <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
+          <div
+            className="shrink-0 overflow-hidden border-b px-3 py-1"
+            style={{
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
+            }}
+          >
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -37687,7 +37745,18 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               </button>
             </div>
             <div className="h-[56px] shrink-0" />
-            <div className="shrink-0 overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
+            {/* Frosted-glass treatment matching every other top bar in the app — was fully
+                transparent before, one of a handful of secondary bars left out when the rest of
+                the app got this treatment. */}
+            <div
+              className="shrink-0 overflow-hidden border-b px-3 py-1"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px) saturate(220%)",
+                WebkitBackdropFilter: "blur(14px) saturate(220%)",
+              }}
+            >
               <div
                 ref={cutlistActivityScrollRef}
                 className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -37831,7 +37900,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 </div>
               </div>
             </div>
-                    <div className="shrink-0 overflow-hidden border-b" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
+                    {/* Frosted-glass treatment matching every other top bar in the app — was a flat,
+                near-transparent productionContainerHeaderBg with no blur before. */}
+            <div
+              className="shrink-0 overflow-hidden border-b"
+              style={{
+                borderColor: "var(--glass-border)",
+                backgroundColor: "var(--glass-bg-strong)",
+                backdropFilter: "blur(14px) saturate(220%)",
+                WebkitBackdropFilter: "blur(14px) saturate(220%)",
+              }}
+            >
               <div
                 data-horizontal-swipe-scroll="true"
                 className="overflow-x-auto overscroll-x-contain snap-x snap-mandatory"
@@ -39916,7 +39995,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             </button>
           </div>
           <div className="h-[56px] shrink-0" />
-          <div className="overflow-hidden border-b px-3 py-1" style={{ borderColor: "var(--glass-border)", backgroundColor: "transparent" }}>
+          <div
+            className="overflow-hidden border-b px-3 py-1"
+            style={{
+              borderColor: "var(--glass-border)",
+              backgroundColor: "var(--glass-bg-strong)",
+              backdropFilter: "blur(14px) saturate(220%)",
+              WebkitBackdropFilter: "blur(14px) saturate(220%)",
+            }}
+          >
             <div
               ref={cutlistActivityScrollRef}
               className="w-full max-w-full min-w-0 overflow-hidden whitespace-nowrap"
@@ -42704,9 +42791,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             // was set — a child's z-index only ever competes within its own parent's stacking
             // context, not against the parent's siblings.
             className="fixed left-0 right-0 top-0 z-[100] flex h-[56px] items-center justify-between pl-3 pr-3 md:pl-5 md:pr-3"
-            // Mobile-only plain white, matching Nesting's own top bar — desktop keeps relying
-            // solely on the shared backdrop div above (untouched).
-            style={isCompactProjectViewport ? { color: "var(--text-main)", backgroundColor: "#FFFFFF" } : { color: "var(--text-main)" }}
+            // No backgroundColor of its own (mobile included) — relies solely on the shared
+            // blurred backdrop div above, matching desktop and every other top bar in the app.
+            // Used to paint plain opaque white on mobile only, defeating the blur specifically on
+            // phones (matching a since-fixed identical override on Nesting's own top bar).
+            style={{ color: "var(--text-main)" }}
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: "var(--glass-border)" }} />
             <div className="inline-flex items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -42854,9 +42943,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               const currentIndex = Math.max(0, boardKeys.indexOf(cncCompactActiveBoardKey));
               const currentLabel = cncRowsByBoardNonCab[currentIndex]?.boardLabel || "";
               return (
+                // No backgroundColor of its own — relies solely on the shared blurred backdrop
+                // behind it (sized 56+49 specifically to cover this band too), matching every
+                // other top bar in the app. Used to paint plain opaque white, defeating the blur.
                 <div
                   className="fixed inset-x-0 z-[95] flex items-center justify-between gap-2 px-3"
-                  style={{ top: 56, height: 49, backgroundColor: "#FFFFFF" }}
+                  style={{ top: 56, height: 49 }}
                 >
                   <button
                     type="button"
@@ -45201,6 +45293,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // actually look even — tuned down from 72 per visual feedback; coincidentally lands
                   // on the same 56 as mobile's own value, unrelated to it).
                   canvasBottomInsetPx={56}
+                  // The fixed title bar's own height, ABOVE this component — SpecsGridEditor has no
+                  // way to know this on its own (the host reserves that space itself, via
+                  // paddingTop on the wrapper around the whole component), but needs it to work out
+                  // how much real vertical room the sheet has to fit in on mobile (see
+                  // sheetFitScale's own comment).
+                  mobileTopOffsetPx={quoteHeaderHeight}
                   highlightedGroupId={hoveredQuoteExtraGroupId}
                   onHoveredGroupChange={setPreviewHoveredQuoteExtraGroupId}
                 />
@@ -45878,18 +45976,17 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     aria-label="Close delete version confirmation backdrop"
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (Date.now() - quoteVersionDeleteModalOpenedAtRef.current < BACKDROP_DISMISS_GRACE_MS) return;
                       setQuoteVersionPendingDeleteId("");
                     }}
-                    // This backdrop sits on top of (but isn't DOM-nested inside) the mobile Version
-                    // History panel's own full-page takeover, which has its OWN drag-to-close swipe
-                    // handlers spread on its wrapper. Without this, a tap here that carries even a
-                    // few incidental pixels of movement bubbles up through the REACT tree (portal
-                    // children still bubble through their REACT ancestors regardless of DOM z-index
-                    // — same reasoning as the Version History/Quote Extras "Back" buttons' own
-                    // identical comment elsewhere in this file) and gets picked up as the start of
-                    // that OTHER panel's own close-drag, fighting this modal's own clean shrink-
-                    // into-the-row close animation with a second, competing close happening at the
-                    // same time.
+                    // Belt-and-braces touch suppression — this backdrop is a sibling portal of the
+                    // mobile Version History panel (not DOM-nested inside it), so a touch here can't
+                    // actually reach that panel's own drag-to-close handlers (sibling React subtrees
+                    // don't bubble into each other, portaled or not). Kept anyway so a touch here
+                    // never does anything beyond the plain dismiss tap it's meant to be — e.g. no
+                    // stray text-selection/callout on a long press landing on this full-screen
+                    // element. The real fix for the gesture that OPENS this modal also appearing to
+                    // instantly close it is BACKDROP_DISMISS_GRACE_MS below, not this.
                     onTouchStart={(e) => e.stopPropagation()}
                     onTouchMove={(e) => e.stopPropagation()}
                     onTouchEnd={(e) => e.stopPropagation()}
@@ -46777,6 +46874,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // Same reasoning as the Quote tab's own identical prop — see its comment.
                   onSheetZoomedAwayFromEdge={setIsSpecsSheetZoomedAwayFromEdge}
                   canvasBottomInsetPx={56}
+                  // Same reasoning as the Quote tab's own identical prop — see its comment.
+                  mobileTopOffsetPx={specsHeaderHeight}
                   highlightedGroupId={hoveredSpecsSectionGroupId}
                   onHoveredGroupChange={setPreviewHoveredSpecsSectionGroupId}
                   // Enables the on-sheet "Import from Quote" button for any group whose link was
@@ -47374,6 +47473,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                     aria-label="Close delete version confirmation backdrop"
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (Date.now() - specsVersionDeleteModalOpenedAtRef.current < BACKDROP_DISMISS_GRACE_MS) return;
                       setSpecsVersionPendingDeleteId("");
                     }}
                     // Same stopPropagation reasoning as deleteQuoteVersionById's own identical
@@ -48320,9 +48420,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           <div
             data-app-top-bar-content="true"
             className="fixed left-0 right-0 top-0 z-[95] flex h-[56px] items-center justify-between gap-3 px-3 md:px-5"
-            // Mobile-only plain white — desktop keeps relying solely on the shared backdrop div
-            // above (untouched).
-            style={isCompactProjectViewport ? { backgroundColor: "#FFFFFF" } : undefined}
+            // No backgroundColor of its own (mobile included) — relies solely on the shared
+            // blurred backdrop div above, matching desktop and every other top bar in the app.
+            // Used to paint plain opaque white on mobile only, defeating the blur specifically on
+            // phones (matching a since-fixed identical override on CNC's own top bar).
           >
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px" style={{ backgroundColor: projectPalette.border }} />
             <div className="inline-flex min-w-0 items-center gap-2 text-[14px] font-medium uppercase tracking-[1px]" style={{ color: "var(--text-main)" }}>
@@ -48398,9 +48499,12 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             const currentIndex = Math.max(0, boardKeys.indexOf(nestingCompactBoardKey));
             const currentLabel = nestingBoardLayouts[currentIndex]?.boardLabel || "";
             return (
+              // No backgroundColor of its own — relies solely on the shared blurred backdrop
+              // behind it (sized 56+49 specifically to cover this band too), matching every other
+              // top bar in the app. Used to paint plain opaque white, defeating the blur.
               <div
                 className="fixed inset-x-0 z-[95] flex items-center justify-between gap-2 px-3"
-                style={{ top: 56, height: 49, backgroundColor: "#FFFFFF" }}
+                style={{ top: 56, height: 49 }}
               >
                 <button
                   type="button"

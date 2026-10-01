@@ -1508,6 +1508,12 @@ export function importLinkedQuoteTextIntoZone(
       skippedCount += 1;
       continue;
     }
+    // A group toggled off (hidden — the Quote window's own show/hide-from-print toggle) is the
+    // staff member deliberately excluding it from what the client sees, which should carry through
+    // to the import too — not counted as `skippedCount` (that's reserved for something actually
+    // wrong, like a renamed/deleted group), just silently left out, same as if it had never been
+    // linked for this particular import.
+    if (quoteGroup.hidden) continue;
     let cellRunBlocks: SpecsTextRun[][];
     if (ref.source === "zone") {
       const quoteZone = quoteGroup.zones?.find((z) => z.kind === "editable");

@@ -257,13 +257,22 @@ export default function ClientsPage() {
           ) : (
             <div className="-ml-4 -mr-4 -mb-4 -mt-4 min-h-[calc(100vh-96px)] md:-ml-5 md:-mr-5" style={{ color: text, backgroundColor: pageBg }}>
             <section className="min-h-[calc(100vh-96px)] pb-4 pt-0" style={{ backgroundColor: pageBg }}>
+                {/* Frosted-glass treatment matching every other sticky/fixed top bar in the app (the
+                    project page's own chromeHidden view headers, .glass-page-header elsewhere) —
+                    was a flat opaque panelBg before, the one top bar in the app without the blur.
+                    The two content rows below no longer set their own backgroundColor so this
+                    backdrop's own translucency actually shows through them. */}
                 <div
                   className="fixed left-0 right-0 top-14 z-30 lg:left-[226px] lg:top-0"
-                  style={{ backgroundColor: panelBg }}
+                  style={{
+                    backgroundColor: "var(--glass-bg-strong)",
+                    backdropFilter: "blur(14px) saturate(220%)",
+                    WebkitBackdropFilter: "blur(14px) saturate(220%)",
+                  }}
                 >
                 <div
                   className="flex h-[56px] items-center justify-between gap-3 border-b px-4 md:px-5"
-                  style={{ borderColor: border, backgroundColor: panelBg }}
+                  style={{ borderColor: border }}
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <Users size={16} color="#12345B" strokeWidth={2.1} />
@@ -296,7 +305,6 @@ export default function ClientsPage() {
                   style={{
                     gridTemplateColumns: "40px minmax(220px,1.4fr) minmax(220px,1.2fr) minmax(160px,1fr) 140px 110px",
                     borderColor: border,
-                    backgroundColor: panelBg,
                     color: text,
                   }}
                 >
