@@ -1,6 +1,17 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type RefObject,
+  type TouchEvent as ReactTouchEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { SYSTEM_QUOTE_FONT_OPTIONS } from "@/lib/quote-font-options";
 import { captureGlassModalOrigin, useGlassModalPopOrigin, type GlassModalOrigin } from "@/lib/use-glass-modal-pop-origin";
@@ -589,6 +600,293 @@ type FloatingSideButtonTarget = {
   topPx: number;
   content: ReactNode;
 };
+
+type MobileLongPressAction = { label: string; title: string; onClick: () => void } | null;
+
+// Mobile's own equivalent of a per-cell floating desktop button (FloatingSideButton above) — used
+// by both "Mark for Confirmation" and "Import from Quote": a long-press on an eligible cell opens a
+// small anchored dropdown with the action, instead of a floating pill always hovering nearby (see
+// each call site's own desktop button, gated !fitToViewportOnMobile, for why — mirrors
+// FloatingBarSlot/useLongPress's own established desktop-hover vs mobile-hold split elsewhere in
+// this app). A plain short tap still just selects the cell as normal; only a sustained hold opens
+// the menu. One hook call per ACTION (not per cell) — makeHandlers is a plain factory, not a hook
+// itself, so calling it fresh for each eligible cell inside the render loop is safe, same
+// "one hook call per list" convention lib/use-long-press.ts's own useLongPress already establishes.
+function useMobileCellLongPressMenu(setSelection: (sel: SpecsGridSelection) => void) {
+  const PRESS_MS = 500;
+  const MOVE_CANCEL_PX = 10;
+  // How long a pending press is ever trusted before onMouseDownCapture starts treating it as
+  // abandoned — see that handler's own comment.
+  const STALE_MS = PRESS_MS + 1000;
+  const MENU_CLOSE_MS = 180;
+
+  // Tracked as a ref (not state) since it's pure interaction bookkeeping for one in-progress touch
+  // gesture, not anything that should ever trigger a re-render on its own.
+  const pressRef = useRef<{
+    row: number;
+    col: number;
+    x: number;
+    y: number;
+    timer: ReturnType<typeof setTimeout>;
+    fired: boolean;
+    // The cell's own real contentEditable div (if it has one) — see onTouchStart's own comment for
+    // why its native magnifier/callout gets suppressed directly on THIS element, separately from
+    // the ancestor <td>'s own user-select/touch-callout suppression. Restored (removed) in every
+    // exit path (clearPending below), regardless of outcome.
+    editableEl: HTMLElement | null;
+    // When this press started (Date.now()) — see onMouseDownCapture's own comment for why this
+    // exists: a safety net against this ref ever getting stuck set forever.
+    startedAt: number;
+  } | null>(null);
+
+  // Position + the already-resolved action for the currently-open mobile dropdown — null when
+  // fully closed. onConfirm already wraps the caller's own onClick with closeMenu (see makeHandlers
+  // below), so a caller never needs to close this itself.
+  const [menu, setMenu] = useState<{ x: number; y: number; label: string; title: string; onConfirm: () => void } | null>(null);
+  // True for exactly the pop-away animation's own duration right after a close is triggered — the
+  // menu stays MOUNTED (menu itself only clears once this window ends) so it has a real element to
+  // animate closed instead of just vanishing; see closeMenu below.
+  const [menuClosing, setMenuClosing] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // Plays the menu's own pop-AWAY (floating-bar-slot-pop, the same class/duration Import from
+  // Quote's OWN desktop ghost uses elsewhere — no ghost-portal trick needed here, unlike that one:
+  // this menu is already portaled straight to <body> with nothing clipping it and never
+  // repositions mid-life, so the one real element can just play its own exit animation in place
+  // before unmounting) instead of vanishing the instant it's dismissed.
+  const closeMenu = () => {
+    setMenu((current) => {
+      if (!current) return current;
+      setMenuClosing(true);
+      window.setTimeout(() => {
+        setMenu(null);
+        setMenuClosing(false);
+      }, MENU_CLOSE_MS);
+      return current;
+    });
+  };
+
+  useEffect(() => {
+    if (!menu || menuClosing) return;
+    const onPointerDown = (e: Event) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      closeMenu();
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [menu, menuClosing]);
+
+  // Single exit path for an in-progress press, used by every one of makeHandlers' own handlers
+  // below — always restores the magnifier/callout suppression (see pressRef's own comment on
+  // editableEl) so a cancelled/finished press never leaves a cell's own text permanently
+  // unselectable, unlike an earlier version of this that only restored it from onTouchEnd/
+  // onTouchCancel, silently skipping the restore whenever a press was cancelled by movement instead.
+  const clearPending = () => {
+    const pending = pressRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending.editableEl?.style.removeProperty("-webkit-user-select");
+    pending.editableEl?.style.removeProperty("-webkit-touch-callout");
+    pressRef.current = null;
+  };
+
+  // row/col: mirrors the one relevant branch of whatever mousedown-driven select this gesture is
+  // deferring (see onTouchStart's own comment) — used for the plain single-cell select a short tap
+  // replays on release, and as this press's own identity for the staleness/cleanup bookkeeping
+  // above. onPressComplete is called once the hold crosses PRESS_MS without enough movement to
+  // cancel — return the action to show in the dropdown, or null for "nothing eligible right now"
+  // (e.g. computed state changed between touchstart and the hold completing), in which case no
+  // dropdown opens at all.
+  const makeHandlers = (row: number, col: number, onPressComplete: () => MobileLongPressAction) => ({
+    // Capture phase, same node as the plain onMouseDown it's paired with at each call site — fires
+    // FIRST and, if a touch-originated press on THIS cell is still pending a long-press decision,
+    // swallows the mousedown outright via stopImmediatePropagation so the normal select/focus logic
+    // below never runs for it. stopPropagation alone would NOT be enough here — it only stops the
+    // event reaching OTHER nodes, not a second listener already registered on this SAME node. Only
+    // ever relevant on mobile (a real mouse never leaves a pending ref behind, since only
+    // onTouchStart below ever creates one).
+    onMouseDownCapture: (e: ReactMouseEvent<HTMLElement>) => {
+      const pending = pressRef.current;
+      if (!pending) return;
+      // Safety net: this ref is ONLY ever meant to be set for the brief window of one in-progress
+      // touch gesture, cleared the moment it ends. If that somehow never happened for some rare
+      // browser/gesture edge case, it would otherwise stay stuck set FOREVER — and since every
+      // eligible cell on the WHOLE sheet shares this SAME hook instance's capture handler, a stuck
+      // ref silently blocks normal tap-to-select grid-wide, not just on the one cell that got
+      // stuck, until the page is reloaded. Treating anything older than STALE_MS as abandoned (and
+      // clearing it right here) means the worst a missed cleanup ever costs is one brief stale
+      // window, not the rest of the session.
+      if (Date.now() - pending.startedAt > STALE_MS) {
+        clearPending();
+        return;
+      }
+      e.nativeEvent.stopImmediatePropagation();
+    },
+    // A touch sequence that MIGHT become a long-press — nothing is selected yet (see
+    // onMouseDownCapture above for why the normal tap-to-select/edit is deliberately deferred, not
+    // run immediately here). If held past PRESS_MS without enough movement to cancel, opens the
+    // dropdown with whatever onPressComplete resolves to.
+    onTouchStart: (e: ReactTouchEvent<HTMLElement>) => {
+      const touch = e.touches[0];
+      if (!touch) return;
+      // Defensively clears out any PREVIOUS pending press this same ref might still be holding
+      // onto — belt-and-braces alongside onMouseDownCapture's own staleness check above, since this
+      // (a brand new touch starting) is an even more direct signal that whatever was pending before
+      // is over, regardless of why its own cleanup never ran.
+      clearPending();
+      const cellEl = e.currentTarget;
+      // iOS's native magnifier loupe (shown for precise caret placement during a hold) triggers
+      // directly off the contentEditable element itself, independent of the ANCESTOR cell's own
+      // WebkitUserSelect/WebkitTouchCallout suppression (its own style at each call site) — that
+      // covers TEXT SELECTION and the copy/look-up CALLOUT MENU, but caret-placement magnification
+      // is tied to the editable element's own identity, not inherited selection behavior, so
+      // without this too the magnifier (and the keyboard/text-cursor UI underneath it) visually
+      // swallowed the whole hold, making the dropdown underneath it read as "nothing happens."
+      // Suppressed directly on the real div for the duration of THIS press only (restored by
+      // clearPending above/below), so a plain short tap's own normal typing/caret placement is
+      // unaffected.
+      const editableEl = cellEl.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (editableEl) {
+        editableEl.style.setProperty("-webkit-user-select", "none");
+        editableEl.style.setProperty("-webkit-touch-callout", "none");
+      }
+      const timer = setTimeout(() => {
+        const pending = pressRef.current;
+        if (!pending) return;
+        pending.fired = true;
+        // Belt-and-braces: if the browser went ahead and natively focused this cell's own editable
+        // text (contentEditable focuses on tap by default, independent of the React handlers
+        // suppressed above) sometime during the hold, un-focus it now rather than letting the hold
+        // open an on-screen keyboard behind the popup — a highlighted, NOT an editing, cell is the
+        // whole point of this gesture.
+        if (document.activeElement instanceof HTMLElement && cellEl.contains(document.activeElement)) {
+          document.activeElement.blur();
+        }
+        const action = onPressComplete();
+        if (action) {
+          setMenu({
+            x: touch.clientX,
+            y: touch.clientY,
+            label: action.label,
+            title: action.title,
+            onConfirm: () => {
+              action.onClick();
+              closeMenu();
+            },
+          });
+        }
+      }, PRESS_MS);
+      pressRef.current = { row, col, x: touch.clientX, y: touch.clientY, timer, fired: false, editableEl, startedAt: Date.now() };
+    },
+    // Moving far enough reads as the start of a scroll, not a hold — cancel outright rather than
+    // guessing; a short tap's own select still correctly happens on touchend either way (this only
+    // ever cancels a press that hasn't fired yet).
+    onTouchMove: (e: ReactTouchEvent<HTMLElement>) => {
+      const pending = pressRef.current;
+      const touch = e.touches[0];
+      if (!pending || !touch) return;
+      if (Math.abs(touch.clientX - pending.x) > MOVE_CANCEL_PX || Math.abs(touch.clientY - pending.y) > MOVE_CANCEL_PX) {
+        clearPending();
+      }
+    },
+    onTouchEnd: (e: ReactTouchEvent<HTMLElement>) => {
+      const pending = pressRef.current;
+      if (!pending) return;
+      const { row: pendingRow, col: pendingCol, fired } = pending;
+      clearPending();
+      if (!fired) {
+        // Finger lifted before the long-press threshold — a short tap, not a hold. Replay the
+        // plain single-cell select the suppressed mousedown would have done (the deferred half of
+        // this gesture's own deal).
+        setSelection({ anchorRow: pendingRow, anchorCol: pendingCol, focusRow: pendingRow, focusCol: pendingCol });
+        return;
+      }
+      // It WAS a hold, the dropdown's already open — stop whatever native tap/click the browser
+      // would otherwise still dispatch for this touch sequence now that it's lifted (another guard
+      // against it silently focusing the cell's own editable text right as the popup appears).
+      e.preventDefault();
+    },
+    onTouchCancel: () => {
+      clearPending();
+    },
+  });
+
+  return { makeHandlers, menu, menuClosing, menuRef };
+}
+
+// The actual dropdown panel for useMobileCellLongPressMenu above — a small anchored menu (same
+// visual convention as headerContextMenu/zoneContextMenu elsewhere in this file), not the heavier
+// grow-from-origin glass modal treatment, since this is a quick single-action dropdown, not a real
+// dialog. Dismissed by tapping/clicking outside it, or by using the action itself (both routed
+// through the hook's own closeMenu, so it always plays its pop-away first instead of vanishing).
+// color/icon are the only things that vary per caller (Mark for Confirmation's always green;
+// Import from Quote's brand blue) — positioning, sizing, and the pop in/out animation are shared.
+function MobileLongPressMenu({
+  menu,
+  menuClosing,
+  menuRef,
+  color,
+  icon,
+}: {
+  menu: { x: number; y: number; label: string; title: string; onConfirm: () => void } | null;
+  menuClosing: boolean;
+  menuRef: RefObject<HTMLDivElement | null>;
+  color: string;
+  icon: ReactNode;
+}) {
+  if (!menu || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={menuRef}
+      className={`${menuClosing ? "floating-bar-slot-pop" : "glass-bubble-pop"} fixed z-[2000] w-[240px] overflow-hidden rounded-[10px] border py-1.5`}
+      style={{
+        // Positioning is baked into plain left/top pixel values (centered above the press point,
+        // each edge clamped so it can't run off a narrow phone screen) rather than a CSS transform:
+        // both the pop-in (glass-bubble-pop) and pop-away (floating-bar-slot-pop) classes below
+        // drive `transform` themselves for their own scale bounce — same conflict, same fix, as
+        // FloatingBarSlot's own entrance animation elsewhere in this file (see its comment) — a
+        // transform used for positioning here would otherwise get clobbered by theirs for the
+        // animation's own duration.
+        left: Math.min(Math.max(menu.x, 128), window.innerWidth - 128) - 120,
+        top: Math.max(8, menu.y - 64),
+        borderColor: "var(--glass-border)",
+        backgroundColor: "var(--glass-bg-strong)",
+        backdropFilter: "blur(24px) saturate(180%)",
+        WebkitBackdropFilter: "blur(24px) saturate(180%)",
+        boxShadow: "var(--shadow-glass)",
+      }}
+    >
+      <button
+        type="button"
+        onClick={menu.onConfirm}
+        title={menu.title}
+        className="flex w-full items-center gap-2.5 whitespace-nowrap px-4 py-3 text-left text-[14px] font-bold"
+        // No hover:brightness-95 (and tap-highlight explicitly killed) — this is a touch-only menu,
+        // and a browser's own sticky :hover/tap-flash on a just-tapped element reads as the button
+        // staying stuck "lit up" after it appears, not a real hover state. userSelect/
+        // WebkitTouchCallout: none for the same reason the cell being held already gets it (see
+        // useMobileCellLongPressMenu's own onTouchStart) — this button renders right under where
+        // the finger's still resting the instant the hold completes, so without this ITS OWN label
+        // text was what ended up visibly highlighted once it appeared.
+        style={{
+          color,
+          WebkitTapHighlightColor: "transparent",
+          WebkitUserSelect: "none",
+          userSelect: "none",
+          WebkitTouchCallout: "none",
+        }}
+      >
+        {icon}
+        {menu.label}
+      </button>
+    </div>,
+    document.body,
+  );
+}
 
 function FloatingSideButton({ target }: { target: FloatingSideButtonTarget | null }) {
   const [rendered, setRendered] = useState(target);
@@ -1338,75 +1636,15 @@ export default function SpecsGridEditor({
     };
     return { allTargets, isMultiple, isActive, label, title, onClick };
   };
-  // Mobile's own equivalent of the desktop floating button: a long-press on an eligible (
-  // confirmableAllowed) cell opens a small anchored dropdown with the same Mark for Confirmation
-  // action, instead of the floating pill (see its own render further down, gated !fitToViewportOnMobile,
-  // for why — mirrors FloatingBarSlot/useLongPress's own established desktop-hover vs mobile-hold
-  // split elsewhere in this app). A plain tap still just selects the cell as normal; only a
-  // sustained hold opens the menu. Tracked as a ref (not state) since it's pure interaction
-  // bookkeeping for one in-progress touch gesture, not anything that should ever trigger a
-  // re-render on its own.
-  const mobileConfirmPressRef = useRef<{
-    row: number;
-    col: number;
-    x: number;
-    y: number;
-    timer: ReturnType<typeof setTimeout>;
-    fired: boolean;
-    // The cell's own real contentEditable div (if it has one) — see onTouchStart's own comment for
-    // why its native magnifier/callout gets suppressed directly on THIS element, separately from
-    // the ancestor <td>'s own user-select/touch-callout suppression. Restored (removed) in
-    // onTouchEnd/onTouchCancel regardless of outcome.
-    editableEl: HTMLElement | null;
-    // When this press started (Date.now()) — see onMouseDownCapture's own comment for why this
-    // exists: a safety net against this ref ever getting stuck set forever.
-    startedAt: number;
-  } | null>(null);
-  const MOBILE_CONFIRM_PRESS_MS = 500;
-  const MOBILE_CONFIRM_MOVE_CANCEL_PX = 10;
-  // How long a pending press is ever trusted before onMouseDownCapture starts treating it as
-  // abandoned — see that handler's own comment.
-  const MOBILE_CONFIRM_PRESS_STALE_MS = MOBILE_CONFIRM_PRESS_MS + 1000;
-  // Position + the already-resolved action (label/title/onClick from computeMarkForConfirmationTarget)
-  // for the currently-open mobile dropdown — null when fully closed.
-  const [mobileConfirmMenu, setMobileConfirmMenu] = useState<{ x: number; y: number; label: string; title: string; onConfirm: () => void } | null>(
-    null,
-  );
-  // True for exactly the pop-away animation's own duration right after a close is triggered — the
-  // menu stays MOUNTED (mobileConfirmMenu itself only clears once this window ends) so it has a real
-  // element to animate closed instead of just vanishing; see closeMobileConfirmMenu below.
-  const [mobileConfirmMenuClosing, setMobileConfirmMenuClosing] = useState(false);
-  const mobileConfirmMenuRef = useRef<HTMLDivElement | null>(null);
-  const MOBILE_CONFIRM_MENU_CLOSE_MS = 180;
-  // Plays the menu's own pop-AWAY (floating-bar-slot-pop, same class/duration Import from Quote's
-  // ghost uses elsewhere — no ghost-portal trick needed here, unlike that one: this menu is already
-  // portaled straight to <body> with nothing clipping it and never repositions mid-life, so the one
-  // real element can just play its own exit animation in place before unmounting) instead of
-  // vanishing the instant it's dismissed.
-  const closeMobileConfirmMenu = () => {
-    setMobileConfirmMenu((current) => {
-      if (!current) return current;
-      setMobileConfirmMenuClosing(true);
-      window.setTimeout(() => {
-        setMobileConfirmMenu(null);
-        setMobileConfirmMenuClosing(false);
-      }, MOBILE_CONFIRM_MENU_CLOSE_MS);
-      return current;
-    });
-  };
-  useEffect(() => {
-    if (!mobileConfirmMenu || mobileConfirmMenuClosing) return;
-    const onPointerDown = (e: Event) => {
-      if (mobileConfirmMenuRef.current?.contains(e.target as Node)) return;
-      closeMobileConfirmMenu();
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("touchstart", onPointerDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("touchstart", onPointerDown);
-    };
-  }, [mobileConfirmMenu, mobileConfirmMenuClosing]);
+  // Mobile long-press dropdowns for "Mark for Confirmation" and "Import from Quote" — see
+  // useMobileCellLongPressMenu's own comment for the shared gesture mechanics. Two SEPARATE
+  // instances (not one shared between both actions): each has its own independent in-progress-press
+  // bookkeeping and its own open/closed dropdown, since a cell could in principle be eligible for
+  // either one somewhat independently of the other (see isMobileImportEligible/
+  // isMobileConfirmEligible below), and conflating them would mean one feature's open dropdown
+  // could get silently stolen/closed by the other's own gesture tracking.
+  const mobileConfirmLongPress = useMobileCellLongPressMenu(setSelection);
+  const mobileImportLongPress = useMobileCellLongPressMenu(setSelection);
 
   // Mobile-only drag handles on the current selection's own 4 edges (its render is further down,
   // next to selectionOutline) — a touch device has no equivalent of a mouse drag across cells to
@@ -1747,6 +1985,21 @@ export default function SpecsGridEditor({
   // copy (isProjectSheetView) actually collapses hidden rows to zero height — the company
   // template builder always shows every row so groups stay editable.
   const expandedGroups = getExpandedRowGroups(liveGrid);
+  // Mobile's own long-press-to-import entry point (see isMobileImportEligible/mobileImportLongPress
+  // further down) needs "is THIS row inside some linked editable zone" as a per-cell check, unlike
+  // the desktop floating button's own target computation, which tests against the current
+  // SELECTION's whole row range instead (see that button's own render further down) — both end up
+  // finding the same zone, this is just the single-row-at-a-time version of that same lookup.
+  const findImportTargetForRow = (row: number): { groupId: string; groupName: string } | null => {
+    for (const g of expandedGroups) {
+      const zone = g.zones?.find((z) => z.kind === "editable" && (z.linkedQuoteGroups?.length ?? 0) > 0);
+      if (!zone) continue;
+      const topRow = g.startRow + zone.startRow;
+      const bottomRow = g.startRow + zone.endRow;
+      if (row >= topRow && row <= bottomRow) return { groupId: g.id, groupName: g.name };
+    }
+    return null;
+  };
   const hiddenRowIndexes = new Set<number>();
   if (isProjectSheetView) {
     for (const g of expandedGroups) {
@@ -3048,6 +3301,13 @@ export default function SpecsGridEditor({
                   // button already enforces (see computeMarkForConfirmationTarget's own comment).
                   const isMobileConfirmEligible =
                     fitToViewportOnMobile && isProjectSheetView && allowConfirmationMarking && Boolean(cell.confirmableAllowed);
+                  // Gates the mobile long-press-to-import gesture below — same row-inside-a-linked-
+                  // zone restriction the desktop floating button already enforces, just checked for
+                  // THIS one row instead of against a whole selection (see findImportTargetForRow's
+                  // own comment). Checked ahead of isMobileConfirmEligible at the handler-spread
+                  // below (not here) so Import wins on the rare cell eligible for both.
+                  const isMobileImportEligible =
+                    fitToViewportOnMobile && isProjectSheetView && !isSentToClient && Boolean(quoteGridForLinkedPull) && Boolean(findImportTargetForRow(rowIdx));
                   return (
                     <td
                       key={key}
@@ -3055,35 +3315,6 @@ export default function SpecsGridEditor({
                       data-col={colIdx}
                       colSpan={colSpan > 1 ? colSpan : undefined}
                       rowSpan={rowSpan > 1 ? rowSpan : undefined}
-                      // Capture phase, same node as the plain onMouseDown below — fires FIRST and, if
-                      // a touch-originated press on THIS cell is still pending a long-press decision
-                      // (mobileConfirmPressRef set, not yet resolved), swallows the mousedown outright
-                      // via stopImmediatePropagation so the normal select/focus logic below never
-                      // runs for it. stopPropagation alone would NOT be enough here — it only stops
-                      // the event reaching OTHER nodes, not a second listener already registered on
-                      // this SAME node. Only ever relevant on mobile (a real mouse never leaves a
-                      // pending ref behind, since only onTouchStart below ever creates one) — see
-                      // mobileConfirmPressRef's own comment on why this exists at all.
-                      onMouseDownCapture={(e) => {
-                        const pending = mobileConfirmPressRef.current;
-                        if (!pending) return;
-                        // Safety net: this ref is ONLY ever meant to be set for the brief window of
-                        // one in-progress touch gesture, cleared the moment it ends (onTouchEnd/
-                        // onTouchCancel). If those somehow never fired for some rare browser/gesture
-                        // edge case, it would otherwise stay stuck set FOREVER — and since EVERY
-                        // eligible cell shares this exact same capture handler, a stuck ref silently
-                        // blocks normal tap-to-select grid-wide, not just on the one cell that got
-                        // stuck, until the page is reloaded. Treating anything older than
-                        // MOBILE_CONFIRM_PRESS_STALE_MS as abandoned (and clearing it right here)
-                        // means the worst a missed cleanup ever costs is one brief stale window, not
-                        // the rest of the session.
-                        if (Date.now() - pending.startedAt > MOBILE_CONFIRM_PRESS_STALE_MS) {
-                          clearTimeout(pending.timer);
-                          mobileConfirmPressRef.current = null;
-                          return;
-                        }
-                        e.nativeEvent.stopImmediatePropagation();
-                      }}
                       onMouseDown={(e) => {
                         if (isUngroupedBlankCell) return;
                         // Ctrl/Cmd+click is its own, entirely separate interaction — toggles this
@@ -3130,138 +3361,49 @@ export default function SpecsGridEditor({
                         if (!isSelectingRef.current) return;
                         setSelection((prev) => (prev ? { ...prev, focusRow: rowIdx, focusCol: colIdx } : prev));
                       }}
-                      {...(isMobileConfirmEligible
-                        ? {
-                            // A touch sequence that MIGHT become a long-press — nothing is selected
-                            // yet (see mobileConfirmPressRef/onMouseDownCapture above for why the
-                            // normal tap-to-select/edit is deliberately deferred, not run immediately
-                            // here). If held past MOBILE_CONFIRM_PRESS_MS without enough movement to
-                            // cancel, highlights just this cell (mirrors the one relevant branch of
-                            // the suppressed mousedown — a plain, no-modifier single-cell select) and
-                            // opens the dropdown — works on ANY eligible cell this way, not only one
-                            // that already happened to be selected/highlighted beforehand: the target
-                            // is computed with THIS cell passed as an explicit fallback (see
-                            // computeMarkForConfirmationTarget's own comment on why setSelection
-                            // alone, a tick earlier in this same callback, isn't enough on its own).
-                            onTouchStart: (e: ReactTouchEvent<HTMLTableCellElement>) => {
-                              const touch = e.touches[0];
-                              if (!touch) return;
-                              // Defensively clears out any PREVIOUS pending press this same ref
-                              // might still be holding onto — belt-and-braces alongside
-                              // onMouseDownCapture's own staleness check above, since this (a brand
-                              // new touch starting) is an even more direct signal that whatever was
-                              // pending before is over, regardless of why its own cleanup never ran.
-                              if (mobileConfirmPressRef.current) {
-                                clearTimeout(mobileConfirmPressRef.current.timer);
-                                mobileConfirmPressRef.current.editableEl?.style.removeProperty("-webkit-user-select");
-                                mobileConfirmPressRef.current.editableEl?.style.removeProperty("-webkit-touch-callout");
+                      {...(isMobileImportEligible
+                        ? mobileImportLongPress.makeHandlers(rowIdx, colIdx, () => {
+                            // Re-resolved fresh here (not captured once at render time) since this
+                            // fires up to PRESS_MS later — recentlyImportedGroupIds (for the
+                            // justImported label) could have changed in the meantime.
+                            const importTarget = findImportTargetForRow(rowIdx);
+                            if (!importTarget) return null;
+                            setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
+                            const justImported = Boolean(recentlyImportedGroupIds[importTarget.groupId]);
+                            return {
+                              label: justImported ? "Imported" : "Import from Quote",
+                              title: `Import "${importTarget.groupName}" from its editable zone's linked Quote group(s)`,
+                              onClick: () => requestImportLinkedQuoteTextIntoZoneForGroup(importTarget.groupId),
+                            };
+                          })
+                        : isMobileConfirmEligible
+                          ? mobileConfirmLongPress.makeHandlers(rowIdx, colIdx, () => {
+                              // Only collapses the selection down to just this one cell when it
+                              // ISN'T already part of a bigger multi-cell selection (e.g. one just
+                              // built via the drag handles above) — holding a cell that's already
+                              // inside a deliberately highlighted range should act on the WHOLE
+                              // range, not shrink the highlight down to whichever single cell the
+                              // hold happened to land on right as the popup opens.
+                              const existingRect = selection ? normalizeRect(selection) : null;
+                              const isExistingMultiCellSelection = Boolean(
+                                existingRect && (existingRect.minRow !== existingRect.maxRow || existingRect.minCol !== existingRect.maxCol),
+                              );
+                              const pressedCellAlreadyInSelection = isExistingMultiCellSelection && isCellInRect(rowIdx, colIdx, existingRect!);
+                              if (!pressedCellAlreadyInSelection) {
+                                setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
                               }
-                              const cellEl = e.currentTarget;
-                              // iOS's native magnifier loupe (shown for precise caret placement
-                              // during a hold) triggers directly off the contentEditable element
-                              // itself, independent of the ANCESTOR <td>'s own WebkitUserSelect/
-                              // WebkitTouchCallout suppression (its own style above) — that covers
-                              // TEXT SELECTION and the copy/look-up CALLOUT MENU, but caret-placement
-                              // magnification is tied to the editable element's own identity, not
-                              // inherited selection behavior, so without this too the magnifier (and
-                              // the keyboard/text-cursor UI underneath it) visually swallowed the
-                              // whole hold, making the dropdown underneath it read as "nothing
-                              // happens." Suppressed directly on the real div for the duration of
-                              // THIS press only (restored in onTouchEnd/onTouchCancel below), so a
-                              // plain short tap's own normal typing/caret placement is unaffected.
-                              const editableEl = cellEl.querySelector<HTMLElement>('[contenteditable="true"]');
-                              if (editableEl) {
-                                editableEl.style.setProperty("-webkit-user-select", "none");
-                                editableEl.style.setProperty("-webkit-touch-callout", "none");
-                              }
-                              const timer = setTimeout(() => {
-                                const pending = mobileConfirmPressRef.current;
-                                if (!pending) return;
-                                pending.fired = true;
-                                // Only collapses the selection down to just this one cell when it
-                                // ISN'T already part of a bigger multi-cell selection (e.g. one just
-                                // built via the drag handles above) — holding a cell that's already
-                                // inside a deliberately highlighted range should act on the WHOLE
-                                // range, not shrink the highlight down to whichever single cell the
-                                // hold happened to land on right as the popup opens.
-                                const existingRect = selection ? normalizeRect(selection) : null;
-                                const isExistingMultiCellSelection = Boolean(
-                                  existingRect && (existingRect.minRow !== existingRect.maxRow || existingRect.minCol !== existingRect.maxCol),
-                                );
-                                const pressedCellAlreadyInSelection = isExistingMultiCellSelection && isCellInRect(rowIdx, colIdx, existingRect!);
-                                if (!pressedCellAlreadyInSelection) {
-                                  setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
-                                }
-                                // Belt-and-braces: if the browser went ahead and natively focused this
-                                // cell's own editable text (contentEditable focuses on tap by default,
-                                // independent of the React handlers suppressed above) sometime during
-                                // the hold, un-focus it now rather than letting the hold open an
-                                // on-screen keyboard behind the popup — a highlighted, NOT an editing,
-                                // cell is the whole point of this gesture.
-                                if (document.activeElement instanceof HTMLElement && cellEl.contains(document.activeElement)) {
-                                  document.activeElement.blur();
-                                }
-                                // forceFallbackCellOnly: !pressedCellAlreadyInSelection — when true,
-                                // this is the SAME synchronous tick as the setSelection(...) call
-                                // just above that replaced whatever used to be selected, so reading
-                                // `selection` here directly would still see that stale, about-to-be-
-                                // replaced value (see this param's own comment). When
-                                // pressedCellAlreadyInSelection is true, nothing was just changed —
-                                // `selection` is already accurate, so the normal derivation is used.
-                                const target = computeMarkForConfirmationTarget({ row: rowIdx, col: colIdx }, !pressedCellAlreadyInSelection);
-                                if (target) {
-                                  setMobileConfirmMenu({ x: touch.clientX, y: touch.clientY, label: target.label, title: target.title, onConfirm: target.onClick });
-                                }
-                              }, MOBILE_CONFIRM_PRESS_MS);
-                              mobileConfirmPressRef.current = { row: rowIdx, col: colIdx, x: touch.clientX, y: touch.clientY, timer, fired: false, editableEl, startedAt: Date.now() };
-                            },
-                            // Moving far enough reads as the start of a scroll, not a hold — cancel
-                            // outright rather than guessing; see mobileConfirmPressRef's own comment
-                            // for why a short tap's own select still correctly happens on touchend
-                            // either way (this only ever cancels a press that hasn't fired yet).
-                            onTouchMove: (e: ReactTouchEvent<HTMLTableCellElement>) => {
-                              const pending = mobileConfirmPressRef.current;
-                              const touch = e.touches[0];
-                              if (!pending || !touch) return;
-                              if (Math.abs(touch.clientX - pending.x) > MOBILE_CONFIRM_MOVE_CANCEL_PX || Math.abs(touch.clientY - pending.y) > MOBILE_CONFIRM_MOVE_CANCEL_PX) {
-                                clearTimeout(pending.timer);
-                                mobileConfirmPressRef.current = null;
-                              }
-                            },
-                            onTouchEnd: (e: ReactTouchEvent<HTMLTableCellElement>) => {
-                              const pending = mobileConfirmPressRef.current;
-                              if (!pending) return;
-                              clearTimeout(pending.timer);
-                              mobileConfirmPressRef.current = null;
-                              // Restores the magnifier/callout suppression set in onTouchStart —
-                              // this one press is over either way, so normal typing/caret placement
-                              // on the NEXT tap needs it gone again.
-                              pending.editableEl?.style.removeProperty("-webkit-user-select");
-                              pending.editableEl?.style.removeProperty("-webkit-touch-callout");
-                              if (!pending.fired) {
-                                // Finger lifted before the long-press threshold — a short tap, not a
-                                // hold. Replay the plain single-cell select the suppressed mousedown
-                                // would have done (the deferred half of this gesture's own deal).
-                                setSelection({ anchorRow: pending.row, anchorCol: pending.col, focusRow: pending.row, focusCol: pending.col });
-                                return;
-                              }
-                              // It WAS a hold, the dropdown's already open — stop whatever native
-                              // tap/click the browser would otherwise still dispatch for this touch
-                              // sequence now that it's lifted (another guard against it silently
-                              // focusing the cell's own editable text right as the popup appears).
-                              e.preventDefault();
-                            },
-                            onTouchCancel: () => {
-                              const pending = mobileConfirmPressRef.current;
-                              if (pending) {
-                                clearTimeout(pending.timer);
-                                pending.editableEl?.style.removeProperty("-webkit-user-select");
-                                pending.editableEl?.style.removeProperty("-webkit-touch-callout");
-                              }
-                              mobileConfirmPressRef.current = null;
-                            },
-                          }
-                        : {})}
+                              // forceFallbackCellOnly: !pressedCellAlreadyInSelection — when true,
+                              // this is the SAME synchronous tick as the setSelection(...) call just
+                              // above that replaced whatever used to be selected, so reading
+                              // `selection` inside computeMarkForConfirmationTarget would still see
+                              // that stale, about-to-be-replaced value (see that param's own
+                              // comment). When pressedCellAlreadyInSelection is true, nothing was
+                              // just changed — `selection` is already accurate, so the normal
+                              // derivation is used.
+                              const target = computeMarkForConfirmationTarget({ row: rowIdx, col: colIdx }, !pressedCellAlreadyInSelection);
+                              return target ? { label: target.label, title: target.title, onClick: target.onClick } : null;
+                            })
+                          : {})}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         if (isUngroupedBlankCell) return;
@@ -3688,7 +3830,7 @@ export default function SpecsGridEditor({
             comment. Shown whenever that zone has a Quote link pre-configured in the Company Settings
             template builder (right-click the zone there — see linkedQuoteSourceGrid's own comment on
             SpecsGridEditorProps for why the link itself is never editable here). */}
-        {isProjectSheetView && !isSentToClient && quoteGridForLinkedPull ? (
+        {isProjectSheetView && !isSentToClient && quoteGridForLinkedPull && !fitToViewportOnMobile ? (
           <FloatingSideButton
             target={(() => {
               if (!selection) return null;
@@ -4814,65 +4956,24 @@ export default function SpecsGridEditor({
             document.body,
           )
         : null}
-      {/* Mobile's own long-press dropdown for "Mark for Confirmation" — see
-          computeMarkForConfirmationTarget/mobileConfirmPressRef's own comments for the gesture
-          itself. A small anchored menu (same visual convention as headerContextMenu/zoneContextMenu
-          elsewhere in this file), not the heavier grow-from-origin glass modal treatment — this is a
-          quick single-action dropdown, not a real dialog. Dismissed by tapping/clicking outside it
-          (the effect wiring mobileConfirmMenuRef) or by using the action itself — either way via
-          closeMobileConfirmMenu, so it always plays its own pop-away first instead of vanishing.
-          Positioning is baked into plain left/top pixel values (centered above the press point, each
-          edge clamped so it can't run off a narrow phone screen) rather than a CSS transform: both
-          the pop-in (glass-bubble-pop) and pop-away (floating-bar-slot-pop) classes below drive
-          `transform` themselves for their own scale bounce — same conflict, same fix, as
-          FloatingBarSlot's own entrance animation elsewhere in this file (see its comment) — a
-          transform used for positioning here would otherwise get clobbered by theirs for the
-          animation's own duration. */}
-      {mobileConfirmMenu && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              ref={mobileConfirmMenuRef}
-              className={`${mobileConfirmMenuClosing ? "floating-bar-slot-pop" : "glass-bubble-pop"} fixed z-[2000] w-[240px] overflow-hidden rounded-[10px] border py-1.5`}
-              style={{
-                left: Math.min(Math.max(mobileConfirmMenu.x, 128), window.innerWidth - 128) - 120,
-                top: Math.max(8, mobileConfirmMenu.y - 64),
-                borderColor: "var(--glass-border)",
-                backgroundColor: "var(--glass-bg-strong)",
-                backdropFilter: "blur(24px) saturate(180%)",
-                WebkitBackdropFilter: "blur(24px) saturate(180%)",
-                boxShadow: "var(--shadow-glass)",
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  mobileConfirmMenu.onConfirm();
-                  closeMobileConfirmMenu();
-                }}
-                title={mobileConfirmMenu.title}
-                className="flex w-full items-center gap-2.5 whitespace-nowrap px-4 py-3 text-left text-[14px] font-bold"
-                // No hover:brightness-95 (and tap-highlight explicitly killed) — this is a touch-only
-                // menu, and a browser's own sticky :hover/tap-flash on a just-tapped element reads as
-                // the button staying stuck "lit up" after it appears, not a real hover state.
-                // userSelect/WebkitTouchCallout: none for the same reason the cell being held already
-                // gets it (see isMobileConfirmEligible's own style above) — this button renders right
-                // under where the finger's still resting the instant the hold completes, so without
-                // this ITS OWN label text was what ended up visibly highlighted once it appeared.
-                style={{
-                  color: "var(--success-strong)",
-                  WebkitTapHighlightColor: "transparent",
-                  WebkitUserSelect: "none",
-                  userSelect: "none",
-                  WebkitTouchCallout: "none",
-                }}
-              >
-                <CheckSquare size={16} />
-                {mobileConfirmMenu.label}
-              </button>
-            </div>,
-            document.body,
-          )
-        : null}
+      {/* Mobile's own long-press dropdowns for "Mark for Confirmation" and "Import from Quote" — see
+          useMobileCellLongPressMenu/MobileLongPressMenu's own comments for the shared gesture and
+          rendering mechanics. Import is rendered after Confirm only so its z-stack wins on the rare
+          cell eligible for both (matches makeHandlers' own priority at the handler-spread above). */}
+      <MobileLongPressMenu
+        menu={mobileConfirmLongPress.menu}
+        menuClosing={mobileConfirmLongPress.menuClosing}
+        menuRef={mobileConfirmLongPress.menuRef}
+        color="var(--success-strong)"
+        icon={<CheckSquare size={16} />}
+      />
+      <MobileLongPressMenu
+        menu={mobileImportLongPress.menu}
+        menuClosing={mobileImportLongPress.menuClosing}
+        menuRef={mobileImportLongPress.menuRef}
+        color="var(--brand-strong)"
+        icon={<RefreshCw size={16} />}
+      />
     </div>
   );
 }

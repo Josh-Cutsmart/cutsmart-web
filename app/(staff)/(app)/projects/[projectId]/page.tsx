@@ -7629,9 +7629,18 @@ export default function ProjectDetailsPage() {
     refreshBoardColourDropdownRect();
     window.addEventListener("resize", refreshBoardColourDropdownRect);
     window.addEventListener("scroll", refreshBoardColourDropdownRect, true);
+    // window's own resize/scroll above don't fire when the on-screen keyboard opens/closes without
+    // also scrolling the page — window.innerHeight (the LAYOUT viewport) doesn't change, only the
+    // VISUAL viewport does (see useKeyboardInsetPx's own comment on the same distinction). Without
+    // these too, this rect goes stale the moment the keyboard opens, leaving the dropdown anchored
+    // to where the textbox USED to be instead of following it.
+    window.visualViewport?.addEventListener("resize", refreshBoardColourDropdownRect);
+    window.visualViewport?.addEventListener("scroll", refreshBoardColourDropdownRect);
     return () => {
       window.removeEventListener("resize", refreshBoardColourDropdownRect);
       window.removeEventListener("scroll", refreshBoardColourDropdownRect, true);
+      window.visualViewport?.removeEventListener("resize", refreshBoardColourDropdownRect);
+      window.visualViewport?.removeEventListener("scroll", refreshBoardColourDropdownRect);
     };
   }, [activeBoardColourSuggestionsRowId]);
   // Same combo-box pattern as Colour above, but suggestions are ranked per the row's OWN colour
@@ -7654,9 +7663,15 @@ export default function ProjectDetailsPage() {
     refreshBoardEdgingDropdownRect();
     window.addEventListener("resize", refreshBoardEdgingDropdownRect);
     window.addEventListener("scroll", refreshBoardEdgingDropdownRect, true);
+    // See boardColourDropdownRect's own effect above for why visualViewport needs its own
+    // listeners too, separate from window's.
+    window.visualViewport?.addEventListener("resize", refreshBoardEdgingDropdownRect);
+    window.visualViewport?.addEventListener("scroll", refreshBoardEdgingDropdownRect);
     return () => {
       window.removeEventListener("resize", refreshBoardEdgingDropdownRect);
       window.removeEventListener("scroll", refreshBoardEdgingDropdownRect, true);
+      window.visualViewport?.removeEventListener("resize", refreshBoardEdgingDropdownRect);
+      window.visualViewport?.removeEventListener("scroll", refreshBoardEdgingDropdownRect);
     };
   }, [activeBoardEdgingSuggestionsRowId]);
   const [productionCutlist, setProductionCutlist] = useState<Cutlist | null>(null);
