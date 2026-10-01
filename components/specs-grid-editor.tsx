@@ -1359,34 +1359,57 @@ export default function SpecsGridEditor({
       const nextRows = rows.map((r, ri) => (ri === lastRow ? { ...r, heightPx: Math.ceil(readHeightPx(lastRow) + extra) } : r));
       return commitGrownRows(nextRows, row, col);
     }
-    // Shrinking back down — deliberately far more conservative than growing, and only attempted for
-    // a plain, single-row cell (rowSpan 1): a multi-row span's own "how much does THIS row alone
-    // need" isn't well-defined (the span's total could be satisfied by shrinking a DIFFERENT row in
-    // it instead), so those are left exactly as grow-only always worked, same as before this existed.
-    if (Math.max(1, rowSpan) > 1) return;
+    // Shrinking back down — deliberately far more conservative than growing.
     // Not meaningfully shorter than what's already stored — nothing to do (also covers the common
     // case where this cell's own measurement hasn't changed since last time).
     if (naturalHeightPx >= currentHeight - GROW_ROW_TOLERANCE_PX) return;
-    const rowCells = rows[row]?.cells ?? [];
-    let maxNeededPx = naturalHeightPx;
-    for (let c = 0; c < rowCells.length; c += 1) {
-      if (c === col) continue;
-      const neighbor = rowCells[c];
-      if (!neighbor) continue;
-      // A merged neighbor spanning into/out of this row makes "how much does this ONE row need"
-      // ambiguous the same way this cell's own multi-row case above does — bail rather than guess.
-      if (Math.max(1, getCellSpan(neighbor).rowSpan) > 1) return;
-      const known = cellNaturalHeightsRef.current.get(`${row}:${c}`);
-      // Never actually measured yet (an image cell, which doesn't report through this map at all,
-      // or a text cell whose own mount effect genuinely hasn't run yet) — NOT the same as "needs no
-      // room." Bailing here, not assuming 0, is what keeps this safe: a row only ever shrinks once
-      // every cell sharing it has positively confirmed it fits.
-      if (known === undefined) return;
-      maxNeededPx = Math.max(maxNeededPx, known);
+    if (Math.max(1, rowSpan) === 1) {
+      const rowCells = rows[row]?.cells ?? [];
+      let maxNeededPx = naturalHeightPx;
+      for (let c = 0; c < rowCells.length; c += 1) {
+        if (c === col) continue;
+        const neighbor = rowCells[c];
+        if (!neighbor) continue;
+        // A merged neighbor spanning into/out of this row makes "how much does this ONE row need"
+        // ambiguous the same way a multi-row span does below — bail rather than guess.
+        if (Math.max(1, getCellSpan(neighbor).rowSpan) > 1) return;
+        const known = cellNaturalHeightsRef.current.get(`${row}:${c}`);
+        // Never actually measured yet (an image cell, which doesn't report through this map at
+        // all, or a text cell whose own mount effect genuinely hasn't run yet) — NOT the same as
+        // "needs no room." Bailing here, not assuming 0, is what keeps this safe: a row only ever
+        // shrinks once every cell sharing it has positively confirmed it fits.
+        if (known === undefined) return;
+        maxNeededPx = Math.max(maxNeededPx, known);
+      }
+      // Some neighbor (possibly re-checked just now) still genuinely needs the current height.
+      if (maxNeededPx >= currentHeight - GROW_ROW_TOLERANCE_PX) return;
+      const nextRows = rows.map((r, ri) => (ri === row ? { ...r, heightPx: Math.max(DEFAULT_ROW_HEIGHT_PX, Math.ceil(maxNeededPx)) } : r));
+      return commitGrownRows(nextRows, row, col);
     }
-    // Some neighbor (possibly re-checked just now) still genuinely needs the current height.
-    if (maxNeededPx >= currentHeight - GROW_ROW_TOLERANCE_PX) return;
-    const nextRows = rows.map((r, ri) => (ri === row ? { ...r, heightPx: Math.max(DEFAULT_ROW_HEIGHT_PX, Math.ceil(maxNeededPx)) } : r));
+    // A multi-row span is only safe to shrink in the one case where it's completely unambiguous:
+    // this cell is the ONLY real content anywhere across its own row range (e.g. a pure blank
+    // "spacer" between two groups, merged across several rows and the full column width, with
+    // nothing else sharing any of those rows) — a genuinely common real-world shape, and exactly
+    // the one this was built for: that measurement-noise class of bug (see this function's own
+    // top comment) leaves this kind of spacer permanently stuck too tall with nothing else ever
+    // touching it, since no OTHER cell in its span exists to ever report a conflicting need. Any
+    // other neighbor sharing the span makes "how much does THIS row alone need" ambiguous (the
+    // span's own total could just as validly be satisfied by shrinking a DIFFERENT row in it) —
+    // bail rather than guess.
+    for (let r = row; r <= lastRow; r += 1) {
+      const rCells = rows[r]?.cells ?? [];
+      for (let c = 0; c < rCells.length; c += 1) {
+        if (r === row && c === col) continue;
+        if (rCells[c]) return;
+      }
+    }
+    // Mirrors growing's own behavior exactly (grow only ever adds to the LAST row of a span,
+    // leaving the others at whatever they already were) — shrink removes the same total deficit
+    // from just the last row, clamped to the sheet's own minimum row height.
+    const deficit = currentHeight - naturalHeightPx;
+    const shrunkLastRowPx = Math.max(MIN_ROW_HEIGHT_PX, readHeightPx(lastRow) - deficit);
+    if (shrunkLastRowPx >= readHeightPx(lastRow) - GROW_ROW_TOLERANCE_PX) return;
+    const nextRows = rows.map((r, ri) => (ri === lastRow ? { ...r, heightPx: Math.ceil(shrunkLastRowPx) } : r));
     commitGrownRows(nextRows, row, col);
   };
   // Shared commit tail for both the grow and shrink branches above — see their own comment for why
@@ -2116,7 +2139,11 @@ export default function SpecsGridEditor({
   // part of it) — a single shared array can't hold both values at once. Defaults to rowPrefixSums
   // itself (same reference) so every consumer below is completely unaffected when no spacer applies.
   let rowBottomEdgeSums = rowPrefixSums;
-  if (isProjectSheetView) {
+  // Pinning content to the bottom of a physical printed page only means anything when that page's
+  // own edge is visible/meaningful on screen (desktop's 1:1 page preview). Mobile shows one
+  // continuously-scrolling sheet with no concept of "page 1's bottom edge", so this would just
+  // insert a large, nonsensical blank gap — skip it there entirely.
+  if (isProjectSheetView && !fitToViewportOnMobile) {
     const anchoredGroups = expandedGroups.filter((g) => g.anchorFirstPageBottom && !g.hidden);
     if (anchoredGroups.length > 0) {
       const anchorStartRow = Math.min(...anchoredGroups.map((g) => g.startRow));
@@ -3768,7 +3795,14 @@ export default function SpecsGridEditor({
                             }}
                             onLiveCommitRuns={(runs) => commitCellRuns(rowIdx, colIdx, runs)}
                             onToggleWholeCellFormat={(formatKey) => toggleCellRunsAt(rowIdx, colIdx, formatKey)}
-                            onNaturalHeightChange={(px) => growRowForCellHeight(rowIdx, colIdx, cell, px)}
+                            // Skipped on mobile: the sheet there should render EXACTLY the row
+                            // heights already stored (same ones the template/desktop view uses),
+                            // never auto-grow/shrink from an on-device measurement — a scaled,
+                            // mobile-rendered textarea's scrollHeight isn't trustworthy enough to
+                            // persist back into the shared grid data.
+                            onNaturalHeightChange={
+                              fitToViewportOnMobile ? undefined : (px) => growRowForCellHeight(rowIdx, colIdx, cell, px)
+                            }
                             // Summed, not passed separately — remeasureSignal is only ever compared
                             // for change (see its own comment: "its actual value is never read"),
                             // so a combined value that changes whenever EITHER input does serves
@@ -5240,6 +5274,15 @@ function SpecsCellTextArea({
   if (readOnly) {
     return (
       <div
+        // Same ref the measuring effect above (defined before this early return, so it runs for a
+        // read-only cell too — hooks can't be conditional) reads via ref.current.scrollHeight. It
+        // was never attached here before, so onNaturalHeightChange NEVER fired for a read-only
+        // cell — meaning a blank, locked "spacer" row (very commonly read-only: outside any
+        // editable zone, or lockUngroupedBlankCells) could never grow OR shrink to what it
+        // actually needs, no matter what. If its stored heightPx was ever wrong for any reason —
+        // including the exact measurement-noise class of bug growRowForCellHeight's own comment
+        // describes — nothing could ever correct it, since this cell never reported in at all.
+        ref={ref}
         dangerouslySetInnerHTML={{ __html: runsToHtml(runs) }}
         title={readOnlyReason ?? "You don't have permission to edit this section"}
         className={`whitespace-pre-wrap break-words px-2 py-0.5 ${dimmed ? "opacity-80" : ""}`}
