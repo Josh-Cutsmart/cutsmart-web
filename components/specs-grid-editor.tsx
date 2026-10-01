@@ -2272,6 +2272,33 @@ export default function SpecsGridEditor({
       if (debounceId) clearTimeout(debounceId);
     };
   }, [fitToViewportOnMobile]);
+  // Safety net for the viewport's own clipping height below (sheetFitViewportHeightPx) — reported
+  // on a real device (not reproduced in any desktop/emulated testing) as the mock page's own white
+  // background ending short of its real content, with the tail of the sheet rendering past it with
+  // no page background behind it at all. mockPageBoxHeightPx is a pure calculation from this
+  // grid's OWN stored row heights, never DOM-measured — if an actual engine ever lays a row out
+  // even slightly taller than that (any of the historical measurement-timing/font-swap/engine
+  // quirks this file already works around elsewhere, or one not yet found), the real page box
+  // silently grows past the calculated figure (its own height is `minHeight`, so IT keeps up fine)
+  // while the viewport clipping it to a HEIGHT frozen at the calculation stays the old, shorter
+  // size — cutting the visible page background off right where the calculation expected it to
+  // end, with the real content carrying on past that into whatever's behind it. Observing the
+  // actual rendered box directly removes the calculation as a point of failure entirely: whatever
+  // the real engine lays out, in ITS OWN unscaled layout units (ResizeObserver's contentRect is
+  // unaffected by this box's own CSS transform), becomes the floor the viewport is clipped to.
+  const pageBoxRef = useRef<HTMLDivElement | null>(null);
+  const [measuredPageBoxHeightPx, setMeasuredPageBoxHeightPx] = useState(0);
+  useEffect(() => {
+    if (!fitToViewportOnMobile || typeof ResizeObserver === "undefined") return;
+    const el = pageBoxRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setMeasuredPageBoxHeightPx(entry.contentRect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [fitToViewportOnMobile]);
   // Many sheets use a custom @font-face (e.g. a signature font) whose font-display: swap means a
   // fallback font renders immediately while the real one loads in the background — the same risk
   // lib/specs-grid-pdf.ts already has to work around for PDF export (see its own comment on
@@ -3368,14 +3395,18 @@ export default function SpecsGridEditor({
                   // own comment: a short page still gets the FULL available screen height here (so
                   // pinch-zoom has real room to pan into instead of hitting this box's own edge a
                   // moment after unscaled padding would have started), while a page taller than
-                  // that genuinely grows past it and scrolls with the rest of the view.
-                  height: Math.max(mockPageBoxHeightPx * sheetFitScale, sheetFitMinHeightPx),
+                  // that genuinely grows past it and scrolls with the rest of the view. Also
+                  // Math.max against measuredPageBoxHeightPx (see its own comment) — the page box's
+                  // OWN real rendered height, whenever that ends up taller than this calculation
+                  // expected, wins instead of silently clipping the difference.
+                  height: Math.max(Math.max(mockPageBoxHeightPx, measuredPageBoxHeightPx) * sheetFitScale, sheetFitMinHeightPx),
                   touchAction: sheetZoom > 1 ? "none" : "pan-y",
                 }
               : undefined
           }
         >
         <div
+          ref={fitToViewportOnMobile ? pageBoxRef : undefined}
           className="relative mx-auto"
           style={{
             width: mockPageBoxWidthPx,
