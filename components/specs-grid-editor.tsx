@@ -1329,10 +1329,19 @@ export default function SpecsGridEditor({
   // rely on, so for that case this persists the grown height immediately via `onChange` directly
   // (not a second applyChange call, deliberately: Ctrl+Z on the import should undo the text AND its
   // own height growth together as one action, not need a second undo for the height alone).
+  // Last known natural (scrollHeight) measurement reported by every cell, keyed "row:col" — exists
+  // purely so growRowForCellHeight can SAFELY shrink a row back down (see its own comment on why
+  // growing alone can leave a row permanently stuck too tall: e.g. a cell whose very first
+  // measurement happened to land during an unsettled render pass, before layout/fonts/width had
+  // actually finished). A row can span several columns, each its own cell — shrinking has to know
+  // EVERY one of them is genuinely fine with the smaller height, not just whichever cell happens to
+  // be re-measuring right now, or it'd clip a neighbor that still needs the room.
+  const cellNaturalHeightsRef = useRef<Map<string, number>>(new Map());
   const growRowForCellHeight = (row: number, col: number, cell: SpecsCell | null, naturalHeightPx: number) => {
     const { rowSpan } = getCellSpan(cell);
     const rows = liveGridRef.current.rows;
     const lastRow = row + Math.max(1, rowSpan) - 1;
+    cellNaturalHeightsRef.current.set(`${row}:${col}`, naturalHeightPx);
     const readHeightPx = (ri: number): number => {
       const h = rows[ri]?.heightPx;
       return typeof h === "number" && Number.isFinite(h) && h > 0 ? h : DEFAULT_ROW_HEIGHT_PX;
@@ -1345,9 +1354,44 @@ export default function SpecsGridEditor({
     // two taller on every first click, even though nothing about its content actually needed more
     // room. A genuinely wrapped extra line is a much bigger jump than this (a full line height, easily
     // 14px+), so real wrapping still grows the row correctly.
-    if (naturalHeightPx <= currentHeight + GROW_ROW_TOLERANCE_PX) return;
-    const extra = naturalHeightPx - currentHeight;
-    const nextRows = rows.map((r, ri) => (ri === lastRow ? { ...r, heightPx: Math.ceil(readHeightPx(lastRow) + extra) } : r));
+    if (naturalHeightPx > currentHeight + GROW_ROW_TOLERANCE_PX) {
+      const extra = naturalHeightPx - currentHeight;
+      const nextRows = rows.map((r, ri) => (ri === lastRow ? { ...r, heightPx: Math.ceil(readHeightPx(lastRow) + extra) } : r));
+      return commitGrownRows(nextRows, row, col);
+    }
+    // Shrinking back down — deliberately far more conservative than growing, and only attempted for
+    // a plain, single-row cell (rowSpan 1): a multi-row span's own "how much does THIS row alone
+    // need" isn't well-defined (the span's total could be satisfied by shrinking a DIFFERENT row in
+    // it instead), so those are left exactly as grow-only always worked, same as before this existed.
+    if (Math.max(1, rowSpan) > 1) return;
+    // Not meaningfully shorter than what's already stored — nothing to do (also covers the common
+    // case where this cell's own measurement hasn't changed since last time).
+    if (naturalHeightPx >= currentHeight - GROW_ROW_TOLERANCE_PX) return;
+    const rowCells = rows[row]?.cells ?? [];
+    let maxNeededPx = naturalHeightPx;
+    for (let c = 0; c < rowCells.length; c += 1) {
+      if (c === col) continue;
+      const neighbor = rowCells[c];
+      if (!neighbor) continue;
+      // A merged neighbor spanning into/out of this row makes "how much does this ONE row need"
+      // ambiguous the same way this cell's own multi-row case above does — bail rather than guess.
+      if (Math.max(1, getCellSpan(neighbor).rowSpan) > 1) return;
+      const known = cellNaturalHeightsRef.current.get(`${row}:${c}`);
+      // Never actually measured yet (an image cell, which doesn't report through this map at all,
+      // or a text cell whose own mount effect genuinely hasn't run yet) — NOT the same as "needs no
+      // room." Bailing here, not assuming 0, is what keeps this safe: a row only ever shrinks once
+      // every cell sharing it has positively confirmed it fits.
+      if (known === undefined) return;
+      maxNeededPx = Math.max(maxNeededPx, known);
+    }
+    // Some neighbor (possibly re-checked just now) still genuinely needs the current height.
+    if (maxNeededPx >= currentHeight - GROW_ROW_TOLERANCE_PX) return;
+    const nextRows = rows.map((r, ri) => (ri === row ? { ...r, heightPx: Math.max(DEFAULT_ROW_HEIGHT_PX, Math.ceil(maxNeededPx)) } : r));
+    commitGrownRows(nextRows, row, col);
+  };
+  // Shared commit tail for both the grow and shrink branches above — see their own comment for why
+  // persistence differs while the row's own cell is focused vs. not.
+  const commitGrownRows = (nextRows: SpecsGrid["rows"], row: number, col: number) => {
     const next: SpecsGrid = {
       pageSize: liveGridRef.current.pageSize,
       columnWidths: liveGridRef.current.columnWidths,
@@ -2233,18 +2277,19 @@ export default function SpecsGridEditor({
       ? Math.max(0.1, Math.min(1, (viewportInnerWidthPx - SHEET_FIT_HORIZONTAL_INSET_PX) / mockPageBoxWidthPx))
       : 1;
   // How tall the pinch-zoom/pan viewport (below) should be AT LEAST — the full room actually
-  // available on screen (host title bar + this component's own toolbar spacer + canvas padding all
-  // subtracted out), regardless of whether the scaled page itself is shorter than that. Without
-  // this, a short page's viewport sized to just its own scaled content left genuine, un-zoomable
-  // padding above/below it (the canvas's own flex-1 stretch only grows the grey BACKGROUND, not
-  // this inner overflow:hidden box) — pinching in had nowhere to pan INTO across that gap, reading
-  // as "it's there no matter how much I zoom, and it still cuts the sheet off." The viewport's own
-  // style below takes Math.max of this and the page's real scaled height, so a TALL page still
-  // grows taller than the screen and simply scrolls with the rest of the view, same as
-  // sheetFitScale's own comment describes.
+  // available on screen (host title bar + this component's own toolbar spacer + the canvas's own
+  // bottom inset all subtracted out — NOT a top padding term, since the canvas now has none left
+  // on mobile, see its own paddingTop: 0 override below), regardless of whether the scaled page
+  // itself is shorter than that. Without this, a short page's viewport sized to just its own scaled
+  // content left genuine, un-zoomable padding above/below it (the canvas's own flex-1 stretch only
+  // grows the grey BACKGROUND, not this inner overflow:hidden box) — pinching in had nowhere to pan
+  // INTO across that gap, reading as "it's there no matter how much I zoom, and it still cuts the
+  // sheet off." The viewport's own style below takes Math.max of this and the page's real scaled
+  // height, so a TALL page still grows taller than the screen and simply scrolls with the rest of
+  // the view, same as sheetFitScale's own comment describes.
   const sheetFitMinHeightPx =
     fitToViewportOnMobile
-      ? Math.max(0, viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - 24 - (canvasBottomInsetPx ?? 0))
+      ? Math.max(0, viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - (canvasBottomInsetPx ?? 0))
       : 0;
   const [sheetZoom, setSheetZoom] = useState(1);
   const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
