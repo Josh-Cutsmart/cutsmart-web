@@ -78,12 +78,28 @@ export type SpecsCell = {
   confirmedAt?: string;
 };
 
+// Cell objects without their own .runs (any cell never touched by rich-text editing — plain text
+// is the common case) used to fall through to a freshly-built array+object literal on EVERY call,
+// even when nothing about the cell had changed. The live editor passes this straight through as a
+// prop (SpecsCellTextArea's `runs`), whose own measuring effect depends on it by reference — a
+// fresh array every render re-fired that effect for every plain-text cell on every single render of
+// the whole grid, regardless of whether anything actually changed, which could cascade into a real
+// infinite render loop the moment any one cell's grow/shrink didn't converge in a single pass (see
+// growRowForCellHeight's own comment). Cached per cell object here instead: the SAME cell reference
+// now always gets back the SAME runs array, and a cell only ever gets a new object reference when
+// its own row is actually rebuilt by an edit — exactly when a fresh computation is wanted anyway.
+const fallbackRunsCache = new WeakMap<SpecsCell, SpecsTextRun[]>();
+
 // The one canonical way to read "the runs for this cell" — every renderer (on-screen editor, PDF
 // export) should go through this rather than branching on whether `runs` happens to be populated.
 export function getCellRuns(cell: SpecsCell): SpecsTextRun[] {
   if (cell.runs && cell.runs.length > 0) return cell.runs;
+  const cached = fallbackRunsCache.get(cell);
+  if (cached) return cached;
   const style = cell.style ?? {};
-  return [{ text: cell.text, ...(style.bold ? { bold: true as const } : {}), ...(style.underline ? { underline: true as const } : {}) }];
+  const computed = [{ text: cell.text, ...(style.bold ? { bold: true as const } : {}), ...(style.underline ? { underline: true as const } : {}) }];
+  fallbackRunsCache.set(cell, computed);
+  return computed;
 }
 
 export function runsToPlainText(runs: SpecsTextRun[]): string {
@@ -1122,6 +1138,25 @@ export function renameRowGroup(grid: SpecsGrid, groupId: string, fields: SpecsRo
 
 export function setRowGroupHidden(grid: SpecsGrid, groupId: string, hidden: boolean): SpecsGrid {
   return { ...grid, groups: grid.groups.map((g) => (g.id === groupId ? { ...g, hidden } : g)) };
+}
+
+// Clears anchorFirstPageBottom from every OTHER group, so exactly one group (or none) is ever the
+// current split point — multiple independently-anchored groups never had distinct meaning anyway
+// (only the earliest start row among them was ever read, see buildSpecsGridPdfBlob's own
+// computation), so this keeps that invariant explicit rather than leaving stray flags behind on
+// groups the splitter-line UI no longer shows as "the" split. `groupId: null` clears the split
+// entirely (no group anchored, every group just flows top-down like normal).
+export function setAnchorSplitGroup(grid: SpecsGrid, groupId: string | null): SpecsGrid {
+  return {
+    ...grid,
+    groups: grid.groups.map((g) => {
+      if (g.id === groupId) return { ...g, anchorFirstPageBottom: true };
+      if (!g.anchorFirstPageBottom) return g;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { anchorFirstPageBottom: _removed, ...rest } = g;
+      return rest;
+    }),
+  };
 }
 
 export function removeRowGroup(grid: SpecsGrid, groupId: string): SpecsGrid {

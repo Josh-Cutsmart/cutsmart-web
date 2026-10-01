@@ -80,33 +80,12 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
   const mockPageMarginPx = Math.round(SPECS_PAGE_MARGIN_MM * MM_TO_PX);
   const mockPageHeightPx = Math.round(SPECS_PAGE_SIZES[grid.pageSize].heightMm * MM_TO_PX);
 
-  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) — ported from
-  // specs-grid-editor.tsx's own project-sheet view verbatim, so a group like "Footer Bar"/"T&C"
-  // pinned to the bottom of page 1 there renders in the SAME place here, instead of just sitting
-  // wherever it naturally falls in the row flow. See that file's own comment on this exact block
-  // for the full reasoning (inflating rowPrefixSums in place, before any consumer reads it, plus a
-  // real blank spacer <tr> in the table's own native row flow, rendered further down).
-  let anchorSpacerPx = 0;
-  let anchorSpacerBeforeRowIdx = -1;
-  let rowBottomEdgeSums = rowPrefixSums;
-  const anchoredGroups = expandedGroups.filter((g) => g.anchorFirstPageBottom && !g.hidden);
-  if (anchoredGroups.length > 0) {
-    const anchorStartRow = Math.min(...anchoredGroups.map((g) => g.startRow));
-    const usableHeightPx = mockPageHeightPx - mockPageMarginPx * 2;
-    const heightBeforeAnchorPx = rowPrefixSums[anchorStartRow] ?? 0;
-    const heightFromAnchorPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) - heightBeforeAnchorPx;
-    const requiredSpacerPx = usableHeightPx - heightBeforeAnchorPx - heightFromAnchorPx;
-    if (requiredSpacerPx > 0.5) {
-      const naturalAnchorTop = rowPrefixSums[anchorStartRow];
-      for (let i = anchorStartRow; i < rowPrefixSums.length; i += 1) rowPrefixSums[i] += requiredSpacerPx;
-      rowBottomEdgeSums = rowPrefixSums.slice();
-      rowBottomEdgeSums[anchorStartRow] = naturalAnchorTop;
-      anchorSpacerPx = requiredSpacerPx;
-      anchorSpacerBeforeRowIdx = anchorStartRow;
-    }
-  }
-
-  const borderSegments = computeBorderSegments(grid, colPrefixSums, rowPrefixSums, rowBottomEdgeSums, hiddenRowIndexes);
+  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) is PDF/print only — removed from
+  // here for the same reason it was removed from specs-grid-editor.tsx's own project-sheet view
+  // (this component deliberately mirrors that one pixel-for-pixel, see this function's own comment
+  // above): it has no on-screen meaning since neither view paginates, and inflating rowPrefixSums
+  // plus a real blank spacer <tr> made row fill/text/borders drift from a group's real content.
+  const borderSegments = computeBorderSegments(grid, colPrefixSums, rowPrefixSums, rowPrefixSums, hiddenRowIndexes);
   const tableRenderedHeightPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) + mockPageMarginPx * 2;
   // Shared with app/client/hub/[shareId]/page.tsx (see that function's own comment) so the
   // "Submit"/"Accept" bars above/below this component are sized to match this page's own width
@@ -135,16 +114,6 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                 if (hiddenRowIndexes.has(rowIdx)) return null;
                 return (
                 <Fragment key={row.id}>
-                  {rowIdx === anchorSpacerBeforeRowIdx ? (
-                    // The real, native-table-flow counterpart to the rowPrefixSums shift above —
-                    // that shift alone only moves the border overlay and this row's own visual
-                    // position; the table's actual row stacking needs an actual blank row too, or
-                    // every row from here on would just sit directly under the previous one. See
-                    // specs-grid-editor.tsx's own identical spacer <tr> for the full reasoning.
-                    <tr aria-hidden="true">
-                      <td colSpan={grid.columnWidths.length} style={{ height: anchorSpacerPx, padding: 0, border: "none", background: "transparent" }} />
-                    </tr>
-                  ) : null}
                   <tr style={{ height: safeRowHeights[rowIdx] }}>
                     {row.cells.map((cell, colIdx) => {
                       if (cell === null) return null;

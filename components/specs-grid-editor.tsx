@@ -81,6 +81,7 @@ import {
   addRowsToGroup,
   renameRowGroup,
   setRowGroupHidden,
+  setAnchorSplitGroup,
   removeRowGroup,
   importLinkedQuoteTextIntoZone,
   getEditableZoneText,
@@ -1065,6 +1066,10 @@ export default function SpecsGridEditor({
   const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [draggingDeletedGroupId, setDraggingDeletedGroupId] = useState<string | null>(null);
   const [dropTargetRowIndex, setDropTargetRowIndex] = useState<number | null>(null);
+  // Live preview position while dragging the template builder's own split line (see
+  // onSplitLineDragStart/splitAnchorGroup below) — null means "not currently dragging," so
+  // rendering falls back to whichever group's own anchorFirstPageBottom is actually committed.
+  const [splitDragRowIndex, setSplitDragRowIndex] = useState<number | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
   const isSelectingRef = useRef(false);
   // A per-cell onMouseUp alone only clears this when the button happens to be released while the
@@ -2119,48 +2124,55 @@ export default function SpecsGridEditor({
   // just the columns' real total), otherwise the last column would stretch to fill the inset.
   const mockPageMarginPx = isProjectSheetView ? Math.round(SPECS_PAGE_MARGIN_MM * MM_TO_PX) : 0;
 
-  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) — the live on-screen analogue of
-  // buildSpecsGridPdfBlob's own print-time version of this calc: if everything before the earliest
-  // anchored group, plus that group and everything after it, together still fit within one physical
-  // page's usable height, every row from that group onward is pushed down to land flush against the
-  // bottom of the page. Done by inflating rowPrefixSums IN PLACE, before any of its many consumers
-  // below (borders, group outlines, the mock page's own height, drag/resize hit-testing, the
-  // selection outline) ever read it — every one of them just sees the already-shifted coordinate
-  // space and stays visually consistent with it automatically, with no need to touch each of them
-  // individually. A real blank spacer <tr> (rendered further down) makes the same gap in the actual
-  // table's native row flow, not just in these derived overlay coordinates. Only meaningful for a
-  // project's own sheet (isProjectSheetView) — the company template builder has no per-project
-  // hidden/included group state for this to react to, and always shows every row uncollapsed.
+  // anchorFirstPageBottom (see its own comment on SpecsRowGroup) is shown on screen everywhere the
+  // document is actually being VIEWED (the template builder's own preview, a project's own sheet,
+  // compact/mobile viewports included) — so the live preview matches what Print/Download PDF
+  // actually produces, rather than silently diverging from it. fitToViewportOnMobile only scales
+  // and makes the same mock page box scrollable — the box, and its own bottom edge, are still
+  // there, just smaller — so there's no reason this should look any different there than at full
+  // desktop width. Not shown in zonePreviewMode: that's a throwaway crop of a single group's own
+  // rows, never a real paginated document. buildSpecsGridPdfBlob has its own separate computation
+  // for the actual exported PDF; this is only ever a preview of that, never a substitute for it.
   let anchorSpacerPx = 0;
   let anchorSpacerBeforeRowIdx = -1;
   // rowPrefixSums[anchorStartRow] itself is read TWO different ways once a spacer's inserted: as the
   // top of the anchor row (wants the shift) and as the BOTTOM edge of whatever row/group ends right
   // before it (wants the row's own NATURAL boundary, not one inflated by a gap that isn't actually
   // part of it) — a single shared array can't hold both values at once. Defaults to rowPrefixSums
-  // itself (same reference) so every consumer below is completely unaffected when no spacer applies.
+  // itself (same reference) so every consumer below is completely unaffected when no split is set.
   let rowBottomEdgeSums = rowPrefixSums;
-  // Pinning content to the bottom of a physical printed page only means anything when that page's
-  // own edge is visible/meaningful on screen (desktop's 1:1 page preview). Mobile shows one
-  // continuously-scrolling sheet with no concept of "page 1's bottom edge", so this would just
-  // insert a large, nonsensical blank gap — skip it there entirely.
-  if (isProjectSheetView && !fitToViewportOnMobile) {
-    const anchoredGroups = expandedGroups.filter((g) => g.anchorFirstPageBottom && !g.hidden);
-    if (anchoredGroups.length > 0) {
-      const anchorStartRow = Math.min(...anchoredGroups.map((g) => g.startRow));
-      const usableHeightPx = mockPageHeightPx - mockPageMarginPx * 2;
-      const heightBeforeAnchorPx = rowPrefixSums[anchorStartRow] ?? 0;
-      const heightFromAnchorPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) - heightBeforeAnchorPx;
-      const requiredSpacerPx = usableHeightPx - heightBeforeAnchorPx - heightFromAnchorPx;
-      if (requiredSpacerPx > 0.5) {
-        // Captured before the shift below overwrites it — this row/group's own natural (un-inflated)
-        // boundary, for anything that ends exactly here to measure its OWN bottom edge against.
-        const naturalAnchorTop = rowPrefixSums[anchorStartRow];
-        for (let i = anchorStartRow; i < rowPrefixSums.length; i += 1) rowPrefixSums[i] += requiredSpacerPx;
-        rowBottomEdgeSums = rowPrefixSums.slice();
-        rowBottomEdgeSums[anchorStartRow] = naturalAnchorTop;
-        anchorSpacerPx = requiredSpacerPx;
-        anchorSpacerBeforeRowIdx = anchorStartRow;
-      }
+  // Matches buildSpecsGridPdfBlob's own rule exactly (filter out hidden, then take the EARLIEST
+  // startRow among whatever's left) rather than just the first array match — several groups can
+  // carry a stale anchorFirstPageBottom flag left over from before this was enforced as a single
+  // splitter (multiple independently-"anchored" groups never had distinct meaning anyway; only the
+  // earliest one was ever read), and a hidden group (toggled off per-project) obviously can't be
+  // the one real content visually lands against.
+  const splitAnchorGroup =
+    !zonePreviewMode
+      ? expandedGroups
+          .filter((g) => g.anchorFirstPageBottom && !g.hidden)
+          .reduce<SpecsRowGroup | undefined>((earliest, g) => (!earliest || g.startRow < earliest.startRow ? g : earliest), undefined)
+      : undefined;
+  if (splitAnchorGroup) {
+    // mockPageMarginPx is already the right margin for whichever view this is — the real print
+    // margin in a project's own sheet (content there starts after it, same as the actual PDF), or
+    // 0 in the builder (which renders with no margin inset at all, keeping its row/column header
+    // gutters instead — see that const's own comment). Using it here keeps both views' usable
+    // height consistent with where their own page box actually ends on screen.
+    const anchorStartRow = splitAnchorGroup.startRow;
+    const usableHeightPx = mockPageHeightPx - mockPageMarginPx * 2;
+    const heightBeforeAnchorPx = rowPrefixSums[anchorStartRow] ?? 0;
+    const heightFromAnchorPx = (rowPrefixSums[rowPrefixSums.length - 1] ?? 0) - heightBeforeAnchorPx;
+    const requiredSpacerPx = usableHeightPx - heightBeforeAnchorPx - heightFromAnchorPx;
+    if (requiredSpacerPx > 0.5) {
+      // Captured before the shift below overwrites it — this row/group's own natural (un-inflated)
+      // boundary, for anything that ends exactly here to measure its OWN bottom edge against.
+      const naturalAnchorTop = rowPrefixSums[anchorStartRow];
+      for (let i = anchorStartRow; i < rowPrefixSums.length; i += 1) rowPrefixSums[i] += requiredSpacerPx;
+      rowBottomEdgeSums = rowPrefixSums.slice();
+      rowBottomEdgeSums[anchorStartRow] = naturalAnchorTop;
+      anchorSpacerPx = requiredSpacerPx;
+      anchorSpacerBeforeRowIdx = anchorStartRow;
     }
   }
 
@@ -2556,6 +2568,46 @@ export default function SpecsGridEditor({
     setDraggingGroupId(null);
     setDraggingDeletedGroupId(null);
     setDropTargetRowIndex(null);
+  };
+
+  // The template builder's own split-line drag (see splitAnchorGroup's own comment above) — plain
+  // mouse drag rather than the HTML5 DnD system above (that one's for reordering an existing group
+  // by its own grip handle; this is a single line with nothing to "drop onto," closer in spirit to
+  // onRowResizeStart just above). Snaps to whichever group's own startRow is nearest the pointer,
+  // same "closest boundary wins" idea as computeDropRowIndex, but restricted to group starts only
+  // (splitting mid-group would leave the line slicing through a group's own rows, which the data
+  // model has no way to represent) — plus liveGrid.rows.length as one more candidate, standing in
+  // for "drag it past the last group" to clear the split entirely.
+  const onSplitLineDragStart = (clientY: number) => {
+    const candidates = expandedGroups.map((g) => g.startRow);
+    candidates.push(liveGrid.rows.length);
+    const computeNearestRow = (y: number): number => {
+      const tableEl = tableRef.current;
+      if (!tableEl) return candidates[0] ?? 0;
+      const localY = y - tableEl.getBoundingClientRect().top;
+      let closestIdx = candidates[0] ?? 0;
+      let closestDist = Infinity;
+      for (const idx of candidates) {
+        const dist = Math.abs((rowPrefixSums[idx] ?? 0) - localY);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestIdx = idx;
+        }
+      }
+      return closestIdx;
+    };
+    setSplitDragRowIndex(computeNearestRow(clientY));
+    const onMove = (e: MouseEvent) => setSplitDragRowIndex(computeNearestRow(e.clientY));
+    const onUp = (e: MouseEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const finalRow = computeNearestRow(e.clientY);
+      setSplitDragRowIndex(null);
+      const targetGroup = expandedGroups.find((g) => g.startRow === finalRow);
+      applyChange(setAnchorSplitGroup(liveGrid, targetGroup ? targetGroup.id : null), true);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
   // Live drag preview — while dragging, shows where things will actually land by moving the REAL
@@ -3016,6 +3068,28 @@ export default function SpecsGridEditor({
               style={toolbarDangerStyle}
             >
               <Trash2 size={12} /> Col
+            </button>
+            <div className="mx-1 h-6 w-px" style={{ backgroundColor: "var(--glass-border)" }} />
+            <button
+              type="button"
+              disabled={!splitAnchorGroup && expandedGroups.length === 0}
+              onClick={() => {
+                if (splitAnchorGroup) {
+                  applyChange(setAnchorSplitGroup(liveGrid, null), true);
+                  return;
+                }
+                const lastGroup = expandedGroups.reduce<SpecsRowGroup | null>(
+                  (furthest, g) => (!furthest || g.startRow > furthest.startRow ? g : furthest),
+                  null,
+                );
+                if (lastGroup) applyChange(setAnchorSplitGroup(liveGrid, lastGroup.id), true);
+              }}
+              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2 text-[11px] font-bold disabled:opacity-40"
+              style={splitAnchorGroup ? toolbarButtonActiveStyle : toolbarButtonStyle}
+              title="Everything below the line lands flush with the bottom of printed page 1 (only when page 1 isn't already full); everything above flows normally. Drag the line once it appears to move the split."
+            >
+              <AlignVerticalJustifyEnd size={14} />
+              {splitAnchorGroup ? "Remove Split Line" : "Split Line"}
             </button>
           </>
         )}
@@ -4201,6 +4275,37 @@ export default function SpecsGridEditor({
               </div>
             ))}
 
+        {/* The draggable bottom-mount split line (see splitAnchorGroup/onSplitLineDragStart above)
+            — shown only once a split exists (or is actively being dragged into existence), since an
+            empty template has no group to anchor to yet. Rendered as a thin visible line inside a
+            taller invisible hit area (same "bigger grab target than the visible mark" convention as
+            the column/row resize handles just below), snapping to whichever group's own startRow is
+            nearest the drop — see that handler's own comment for why mid-group isn't a valid stop. */}
+        {!isProjectSheetView && !zonePreviewMode && (splitAnchorGroup || splitDragRowIndex !== null) ? (
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onSplitLineDragStart(e.clientY);
+            }}
+            className="absolute z-20 flex cursor-row-resize items-center"
+            style={{
+              left: rowHeaderWidthPx,
+              width: tableTotalWidthPx,
+              top: colHeaderHeightPx + (rowPrefixSums[splitDragRowIndex ?? splitAnchorGroup!.startRow] ?? 0) - 8,
+              height: 16,
+            }}
+            title="Drag to move the bottom-mount split. Everything below lands flush with the bottom of printed page 1 (only if page 1 isn't already full) — everything above flows normally, and pages after the first are never affected."
+          >
+            <div className="h-[3px] w-full" style={{ backgroundColor: "var(--danger-strong)" }} />
+            <span
+              className="absolute left-1 whitespace-nowrap rounded-[4px] px-1.5 py-0.5 text-[9px] font-bold"
+              style={{ top: 8, backgroundColor: "var(--danger-strong)", color: "#ffffff" }}
+            >
+              Bottom-mount split (page 1)
+            </span>
+          </div>
+        ) : null}
+
         {/* The zone-marking preview's own equivalent of groupOutlines just above — a solid
             success-colored outline (rather than groupOutlines' own dashed brand-strong one) so an
             already-marked zone reads as visually distinct from an ordinary group boundary. */}
@@ -4689,24 +4794,12 @@ export default function SpecsGridEditor({
                       />
                     </span>
                   </label>
-                  {groupsSupportPricing ? (
-                    <label
-                      className="flex items-center justify-between gap-2 text-[12px] font-semibold"
-                      style={{ color: "var(--text-main)" }}
-                      title="If the content above it doesn't already fill the first page, this group (and anything after it) is pushed down to sit flush with the bottom of that page in Print/Download PDF"
-                    >
-                      Anchor to bottom of first page
-                      <span className="inline-flex items-center gap-2">
-                        <span style={{ color: "var(--text-muted)" }}>{groupDraft.anchorFirstPageBottom ? "On" : "Off"}</span>
-                        <input
-                          type="checkbox"
-                          checked={groupDraft.anchorFirstPageBottom}
-                          onChange={(e) => setGroupDraft((d) => ({ ...d, anchorFirstPageBottom: e.target.checked }))}
-                          className="h-4 w-4"
-                        />
-                      </span>
-                    </label>
-                  ) : null}
+                  {/* "Anchor to bottom of first page" used to be a per-group checkbox here — removed
+                      in favor of the single draggable split line in the canvas itself (see
+                      splitAnchorGroupId/onSplitLineDragStart below): a checkbox per group implied
+                      several groups could each be independently anchored, when really only the
+                      EARLIEST one ever mattered (see setAnchorSplitGroup's own comment). The line
+                      makes "there is exactly one split point" visible instead of implied. */}
                   {/* Rules — NOT gated behind groupsSupportPricing (that flag only controls the
                       pricing-specific fields above): dependency rules apply to both the Quote and
                       Specifications template builders alike. */}
