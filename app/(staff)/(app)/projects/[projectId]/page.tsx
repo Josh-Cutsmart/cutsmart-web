@@ -1665,16 +1665,16 @@ function stableBubbleAnimationDelayMs(id: string): number {
   return hash % 280;
 }
 
-// Style for one mobile Actions sheet button's entrance bounce (glass-bubble-rise-in, see its own
-// comment in globals.css for why it's a plain two-stop translateY tween rather than a manually
-// overshooting multi-stop one) — same stable-per-id-hash idea as stableBubbleAnimationDelayMs above
-// (not Math.random(), for the same reason: see that function's own comment), but varying the delay,
-// duration, AND starting distance per button (hashing id, `${id}-duration`, and `${id}-distance`
-// separately, so none of the three move in lockstep with each other) rather than just the delay —
-// different buttons bouncing with the exact same motion, just offset in time, still reads as one
-// mechanical wave; varying the duration (380-519ms) and how far below rest each one starts (6-9px)
-// is what makes each button's bounce feel like its own, distinct little motion rather than a
-// uniform pulse.
+// Style for one mobile Actions sheet button's entrance (glass-bubble-slide-in-up, see its own
+// comment in globals.css for why it's the exact same fade+overshoot shape as the desktop Version
+// History bubbles' own glass-bubble-slide-in-left, just rising from below instead of sliding in from
+// the side) — same stable-per-id-hash idea as stableBubbleAnimationDelayMs above (not Math.random(),
+// for the same reason: see that function's own comment), but varying the delay, duration, AND
+// starting distance per button (hashing id, `${id}-duration`, and `${id}-distance` separately, so
+// none of the three move in lockstep with each other) rather than just the delay — different buttons
+// playing the exact same motion, just offset in time, still reads as one mechanical wave; varying
+// the duration (380-519ms) and how far below rest each one starts (6-9px) is what makes each
+// button's entrance feel like its own, distinct little motion rather than a uniform pulse.
 //
 // 6-9px, not bigger — this sheet's buttons sit `gap-3` (12px) apart (bumped up from the original
 // gap-2/8px specifically to give this bigger distance room — see that className's own comment),
@@ -1683,20 +1683,19 @@ function stableBubbleAnimationDelayMs(id: string): number {
 // completely independently of its neighbors' own delay/duration. Two buttons can therefore be at
 // ANY two points in their own cycles at once — worst case, the button ABOVE is still sitting at its
 // full starting distance (its own closest approach to the one below) at the exact instant the
-// button BELOW is at its own peak overshoot (cubic-bezier(0.34, 1.56, 0.64, 1) overshoots a
-// translateY tween by about 10% of its own starting distance — see glass-bubble-rise-in's own
-// comment), i.e. moving UP toward the one above it. Capping the starting distance at 9px keeps that
-// worst-case combined encroachment (9 + 10% of 9 ≈ 9.9px) safely under the 12px gap no matter how
-// the two buttons' independent timings happen to line up, so two buttons can never actually touch,
-// let alone overlap. Returns a full style object (not just the animation shorthand) since the
-// distance travels as a CSS custom property the keyframe itself reads, rather than needing a
-// separate keyframe per possible distance.
+// button BELOW is at its own peak overshoot (glass-bubble-slide-in-up's own 55% stop, a fixed 25% of
+// its OWN starting distance, past rest in the opposite direction), i.e. moving UP toward the one
+// above it. Capping the starting distance at 9px keeps that worst-case combined encroachment
+// (9 + 25% of 9 = 11.25px) safely under the 12px gap no matter how the two buttons' independent
+// timings happen to line up, so two buttons can never actually touch, let alone overlap. Returns a
+// full style object (not just the animation shorthand) since the distance travels as a CSS custom
+// property the keyframe itself reads, rather than needing a separate keyframe per possible distance.
 function mobileActionsBubbleStyle(id: string): React.CSSProperties {
   const delay = stableBubbleAnimationDelayMs(id);
   const duration = 380 + (stableBubbleAnimationDelayMs(`${id}-duration`) % 140);
   const distance = 6 + (stableBubbleAnimationDelayMs(`${id}-distance`) % 4);
   return {
-    animation: `glass-bubble-rise-in ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`,
+    animation: `glass-bubble-slide-in-up ${duration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms both`,
     ["--bubble-bounce-distance" as string]: `${distance}px`,
   } as React.CSSProperties;
 }
@@ -44738,10 +44737,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const quoteBackButton = isCompactProjectViewport ? (
       <button
         type="button"
-        onClick={() => {
+        onClick={(e) => {
+          e.stopPropagation();
           void leaveQuoteGridWindow();
           setSalesNav("overview");
         }}
+        // Same stopPropagation reasoning as the Version History/Quote Extras drawers' own "Back"
+        // buttons elsewhere in this file: this small tap target sits inside <main>'s own touch-
+        // gesture subtree, and without this, a tap here that carries even a few incidental pixels
+        // of horizontal movement bubbles all the way up to app-shell's global nav-drawer swipe
+        // gesture (and to this view's own swipe-to-open-Version-History handler on the way there),
+        // arming either one instead of just being read as a plain "leave this view" tap.
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
         className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
         style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
         aria-label="Back"
@@ -46366,7 +46375,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const specsBackButton = isCompactProjectViewport ? (
       <button
         type="button"
-        onClick={() => setSalesNav("overview")}
+        onClick={(e) => {
+          e.stopPropagation();
+          setSalesNav("overview");
+        }}
+        // Same stopPropagation reasoning as quoteBackButton's identical comment above.
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
         className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
         style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
         aria-label="Back"
@@ -47426,7 +47442,15 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             {isCompactProjectViewport ? (
               <button
                 type="button"
-                onClick={() => setSalesNav("overview")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSalesNav("overview");
+                }}
+                // Same stopPropagation reasoning as quoteBackButton's identical comment elsewhere in
+                // this file.
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border hover:brightness-95"
                 style={{ backgroundImage: "var(--brand-gradient)", borderColor: "var(--brand-strong)" }}
                 aria-label="Back"

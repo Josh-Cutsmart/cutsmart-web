@@ -993,6 +993,13 @@ export function AppShell({
     if (isDesktopViewport || mobileNavOpen || notifOpen || startedOnGestureExempt || event.touches.length > 1) {
       mainSwipeStartRef.current = null;
       pullDashboardRef.current = null;
+      // Also clear a stale kind, not just the two refs above — a previous gesture that committed
+      // to "nav"/"notif" but never made it to onMainTouchEnd (e.g. mobileNavOpen is already true
+      // here precisely because of that) would otherwise leave mainOpenDragRef.current.kind sitting
+      // non-null, ready to be picked up as already-decided by this NEXT touch's own
+      // onMainTouchMove (its own `if (!mainOpenDragRef.current.kind)` check reads false against
+      // this stale leftover instead of resolving its own fresh direction).
+      mainOpenDragRef.current.kind = null;
       return;
     }
     const startedOnHorizontalScroller = Boolean(
@@ -1085,7 +1092,27 @@ export function AppShell({
       // shouldRender) early enough for the drag below to actually have something to move. On the
       // very tick this fires the panel usually isn't in the DOM yet (React hasn't re-rendered),
       // so applyMainOpenDrag below just no-ops until a later tick finds it.
-      if (!mainOpenDragRef.current.kind) {
+      //
+      // !chromeHidden: a chromeHidden fullscreen view (Quote, Specifications, Compare, etc.) is
+      // rendered as a plain (non-exempt) child of <main>, and several of ITS OWN controls — most
+      // notably the small top-left "Back" button that leaves the view entirely — have no touch
+      // handlers of their own, so a tap on one that carries even a few incidental pixels of
+      // horizontal movement bubbles up and lands right here. Committing to "nav"/"notif" at that
+      // point calls setMobileNavOpen/setNotifOpen(true) immediately — invisibly, since
+      // effectiveHideSidebar (hideSidebar || chromeHidden) keeps the panel unrendered while still
+      // inside the fullscreen view — and nothing ever resets it back: the only navigation-keyed
+      // reset is pathname-based (below), but leaving a chromeHidden view is a local state change
+      // (e.g. setSalesNav("overview")), not a route change. The stale `true` then surfaces the
+      // instant chromeHidden flips back to false and the drawer becomes visible again, reading as
+      // "closing the fullscreen view randomly opened the nav drawer." Bailing out here entirely
+      // while chromeHidden is far simpler than auditing every current and future control inside
+      // every such view for the same gap — these fullscreen views already own this exact gesture
+      // space themselves (e.g. Quote/Specifications' own swipe-to-open-Version-History), so the
+      // global drawer swipe has nothing legitimate to do here anyway. Deliberately NOT folded into
+      // onMainTouchStart's own early bail-out above: that would also drop mainSwipeStartRef/
+      // pullDashboardRef, breaking the vertical pull-down-to-reveal-menu gesture, which DOES need
+      // to keep working inside these views (it's how several of them are meant to be left).
+      if (!mainOpenDragRef.current.kind && !chromeHidden) {
         if (dx > 0) {
           mainOpenDragRef.current.kind = "nav";
           setMobileNavOpen(true);

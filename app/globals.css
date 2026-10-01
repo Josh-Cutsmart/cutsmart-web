@@ -605,32 +605,35 @@ body[data-theme="dark"].cs-app .notes-rich li {
   }
 }
 
-/* For the mobile Quote/Specifications Actions sheet's own buttons — rise from just below their own
- * resting spot, bounce PAST it once, then settle, each staggered with its own
- * stableBubbleAnimationDelayMs-derived delay/duration/distance the same way the Version History/
- * Quote Extras bubbles use a stable hash instead of Math.random() (see that function's own comment
- * for why).
- *
- * Exactly TWO keyframe stops, deliberately — a multi-stop manual overshoot/wobble (0%→X%→Y%→100%)
- * was tried and reverted: with cubic-bezier(0.34, 1.56, 0.64, 1) (a back-ease curve that ALREADY
- * overshoots on its own) as the animation-timing-function, that SAME curve independently re-applies
- * to EVERY segment between keyframe stops (per the CSS animations spec) — adding more stops made it
- * overshoot MULTIPLE times (once per segment), reading as a jerky multi-bounce wobble rather than
- * one fluid motion. With only a start and an end, that SAME back-ease curve is being used exactly
- * the way it's designed for — easing a single A→B tween — so its own built-in characteristic of
- * sailing slightly past the target before easing back onto it (same reason glass-bubble-pop-in/
- * floating-bar-slot-pop already use this exact curve) is what produces the "overshoot and land back"
- * on its own, in one continuous fluid motion, without a second, independently-eased overshoot
- * stacked on top of it. --bubble-bounce-distance (how far below rest each button starts, see
- * mobileActionsBubbleStyle for both its value — capped well under the sheet's own 12px gap-3
- * between buttons so two independently timed neighbors can never actually touch — and the full
- * worst-case math behind that cap) is a CSS custom property set per-button via inline style rather
- * than needing a separate keyframe per distance. */
-@keyframes glass-bubble-rise-in {
+/* For the mobile Quote/Specifications Actions sheet's own buttons — rise up from just below their
+ * own resting spot, fading in as they go, overshoot PAST it once, then settle, each staggered with
+ * its own stableBubbleAnimationDelayMs-derived delay/duration/distance the same way the Version
+ * History/Quote Extras bubbles use a stable hash instead of Math.random() (see that function's own
+ * comment for why). Deliberately the SAME shape as glass-bubble-slide-in-left below (opacity 0→1,
+ * three stops with an explicit overshoot at 55%, same cubic-bezier(0.34, 1.56, 0.64, 1) back-ease
+ * timing function) — these buttons used to rise with a plain two-stop tween and no fade, relying on
+ * the curve's own small built-in overshoot alone (a manual multi-stop version was tried and reverted
+ * back then as a jerky double-bounce), but per later feedback asking this to look more like the
+ * desktop Version History bubbles' own entrance, it's now that exact same shape turned 90°: sliding
+ * in from below (translateY, positive = down) instead of from the side (translateX). Reads cleanly
+ * despite reusing the already-overshooting curve across multiple stops the same way slide-in-left
+ * already does — see glass-bubble-slide-in-left's own comment for the general shape/curve pairing.
+ * --bubble-bounce-distance (how far below rest each button starts, see mobileActionsBubbleStyle for
+ * both its value — capped well under the sheet's own 12px gap-3 between buttons so two independently
+ * timed neighbors can never actually touch — and the full worst-case math behind that cap) also
+ * drives the 55% overshoot via calc(), scaling proportionally instead of needing its own separate
+ * custom property. */
+@keyframes glass-bubble-slide-in-up {
   0% {
+    opacity: 0;
     transform: translateY(var(--bubble-bounce-distance, 8px));
   }
+  55% {
+    opacity: 1;
+    transform: translateY(calc(var(--bubble-bounce-distance, 8px) * -0.25));
+  }
   100% {
+    opacity: 1;
     transform: translateY(0);
   }
 }
@@ -639,8 +642,8 @@ body[data-theme="dark"].cs-app .notes-rich li {
  * button leaving the bar), for the mobile Actions sheet's own buttons popping away together when the
  * WHOLE sheet closes (see useMobileFloatingActionSheet's own isClosing) rather than one button's own
  * visibility flipping off. Not literally floating-bar-slot-pop itself — that one scales both axes,
- * which bulges a `w-full` mobile button's LEFT/RIGHT edges the same way plain `scale()` did on
- * glass-bubble-rise-in above (see its own comment); scaleY keeps this one's edges fixed too. Fixed
+ * which bulges a `w-full` mobile button's LEFT/RIGHT edges the same way plain `scale()` did on an
+ * earlier version of glass-bubble-slide-in-up above; scaleY keeps this one's edges fixed too. Fixed
  * 180ms, no per-button stagger — this plays all at once, matching the single, un-staggered timing
  * floating-bar-slot-pop itself already uses for one button leaving the desktop bar. */
 @keyframes glass-bubble-pop-away {
