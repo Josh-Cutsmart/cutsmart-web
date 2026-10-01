@@ -605,32 +605,41 @@ body[data-theme="dark"].cs-app .notes-rich li {
 }
 
 /* For the mobile Quote/Specifications Actions sheet's own buttons — rise from just below their own
- * resting spot, bounce PAST it, then settle, each staggered with its own
- * stableBubbleAnimationDelayMs-derived delay/duration/distance the same way the Version History/
- * Quote Extras bubbles use a stable hash instead of Math.random() (see that function's own comment
- * for why).
+ * resting spot, then WOBBLE at the end (overshoot past rest, a smaller correction back, a smaller
+ * correction still, settle) rather than a single clean bounce, each staggered with its own
+ * stableBubbleAnimationDelayMs-derived delay/duration/distance/wobble the same way the Version
+ * History/Quote Extras bubbles use a stable hash instead of Math.random() (see that function's own
+ * comment for why).
  *
- * Exactly TWO keyframe stops, deliberately — earlier versions of this both used a 0%→55%→100% shape
- * (an explicit manual dip/overshoot value at 55%) and both felt wrong in their own way: one scaled
- * instead of moved, which visibly bulged these `w-full` buttons' LEFT/RIGHT edges in and out (no
- * horizontal slack to grow into); the position-based one before that read as stiff, because the SAME
- * animation-timing-function applies independently to EACH segment between keyframe stops (per the
- * CSS animations spec) — a back/overshoot curve like cubic-bezier(0.34, 1.56, 0.64, 1) used across
- * 0%→55%→100% overshoots TWICE (once past the 55% stop on the way down, again past 0 settling back
- * in), a small fast two-direction correction that reads as a jerky snap rather than one soft bounce.
- * With only a start and an end, that SAME back-ease curve is being used exactly the way it's
- * designed for — easing a single A→B tween — so its own built-in characteristic of sailing slightly
- * past the target before easing back onto it (same reason glass-bubble-pop-in/floating-bar-slot-pop
- * already use this exact curve) is what produces the "bounce past and come back to sit" on its own,
- * in one continuous motion, without a second, independently-eased overshoot stacked on top of it.
- * --bubble-bounce-distance (how far below rest each button starts, see mobileActionsBubbleStyle for
- * both its value — capped well under the sheet's own 8px gap-2 between buttons so two independently
- * timed neighbors can never actually touch — and the full worst-case math behind that cap) is a CSS
- * custom property set per-button via inline style rather than needing a separate keyframe per
- * distance. */
+ * An EARLIER version of this tried a manual multi-stop overshoot (0%→55%→100%) and reverted it:
+ * with cubic-bezier(0.34, 1.56, 0.64, 1) (a back-ease curve that ALREADY overshoots on its own) as
+ * the animation-timing-function, that SAME curve
+ * independently re-applies to EVERY segment between keyframe stops (per the CSS animations spec),
+ * so a 0%→55%→100% shape overshot TWICE — once past the 55% stop on the way down, again past 0
+ * settling back in — reading as a jerky snap, not one soft bounce. This version avoids repeating
+ * that mistake the opposite way: the overshoot/wobble is now authored explicitly as real keyframe
+ * stops (so it reads as a deliberate decaying oscillation, not a doubled accident), paired with a
+ * plain `ease-out` timing function at the call site instead of a back-ease one — ease-out has no
+ * overshoot of its own, so each segment just eases smoothly toward ITS OWN stop's value with
+ * nothing stacking on top of the shape the stops already describe.
+ * --bubble-bounce-distance (how far below rest each button starts) and --bubble-wobble-distance
+ * (how far PAST rest the wobble's own peak swings) are CSS custom properties set per-button via
+ * inline style (mobileActionsBubbleStyle) rather than needing a separate keyframe per combination —
+ * both are kept modest and their worst-case SUM capped well under the sheet's own 8px gap-2 between
+ * buttons (see that function's own comment for the exact numbers and the full worst-case math
+ * behind them), so two independently-timed neighbors still can never actually touch. */
 @keyframes glass-bubble-rise-in {
   0% {
-    transform: translateY(var(--bubble-bounce-distance, 5px));
+    transform: translateY(var(--bubble-bounce-distance, 4px));
+  }
+  58% {
+    transform: translateY(calc(var(--bubble-wobble-distance, 2px) * -1));
+  }
+  78% {
+    transform: translateY(calc(var(--bubble-wobble-distance, 2px) * 0.35));
+  }
+  92% {
+    transform: translateY(calc(var(--bubble-wobble-distance, 2px) * -0.12));
   }
   100% {
     transform: translateY(0);

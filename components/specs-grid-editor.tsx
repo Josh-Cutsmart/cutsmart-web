@@ -259,6 +259,13 @@ export type SpecsGridEditorProps = {
   // never renders that menu itself, since the picker needs `linkedQuoteSourceGrid` (a prop of the
   // OUTER/host instance, not this cropped nested one).
   onZoneContextMenu?: (zoneId: string, x: number, y: number) => void;
+  // fitToViewportOnMobile only: fires whenever this sheet's own pinch-zoom goes above/back to 1x —
+  // see its call site's own comment (near sheetZoom) for why the host page needs this at all (its
+  // mobile swipe-to-open-a-drawer gesture can't otherwise tell a pan across zoomed-in content apart
+  // from an ordinary drag). Pass a stable function (e.g. a plain useState setter) — see that
+  // comment for why an inline arrow redefined every render would still work correctly here, but a
+  // setState function identity is the simplest way to guarantee it.
+  onSheetZoomedAwayFromEdge?: (zoomedAway: boolean) => void;
 };
 
 function normalizeRect(sel: SpecsGridSelection) {
@@ -690,6 +697,7 @@ export default function SpecsGridEditor({
   onSelectionRangeChange,
   previewZones,
   onZoneContextMenu,
+  onSheetZoomedAwayFromEdge,
 }: SpecsGridEditorProps) {
   const [liveGrid, setLiveGrid] = useState<SpecsGrid>(value);
   // Mirrors `liveGrid`, updated synchronously everywhere `liveGrid` is — lets the drag-end handlers
@@ -1247,7 +1255,15 @@ export default function SpecsGridEditor({
   // Ctrl/Cmd+click multi-select (ctrlMarkedCells) takes precedence over a drag-highlighted range
   // whenever it's non-empty; a single remaining eligible cell (whichever way it got there) toggles
   // directly instead of going through the bulk "mark/unmark all" path.
-  const computeMarkForConfirmationTarget = (): {
+  const computeMarkForConfirmationTarget = (
+    // Mobile's long-press only, see its own call site: the just-pressed cell to fall back to when
+    // nothing's already selected. Needed because the long-press handler calls setSelection(...) to
+    // highlight that cell THEN calls this in the same synchronous tick — React state updates aren't
+    // visible to a closure that way, so `selection` here would still read whatever it was BEFORE
+    // that call, not the cell just pressed. Passing it straight through sidesteps that entirely
+    // rather than relying on timing.
+    fallbackCell?: { row: number; col: number },
+  ): {
     allTargets: { row: number; col: number }[];
     isMultiple: boolean;
     isActive: boolean;
@@ -1281,7 +1297,10 @@ export default function SpecsGridEditor({
     // silently falling back to an unrelated drag-highlighted range the user didn't actually pick
     // via this gesture.
     const usingCtrlMarked = ctrlMarkedCells.size > 0;
-    const allTargets = usingCtrlMarked ? ctrlMarkedTargets : dragRangeTargets;
+    let allTargets = usingCtrlMarked ? ctrlMarkedTargets : dragRangeTargets;
+    if (allTargets.length === 0 && fallbackCell && isCellAllowed(fallbackCell.row, fallbackCell.col)) {
+      allTargets = [fallbackCell];
+    }
     if (allTargets.length === 0) return null;
 
     const isMultiple = allTargets.length > 1;
@@ -1317,16 +1336,37 @@ export default function SpecsGridEditor({
   const MOBILE_CONFIRM_PRESS_MS = 500;
   const MOBILE_CONFIRM_MOVE_CANCEL_PX = 10;
   // Position + the already-resolved action (label/title/onClick from computeMarkForConfirmationTarget)
-  // for the currently-open mobile dropdown — null when closed.
+  // for the currently-open mobile dropdown — null when fully closed.
   const [mobileConfirmMenu, setMobileConfirmMenu] = useState<{ x: number; y: number; label: string; title: string; onConfirm: () => void } | null>(
     null,
   );
+  // True for exactly the pop-away animation's own duration right after a close is triggered — the
+  // menu stays MOUNTED (mobileConfirmMenu itself only clears once this window ends) so it has a real
+  // element to animate closed instead of just vanishing; see closeMobileConfirmMenu below.
+  const [mobileConfirmMenuClosing, setMobileConfirmMenuClosing] = useState(false);
   const mobileConfirmMenuRef = useRef<HTMLDivElement | null>(null);
+  const MOBILE_CONFIRM_MENU_CLOSE_MS = 180;
+  // Plays the menu's own pop-AWAY (floating-bar-slot-pop, same class/duration Import from Quote's
+  // ghost uses elsewhere — no ghost-portal trick needed here, unlike that one: this menu is already
+  // portaled straight to <body> with nothing clipping it and never repositions mid-life, so the one
+  // real element can just play its own exit animation in place before unmounting) instead of
+  // vanishing the instant it's dismissed.
+  const closeMobileConfirmMenu = () => {
+    setMobileConfirmMenu((current) => {
+      if (!current) return current;
+      setMobileConfirmMenuClosing(true);
+      window.setTimeout(() => {
+        setMobileConfirmMenu(null);
+        setMobileConfirmMenuClosing(false);
+      }, MOBILE_CONFIRM_MENU_CLOSE_MS);
+      return current;
+    });
+  };
   useEffect(() => {
-    if (!mobileConfirmMenu) return;
+    if (!mobileConfirmMenu || mobileConfirmMenuClosing) return;
     const onPointerDown = (e: Event) => {
       if (mobileConfirmMenuRef.current?.contains(e.target as Node)) return;
-      setMobileConfirmMenu(null);
+      closeMobileConfirmMenu();
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("touchstart", onPointerDown);
@@ -1334,7 +1374,70 @@ export default function SpecsGridEditor({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("touchstart", onPointerDown);
     };
-  }, [mobileConfirmMenu]);
+  }, [mobileConfirmMenu, mobileConfirmMenuClosing]);
+
+  // Mobile-only drag handles on the current selection's own 4 edges (its render is further down,
+  // next to selectionOutline) — a touch device has no equivalent of a mouse drag across cells to
+  // extend a selection (onMouseEnter below only ever fires for the element a touch STARTED on, not
+  // whatever's currently under a moving finger, and treating any touch-drag across the sheet as a
+  // selection-drag would fight the pinch/pan gesture already living on the same surface). A small
+  // dedicated handle per edge sidesteps that entirely: each one is its own deliberate touch target,
+  // only ever changing the ONE edge it sits on (top/bottom move the row range, left/right the column
+  // range), so there's never a question of what a stray touch-drag elsewhere on the sheet means.
+  // Tracked as a ref, not state — this is live per-frame drag bookkeeping, not something that should
+  // schedule its own re-render on every touchmove (only `selection` itself, already state, needs to
+  // re-render as it's dragged).
+  const selectionHandleDragRef = useRef<{ edge: "top" | "bottom" | "left" | "right"; startRect: CellRect } | null>(null);
+  // Which edge (if any) is actively being dragged — state, not the ref above, purely so the handle
+  // being touched can grow slightly as feedback; reposition-while-dragging itself is driven by
+  // `selection` already re-rendering on every touchmove, not by this.
+  const [draggingSelectionHandle, setDraggingSelectionHandle] = useState<"top" | "bottom" | "left" | "right" | null>(null);
+  // Resolves a touch point to the real data cell currently under it (NOT the element the touch
+  // GESTURE started on — these handles sit outside every cell, and the finger is meant to move
+  // across other cells entirely) via document.elementFromPoint, which — unlike doing this math by
+  // hand — already accounts for the sheet's own current pinch-zoom scale/pan transform for free: it
+  // answers "what's actually rendered at this screen pixel," which is exactly what's needed
+  // regardless of how zoomed in/panned the mobile preview currently is.
+  const resolveTouchToCell = (clientX: number, clientY: number): { row: number; col: number } | null => {
+    const el = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-row][data-col]");
+    if (!el) return null;
+    const row = Number(el.dataset.row);
+    const col = Number(el.dataset.col);
+    if (!Number.isFinite(row) || !Number.isFinite(col)) return null;
+    return { row, col };
+  };
+  const onSelectionHandleTouchStart = (edge: "top" | "bottom" | "left" | "right") => (e: ReactTouchEvent<HTMLDivElement>) => {
+    if (!selection) return;
+    e.stopPropagation();
+    selectionHandleDragRef.current = { edge, startRect: normalizeRect(selection) };
+    setDraggingSelectionHandle(edge);
+  };
+  const onSelectionHandleTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const drag = selectionHandleDragRef.current;
+    const touch = e.touches[0];
+    if (!drag || !touch) return;
+    e.preventDefault();
+    const cell = resolveTouchToCell(touch.clientX, touch.clientY);
+    if (!cell) return;
+    const { startRect } = drag;
+    let { minRow, maxRow, minCol, maxCol } = startRect;
+    const lastRow = liveGrid.rows.length - 1;
+    const lastCol = liveGrid.columnWidths.length - 1;
+    if (drag.edge === "top") {
+      minRow = Math.max(0, Math.min(cell.row, startRect.maxRow));
+    } else if (drag.edge === "bottom") {
+      maxRow = Math.min(lastRow, Math.max(cell.row, startRect.minRow));
+    } else if (drag.edge === "left") {
+      minCol = Math.max(0, Math.min(cell.col, startRect.maxCol));
+    } else {
+      maxCol = Math.min(lastCol, Math.max(cell.col, startRect.minCol));
+    }
+    setSelection({ anchorRow: minRow, anchorCol: minCol, focusRow: maxRow, focusCol: maxCol });
+  };
+  const onSelectionHandleTouchEnd = () => {
+    selectionHandleDragRef.current = null;
+    setDraggingSelectionHandle(null);
+  };
 
   // The group-editor modal — a single controlled form (Name/Default/Anchor/roles/Cost all at once)
   // replacing the old inline "Link Rows as Group"/"Rename Group" popover, which built its result up
@@ -1787,6 +1890,31 @@ export default function SpecsGridEditor({
       : 1;
   const [sheetZoom, setSheetZoom] = useState(1);
   const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
+  // Reports "is this sheet currently zoomed in at all" up to the host page, purely so ITS OWN
+  // page-level gestures (the mobile Version History/Sections-or-Extras drawer swipe, see
+  // makeSpecsQuoteMobileSwipeHandlers in the project page) can tell a genuine single-finger PAN
+  // across zoomed-in content apart from an ordinary drag meant to open a drawer — both look
+  // identical as raw touch deltas, which is all those page-level gesture handlers see, since this
+  // sheet's own pan/pinch handlers below deliberately never call stopPropagation (see their own
+  // comment on why: letting an ordinary one-finger drag still reach the host's pulldown/drawer
+  // gestures when the sheet ISN'T zoomed is the whole point). zoom > 1 is "away from the true
+  // edge" on its own — clampSheetPan below always resets sheetPan back to exactly {0, 0} the
+  // moment zoom returns to 1, so there's no separate panned-but-not-zoomed case to also check.
+  useEffect(() => {
+    onSheetZoomedAwayFromEdge?.(sheetZoom > 1);
+  }, [sheetZoom, onSheetZoomedAwayFromEdge]);
+  // Resets back to "at the true edge" on UNMOUNT ONLY (tab switch, etc.) — a separate, empty-deps
+  // effect rather than a cleanup on the one above: that effect's own cleanup would otherwise also
+  // fire on every single intermediate zoom VALUE during an ordinary pinch (cleanup runs before
+  // every re-run, not just on unmount), flickering the host's copy of this flag false then
+  // immediately true again on every frame of an active pinch instead of changing once. Reads the
+  // callback from a ref (kept fresh every render below) rather than closing over it directly, so
+  // this still calls whatever the CURRENT prop is even though its own deps array never reruns it.
+  const onSheetZoomedAwayFromEdgeRef = useRef(onSheetZoomedAwayFromEdge);
+  onSheetZoomedAwayFromEdgeRef.current = onSheetZoomedAwayFromEdge;
+  useEffect(() => {
+    return () => onSheetZoomedAwayFromEdgeRef.current?.(false);
+  }, []);
   const sheetGestureRef = useRef<{
     mode: "none" | "pinch" | "pan";
     startScale: number;
@@ -2891,6 +3019,8 @@ export default function SpecsGridEditor({
                   return (
                     <td
                       key={key}
+                      data-row={rowIdx}
+                      data-col={colIdx}
                       colSpan={colSpan > 1 ? colSpan : undefined}
                       rowSpan={rowSpan > 1 ? rowSpan : undefined}
                       // Capture phase, same node as the plain onMouseDown below — fires FIRST and, if
@@ -2957,18 +3087,32 @@ export default function SpecsGridEditor({
                             // yet (see mobileConfirmPressRef/onMouseDownCapture above for why the
                             // normal tap-to-select/edit is deliberately deferred, not run immediately
                             // here). If held past MOBILE_CONFIRM_PRESS_MS without enough movement to
-                            // cancel, selects just this cell (mirrors the one relevant branch of the
-                            // suppressed mousedown — a plain, no-modifier single-cell select) so
-                            // computeMarkForConfirmationTarget sees it, then opens the dropdown.
+                            // cancel, highlights just this cell (mirrors the one relevant branch of
+                            // the suppressed mousedown — a plain, no-modifier single-cell select) and
+                            // opens the dropdown — works on ANY eligible cell this way, not only one
+                            // that already happened to be selected/highlighted beforehand: the target
+                            // is computed with THIS cell passed as an explicit fallback (see
+                            // computeMarkForConfirmationTarget's own comment on why setSelection
+                            // alone, a tick earlier in this same callback, isn't enough on its own).
                             onTouchStart: (e: ReactTouchEvent<HTMLTableCellElement>) => {
                               const touch = e.touches[0];
                               if (!touch) return;
+                              const cellEl = e.currentTarget;
                               const timer = setTimeout(() => {
                                 const pending = mobileConfirmPressRef.current;
                                 if (!pending) return;
                                 pending.fired = true;
                                 setSelection({ anchorRow: rowIdx, anchorCol: colIdx, focusRow: rowIdx, focusCol: colIdx });
-                                const target = computeMarkForConfirmationTarget();
+                                // Belt-and-braces: if the browser went ahead and natively focused this
+                                // cell's own editable text (contentEditable focuses on tap by default,
+                                // independent of the React handlers suppressed above) sometime during
+                                // the hold, un-focus it now rather than letting the hold open an
+                                // on-screen keyboard behind the popup — a highlighted, NOT an editing,
+                                // cell is the whole point of this gesture.
+                                if (document.activeElement instanceof HTMLElement && cellEl.contains(document.activeElement)) {
+                                  document.activeElement.blur();
+                                }
+                                const target = computeMarkForConfirmationTarget({ row: rowIdx, col: colIdx });
                                 if (target) {
                                   setMobileConfirmMenu({ x: touch.clientX, y: touch.clientY, label: target.label, title: target.title, onConfirm: target.onClick });
                                 }
@@ -2988,17 +3132,23 @@ export default function SpecsGridEditor({
                                 mobileConfirmPressRef.current = null;
                               }
                             },
-                            onTouchEnd: () => {
+                            onTouchEnd: (e: ReactTouchEvent<HTMLTableCellElement>) => {
                               const pending = mobileConfirmPressRef.current;
                               if (!pending) return;
                               clearTimeout(pending.timer);
                               mobileConfirmPressRef.current = null;
-                              // Finger lifted before the long-press threshold — a short tap, not a
-                              // hold. Replay the plain single-cell select the suppressed mousedown
-                              // would have done (the deferred half of this gesture's own deal).
                               if (!pending.fired) {
+                                // Finger lifted before the long-press threshold — a short tap, not a
+                                // hold. Replay the plain single-cell select the suppressed mousedown
+                                // would have done (the deferred half of this gesture's own deal).
                                 setSelection({ anchorRow: pending.row, anchorCol: pending.col, focusRow: pending.row, focusCol: pending.col });
+                                return;
                               }
+                              // It WAS a hold, the dropdown's already open — stop whatever native
+                              // tap/click the browser would otherwise still dispatch for this touch
+                              // sequence now that it's lifted (another guard against it silently
+                              // focusing the cell's own editable text right as the popup appears).
+                              e.preventDefault();
                             },
                             onTouchCancel: () => {
                               const pending = mobileConfirmPressRef.current;
@@ -3653,6 +3803,54 @@ export default function SpecsGridEditor({
             }}
           />
         ) : null}
+
+        {/* Mobile-only selection-extend handles — see selectionHandleDragRef's own comment for why
+            these exist at all. One per edge, centered on that edge's own midpoint, each only moving
+            the ONE dimension (row range for top/bottom, column range for left/right) its own edge
+            represents. A generously-sized invisible 28px touch target around a small visible dot —
+            same "bigger hit area than visible mark" convention this file already uses elsewhere
+            (e.g. the per-row +/- buttons) — real fingers are far less precise than a mouse cursor. */}
+        {fitToViewportOnMobile && !zonePreviewMode && selectionOutline && !hideCellSelectionOutline
+          ? (["top", "bottom", "left", "right"] as const).map((edge) => {
+              const isVertical = edge === "top" || edge === "bottom";
+              const centerX = rowHeaderWidthPx + selectionOutline.left + selectionOutline.width / 2;
+              const centerY = colHeaderHeightPx + selectionOutline.top + selectionOutline.height / 2;
+              const left = edge === "left" ? rowHeaderWidthPx + selectionOutline.left : edge === "right" ? rowHeaderWidthPx + selectionOutline.left + selectionOutline.width : centerX;
+              const top = edge === "top" ? colHeaderHeightPx + selectionOutline.top : edge === "bottom" ? colHeaderHeightPx + selectionOutline.top + selectionOutline.height : centerY;
+              const isActive = draggingSelectionHandle === edge;
+              return (
+                <div
+                  key={edge}
+                  onTouchStart={onSelectionHandleTouchStart(edge)}
+                  onTouchMove={onSelectionHandleTouchMove}
+                  onTouchEnd={onSelectionHandleTouchEnd}
+                  onTouchCancel={onSelectionHandleTouchEnd}
+                  className="absolute z-20 flex items-center justify-center"
+                  style={{
+                    left,
+                    top,
+                    width: 28,
+                    height: 28,
+                    transform: "translate(-50%, -50%)",
+                    touchAction: "none",
+                    WebkitTapHighlightColor: "transparent",
+                    cursor: isVertical ? "ns-resize" : "ew-resize",
+                  }}
+                >
+                  <div
+                    className="rounded-full border-2 transition-transform"
+                    style={{
+                      width: isActive ? 16 : 12,
+                      height: isActive ? 16 : 12,
+                      backgroundColor: "var(--brand-strong)",
+                      borderColor: "#ffffff",
+                      boxShadow: "var(--shadow-glass)",
+                    }}
+                  />
+                </div>
+              );
+            })
+          : null}
 
         {/* Resizing (and the header strips it's confined to) is a builder-only affordance — a
             project's own copy shouldn't let someone drag the template's own layout bigger/smaller
@@ -4504,19 +4702,23 @@ export default function SpecsGridEditor({
           itself. A small anchored menu (same visual convention as headerContextMenu/zoneContextMenu
           elsewhere in this file), not the heavier grow-from-origin glass modal treatment — this is a
           quick single-action dropdown, not a real dialog. Dismissed by tapping/clicking outside it
-          (the effect wiring mobileConfirmMenuRef), or by using the action itself. */}
+          (the effect wiring mobileConfirmMenuRef) or by using the action itself — either way via
+          closeMobileConfirmMenu, so it always plays its own pop-away first instead of vanishing.
+          Positioning is baked into plain left/top pixel values (centered above the press point, each
+          edge clamped so it can't run off a narrow phone screen) rather than a CSS transform: both
+          the pop-in (glass-bubble-pop) and pop-away (floating-bar-slot-pop) classes below drive
+          `transform` themselves for their own scale bounce — same conflict, same fix, as
+          FloatingBarSlot's own entrance animation elsewhere in this file (see its comment) — a
+          transform used for positioning here would otherwise get clobbered by theirs for the
+          animation's own duration. */}
       {mobileConfirmMenu && typeof document !== "undefined"
         ? createPortal(
             <div
               ref={mobileConfirmMenuRef}
-              className="glass-bubble-pop fixed z-[2000] w-[200px] overflow-hidden rounded-[8px] border py-1"
+              className={`${mobileConfirmMenuClosing ? "floating-bar-slot-pop" : "glass-bubble-pop"} fixed z-[2000] w-[240px] overflow-hidden rounded-[10px] border py-1.5`}
               style={{
-                // Centered (translate -50%) on the press point, but clamped so neither edge of this
-                // 200px-wide box ever runs off-screen on a narrow phone — 108 = half the width (100)
-                // plus a small 8px gutter.
-                left: Math.min(Math.max(mobileConfirmMenu.x, 108), window.innerWidth - 108),
-                top: mobileConfirmMenu.y,
-                transform: "translate(-50%, -110%)",
+                left: Math.min(Math.max(mobileConfirmMenu.x, 128), window.innerWidth - 128) - 120,
+                top: Math.max(8, mobileConfirmMenu.y - 64),
                 borderColor: "var(--glass-border)",
                 backgroundColor: "var(--glass-bg-strong)",
                 backdropFilter: "blur(24px) saturate(180%)",
@@ -4528,13 +4730,16 @@ export default function SpecsGridEditor({
                 type="button"
                 onClick={() => {
                   mobileConfirmMenu.onConfirm();
-                  setMobileConfirmMenu(null);
+                  closeMobileConfirmMenu();
                 }}
                 title={mobileConfirmMenu.title}
-                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-left text-[12px] font-bold hover:brightness-95"
-                style={{ color: "var(--success-strong)" }}
+                className="flex w-full items-center gap-2.5 whitespace-nowrap px-4 py-3 text-left text-[14px] font-bold"
+                // No hover:brightness-95 (and tap-highlight explicitly killed) — this is a touch-only
+                // menu, and a browser's own sticky :hover/tap-flash on a just-tapped element reads as
+                // the button staying stuck "lit up" after it appears, not a real hover state.
+                style={{ color: "var(--success-strong)", WebkitTapHighlightColor: "transparent" }}
               >
-                <CheckSquare size={14} />
+                <CheckSquare size={16} />
                 {mobileConfirmMenu.label}
               </button>
             </div>,
