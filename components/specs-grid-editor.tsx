@@ -488,11 +488,23 @@ function escapeHtmlText(text: string): string {
 // tag-based reading stays the exact inverse of this. A run's embedded `\n` becomes a literal <br> —
 // see SpecsCellTextArea's own onKeyDown for why every line break ends up represented that way rather
 // than the browser's own inconsistent (and, for reading back out, much messier) per-paragraph <div>
-// wrapping.
+// wrapping. Each <br> carries an explicit inline line-height (matching lib/specs-grid-pdf.ts's own
+// SPECS_PDF_LINE_HEIGHT_FACTOR, so a forced break takes up the same vertical space in the live preview
+// as the PDF already assumes) rather than leaving it to the element's inherited `line-height: normal` —
+// real iPhone Safari (never reproduced in Chromium, at any viewport width) was found rendering a blank
+// line between two paragraphs (back-to-back `\n\n`, i.e. two consecutive <br>s with nothing between
+// them) far taller than it should be, specifically in multi-paragraph cells and nowhere else on the
+// same sheet. A `<br>`'s own line-height is what sizes the empty line it creates, and `normal` is
+// exactly the ambiguous, engine-resolved value real-world WebKit forced-line-break bugs (including a
+// first-party WebKit regression note on <br> not respecting its declared line-height) are reported
+// against — pinning a concrete number removes that ambiguity. Scoped to the <br> itself, not the whole
+// cell, so this can't change any row's measured height except ones that actually contain a manual line
+// break.
+const SPECS_CELL_BR_LINE_HEIGHT = 1.15;
 function runsToHtml(runs: SpecsTextRun[]): string {
   return runs
     .map((run) => {
-      const escaped = escapeHtmlText(run.text).replace(/\n/g, "<br>");
+      const escaped = escapeHtmlText(run.text).replace(/\n/g, `<br style="line-height:${SPECS_CELL_BR_LINE_HEIGHT}">`);
       let html = escaped;
       if (run.underline) html = `<u>${html}</u>`;
       if (run.bold) html = `<b>${html}</b>`;
@@ -3901,8 +3913,16 @@ export default function SpecsGridEditor({
                           // Splitting "clips" from "flex-aligns" into two nested divs puts the actual
                           // clipping on a plain block, the one shape every engine has always reliably
                           // honored height+overflow:hidden on, regardless of what its flex-positioned
-                          // content inside wants to be.
-                          style={{ height: spannedHeightPx, overflow: "hidden", position: "relative", WebkitTransform: "translateZ(0)" }}
+                          // content inside wants to be. Deliberately NOT forcing a compositing layer
+                          // here (e.g. via translateZ(0)) — this div renders once per cell (50-100+ per
+                          // sheet), all nested inside the page box's own already-transform:scale()'d
+                          // ancestor on mobile; that many forced layers stacked inside one already-
+                          // transformed ancestor is a documented real-iPhone-Safari risk factor for
+                          // stale/incorrect paint that has nothing to do with this div's own layout
+                          // math (which is why it was never reproducible here in Chromium). The plain
+                          // block + overflow:hidden above is what actually fixes flexbugs#1; a forced
+                          // layer was never required for that.
+                          style={{ height: spannedHeightPx, overflow: "hidden", position: "relative" }}
                         >
                         <div
                           onMouseDown={(e) => {
