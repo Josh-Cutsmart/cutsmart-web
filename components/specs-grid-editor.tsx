@@ -2366,6 +2366,64 @@ export default function SpecsGridEditor({
     const id = setTimeout(() => setSettledTick((t) => t + 1), 400);
     return () => clearTimeout(id);
   }, []);
+  // TEMPORARY diagnostic — remove once the real-device-only "gap between a group's outline and its
+  // own text" bug is found. Every fix attempted so far (a geometry-aware React key, swapping the
+  // outline's box-shadow for an outline property, replacing a percentage min-height with the already-
+  // known pixel value) was reasoned from Chromium measurements that come back perfectly correct every
+  // time — none of them reproduce the bug here, so none of them can be verified here either. This logs
+  // the same measurements directly on the affected device instead, via the app's own existing
+  // ?debug=1 console-capture panel (see app/layout.tsx) — no dev tools or cable needed, just the
+  // floating "Logs" button already built for exactly this. Fires once, 600ms after mount (past
+  // settledTick's own 400ms) so layout has settled, and only when the debug console is active.
+  useEffect(() => {
+    if (!isProjectSheetView || typeof window === "undefined") return;
+    if (window.localStorage?.getItem("cutsmart_debug_console") !== "1") return;
+    const id = setTimeout(() => {
+      try {
+        const editable = Array.from(document.querySelectorAll<HTMLElement>('[contenteditable="true"]')).find((el) =>
+          /dear\s+[^,]+,/i.test(el.textContent ?? ""),
+        );
+        if (!editable) {
+          console.log("[gap-debug] no greeting cell found on this sheet");
+          return;
+        }
+        const flexParent = editable.parentElement;
+        const clipParent = flexParent?.parentElement;
+        const td = editable.closest("td");
+        const outline = Array.from(document.querySelectorAll<HTMLElement>("div")).find(
+          (d) => d.style.outline && td && d.getBoundingClientRect().top <= td.getBoundingClientRect().top + 2,
+        );
+        const rectOf = (el: Element | null | undefined) => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { top: Math.round(r.top * 100) / 100, height: Math.round(r.height * 100) / 100 };
+        };
+        const flexStyle = flexParent
+          ? (({ display, justifyContent, minHeight, height }: CSSStyleDeclaration) => ({ display, justifyContent, minHeight, height }))(
+              getComputedStyle(flexParent),
+            )
+          : null;
+        console.log(
+          "[gap-debug]",
+          JSON.stringify({
+            ua: navigator.userAgent,
+            dpr: window.devicePixelRatio,
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            textRect: rectOf(editable),
+            flexParentRect: rectOf(flexParent),
+            flexParentComputedStyle: flexStyle,
+            clipParentRect: rectOf(clipParent),
+            tdRect: rectOf(td),
+            outlineOverlayRect: rectOf(outline),
+          }),
+        );
+      } catch (err) {
+        console.log("[gap-debug] threw", String(err));
+      }
+    }, 600);
+    return () => clearTimeout(id);
+  }, [isProjectSheetView, liveGrid]);
   // The canvas has no horizontal padding of its own on mobile now (it bleeds past the host page's
   // own px-3/sm:px-4/md:px-5 wrapper too — see the canvas div's own className below), so the page
   // is meant to reach the true screen edges exactly — just a few px of safety margin against
