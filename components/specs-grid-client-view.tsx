@@ -156,6 +156,12 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                             // up its own flow space here.
                             height: spannedHeightPx,
                             overflow: "hidden",
+                            // Matches specs-grid-editor.tsx's own identical fix (see its comment) — a
+                            // rowSpan'd td can still grow past the `height` just above it on real
+                            // iPhone Safari ("height is only a floor"), and this td's own default
+                            // vertical-align (`middle`, not `top`) would otherwise split that extra
+                            // room above AND below its one child, landing as a gap above the text.
+                            verticalAlign: "top",
                             backgroundColor: style.bgColor ?? "#ffffff",
                             // No gridline at all on a plain cell — explicit borders are drawn as the
                             // separate overlay below. Unlike specs-grid-editor.tsx's own staff-facing

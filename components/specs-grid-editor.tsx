@@ -3869,19 +3869,27 @@ export default function SpecsGridEditor({
                         ...(isMobileConfirmEligible
                           ? { WebkitUserSelect: "none" as const, userSelect: "none" as const, WebkitTouchCallout: "none" as const }
                           : {}),
-                        // Vertical alignment for TEXT cells is handled by the flex wrapper around
-                        // SpecsCellTextArea below, not by this `vertical-align` — a table cell only
-                        // hands its content the space it doesn't already claim for itself, and a
-                        // block child capped with `maxHeight` (rather than a fixed `height`, so a
-                        // short line of text could shrink to its own natural size and leave room to
-                        // align within) turned out to still get silently stretched to fill that
-                        // maxHeight anyway in Chrome's table layout — confirmed directly via
-                        // getComputedStyle, `height` resolved to the maxHeight value even with no
-                        // `height` of its own set, leaving zero slack for `vertical-align` to ever
-                        // show any difference between top/middle/bottom. A flex column with a
-                        // genuinely fixed height sidesteps that table-cell-specific quirk entirely.
-                        // Image cells don't need this — they're already explicitly positioned via
-                        // imageObjectPositionFor.
+                        // Explicit, rather than leaving this td at its browser default — which for a
+                        // <td> is `middle`, not `top`. The in-cell vertical alignment someone actually
+                        // picks (top/middle/bottom) is still entirely the flex wrapper's job (below,
+                        // around SpecsCellTextArea) — this is a DIFFERENT layer: real iPhone Safari
+                        // (confirmed via this file's own on-device diagnostic, never reproduced in
+                        // Chromium) was found growing a rowSpan'd td measurably TALLER than the
+                        // `height` set on it two lines up (exactly the "height is only a floor" case
+                        // this file's own comment on spannedHeightPx already warns about, just not
+                        // previously seen happen on a real device) — and once that happens, the td's
+                        // OWN vertical-align decides where its one child (the clip div, still sized to
+                        // the original shorter height) sits inside that extra room. Left at the
+                        // default `middle`, the gap this created split evenly above and below the
+                        // clip div — exactly the "gap between the group's outline and its own text"
+                        // bug, measured on a real device as close to half the cell's own excess
+                        // height. Pinning `top` here keeps that gap (whenever the td grows past its
+                        // own set height for any reason, on any device) collapsed to the bottom,
+                        // where it's inert, instead of split with half of it landing above the
+                        // content. Image cells don't need this — they're already explicitly
+                        // positioned via imageObjectPositionFor, unaffected by vertical-align either
+                        // way.
+                        verticalAlign: "top",
                         // Fill color always shows now — selection used to be indicated by replacing
                         // this with the blue tint, which made an applied fill invisible for as long
                         // as the cell stayed selected (i.e. the whole time you're picking a color).
