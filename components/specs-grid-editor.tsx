@@ -4431,25 +4431,23 @@ export default function SpecsGridEditor({
         {/* showEditableGroupBorders' own overlay — see its comment on SpecsGridEditorProps. A plain
             inset border (no label, no dashing) rather than reusing groupOutlines' own look: this is
             meant to read as a quiet, permanent part of the live document (only Quote's own project
-            sheet turns it on), not as a layout-tool wireframe like the builder's version above. An
-            inset box-shadow (same technique as selectionOutline just below) draws the border without
-            affecting this div's own box/layout, so adjacent groups' borders never fight for space. */}
+            sheet turns it on), not as a layout-tool wireframe like the builder's version above.
+            Drawn as an inset `outline` (negative outlineOffset pulls it fully inside the div's own
+            edge) rather than an inset box-shadow — same visual result, without affecting this div's
+            own box/layout so adjacent groups' borders never fight for space — but NOT purely a style
+            preference: real iPhone Safari (confirmed: also iOS Chrome, same underlying WebKit engine
+            — not a caching or device-setting issue, reproduced after a full cache clear, and the
+            underlying top/height numbers themselves are independently confirmed correct via
+            getBoundingClientRect) was found painting this box noticeably off from the content it's
+            meant to outline — specifically the kind of thing `box-shadow`, whose repaint/paint-bounds
+            handling is a known rough edge in some engines once nested inside an already
+            `transform: scale()`'d ancestor (the whole page box, here, on mobile), can get wrong where
+            a plain `outline` — which doesn't carry that extra paint-bounds-expansion complexity at
+            all — reliably doesn't. A geometry-aware key (not just g.id) is kept alongside this too, so
+            a position CHANGE still forces a fresh DOM node rather than patching an existing one's
+            style, on the chance either mechanism alone isn't sufficient on its own. */}
         {editableGroupOutlines.map((g) => (
           <div
-            // Geometry baked into the key (not just g.id) is deliberate: a group's own top/height
-            // shift whenever something ABOVE it is hidden/shown (another group's toggle, this one's
-            // own content growing) — real iPhone Safari/WebKit (confirmed: also iOS Chrome, which is
-            // the same underlying engine — not a caching or device-setting issue, reproduced after a
-            // full cache clear) was found leaving this box PAINTED at its old position after such a
-            // shift, even though the real table content below it reflowed correctly and this div's
-            // own style.top/height genuinely updated — a stale-repaint bug for a style-only change on
-            // an already-mounted node, not a layout bug (every geometry value here is independently
-            // confirmed correct). An inset box-shadow specifically (rather than a plain border) is a
-            // known trouble spot for incremental repaint invalidation in some engines. Including the
-            // computed position in the key forces React to unmount+remount a fresh DOM node whenever
-            // it changes, instead of patching an existing one's style — a brand new node can't have
-            // stale paint to begin with, sidestepping the repaint-invalidation bug entirely regardless
-            // of its exact cause.
             key={`editable-border-${g.id}-${Math.round(g.top)}-${Math.round(g.height)}`}
             className="pointer-events-none absolute"
             style={{
@@ -4457,7 +4455,8 @@ export default function SpecsGridEditor({
               top: colHeaderHeightPx + g.top,
               width: tableTotalWidthPx,
               height: g.height,
-              boxShadow: "inset 0 0 0 1.5px var(--brand-strong)",
+              outline: "1.5px solid var(--brand-strong)",
+              outlineOffset: "-1.5px",
             }}
           />
         ))}
