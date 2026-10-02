@@ -190,6 +190,11 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                                 style={{
                                   fontFamily: style.fontFamily || DEFAULT_CELL_FONT_FAMILY,
                                   fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
+                                  // Matches specs-grid-editor.tsx's own identical fix (see its comment) —
+                                  // an explicit line-height instead of the ambiguous browser default,
+                                  // for the same real-Safari blank-line-between-paragraphs bug. Also
+                                  // matches lib/specs-grid-pdf.ts's own SPECS_PDF_LINE_HEIGHT_FACTOR.
+                                  lineHeight: 1.15,
                                   textAlign: style.align ?? "left",
                                   color: style.textColor ?? "var(--text-main)",
                                 }}

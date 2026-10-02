@@ -488,23 +488,11 @@ function escapeHtmlText(text: string): string {
 // tag-based reading stays the exact inverse of this. A run's embedded `\n` becomes a literal <br> —
 // see SpecsCellTextArea's own onKeyDown for why every line break ends up represented that way rather
 // than the browser's own inconsistent (and, for reading back out, much messier) per-paragraph <div>
-// wrapping. Each <br> carries an explicit inline line-height (matching lib/specs-grid-pdf.ts's own
-// SPECS_PDF_LINE_HEIGHT_FACTOR, so a forced break takes up the same vertical space in the live preview
-// as the PDF already assumes) rather than leaving it to the element's inherited `line-height: normal` —
-// real iPhone Safari (never reproduced in Chromium, at any viewport width) was found rendering a blank
-// line between two paragraphs (back-to-back `\n\n`, i.e. two consecutive <br>s with nothing between
-// them) far taller than it should be, specifically in multi-paragraph cells and nowhere else on the
-// same sheet. A `<br>`'s own line-height is what sizes the empty line it creates, and `normal` is
-// exactly the ambiguous, engine-resolved value real-world WebKit forced-line-break bugs (including a
-// first-party WebKit regression note on <br> not respecting its declared line-height) are reported
-// against — pinning a concrete number removes that ambiguity. Scoped to the <br> itself, not the whole
-// cell, so this can't change any row's measured height except ones that actually contain a manual line
-// break.
-const SPECS_CELL_BR_LINE_HEIGHT = 1.15;
+// wrapping.
 function runsToHtml(runs: SpecsTextRun[]): string {
   return runs
     .map((run) => {
-      const escaped = escapeHtmlText(run.text).replace(/\n/g, `<br style="line-height:${SPECS_CELL_BR_LINE_HEIGHT}">`);
+      const escaped = escapeHtmlText(run.text).replace(/\n/g, "<br>");
       let html = escaped;
       if (run.underline) html = `<u>${html}</u>`;
       if (run.bold) html = `<b>${html}</b>`;
@@ -4448,7 +4436,21 @@ export default function SpecsGridEditor({
             affecting this div's own box/layout, so adjacent groups' borders never fight for space. */}
         {editableGroupOutlines.map((g) => (
           <div
-            key={`editable-border-${g.id}`}
+            // Geometry baked into the key (not just g.id) is deliberate: a group's own top/height
+            // shift whenever something ABOVE it is hidden/shown (another group's toggle, this one's
+            // own content growing) — real iPhone Safari/WebKit (confirmed: also iOS Chrome, which is
+            // the same underlying engine — not a caching or device-setting issue, reproduced after a
+            // full cache clear) was found leaving this box PAINTED at its old position after such a
+            // shift, even though the real table content below it reflowed correctly and this div's
+            // own style.top/height genuinely updated — a stale-repaint bug for a style-only change on
+            // an already-mounted node, not a layout bug (every geometry value here is independently
+            // confirmed correct). An inset box-shadow specifically (rather than a plain border) is a
+            // known trouble spot for incremental repaint invalidation in some engines. Including the
+            // computed position in the key forces React to unmount+remount a fresh DOM node whenever
+            // it changes, instead of patching an existing one's style — a brand new node can't have
+            // stale paint to begin with, sidestepping the repaint-invalidation bug entirely regardless
+            // of its exact cause.
+            key={`editable-border-${g.id}-${Math.round(g.top)}-${Math.round(g.height)}`}
             className="pointer-events-none absolute"
             style={{
               left: rowHeaderWidthPx,
@@ -5504,6 +5506,10 @@ function SpecsCellTextArea({
         style={{
           fontFamily: style.fontFamily || DEFAULT_CELL_FONT_FAMILY,
           fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
+          // Matches lib/specs-grid-pdf.ts's own SPECS_PDF_LINE_HEIGHT_FACTOR — see the editable
+          // branch's own style below for why this is set explicitly rather than left at the
+          // browser default `normal`.
+          lineHeight: 1.15,
           textAlign: style.align ?? "left",
           color: dimmed ? style.textColor ?? "var(--text-main)" : style.textColor ?? "#000000",
           // "not-allowed" (a permissions-style cross) only reads correctly for the role-based lock —
@@ -5571,6 +5577,21 @@ function SpecsCellTextArea({
       style={{
         fontFamily: style.fontFamily || DEFAULT_CELL_FONT_FAMILY,
         fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
+        // Explicit rather than the browser default `normal`: real iPhone Safari (never reproduced in
+        // Chromium, at any viewport width, and confirmed not a caching/device-setting issue) was found
+        // rendering a blank line between two paragraphs (a run's embedded "\n\n" — two consecutive
+        // <br>s with nothing between them, see runsToHtml) far taller than it should be, specifically
+        // in multi-paragraph cells. `line-height: normal` is an ambiguous, engine-resolved value that
+        // real-world WebKit forced-line-break bugs (including a first-party WebKit regression note on
+        // <br> not respecting a DECLARED line-height) are reported against — pinning a concrete number
+        // here removes that ambiguity. Tried scoping this to just the generated <br> tags first (an
+        // inline style="line-height" on the <br> itself) since that's a narrower change; that alone
+        // didn't fix it on a real affected device, consistent with <br> being a historically
+        // unreliable element to style directly — line-height on the actual line-box-owning container
+        // (this div) is the only form every engine has always reliably honored. Matches
+        // lib/specs-grid-pdf.ts's own SPECS_PDF_LINE_HEIGHT_FACTOR, so this doesn't newly diverge from
+        // what the PDF already assumes.
+        lineHeight: 1.15,
         textAlign: style.align ?? "left",
         color: style.textColor ?? "var(--text-main)",
       }}
