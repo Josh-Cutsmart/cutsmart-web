@@ -8,8 +8,10 @@ import { ArrowLeft, ArrowLeftRight, ArrowRight, Bell, CalendarDays, Check, Chevr
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { PDFDocument } from "pdf-lib";
-import { toJpeg, toPng } from "html-to-image";
-import * as XLSX from "xlsx-js-style";
+import type { DecoupledEditor, ModelWriter } from "ckeditor5";
+import type { RichText as ExcelRichText } from "exceljs";
+import type { CellInput as AutoTableCellInput, RowInput as AutoTableRowInput } from "jspdf-autotable";
+import { toJpeg } from "html-to-image";
 import { deleteObject, getBlob, getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
 import { FullscreenImageViewerShell } from "@/components/fullscreen-image-viewer-shell";
 import { GlassScrollbarThumb } from "@/components/glass-scrollbar-thumb";
@@ -27,13 +29,12 @@ import {
   type GlassModalOrigin,
 } from "@/lib/use-glass-modal-pop-origin";
 import { useSwipeToClose } from "@/lib/use-swipe-to-close";
-import { useMobileBottomSheet } from "@/lib/use-mobile-bottom-sheet";
 import { useMobileFloatingActionSheet } from "@/lib/use-mobile-floating-action-sheet";
 import { useLongPress } from "@/lib/use-long-press";
 import { useDragGhost, DragGhostLayer } from "@/lib/use-drag-ghost";
 import { clusterPins, computeSpreadPositions, findClusterContainingPin } from "@/lib/pin-clustering";
 import SpecsGridEditor from "@/components/specs-grid-editor";
-import { type SpecsGrid, type SpecsCellStyle, type SpecsGridVersion, type SpecsTextRun, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, pruneEmptySpecsRows, genSpecsRowId, getCellSpan, getCellRuns, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks, createEmptyGrid, computeSpecsPageBoxWidthPx, DEFAULT_CELL_FONT_SIZE_PX, DEFAULT_BORDER_WIDTH_PX, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PX } from "@/lib/specs-grid-types";
+import { type SpecsGrid, type SpecsGridVersion, type SpecsRowGroup, normalizeSpecsGrid, normalizeSpecsGridVersion, resolveSpecsGridTokens, genSpecsRowId, getExpandedRowGroups, setRowGroupHidden, applyGroupRules, clearAllConfirmableMarks } from "@/lib/specs-grid-types";
 import { buildSpecsGridPdfBlob, openPdfBlobInPrintWindow, resolveProjectImageUrl, resolveProjectImageDataUrl, blobToDataUrl } from "@/lib/specs-grid-pdf";
 import { isProjectNotifySubscribed, projectNotifySubscriberUids } from "@/lib/project-notify";
 import { retryAsync, withTimeout } from "@/lib/load-retry";
@@ -87,10 +88,10 @@ import { normalizeRoles } from "@/lib/company-roles";
 import { getFirebaseStorageQuotaExceededMessage, isFirebaseStorageQuotaExceeded } from "@/lib/firebase-storage-errors";
 import { readThemeMode, THEME_MODE_UPDATED_EVENT, type ThemeMode } from "@/lib/theme-mode";
 import { USER_COLOR_UPDATED_EVENT, type UserColorUpdatedDetail } from "@/lib/user-color-sync";
-import { QUOTE_TEMPLATE_PLACEHOLDERS, interpolateQuoteTemplateText } from "@/lib/quote-template-placeholders";
+import { interpolateQuoteTemplateText } from "@/lib/quote-template-placeholders";
 import type { ChecklistTemplate, Cutlist, Project, ProjectChange, ProjectChecklist, ProjectImageAnnotation, ProjectImageItem, SalesQuote } from "@/lib/types";
 import { storage, auth } from "@/lib/firebase";
-import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistEntryDraft, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
+import { summarizeCutlistRowsByPartType, type CutlistDraftRow, type CutlistRow, type DoorModeValue, type ProductComparison } from "@/lib/cutlist-types";
 
 const ACTIVE_COMPANY_STORAGE_KEY = "cutsmart_active_company_id";
 const QUOTE_SNAPSHOT_RENDERER_VERSION = "html-v1";
@@ -475,551 +476,8 @@ function renderQuoteRichTextHtml(value: string): string {
   return sanitizeQuoteRichTextMarkup(value);
 }
 
-function QuotePagedPreviewMount({
-  sourceChildren,
-  pageWidthMm,
-  pageHeightMm,
-  pageMarginMm,
-}: {
-  sourceChildren: ReactNode;
-  pageWidthMm: number;
-  pageHeightMm: number;
-  pageMarginMm: number;
-}) {
-  const sourceRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const [scriptReady, setScriptReady] = useState(false);
-  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [errorMessage, setErrorMessage] = useState("");
-  const [pageCount, setPageCount] = useState(0);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if ((window as Window & { Paged?: unknown }).Paged) {
-      setScriptReady(true);
-      return;
-    }
-    const existingScript = document.querySelector('script[data-pagedjs-bundle="true"]') as HTMLScriptElement | null;
-    if (existingScript?.dataset.loaded === "true") {
-      setScriptReady(true);
-      return;
-    }
-    const script = existingScript ?? document.createElement("script");
-    script.src = "/vendor/paged.polyfill.js";
-    script.async = true;
-    script.dataset.pagedjsBundle = "true";
-    const handleLoad = () => {
-      script.dataset.loaded = "true";
-      setScriptReady(true);
-    };
-    script.addEventListener("load", handleLoad);
-    if (!existingScript) {
-      document.body.appendChild(script);
-    }
-    return () => {
-      script.removeEventListener("load", handleLoad);
-    };
-  }, []);
-
-  useEffect(() => {
-    let isCancelled = false;
-    const run = async () => {
-      const sourceNode = sourceRef.current;
-      const viewportNode = viewportRef.current;
-      if (!sourceNode || !viewportNode || typeof window === "undefined") return;
-      const pagedWindow = window as Window & {
-        PagedConfig?: {
-          auto?: boolean;
-        };
-        PagedPolyfill?: {
-          preview: () => Promise<{ total?: number } | undefined>;
-        };
-      };
-      if (!pagedWindow.PagedPolyfill?.preview) {
-        setStatus("loading");
-        return;
-      }
-
-      setStatus("loading");
-      setErrorMessage("");
-      viewportNode.innerHTML = "";
-
-      try {
-        pagedWindow.PagedConfig = { auto: false };
-        const sourceClone = sourceNode.cloneNode(true) as HTMLDivElement;
-        sourceClone.style.position = "static";
-        sourceClone.style.opacity = "1";
-        sourceClone.style.pointerEvents = "none";
-        sourceClone.querySelectorAll("[contenteditable]").forEach((element) => {
-          (element as HTMLElement).removeAttribute("contenteditable");
-        });
-        viewportNode.appendChild(sourceClone);
-        const flow = await pagedWindow.PagedPolyfill.preview();
-        if (isCancelled) return;
-        const pageNodes = viewportNode.querySelectorAll(".pagedjs_page");
-        setPageCount(pageNodes.length || Number(flow?.total ?? 0));
-        setStatus("ready");
-      } catch (error) {
-        if (isCancelled) return;
-        setStatus("error");
-        setErrorMessage(error instanceof Error ? error.message : "Could not render paged preview.");
-      }
-    };
-
-    const timer = window.setTimeout(() => {
-      void run();
-    }, 0);
-    return () => {
-      isCancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [scriptReady, sourceChildren, pageHeightMm, pageMarginMm, pageWidthMm]);
-
-  return (
-    <div className="quote-preview-shell">
-      <div
-        ref={sourceRef}
-        aria-hidden="true"
-        style={{
-          position: "fixed",
-          left: "-100000px",
-          top: "0",
-          width: `${pageWidthMm}mm`,
-          pointerEvents: "none",
-          opacity: 0,
-          zIndex: -1,
-        }}
-      >
-        <style>{`
-          @page {
-            size: ${pageWidthMm}mm ${pageHeightMm}mm;
-            margin: ${pageMarginMm}mm;
-          }
-          .quote-paged-source-root {
-            color: #0f172a;
-          }
-          .quote-paged-source-root .quote-paged-flow {
-            width: 100%;
-          }
-          .quote-paged-source-root .quote-paged-flow [data-quote-container-id] {
-            break-inside: avoid;
-            page-break-inside: avoid;
-          }
-          .quote-paged-source-root .quote-paged-flow [data-quote-project-text-block-id] {
-            break-inside: auto;
-            page-break-inside: auto;
-          }
-        `}</style>
-        <div className="quote-paged-source-root">
-          {sourceChildren}
-        </div>
-      </div>
-      <section className="quote-preview-stage rounded-[18px] border border-[#D7DEE8] bg-[#EDEFF4] p-4 shadow-[inset_0_1px_2px_rgba(16,24,40,0.04)]">
-        <div className="mb-3 flex items-center justify-between rounded-[12px] border border-[#D7DEE8] bg-white px-4 py-3">
-          <div>
-            <p className="text-[14px] font-semibold tracking-[1px] text-[#0F2A4A]">PAGED PREVIEW</p>
-            <p className="text-[12px] text-[#667085]">
-              {status === "ready" ? `Page ${pageCount || 1}` : status === "loading" ? "Laying out pages..." : status === "error" ? errorMessage : "Preparing preview..."}
-            </p>
-          </div>
-        </div>
-        <div
-          ref={viewportRef}
-          className="overflow-auto rounded-[18px] bg-[#B8B8B8] p-4 [&_.pagedjs_pages]:mx-auto [&_.pagedjs_pages]:flex [&_.pagedjs_pages]:flex-col [&_.pagedjs_pages]:gap-4 [&_.pagedjs_page]:mx-auto [&_.pagedjs_page]:overflow-hidden [&_.pagedjs_page]:rounded-[18px] [&_.pagedjs_page]:bg-white [&_.pagedjs_page]:shadow-[0_18px_36px_rgba(15,23,42,0.08)]"
-          style={{ minHeight: "70dvh" }}
-        />
-      </section>
-    </div>
-  );
-}
-
 function quoteRichTextHasVisibleContent(value: string): boolean {
   return stripHtmlToPlainText(value).length > 0;
-}
-
-function quoteEditorNodeHasVisibleContent(node: Node): boolean {
-  if (node.nodeType === Node.TEXT_NODE) {
-    return String(node.textContent || "").replace(/\u200b/g, "").trim().length > 0;
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE) return false;
-
-  const element = node as HTMLElement;
-  if (element.dataset.quotePlaceholder === "true") return false;
-
-  const tag = element.tagName.toLowerCase();
-  if (tag === "br") return false;
-
-  return Array.from(element.childNodes).some(quoteEditorNodeHasVisibleContent);
-}
-
-function isQuoteEditorEmptyForFormatting(editor: HTMLDivElement): boolean {
-  return !Array.from(editor.childNodes).some(quoteEditorNodeHasVisibleContent);
-}
-
-function applyQuoteRichTextCommand(
-  editor: HTMLDivElement | null,
-  savedRange: Range | null,
-  command: "bold" | "italic" | "underline" | "strikeThrough",
-  onChange: (nextValue: string) => void,
-) {
-  if (!editor || typeof document === "undefined") return;
-  editor.focus();
-  const selection = window.getSelection();
-  const hasSelectionInEditor = Boolean(
-    selection &&
-      selection.rangeCount > 0 &&
-      editor.contains(selection.anchorNode),
-  );
-  if (isQuoteEditorEmptyForFormatting(editor) || !hasSelectionInEditor) {
-    editor.querySelectorAll("[data-quote-placeholder='true']").forEach((node) => node.remove());
-    editor.innerHTML = "";
-    const textNode = document.createTextNode("\u200b");
-    editor.appendChild(textNode);
-    const range = document.createRange();
-    range.setStart(textNode, 0);
-    range.setEnd(textNode, textNode.textContent?.length ?? 1);
-    if (selection) {
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    document.execCommand(command);
-    const nextValue = sanitizeQuoteRichTextMarkup(editor.innerHTML);
-    if (quoteRichTextHasVisibleContent(nextValue)) {
-      onChange(nextValue);
-    }
-    return;
-  }
-  if (selection && savedRange) {
-    selection.removeAllRanges();
-    selection.addRange(savedRange);
-  }
-  document.execCommand(command);
-  onChange(sanitizeQuoteRichTextMarkup(editor.innerHTML));
-}
-
-function arraysEqualText(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-function arraysEqualPagePlan(
-  a: Array<Array<{ containerId: string; projectTextBlockId?: string; projectTextChunkIndex?: number; projectTextChunkCount?: number; projectTextOnly?: boolean }>>,
-  b: Array<Array<{ containerId: string; projectTextBlockId?: string; projectTextChunkIndex?: number; projectTextChunkCount?: number; projectTextOnly?: boolean }>>,
-): boolean {
-  if (a.length !== b.length) return false;
-  for (let pageIndex = 0; pageIndex < a.length; pageIndex += 1) {
-    const pageA = a[pageIndex] ?? [];
-    const pageB = b[pageIndex] ?? [];
-    if (pageA.length !== pageB.length) return false;
-    for (let entryIndex = 0; entryIndex < pageA.length; entryIndex += 1) {
-      const entryA = pageA[entryIndex];
-      const entryB = pageB[entryIndex];
-      if (
-        entryA.containerId !== entryB.containerId ||
-        String(entryA.projectTextBlockId ?? "") !== String(entryB.projectTextBlockId ?? "") ||
-        Number(entryA.projectTextChunkIndex ?? 0) !== Number(entryB.projectTextChunkIndex ?? 0) ||
-        Number(entryA.projectTextChunkCount ?? 1) !== Number(entryB.projectTextChunkCount ?? 1) ||
-        Boolean(entryA.projectTextOnly) !== Boolean(entryB.projectTextOnly)
-      ) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-function splitQuoteProjectTextHtmlByHeight(
-  html: string,
-  widthPx: number,
-  baseStyle: Partial<CSSStyleDeclaration>,
-  firstPageMaxHeight: number,
-  continuationPageMaxHeight: number,
-): string[] {
-  if (typeof document === "undefined") return [html];
-  const safeFirstHeight = Math.max(80, Math.floor(firstPageMaxHeight));
-  const safeContinuationHeight = Math.max(120, Math.floor(continuationPageMaxHeight));
-
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  let sourceNodes: Node[] = Array.from(template.content.childNodes);
-  let chunkWrapperTemplate: HTMLElement | null = null;
-  if (sourceNodes.length === 1 && sourceNodes[0]?.nodeType === Node.ELEMENT_NODE) {
-    const singleElement = sourceNodes[0] as HTMLElement;
-    if (singleElement.childNodes.length > 1) {
-      chunkWrapperTemplate = singleElement.cloneNode(false) as HTMLElement;
-      sourceNodes = Array.from(singleElement.childNodes).map((node) => node.cloneNode(true));
-    }
-  }
-  if (sourceNodes.length === 0) return [html];
-
-  const host = document.createElement("div");
-  host.style.position = "fixed";
-  host.style.left = "-100000px";
-  host.style.top = "0";
-  host.style.width = `${Math.max(80, Math.floor(widthPx))}px`;
-  host.style.pointerEvents = "none";
-  host.style.opacity = "0";
-  host.style.zIndex = "-1";
-
-  const measure = document.createElement("div");
-  measure.style.width = "100%";
-  measure.style.boxSizing = "border-box";
-  measure.style.whiteSpace = "pre-wrap";
-  if (baseStyle.fontFamily) measure.style.fontFamily = baseStyle.fontFamily;
-  if (baseStyle.fontSize) measure.style.fontSize = baseStyle.fontSize;
-  if (baseStyle.fontWeight) measure.style.fontWeight = baseStyle.fontWeight;
-  if (baseStyle.fontStyle) measure.style.fontStyle = baseStyle.fontStyle;
-  if (baseStyle.lineHeight) measure.style.lineHeight = baseStyle.lineHeight;
-  if (baseStyle.letterSpacing) measure.style.letterSpacing = baseStyle.letterSpacing;
-  if (baseStyle.wordSpacing) measure.style.wordSpacing = baseStyle.wordSpacing;
-  if (baseStyle.textTransform) measure.style.textTransform = baseStyle.textTransform;
-  if (baseStyle.padding) measure.style.padding = baseStyle.padding;
-  if (baseStyle.paddingTop) measure.style.paddingTop = baseStyle.paddingTop;
-  if (baseStyle.paddingRight) measure.style.paddingRight = baseStyle.paddingRight;
-  if (baseStyle.paddingBottom) measure.style.paddingBottom = baseStyle.paddingBottom;
-  if (baseStyle.paddingLeft) measure.style.paddingLeft = baseStyle.paddingLeft;
-  if (baseStyle.margin) measure.style.margin = baseStyle.margin;
-  if (baseStyle.border) measure.style.border = baseStyle.border;
-  if (baseStyle.borderWidth) measure.style.borderWidth = baseStyle.borderWidth;
-  if (baseStyle.borderStyle) measure.style.borderStyle = baseStyle.borderStyle;
-  if (baseStyle.borderColor) measure.style.borderColor = baseStyle.borderColor;
-  host.appendChild(measure);
-  document.body.appendChild(host);
-
-  try {
-    const mountMeasureRoot = () => {
-      measure.innerHTML = "";
-      if (chunkWrapperTemplate) {
-        const wrapper = chunkWrapperTemplate.cloneNode(false) as HTMLElement;
-        measure.appendChild(wrapper);
-        return wrapper as HTMLElement | HTMLDivElement;
-      }
-      return measure;
-    };
-
-    const splitOversizedNodeToFit = (
-      node: Node,
-      maxHeight: number,
-    ): { fitNode: Node; remainderNode: Node | null } | null => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const fullText = String(node.textContent || "");
-        if (fullText.length <= 1) {
-          return { fitNode: node.cloneNode(true), remainderNode: null };
-        }
-
-        let bestIndex = 0;
-        let low = 1;
-        let high = fullText.length;
-        while (low <= high) {
-          const mid = Math.floor((low + high) / 2);
-          const root = mountMeasureRoot();
-          root.appendChild(document.createTextNode(fullText.slice(0, mid)));
-          if (measure.scrollHeight <= maxHeight) {
-            bestIndex = mid;
-            low = mid + 1;
-          } else {
-            high = mid - 1;
-          }
-        }
-
-        if (bestIndex <= 0) bestIndex = 1;
-        return {
-          fitNode: document.createTextNode(fullText.slice(0, bestIndex)),
-          remainderNode:
-            bestIndex < fullText.length ? document.createTextNode(fullText.slice(bestIndex)) : null,
-        };
-      }
-
-      if (node.nodeType !== Node.ELEMENT_NODE) {
-        return { fitNode: node.cloneNode(true), remainderNode: null };
-      }
-
-      const element = node as HTMLElement;
-      const children = Array.from(element.childNodes);
-      if (children.length === 0) {
-        return { fitNode: element.cloneNode(true), remainderNode: null };
-      }
-
-      const fitWrapper = element.cloneNode(false) as HTMLElement;
-      const remainderWrapper = element.cloneNode(false) as HTMLElement;
-      let fitChildCount = 0;
-
-      for (let i = 0; i < children.length; i += 1) {
-        const child = children[i];
-        const childClone = child.cloneNode(true);
-        const root = mountMeasureRoot();
-        const probeWrapper = element.cloneNode(false) as HTMLElement;
-        Array.from(fitWrapper.childNodes).forEach((existingChild) => {
-          probeWrapper.appendChild(existingChild.cloneNode(true));
-        });
-        probeWrapper.appendChild(childClone);
-        root.appendChild(probeWrapper);
-
-        if (measure.scrollHeight <= maxHeight) {
-          fitWrapper.appendChild(child.cloneNode(true));
-          fitChildCount += 1;
-          continue;
-        }
-
-        if (fitChildCount === 0) {
-          const nestedSplit = splitOversizedNodeToFit(child, maxHeight);
-          if (!nestedSplit) {
-            fitWrapper.appendChild(child.cloneNode(true));
-            fitChildCount += 1;
-          } else {
-            fitWrapper.appendChild(nestedSplit.fitNode);
-            if (nestedSplit.remainderNode) {
-              remainderWrapper.appendChild(nestedSplit.remainderNode);
-            }
-          }
-          for (let restIndex = i + 1; restIndex < children.length; restIndex += 1) {
-            remainderWrapper.appendChild(children[restIndex].cloneNode(true));
-          }
-          break;
-        }
-
-        for (let restIndex = i; restIndex < children.length; restIndex += 1) {
-          remainderWrapper.appendChild(children[restIndex].cloneNode(true));
-        }
-        break;
-      }
-
-      if (fitChildCount === children.length) {
-        return { fitNode: fitWrapper, remainderNode: null };
-      }
-
-      return {
-        fitNode: fitWrapper,
-        remainderNode: remainderWrapper.childNodes.length > 0 ? remainderWrapper : null,
-      };
-    };
-
-    const chunks: string[] = [];
-    let workingNodes = sourceNodes.map((node) => node.cloneNode(true));
-    let maxHeight = safeFirstHeight;
-
-    while (workingNodes.length > 0) {
-      const activeMeasureRoot = mountMeasureRoot();
-      const chunkNodes: Node[] = [];
-
-      while (workingNodes.length > 0) {
-        const candidate = workingNodes[0].cloneNode(true);
-        activeMeasureRoot.appendChild(candidate);
-        if (measure.scrollHeight <= maxHeight) {
-          chunkNodes.push(workingNodes.shift() as Node);
-          continue;
-        }
-        candidate.parentNode?.removeChild(candidate);
-        if (chunkNodes.length === 0) {
-          const oversizedNode = workingNodes.shift() as Node;
-          const splitNodeResult = splitOversizedNodeToFit(oversizedNode, maxHeight);
-          if (splitNodeResult) {
-            chunkNodes.push(splitNodeResult.fitNode);
-            if (splitNodeResult.remainderNode) {
-              workingNodes.unshift(splitNodeResult.remainderNode);
-            }
-          } else {
-            chunkNodes.push(oversizedNode);
-          }
-        }
-        break;
-      }
-
-      const chunkTemplate = document.createElement("template");
-      if (chunkWrapperTemplate) {
-        const wrapper = chunkWrapperTemplate.cloneNode(false) as HTMLElement;
-        chunkNodes.forEach((node) => wrapper.appendChild(node.cloneNode(true)));
-        chunkTemplate.content.appendChild(wrapper);
-      } else {
-        chunkNodes.forEach((node) => chunkTemplate.content.appendChild(node.cloneNode(true)));
-      }
-      chunks.push(chunkTemplate.innerHTML);
-      maxHeight = safeContinuationHeight;
-    }
-
-    return chunks.length > 0 ? chunks : [html];
-  } finally {
-    host.remove();
-  }
-}
-
-function splitQuoteProjectTextPlainLinesByHeight(
-  lines: string[],
-  widthPx: number,
-  baseStyle: Partial<CSSStyleDeclaration>,
-  firstPageMaxHeight: number,
-  continuationPageMaxHeight: number,
-): string[] {
-  if (typeof document === "undefined") {
-    return [lines.map((line) => `<p>${escapeQuoteRichTextHtml(line || " ")}</p>`).join("")];
-  }
-  const safeFirstHeight = Math.max(80, Math.floor(firstPageMaxHeight));
-  const safeContinuationHeight = Math.max(120, Math.floor(continuationPageMaxHeight));
-  const safeWidth = Math.max(80, Math.floor(widthPx));
-
-  const host = document.createElement("div");
-  host.style.position = "fixed";
-  host.style.left = "-100000px";
-  host.style.top = "0";
-  host.style.width = `${safeWidth}px`;
-  host.style.pointerEvents = "none";
-  host.style.opacity = "0";
-  host.style.zIndex = "-1";
-
-  const measure = document.createElement("div");
-  measure.style.width = "100%";
-  measure.style.boxSizing = "border-box";
-  measure.style.whiteSpace = "normal";
-  if (baseStyle.fontFamily) measure.style.fontFamily = baseStyle.fontFamily;
-  if (baseStyle.fontSize) measure.style.fontSize = baseStyle.fontSize;
-  if (baseStyle.fontWeight) measure.style.fontWeight = baseStyle.fontWeight;
-  if (baseStyle.fontStyle) measure.style.fontStyle = baseStyle.fontStyle;
-  if (baseStyle.lineHeight) measure.style.lineHeight = baseStyle.lineHeight;
-  if (baseStyle.letterSpacing) measure.style.letterSpacing = baseStyle.letterSpacing;
-  if (baseStyle.wordSpacing) measure.style.wordSpacing = baseStyle.wordSpacing;
-  if (baseStyle.textTransform) measure.style.textTransform = baseStyle.textTransform;
-  if (baseStyle.padding) measure.style.padding = baseStyle.padding;
-  if (baseStyle.paddingTop) measure.style.paddingTop = baseStyle.paddingTop;
-  if (baseStyle.paddingRight) measure.style.paddingRight = baseStyle.paddingRight;
-  if (baseStyle.paddingBottom) measure.style.paddingBottom = baseStyle.paddingBottom;
-  if (baseStyle.paddingLeft) measure.style.paddingLeft = baseStyle.paddingLeft;
-  if (baseStyle.margin) measure.style.margin = baseStyle.margin;
-  if (baseStyle.border) measure.style.border = baseStyle.border;
-  if (baseStyle.borderWidth) measure.style.borderWidth = baseStyle.borderWidth;
-  if (baseStyle.borderStyle) measure.style.borderStyle = baseStyle.borderStyle;
-  if (baseStyle.borderColor) measure.style.borderColor = baseStyle.borderColor;
-  host.appendChild(measure);
-  document.body.appendChild(host);
-
-  try {
-    const chunks: string[] = [];
-    let lineIndex = 0;
-    let maxHeight = safeFirstHeight;
-    while (lineIndex < lines.length) {
-      measure.innerHTML = "";
-      const chunkLines: string[] = [];
-      while (lineIndex < lines.length) {
-        const paragraph = document.createElement("p");
-        paragraph.innerHTML = escapeQuoteRichTextHtml(lines[lineIndex] || " ").replace(/\r?\n/g, "<br />");
-        measure.appendChild(paragraph);
-        if (measure.scrollHeight <= maxHeight || chunkLines.length === 0) {
-          chunkLines.push(lines[lineIndex] || "");
-          lineIndex += 1;
-          continue;
-        }
-        paragraph.remove();
-        break;
-      }
-      chunks.push(chunkLines.map((line) => `<p>${escapeQuoteRichTextHtml(line || " ").replace(/\r?\n/g, "<br />")}</p>`).join(""));
-      maxHeight = safeContinuationHeight;
-    }
-    return chunks.length > 0 ? chunks : [""];
-  } finally {
-    host.remove();
-  }
 }
 
 function normalizeQuoteBoxStyle(raw: unknown): QuoteTemplateBoxStyle {
@@ -1139,6 +597,7 @@ type ProjectLiveTabStateSnapshot = {
   salesNav: SalesNav;
   productionNav: ProductionNav;
   nestingFullscreen: boolean;
+  selectedNestingMachineId: string | null;
   cutlistRoomFilter: string;
   cutlistPartTypeFilter: string;
   cutlistSearch: string;
@@ -1290,11 +749,6 @@ const PROJECT_GAP_ALLOWANCE_SECTIONS: Array<{
 type SalesQuoteHelperRow = {
   id: string;
   content: string;
-};
-type SalesQuoteSnapshotRoomRow = {
-  name: string;
-  included: boolean;
-  totalPrice: string;
 };
 type SalesQuoteSnapshotRow = {
   id: string;
@@ -3890,12 +3344,25 @@ type NestingSheetLayout = {
   placements: NestingSheetPlacement[];
 };
 
+// "guillotine" (the only mode this function ever had until machine-aware nesting) is what a table
+// saw needs: every cut this produces is a full straight line across whatever rectangle it's cutting,
+// because commitRectPlacement below only ever splits the ONE free rect a piece landed in, in half —
+// a right leftover and a bottom leftover, recursively — which is exactly the guillotine-cutting
+// constraint, satisfied for free by this function's existing logic (no separate "table saw mode" of
+// its own needed). "maxrects" is for a CNC, which can cut an arbitrary outline and isn't limited to
+// edge-to-edge splits: commitRectPlacement instead subtracts the placed piece's own footprint from
+// EVERY free rect it overlaps (not just the one it was chosen from), generating up to four leftover
+// rects per overlap — the standard MaxRects bin-packing technique — so later pieces can land in space
+// a guillotine cut would have sealed off, packing tighter and sometimes needing fewer sheets. Every
+// other part of this function (piece flattening, grain-locked bundle handling, scoring) is identical
+// either way — only how a committed placement updates the free-rect list differs.
 function computeNestingSheetLayouts(
   rows: CutlistRow[],
   innerW: number,
   innerH: number,
   kerf: number,
   minPieceMm: number = NESTING_MACHINE_MIN_MM,
+  placementMode: "guillotine" | "maxrects" = "guillotine",
 ): NestingSheetLayout[] {
   const toPositiveNum = (v: unknown) => {
     const n = Number.parseFloat(String(v ?? "").replace(/[^\d.-]/g, ""));
@@ -4143,37 +3610,75 @@ function computeNestingSheetLayouts(
     return best;
   };
 
+  // MaxRects mode only: does rect `a`'s area genuinely overlap rect `b`'s (not just touch at an
+  // edge) — a 0.001 epsilon on every side so two rects that merely share a boundary line don't
+  // count as overlapping (otherwise every freshly-split neighbor would immediately "overlap" the
+  // rect it was split from).
+  const rectsOverlap = (a: FreeRect, b: FreeRect) =>
+    a.x < b.x + b.w - 0.001 && a.x + a.w > b.x + 0.001 && a.y < b.y + b.h - 0.001 && a.y + a.h > b.y + 0.001;
+
   const commitRectPlacement = (
     sheet: SheetState,
     freeRectIndex: number,
     commitRect: { x: number; y: number; w: number; h: number },
     placementsToAdd: NestingSheetPlacement[],
   ) => {
-    const rect = sheet.freeRects[freeRectIndex];
     const { x, y, w, h } = commitRect;
-    const nextRects = sheet.freeRects.filter((_, idx) => idx !== freeRectIndex);
-    const rightStart = x + w + kerf;
-    const bottomStart = y + h + kerf;
-    const rightWidth = rect.x + rect.w - rightStart;
-    const bottomHeight = rect.y + rect.h - bottomStart;
+    if (placementMode === "guillotine") {
+      const rect = sheet.freeRects[freeRectIndex];
+      const nextRects = sheet.freeRects.filter((_, idx) => idx !== freeRectIndex);
+      const rightStart = x + w + kerf;
+      const bottomStart = y + h + kerf;
+      const rightWidth = rect.x + rect.w - rightStart;
+      const bottomHeight = rect.y + rect.h - bottomStart;
 
-    if (rightWidth > 0.001) {
-      nextRects.push({
-        x: rightStart,
-        y: rect.y,
-        w: rightWidth,
-        h,
-      });
-    }
-    if (bottomHeight > 0.001) {
-      nextRects.push({
-        x: rect.x,
-        y: bottomStart,
-        w: rect.w,
-        h: bottomHeight,
-      });
+      if (rightWidth > 0.001) {
+        nextRects.push({
+          x: rightStart,
+          y: rect.y,
+          w: rightWidth,
+          h,
+        });
+      }
+      if (bottomHeight > 0.001) {
+        nextRects.push({
+          x: rect.x,
+          y: bottomStart,
+          w: rect.w,
+          h: bottomHeight,
+        });
+      }
+
+      sheet.freeRects = pruneFreeRects(nextRects);
+      sheet.placements.push(...placementsToAdd);
+      return;
     }
 
+    // maxrects: the kerf is folded into the occupied footprint itself (same "next piece starts
+    // kerf past this one" convention the guillotine branch above gets via rightStart/bottomStart)
+    // rather than applied per-split-direction, so a piece that ends up with free space on more than
+    // one side (impossible in guillotine mode, routine here) still gets a consistent gap on every
+    // side it borders. Every free rect that overlaps this occupied footprint — not just the one
+    // `placeOnSheet` chose — gets subtracted from, generating up to four leftover rects (the parts
+    // of that free rect NOT covered by the occupied footprint): this is what lets a later, smaller
+    // piece land in space freed up by an EARLIER split, which a pure single-rect split can never
+    // offer since it only ever looks at the one rect a piece was chosen from.
+    const occupied: FreeRect = { x, y, w: w + kerf, h: h + kerf };
+    const nextRects: FreeRect[] = [];
+    for (const rect of sheet.freeRects) {
+      if (!rectsOverlap(rect, occupied)) {
+        nextRects.push(rect);
+        continue;
+      }
+      if (rect.x < occupied.x) nextRects.push({ x: rect.x, y: rect.y, w: occupied.x - rect.x, h: rect.h });
+      if (rect.x + rect.w > occupied.x + occupied.w) {
+        nextRects.push({ x: occupied.x + occupied.w, y: rect.y, w: rect.x + rect.w - (occupied.x + occupied.w), h: rect.h });
+      }
+      if (rect.y < occupied.y) nextRects.push({ x: rect.x, y: rect.y, w: rect.w, h: occupied.y - rect.y });
+      if (rect.y + rect.h > occupied.y + occupied.h) {
+        nextRects.push({ x: rect.x, y: occupied.y + occupied.h, w: rect.w, h: rect.y + rect.h - (occupied.y + occupied.h) });
+      }
+    }
     sheet.freeRects = pruneFreeRects(nextRects);
     sheet.placements.push(...placementsToAdd);
   };
@@ -4653,16 +4158,6 @@ function splitClashing(raw: string): { left: string; right: string } {
   return { left, right };
 }
 
-function parseConfiguredFrontIndexesFromName(name: string): number[] {
-  const match = String(name || "").match(/\(([^)]+)\)\s*$/);
-  if (!match) return [];
-  return match[1]
-    .split(",")
-    .map((part) => Number.parseInt(part.trim(), 10))
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .map((value) => value - 1);
-}
-
 function joinClashing(left: string, right: string): string {
   return [String(left || "").trim(), String(right || "").trim()].filter(Boolean).join(" ");
 }
@@ -4940,10 +4435,7 @@ function DrawerHeightDropdown({
   };
 
   const updateOverflowState = () => {
-    if (!labelRef.current) {
-      setIsOverflowing(false);
-      return;
-    }
+    if (!labelRef.current) return;
     const el = labelRef.current;
     setIsOverflowing(el.scrollWidth > el.clientWidth + 1);
   };
@@ -6139,11 +5631,9 @@ function normalizeSalesProducts(raw: unknown): SalesProductRow[] {
 function serializeCutlistRowsForStorage(
   rows: CutlistRow[],
   isCabinetryPartTypeFn: (partType: string) => boolean,
-  isDoorPartTypeFn: (partType: string) => boolean,
 ) {
   return rows.map((row, idx) => {
     const isCabinetry = isCabinetryPartTypeFn(row.partType);
-    const isDoor = isDoorPartTypeFn(row.partType);
     return {
       __id: idx + 1,
       __cutlist_key: row.id,
@@ -6234,24 +5724,6 @@ function serializeCutlistRowsSnapshot(rows: CutlistRow[]) {
         parentName: String(row.parentName ?? ""),
       })),
   );
-}
-
-function normalizeCompanySalesProducts(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const row of raw) {
-    if (!row || typeof row !== "object") continue;
-    const item = row as Record<string, unknown>;
-    const name = String(item.name ?? "").trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key)) continue;
-    const showInSales = Boolean(item.showInSales ?? true);
-    if (!showInSales) continue;
-    seen.add(key);
-    out.push(name);
-  }
-  return out;
 }
 
 // Factored out of the `salesPayload` useMemo so refreshSpecsConfirmationAnswers can run the exact
@@ -6403,7 +5875,7 @@ export default function ProjectDetailsPage() {
   const [projectFiles, setProjectFiles] = useState<ProjectFileEntry[]>([]);
   const [quoteProjectTextDrafts, setQuoteProjectTextDrafts] = useState<Record<string, string>>({});
   const deferredQuoteProjectTextDrafts = useDeferredValue(quoteProjectTextDrafts);
-  const [isSavingQuoteProjectText, setIsSavingQuoteProjectText] = useState(false);
+  const [isSavingQuoteProjectText] = useState(false);
   const [isSavingQuoteSnapshot, setIsSavingQuoteSnapshot] = useState(false);
   const [isGeneratingQuotePdf, setIsGeneratingQuotePdf] = useState(false);
   // Tracks which project's sheet is currently hydrated into `specsSheetGrid`, so the hydration effect
@@ -7091,8 +6563,7 @@ export default function ProjectDetailsPage() {
     deleteQuoteSnapshotOriginElRef,
   );
   const quoteProjectTextEditorRef = useRef<HTMLDivElement | null>(null);
-  const quoteProjectTextSelectionRef = useRef<Range | null>(null);
-  const quoteProjectTextCkEditorRefs = useRef<Record<string, any>>({});
+  const quoteProjectTextCkEditorRefs = useRef<Record<string, DecoupledEditor>>({});
   const quotePrintSheetRef = useRef<HTMLDivElement | null>(null);
   const quoteContainerRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const quotePreviewPageRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -7116,32 +6587,20 @@ export default function ProjectDetailsPage() {
     >;
   } | null>(null);
   const [activeQuotePreviewPageId, setActiveQuotePreviewPageId] = useState("quote_page_1");
-  const [quoteLayoutRevision, setQuoteLayoutRevision] = useState(0);
-  const [quoteLayoutMeasureRevision, setQuoteLayoutMeasureRevision] = useState(0);
-  const [quoteProjectTextPreviewMode, setQuoteProjectTextPreviewMode] = useState<{
+  const [quoteLayoutRevision] = useState(0);
+  const [, setQuoteProjectTextPreviewMode] = useState<{
     blockId: string;
     mode: "single" | "textSplit" | "trailingOnly";
   } | null>(null);
   const [activeQuoteProjectTextEditBlockId, setActiveQuoteProjectTextEditBlockId] = useState<string | null>(null);
-  const [lastEditedQuoteProjectTextBlockId, setLastEditedQuoteProjectTextBlockId] = useState<string | null>(null);
-  const [quoteRichTextToolbarState, setQuoteRichTextToolbarState] = useState<{
+  const [, setLastEditedQuoteProjectTextBlockId] = useState<string | null>(null);
+  const [, setQuoteRichTextToolbarState] = useState<{
     blockId: string;
     top: number;
     left: number;
     visible: boolean;
   } | null>(null);
-  const [quoteRichTextToolbarMarks, setQuoteRichTextToolbarMarks] = useState<{
-    bold: boolean;
-    italic: boolean;
-    underline: boolean;
-    strikeThrough: boolean;
-  }>({
-    bold: false,
-    italic: false,
-    underline: false,
-    strikeThrough: false,
-  });
-  const [quoteProjectTextMetrics, setQuoteProjectTextMetrics] = useState<{
+  const [, setQuoteProjectTextMetrics] = useState<{
     blockId: string;
     pageHeight: number;
     firstTextTop: number;
@@ -7706,7 +7165,7 @@ export default function ProjectDetailsPage() {
       window.visualViewport?.removeEventListener("scroll", refreshBoardEdgingDropdownRect);
     };
   }, [activeBoardEdgingSuggestionsRowId]);
-  const [productionCutlist, setProductionCutlist] = useState<Cutlist | null>(null);
+  const [, setProductionCutlist] = useState<Cutlist | null>(null);
   const [cutlistRows, setCutlistRows] = useState<CutlistRow[]>([]);
   const cutlistRowsJsonRef = useRef("");
   const pendingCutlistRowsJsonRef = useRef("");
@@ -7767,6 +7226,17 @@ export default function ProjectDetailsPage() {
   const [initialMeasureSummaryBaseline, setInitialMeasureSummaryBaseline] = useState<Record<string, number> | null>(null);
   const productionSessionBaselineRef = useRef<Record<string, number> | null>(null);
   const [productionSummaryBaseline, setProductionSummaryBaseline] = useState<Record<string, number> | null>(null);
+  // A full, field-by-field snapshot (serializeCutlistRowsSnapshot — the same comparison already used
+  // to detect real Firestore-vs-local changes elsewhere) taken the moment each cutlist tab becomes
+  // active, so Save & Back can tell whether anything ACTUALLY changed before popping open the close
+  // summary — unlike initialMeasure/productionSessionBaselineRef just above (per-partType COUNTS
+  // only, captured at first SAVE rather than on entry, kept purely for that summary's own "+N this
+  // session" delta display), this exists only to gate whether the summary shows at all, and needs to
+  // catch in-place edits (a dimension/board/name change with the same row count) too, not just
+  // adds/removes. Reset to null whenever nav leaves the tab, so the NEXT visit captures its own fresh
+  // entry point rather than comparing against a stale one from a previous visit.
+  const initialMeasureEntrySnapshotRef = useRef<string | null>(null);
+  const productionCutlistEntrySnapshotRef = useRef<string | null>(null);
   const [initialCutlistSearch, setInitialCutlistSearch] = useState("");
   const [initialCutlistPartTypeFilter, setInitialCutlistPartTypeFilter] = useState("All Part Types");
   const [initialCutlistRoomFilter, setInitialCutlistRoomFilter] = useState("Project Cutlist");
@@ -7783,8 +7253,8 @@ export default function ProjectDetailsPage() {
   const pendingInitialCutlistRowsJsonRef = useRef("");
   const persistInitialCutlistRowsChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const initialCutlistHydratedProjectIdRef = useRef("");
-  const [cncSearch, setCncSearch] = useState("");
-  const [cncPartTypeFilter, setCncPartTypeFilter] = useState("All Part Types");
+  const [cncSearch] = useState("");
+  const [cncPartTypeFilter] = useState("All Part Types");
   const [cncExportMenuOpen, setCncExportMenuOpen] = useState(false);
   const [cncActiveGrainInfoKey, setCncActiveGrainInfoKey] = useState<string | null>(null);
   // Mobile: the cutlist pager (one board type per page) is always the main view now — Visibility
@@ -8001,6 +7471,9 @@ export default function ProjectDetailsPage() {
   });
   const [nestingVisibilityMap, setNestingVisibilityMap] = useState<Record<string, boolean>>({});
   const [nestingCollapsedGroups, setNestingCollapsedGroups] = useState<Record<string, boolean>>({});
+  // Hoisted above its own derived memos (further down, near the Nesting tab's own logic) so the
+  // projectLiveTabStateSnapshot memo below can read it without a temporal-dead-zone error.
+  const [selectedNestingMachineIdRaw, setSelectedNestingMachineIdRaw] = useState<string | null>(null);
   const [cutlistEntryRoom, setCutlistEntryRoom] = useState("Project Cutlist");
   const [cutlistEntry, setCutlistEntry] = useState<Omit<CutlistRow, "id" | "room">>(createEmptyCutlistEntry());
   const [activeCutlistPartType, setActiveCutlistPartType] = useState("");
@@ -9208,6 +8681,31 @@ export default function ProjectDetailsPage() {
     cutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(cutlistRows);
   }, [cutlistRows]);
 
+  // Captures initialMeasureEntrySnapshotRef/productionCutlistEntrySnapshotRef the moment each tab
+  // becomes active (see those refs' own comment) — deliberately keyed only on the nav value, not on
+  // the rows themselves, so this fires exactly once per visit rather than re-capturing (and so
+  // "baselining") on every keystroke while the user is actually editing.
+  useEffect(() => {
+    if (salesNav === "initial") {
+      if (initialMeasureEntrySnapshotRef.current === null) {
+        initialMeasureEntrySnapshotRef.current = serializeCutlistRowsSnapshot(initialCutlistRows);
+      }
+    } else {
+      initialMeasureEntrySnapshotRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salesNav]);
+  useEffect(() => {
+    if (productionNav === "cutlist") {
+      if (productionCutlistEntrySnapshotRef.current === null) {
+        productionCutlistEntrySnapshotRef.current = serializeCutlistRowsSnapshot(cutlistRows);
+      }
+    } else {
+      productionCutlistEntrySnapshotRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productionNav]);
+
   // Deliberately NOT tab-gated — initialCutlistRows already feeds unconditional, ungated pricing
   // memos (e.g. displayedSalesQuoteGrandTotal) that are relied on outside the Sales tab too, so
   // gating the fetch itself risked showing stale/zero totals elsewhere. Still gets the CPU-parse
@@ -9463,12 +8961,6 @@ export default function ProjectDetailsPage() {
   const boardDisplayLabel = (value: string) => {
     const key = resolveBoardKey(value);
     return boardMetaByKey[key]?.label ?? String(value || "").trim();
-  };
-  const boardOptionLabel = (value: string) => {
-    const key = resolveBoardKey(value);
-    const meta = boardMetaByKey[key];
-    if (!meta) return value;
-    return meta.label;
   };
   const showCutlistGrainColumn = useMemo(
     () =>
@@ -10147,6 +9639,7 @@ export default function ProjectDetailsPage() {
       salesNav,
       productionNav,
       nestingFullscreen,
+      selectedNestingMachineId: selectedNestingMachineIdRaw,
       cutlistRoomFilter,
       cutlistPartTypeFilter,
       cutlistSearch,
@@ -10199,6 +9692,7 @@ export default function ProjectDetailsPage() {
       productionNav,
       resolvedTab,
       salesNav,
+      selectedNestingMachineIdRaw,
     ],
   );
   const projectLiveTabStateSnapshotJson = useMemo(
@@ -10284,6 +9778,9 @@ export default function ProjectDetailsPage() {
     }
     if (typeof snapshot.nestingFullscreen === "boolean") {
       setNestingFullscreen(snapshot.nestingFullscreen);
+    }
+    if (typeof snapshot.selectedNestingMachineId === "string" || snapshot.selectedNestingMachineId === null) {
+      setSelectedNestingMachineIdRaw(snapshot.selectedNestingMachineId);
     }
     if (typeof snapshot.cutlistRoomFilter === "string" && snapshot.cutlistRoomFilter.trim()) {
       setCutlistRoomFilter(snapshot.cutlistRoomFilter);
@@ -10553,24 +10050,6 @@ export default function ProjectDetailsPage() {
 
   const isPanelPartType = (partType: string) =>
     Boolean(partTypePanelMap[String(partType || "").trim().toLowerCase()]);
-
-  const partTypeExtraMap = useMemo(() => {
-    const out: Record<string, boolean> = {};
-    const raw = Array.isArray(companyDoc?.partTypes) ? companyDoc.partTypes : [];
-    for (const row of raw) {
-      if (!row || typeof row !== "object") continue;
-      const item = row as Record<string, unknown>;
-      const name = toStr(item.name);
-      if (!name) continue;
-      const category = toStr(item.category ?? item.kind ?? item.type).trim().toLowerCase();
-      const isExtra = category === "extra" || Boolean(item.extra ?? item.isExtra ?? false);
-      out[name.trim().toLowerCase()] = isExtra;
-    }
-    return out;
-  }, [companyDoc?.partTypes]);
-
-  const isExtraPartType = (partType: string) =>
-    Boolean(partTypeExtraMap[String(partType || "").trim().toLowerCase()]);
 
   const isConfiguredDoorRowLike = (row: { partType?: unknown; doorMode?: unknown } | null | undefined) =>
     !!row && isDoorPartType(String(row.partType || "")) && isConfiguredDoorModeValue(row.doorMode);
@@ -13454,15 +12933,6 @@ export default function ProjectDetailsPage() {
     if (explicitAssignedUid) return explicitAssignedUid;
     return "";
   }, [project?.assignedToUid]);
-  const isCurrentProjectCreator = useMemo(
-    () =>
-      Boolean(
-        user?.uid &&
-          project?.createdByUid &&
-          String(user.uid).trim() === String(project.createdByUid).trim(),
-      ),
-    [project?.createdByUid, user?.uid],
-  );
   const canChangeProjectCreator = useMemo(() => {
     const roleKey = String(effectiveRole || "").trim().toLowerCase();
     if (roleKey === "owner" || roleKey === "admin") {
@@ -14414,96 +13884,6 @@ export default function ProjectDetailsPage() {
       setIsDeletingQuoteSnapshot(false);
     }
   };
-  const persistQuoteProjectText = async (blockId: string, fullValue: string) => {
-    if (!project) return;
-    const trimmedValue = String(fullValue ?? "");
-    const nextQuoteProjectText = { ...salesQuoteProjectText };
-    if (trimmedValue.trim()) nextQuoteProjectText[blockId] = trimmedValue;
-    else delete nextQuoteProjectText[blockId];
-    const nextSales = {
-      ...salesPayload,
-      quoteProjectText: nextQuoteProjectText,
-    } as Record<string, unknown>;
-    setIsSavingQuoteProjectText(true);
-    const ok = await persistSalesPatch(nextSales);
-    setIsSavingQuoteProjectText(false);
-    if (!ok) return;
-  };
-  const persistActiveQuoteProjectTextFromEditor = async (editor: HTMLDivElement | null, blockId: string) => {
-    if (!editor) return;
-    const nextValue = sanitizeQuoteRichTextMarkup(editor.innerHTML);
-    const normalizedValue = quoteRichTextHasVisibleContent(nextValue) ? nextValue : "";
-    setQuoteProjectTextDrafts((prev) => ({ ...prev, [blockId]: normalizedValue }));
-    await persistQuoteProjectText(blockId, normalizedValue);
-  };
-  const syncQuoteProjectTextSelection = (editor: HTMLDivElement | null) => {
-    if (typeof window === "undefined" || !editor) return;
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
-      return;
-    }
-    quoteProjectTextSelectionRef.current = selection.getRangeAt(0).cloneRange();
-  };
-  const updateQuoteRichTextToolbarPosition = (editor: HTMLDivElement | null, blockId: string) => {
-    if (typeof window === "undefined" || !editor) return;
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
-      setQuoteRichTextToolbarMarks({
-        bold: false,
-        italic: false,
-        underline: false,
-        strikeThrough: false,
-      });
-      setQuoteRichTextToolbarState((prev) =>
-        prev?.blockId === blockId ? { ...prev, visible: false } : prev,
-      );
-      return;
-    }
-    const range = selection.getRangeAt(0).cloneRange();
-    let rect = range.getBoundingClientRect();
-    if ((!rect.width && !rect.height) || !Number.isFinite(rect.top)) {
-      const markerRange = range.cloneRange();
-      if (markerRange.collapsed) {
-        const marker = document.createElement("span");
-        marker.textContent = "\u200b";
-        markerRange.insertNode(marker);
-        rect = marker.getBoundingClientRect();
-        marker.remove();
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
-    }
-    if (!rect || (!rect.width && !rect.height)) return;
-    const toolbarWidth = 164;
-    const toolbarHeight = 36;
-    const gap = 14;
-    const top = Math.max(72, rect.top + window.scrollY - 2);
-    const pageElement = editor.closest("[data-quote-print-sheet='true']") as HTMLElement | null;
-    const pageRect = pageElement?.getBoundingClientRect();
-    const pageRight = pageRect ? pageRect.right + window.scrollX : rect.right + window.scrollX;
-    const pageLeft = pageRect ? pageRect.left + window.scrollX : rect.left + window.scrollX;
-    const preferredLeft = pageRight + gap;
-    const fallbackLeft = pageLeft - toolbarWidth - gap;
-    const maxLeft = window.scrollX + window.innerWidth - toolbarWidth - 16;
-    const minLeft = window.scrollX + 16;
-    const left =
-      preferredLeft + toolbarWidth <= window.scrollX + window.innerWidth - 16
-        ? preferredLeft
-        : Math.max(minLeft, Math.min(maxLeft, fallbackLeft));
-    setQuoteRichTextToolbarMarks({
-      bold: !!document.queryCommandState("bold"),
-      italic: !!document.queryCommandState("italic"),
-      underline: !!document.queryCommandState("underline"),
-      strikeThrough: !!document.queryCommandState("strikeThrough"),
-    });
-    setQuoteRichTextToolbarState({
-      blockId,
-      top: Math.max(window.scrollY + 16, Math.min(top, window.scrollY + window.innerHeight - toolbarHeight - 16)),
-      left,
-      visible: true,
-    });
-  };
-
   const insertSalesQuoteHelperAtCursor = (helper: SalesQuoteHelperRow) => {
     const activeBlockId = String(activeQuoteProjectTextEditBlockId ?? "").trim();
     if (!activeBlockId) return;
@@ -14520,7 +13900,7 @@ export default function ProjectDetailsPage() {
       if (editor.commands.get("enter")) {
         editor.execute("enter");
       }
-      editor.model.change((writer: any) => {
+      editor.model.change((writer: ModelWriter) => {
         const selection = editor.model.document.selection;
         Array.from(selection.getAttributeKeys()).forEach((key) => writer.removeSelectionAttribute(key as string));
       });
@@ -16772,6 +16152,7 @@ export default function ProjectDetailsPage() {
           salesNav?: SalesNav;
           productionNav?: ProductionNav;
           nestingFullscreen?: boolean;
+          selectedNestingMachineId?: string | null;
           cutlistRoomFilter?: string;
           cutlistPartTypeFilter?: string;
           cutlistSearch?: string;
@@ -16815,6 +16196,9 @@ export default function ProjectDetailsPage() {
         }
         if (typeof parsed.nestingFullscreen === "boolean") {
           setNestingFullscreen(parsed.nestingFullscreen);
+        }
+        if (typeof parsed.selectedNestingMachineId === "string" || parsed.selectedNestingMachineId === null) {
+          setSelectedNestingMachineIdRaw(parsed.selectedNestingMachineId);
         }
         if (typeof parsed.cutlistRoomFilter === "string" && parsed.cutlistRoomFilter.trim()) {
           setCutlistRoomFilter(parsed.cutlistRoomFilter);
@@ -17050,6 +16434,7 @@ export default function ProjectDetailsPage() {
       salesNav,
       productionNav,
       nestingFullscreen,
+      selectedNestingMachineId: selectedNestingMachineIdRaw,
       cutlistRoomFilter,
       cutlistPartTypeFilter,
       cutlistSearch,
@@ -17109,6 +16494,7 @@ export default function ProjectDetailsPage() {
     expandedDrawerRows,
     expandedDoorRows,
     nestingFullscreen,
+    selectedNestingMachineIdRaw,
   ]);
 
   useEffect(() => {
@@ -17952,7 +17338,7 @@ export default function ProjectDetailsPage() {
         : prevProject,
     );
     setIsSavingSalesRooms(true);
-    const ok = await persistSalesPatch(nextSales);
+    await persistSalesPatch(nextSales);
     setIsSavingSalesRooms(false);
   };
 
@@ -17973,7 +17359,7 @@ export default function ProjectDetailsPage() {
         : prevProject,
     );
     setIsSavingSalesRooms(true);
-    const ok = await persistSalesPatch(nextSales);
+    await persistSalesPatch(nextSales);
     setIsSavingSalesRooms(false);
   };
 
@@ -18595,17 +17981,6 @@ export default function ProjectDetailsPage() {
     if (ok) {
       setCompanyDoc((prev) => ({ ...(prev ?? {}), boardMaterialUsage: nextUsage }));
     }
-  };
-
-  const onExistingDraftChange = (key: keyof ProductionFormState["existing"], value: string) => {
-    setProductionForm((prev) => ({
-      ...prev,
-      existing: { ...prev.existing, [key]: value },
-    }));
-  };
-
-  const onExistingBlurSave = async () => {
-    await persistProductionForm(productionForm);
   };
 
   const onCabinetryDraftChange = (key: keyof ProductionFormState["cabinetry"], value: string) => {
@@ -19324,7 +18699,7 @@ export default function ProjectDetailsPage() {
 
   const persistCutlistContainer = async (nextRows: CutlistRow[]) => {
     if (!project) return false;
-    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
+    const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
     // The rows as they stood before THIS save — used below purely as the diff base for the
     // changelog/company-stats deltas, sourced from the cutlist hook's last-known rows now that
     // this data lives in its own subcollection instead of on `project.cutlist`.
@@ -19413,7 +18788,7 @@ export default function ProjectDetailsPage() {
   const persistInitialCutlistRows = (nextRows: CutlistRow[]): Promise<boolean> => {
     const run = async (): Promise<boolean> => {
       if (!project) return false;
-      const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType, isDoorPartType);
+      const rows = serializeCutlistRowsForStorage(nextRows, isCabinetryPartType);
       pendingInitialCutlistRowsJsonRef.current = serializeCutlistRowsSnapshot(nextRows);
       isPersistingInitialCutlistRowsRef.current = true;
       initialCutlistState.setRawRowsOptimistic(rows);
@@ -20061,7 +19436,7 @@ export default function ProjectDetailsPage() {
     grainCandidates?: Array<{ field: "H" | "W" | "D"; value: string }>;
   }) => {
     const {
-      count, values, topGapValue, betweenGaps, hasTopGapLabel, hasBetweenGapLabel,
+      values, topGapValue, betweenGaps, hasTopGapLabel, hasBetweenGapLabel,
       onValueChange, onValueBlur, onTopGapChange, onBetweenGapChange, topGapTitle, betweenGapTitle,
       fieldLabel, fieldBg, fieldBorder, fieldText, gapKey, compact, grainValue, grainCandidates,
     } = params;
@@ -20956,7 +20331,6 @@ export default function ProjectDetailsPage() {
     frontHeightManual,
     onTopGapChange,
     onBetweenGapChange,
-    onSideChange,
     onSideGapChange,
     onFrontWidthChange,
     onFrontHeightChange,
@@ -21159,16 +20533,6 @@ export default function ProjectDetailsPage() {
     const leftGuideThickness = Math.max(1, leftGapPx);
     const rightGuideThickness = Math.max(1, rightGapPx);
     type BetweenGapInput = { key: string; leftPx: number; topPx: number; gapCenterX: number; gapCenterY: number; gapThickness: number };
-    type SideGapInput = {
-      key: string;
-      leftPx: number;
-      topPx: number;
-      value: string;
-      gapX: number;
-      gapTopY: number;
-      gapBottomY: number;
-      side: "left" | "right";
-    };
     const resolveHorizontalGapInputs = (inputs: BetweenGapInput[]) => {
       if (inputs.length <= 1) return inputs;
       const minLeft = frameX + 4;
@@ -21327,7 +20691,6 @@ export default function ProjectDetailsPage() {
         };
       });
       const betweenInputs = overlays.slice(0, -1).map((overlay, index) => {
-        const nextOverlay = overlays[index + 1];
         const gapCenterY = overlay.rectY + overlay.frontHeightPx + gapPx / 2;
         return {
           key: `between_v_${index}`,
@@ -21447,13 +20810,21 @@ export default function ProjectDetailsPage() {
       mode === "door"
         ? allDoorBottomGapInputs
             .filter((input) => input.kind === "between")
-            .map(({ kind: _kind, ...input }) => input)
+            .map((input) => {
+              const { kind, ...rest } = input;
+              void kind;
+              return rest;
+            })
         : baseBetweenGapInputs;
     const sideGapInputs =
       mode === "door"
         ? allDoorBottomGapInputs
             .filter((input) => input.kind === "side")
-            .map(({ kind: _kind, ...input }) => input)
+            .map((input) => {
+              const { kind, ...rest } = input;
+              void kind;
+              return rest;
+            })
         : baseSideGapInputs;
     const bottomGapRowBottomY =
       Math.max(
@@ -21546,7 +20917,6 @@ export default function ProjectDetailsPage() {
         )
       : svgHeight;
     const svgLeft = (value: number) => `${(value / svgCanvasWidth) * 100}%`;
-    const svgTop = (value: number) => `${(value / svgCanvasHeight) * 100}%`;
     return (
       <div className="space-y-3">
         <div className="px-1 py-1">
@@ -22598,17 +21968,6 @@ export default function ProjectDetailsPage() {
     clearWarningForCell("single", "grain");
     setCutlistEntry((prev) => ({ ...prev, grainValue: resolved.value, grain: Boolean(resolved.value) }));
   };
-  const removeInitialCutlistRow = async (id: string) => {
-    if (!salesAccess.edit) return;
-    const removed = initialCutlistRows.find((row) => row.id === id);
-    const next = initialCutlistRows.filter((row) => row.id !== id);
-    setInitialCutlistRows(next);
-    if (removed) {
-      logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
-    }
-    await persistInitialCutlistRows(next);
-  };
-
   const toggleInitialPendingCutlistRowDelete = (partType: string, rowId: string) => {
     const groupKey = String(partType || "Unassigned").trim() || "Unassigned";
     const id = String(rowId || "").trim();
@@ -22619,7 +21978,8 @@ export default function ProjectDetailsPage() {
       const has = existing.includes(id);
       const next = has ? existing.filter((v) => v !== id) : [...existing, id];
       if (!next.length) {
-        const { [groupKey]: _removed, ...rest } = prev;
+        const { [groupKey]: removedEntry, ...rest } = prev;
+        void removedEntry;
         return rest;
       }
       return { ...prev, [groupKey]: next };
@@ -22645,7 +22005,8 @@ export default function ProjectDetailsPage() {
       logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType, scope: "initial" });
     }
     setInitialPendingDeleteRowsByGroup((prev) => {
-      const { [groupKey]: _removed, ...rest } = prev;
+      const { [groupKey]: removedEntry, ...rest } = prev;
+      void removedEntry;
       return rest;
     });
     setInitialDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
@@ -22653,7 +22014,6 @@ export default function ProjectDetailsPage() {
   };
 
   const deletePendingInitialCutlistRows = async () => {
-    const groupKeys = Object.keys(initialPendingDeleteRowsByGroup);
     const allPending = new Set<string>();
     for (const ids of Object.values(initialPendingDeleteRowsByGroup)) {
       for (const id of ids || []) {
@@ -22770,7 +22130,8 @@ export default function ProjectDetailsPage() {
       const has = existing.includes(id);
       const next = has ? existing.filter((v) => v !== id) : [...existing, id];
       if (!next.length) {
-        const { [groupKey]: _removed, ...rest } = prev;
+        const { [groupKey]: removedEntry, ...rest } = prev;
+        void removedEntry;
         return rest;
       }
       return { ...prev, [groupKey]: next };
@@ -22795,7 +22156,8 @@ export default function ProjectDetailsPage() {
       logCutlistActivity(`${removed.name || "Part"} removed`, { partType: removed.partType });
     }
     setPendingDeleteRowsByGroup((prev) => {
-      const { [groupKey]: _removed, ...rest } = prev;
+      const { [groupKey]: removedEntry, ...rest } = prev;
+      void removedEntry;
       return rest;
     });
     setDeleteConfirmArmedGroups((prev) => ({ ...prev, [groupKey]: false }));
@@ -23479,28 +22841,6 @@ export default function ProjectDetailsPage() {
     const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
     return numericDimensionText(productionForm.cabinetry.baseCabHeight || toStr(projectSettings.baseCabHeight));
   }, [productionForm.cabinetry.baseCabHeight, project]);
-  const experimentalPanelPartType = useMemo(
-    () =>
-      partTypeOptions.find((option) => isPanelPartType(option)) ??
-      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "panels") ??
-      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "panel") ??
-      "Panel",
-    [isPanelPartType, partTypeOptions],
-  );
-  const experimentalExtraPartType = useMemo(
-    () =>
-      partTypeOptions.find((option) => isExtraPartType(option)) ??
-      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "extra") ??
-      "Extra",
-    [isExtraPartType, partTypeOptions],
-  );
-  const experimentalConfiguredFrontPartType = useMemo(
-    () =>
-      partTypeOptions.find((option) => isDoorPartType(option)) ??
-      partTypeOptions.find((option) => String(option || "").trim().toLowerCase() === "front") ??
-      "Front",
-    [isDoorPartType, partTypeOptions],
-  );
   const buildEffectiveProductionCutlistRow = (
     source: Partial<CutlistRow>,
     roomFallback: string,
@@ -24642,16 +23982,102 @@ export default function ProjectDetailsPage() {
       });
   }, [boardDisplayLabel, cncVisibilityRows, partTypeOptions]);
 
+  // Read-only mirror of Company Settings → Machining's own Machine shape (see that page's own
+  // richer, form-editing version) — production only ever needs to READ these, never edit them, so
+  // this stays a minimal local parse rather than importing a whole settings-page component.
+  const productionMachines = useMemo(() => {
+    const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
+    const rawList = Array.isArray(rawRoot.machines) ? rawRoot.machines : [];
+    return rawList
+      .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object")
+      .map((row) => {
+        const nestingRaw = (row.nestingSettings ?? {}) as Record<string, unknown>;
+        const edgeRaw = (row.edgebandingSettings ?? {}) as Record<string, unknown>;
+        const rulesRaw = Array.isArray(edgeRaw.addToTotalRules) ? edgeRaw.addToTotalRules : [];
+        return {
+          id: toStr(row.id),
+          type: (["cnc", "table-saw", "edge-bander"].includes(toStr(row.type)) ? toStr(row.type) : "other") as
+            | "cnc"
+            | "table-saw"
+            | "edge-bander"
+            | "other",
+          name: toStr(row.name, "Untitled Machine"),
+          isDefaultForType: Boolean(row.isDefaultForType),
+          // No sheetHeight/sheetWidth here — the real per-sheet size comes from each board's own
+          // entry in Materials & Board Types (see parseBoardSize below), not from the machine. Only
+          // this machine's own cutting settings live here.
+          nestingSettings: {
+            kerf: Math.max(0, toNum(nestingRaw.kerf ?? 5) || 5),
+            margin: Math.max(0, toNum(nestingRaw.margin ?? 10) || 10),
+            minPieceSize: Math.max(0, toNum(nestingRaw.minPieceSize ?? 100) || 100),
+          },
+          edgebandingSettings: {
+            rules: rulesRaw
+              .filter((r): r is Record<string, unknown> => Boolean(r) && typeof r === "object")
+              .map((r) => ({ upToMeters: toNum(r.upToMeters), addMeters: toNum(r.addMeters) }))
+              .filter((r) => r.upToMeters > 0 && r.addMeters > 0),
+            excessPerEndMm: Math.max(0, toNum(edgeRaw.excessPerEndMm) || 0),
+            roundEnabled: Boolean(edgeRaw.roundEnabled),
+            roundDirection: (toStr(edgeRaw.roundDirection).toLowerCase() === "down" ? "down" : "up") as "up" | "down",
+            roundNearestMeters: Math.max(0, toNum(edgeRaw.roundNearestMeters) || 0),
+          },
+        };
+      })
+      .filter((m) => m.id);
+  }, [companyDoc]);
+  const nestingEligibleMachines = useMemo(
+    () => productionMachines.filter((m) => m.type === "cnc" || m.type === "table-saw"),
+    [productionMachines],
+  );
+  // selectedNestingMachineIdRaw itself is declared earlier (near nestingVisibilityMap) and persisted
+  // via the project's live-tab snapshot. Falls back to the flagged default among the eligible set,
+  // else the first one, else nothing (no CNC/table saw configured yet).
+  const selectedNestingMachineId =
+    selectedNestingMachineIdRaw && nestingEligibleMachines.some((m) => m.id === selectedNestingMachineIdRaw)
+      ? selectedNestingMachineIdRaw
+      : (nestingEligibleMachines.find((m) => m.isDefaultForType) ?? nestingEligibleMachines[0])?.id ?? null;
+  const selectedNestingMachine = nestingEligibleMachines.find((m) => m.id === selectedNestingMachineId) ?? null;
+  const nestingPlacementMode: "guillotine" | "maxrects" = selectedNestingMachine?.type === "cnc" ? "maxrects" : "guillotine";
+  // Button + dropdown menu for picking the nesting machine (replaces a plain <select> so it can
+  // match the app's other top-bar menu buttons, e.g. CNC's own Export button/menu).
+  const [nestingMachineMenuOpen, setNestingMachineMenuOpen] = useState(false);
+  const nestingMachineMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!nestingMachineMenuOpen) return;
+    const onDocPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (nestingMachineMenuRef.current?.contains(target)) return;
+      setNestingMachineMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onDocPointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", onDocPointerDown);
+    };
+  }, [nestingMachineMenuOpen]);
+
   const nestingSettings = useMemo(() => {
+    // sheetHeight/sheetWidth here are ONLY ever the fallback parseBoardSize falls back to when a
+    // board's own entry in Materials & Board Types can't be resolved — real per-sheet sizing always
+    // comes from there (group.sheetWidth/sheetHeight below), never from a machine (see
+    // productionMachines' own comment) or this fallback pair. Read once from the company's old
+    // global nestingSettings field regardless of machine selection, same value this always used
+    // before Machining existed, so this one remaining use of it stays exactly as before.
     const rawRoot = (companyDoc ?? {}) as Record<string, unknown>;
     const rawNested = ((rawRoot.nestingSettings ?? rawRoot.nesting) ?? {}) as Record<string, unknown>;
     const sheetHeight = Math.max(100, toNum(rawNested.sheetHeight ?? rawNested.h ?? 2440) || 2440);
     const sheetWidth = Math.max(100, toNum(rawNested.sheetWidth ?? rawNested.w ?? 1220) || 1220);
+    if (selectedNestingMachine) {
+      return { sheetHeight, sheetWidth, ...selectedNestingMachine.nestingSettings };
+    }
+    // No machine selected (none configured yet) — same legacy global-field fallback this always
+    // read before Machining existed, so a company that hasn't set up any machines yet doesn't lose
+    // nesting entirely in the meantime.
     const kerf = Math.max(0, toNum(rawNested.kerf ?? 5) || 5);
     const margin = Math.max(0, toNum(rawNested.margin ?? 10) || 10);
     const minPieceSize = Math.max(0, toNum(rawNested.minPieceSize ?? 100) || 100);
     return { sheetHeight, sheetWidth, kerf, margin, minPieceSize };
-  }, [companyDoc]);
+  }, [selectedNestingMachine, companyDoc]);
 
   const nestingVisibleRows = useMemo(() => {
     if (!shouldComputeNesting) return [];
@@ -24976,7 +24402,7 @@ export default function ProjectDetailsPage() {
       const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
       const innerH = Math.max(80, sheetHeight - nestingSettings.margin * 2);
       const kerf = Math.max(0, nestingSettings.kerf);
-      const sheets = computeNestingSheetLayouts(group.rows, innerW, innerH, kerf, nestingSettings.minPieceSize);
+      const sheets = computeNestingSheetLayouts(group.rows, innerW, innerH, kerf, nestingSettings.minPieceSize, nestingPlacementMode);
 
       return {
         boardKey: group.boardKey,
@@ -24989,7 +24415,7 @@ export default function ProjectDetailsPage() {
         sheets,
       };
     });
-  }, [nestingRowsByBoard, nestingSettings.kerf, nestingSettings.margin, nestingSettings.minPieceSize, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSheetByLabel, resolveBoardKey]);
+  }, [nestingRowsByBoard, nestingSettings.kerf, nestingSettings.margin, nestingSettings.minPieceSize, nestingSettings.sheetHeight, nestingSettings.sheetWidth, nestingPlacementMode, boardSheetByLabel, resolveBoardKey]);
   const nestingBoardLayoutsForSheetCount = useMemo(() => {
     const parseBoardSize = (boardKey: string, fallbackW: number, fallbackH: number) => {
       const resolved = resolveBoardKey(boardKey);
@@ -25018,7 +24444,7 @@ export default function ProjectDetailsPage() {
       const innerW = Math.max(80, sheetWidth - nestingSettings.margin * 2);
       const innerH = Math.max(80, sheetHeight - nestingSettings.margin * 2);
       const kerf = Math.max(0, nestingSettings.kerf);
-      const sheets = computeNestingSheetLayouts(group.rows, innerW, innerH, kerf, nestingSettings.minPieceSize);
+      const sheets = computeNestingSheetLayouts(group.rows, innerW, innerH, kerf, nestingSettings.minPieceSize, nestingPlacementMode);
 
       return {
         boardKey: group.boardKey,
@@ -25031,7 +24457,7 @@ export default function ProjectDetailsPage() {
         sheets,
       };
     });
-  }, [nestingRowsByBoardForSheetCount, nestingSettings.kerf, nestingSettings.margin, nestingSettings.minPieceSize, nestingSettings.sheetHeight, nestingSettings.sheetWidth, boardSheetByLabel, resolveBoardKey]);
+  }, [nestingRowsByBoardForSheetCount, nestingSettings.kerf, nestingSettings.margin, nestingSettings.minPieceSize, nestingSettings.sheetHeight, nestingSettings.sheetWidth, nestingPlacementMode, boardSheetByLabel, resolveBoardKey]);
 
   const nestingSummary = useMemo(() => {
     const totalPieces = nestingVisibleRows.reduce((sum, row) => sum + Math.max(1, Number.parseInt(String(row.quantity || "1"), 10) || 1), 0);
@@ -25306,10 +24732,17 @@ export default function ProjectDetailsPage() {
     }
     return rows.sort((a, b) => a.productName.localeCompare(b.productName) || a.sheetSize.localeCompare(b.sheetSize));
   }, [productionForm.boardTypes, requiredSheetCountByBoardRowId, boardBaseLabelFromRow]);
-  const edgebandingSettings = useMemo(
-    () => normalizeEdgebandingSettings((companyDoc as Record<string, unknown> | null)?.edgebandingSettings),
-    [companyDoc],
-  );
+  const edgebandingSettings = useMemo(() => {
+    // Reads the default Edge Bander MACHINE's own settings now, not the old single global field —
+    // see productionMachines' own comment. Falls back to that legacy field when no Edge Bander
+    // machine is configured yet, same reasoning as nestingSettings' own fallback above.
+    const rawRoot = (companyDoc as Record<string, unknown> | null) ?? {};
+    const rawMachines = Array.isArray(rawRoot.machines) ? (rawRoot.machines as Record<string, unknown>[]) : [];
+    const defaultEdgeBander =
+      rawMachines.find((m) => m && typeof m === "object" && m.type === "edge-bander" && m.isDefaultForType) ??
+      rawMachines.find((m) => m && typeof m === "object" && m.type === "edge-bander");
+    return normalizeEdgebandingSettings(defaultEdgeBander ? defaultEdgeBander.edgebandingSettings : rawRoot.edgebandingSettings);
+  }, [companyDoc]);
   const effectiveProjectGapAllowances = useMemo(() => {
     const projectSettings = ((project?.projectSettings ?? {}) as Record<string, unknown>) || {};
     return normalizeGapAllowancesSettings(
@@ -27076,7 +26509,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   const cncHeaderTextColor = isLightHex(companyThemeColor) ? "#0F172A" : "#FFFFFF";
   const showCncGrainColumn =
     showCutlistGrainColumn || filteredCncRows.some((row) => String(row.grainValue ?? "").trim().length > 0);
-  const cncTotalQty = filteredCncRows.reduce((sum, row) => sum + (Number.parseInt(String(row.quantity || "0"), 10) || 0), 0);
   const enabledQuoteContainers = useMemo(
     () =>
       quoteLayoutTemplate.containers.filter((container) => {
@@ -27103,37 +26535,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     () => enabledQuoteContainers.filter((container) => container.mount === "bottom"),
     [enabledQuoteContainers],
   );
-  const paginatedQuoteProjectTextTarget = useMemo(() => {
-    const paginatedContainers = [...topQuoteContainers, ...flowQuoteContainers];
-    const candidates: Array<{ container: QuoteTemplateContainer; block: QuoteTemplateBlock; orderedIndex: number }> = [];
-    for (let i = 0; i < paginatedContainers.length; i += 1) {
-      const container = paginatedContainers[i];
-      for (const column of container.columns) {
-        for (const item of column.blocks) {
-          if (item.enabled && item.type === "projectText") {
-            candidates.push({ container, block: item, orderedIndex: i });
-          }
-        }
-      }
-    }
-    if (candidates.length === 0) return null;
-    const preferredBlockIds = [
-      String(activeQuoteProjectTextEditBlockId ?? "").trim(),
-      String(lastEditedQuoteProjectTextBlockId ?? "").trim(),
-    ].filter(Boolean);
-    for (const preferredBlockId of preferredBlockIds) {
-      const preferredMatch = candidates.find(
-        (candidate) => String(candidate.block.id || "").trim() === preferredBlockId,
-      );
-      if (preferredMatch) return preferredMatch;
-    }
-    return candidates[candidates.length - 1] ?? null;
-  }, [
-    activeQuoteProjectTextEditBlockId,
-    topQuoteContainers,
-    flowQuoteContainers,
-    lastEditedQuoteProjectTextBlockId,
-  ]);
   useEffect(() => {
     if (salesNav !== "quote") return;
     setQuoteContainerPagination((prev) => (prev ? null : prev));
@@ -27363,7 +26764,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   // of send status), so this only ever re-fetches that ONE version doc and merges ONLY each
   // confirmable cell's confirmedYes/confirmedAt into the local copy of that version — the live
   // `specsSheetGrid` is never touched here.
-  const [isRefreshingSpecsAnswers, setIsRefreshingSpecsAnswers] = useState(false);
+  const [, setIsRefreshingSpecsAnswers] = useState(false);
   const sentSpecsVersionId = specsShareStatus?.versionId || "";
   const refreshSpecsConfirmationAnswers = useCallback(async () => {
     if (!project || !sentSpecsVersionId) return;
@@ -28555,7 +27956,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     );
   }
 
-  const roomTags = salesRoomRows.map((row) => row.name);
   const quoteCompanyName = toStr(
     companyDoc?.companyName ??
       companyDoc?.name ??
@@ -29044,20 +28444,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               }),
             )}
           </div>
-      )}
-    </div>
-  );
-  const salesQuotePagedSourceContent = (
-    <div className="quote-paged-flow space-y-4">
-      {[...topQuoteContainers, ...flowQuoteContainers, ...bottomQuoteContainers].map((container, containerIndex) =>
-        renderQuoteContainer(container, `paged_source_${containerIndex}`, {
-          attachRef: false,
-          quoteProjectTextMapOverride: quotePreviewProjectTextMap,
-          replacementsOverride: quotePreviewReplacements,
-          includedRoomsOverride: quotePreviewIncludedRooms,
-          totalFormattedOverride: quotePreviewTotalFormatted,
-          readOnlyMode: true,
-        }),
       )}
     </div>
   );
@@ -32244,6 +31630,13 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
   };
 
   const saveAndBackFromInitialMeasure = async () => {
+    // Only pop the close-summary open if something in the cutlist actually changed since this tab
+    // was opened — see initialMeasureEntrySnapshotRef's own comment. A null entry snapshot (the tab
+    // somehow wasn't marked "entered" before Save & Back fired) falls back to showing the summary
+    // rather than silently hiding a real change we have no baseline to rule out.
+    const initialMeasureRowsChanged =
+      initialMeasureEntrySnapshotRef.current === null ||
+      initialMeasureEntrySnapshotRef.current !== serializeCutlistRowsSnapshot(initialCutlistRows);
     setSalesNav("overview");
     setInitialMeasureSummaryBaseline(initialMeasureSessionBaselineRef.current);
     if (!initialMeasureSessionBaselineRef.current) {
@@ -32251,7 +31644,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       for (const s of summarizeCutlistRowsByPartType(initialCutlistRows)) snapshot[s.partType] = s.count;
       initialMeasureSessionBaselineRef.current = snapshot;
     }
-    setShowInitialMeasureCloseSummary(true);
+    if (initialMeasureRowsChanged) setShowInitialMeasureCloseSummary(true);
     if (initialEditingCell) {
       void commitInitialCellEdit().then(() => {
         setLockMessage("");
@@ -32399,6 +31792,11 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     await persistOrderHingeDraft(next);
   };
   const onSaveAndBackFromCutlist = async () => {
+    // See saveAndBackFromInitialMeasure's own identical comment — only show the close summary when
+    // something in the cutlist actually changed since this tab was opened.
+    const productionCutlistRowsChanged =
+      productionCutlistEntrySnapshotRef.current === null ||
+      productionCutlistEntrySnapshotRef.current !== serializeCutlistRowsSnapshot(cutlistRows);
     setProductionNav("overview");
     setNestingFullscreen(false);
     setProductionSummaryBaseline(productionSessionBaselineRef.current);
@@ -32407,7 +31805,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       for (const s of summarizeCutlistRowsByPartType(cutlistRows)) snapshot[s.partType] = s.count;
       productionSessionBaselineRef.current = snapshot;
     }
-    setShowProductionCutlistCloseSummary(true);
+    if (productionCutlistRowsChanged) setShowProductionCutlistCloseSummary(true);
     void persistCutlistRows(cutlistRows).then((ok) => {
       if (!ok) {
         setLockMessage("Could not save Production Cutlist changes.");
@@ -32494,8 +31892,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     const printLegendMarkerPaddingX = 0.12;
     const printLegendMarkerHeight = 3.7;
     const printLegendTextGap = 0.7;
-    const pxToMm = 0.2645833333;
-
     const toRgb = (hex: string): [number, number, number] => {
       const safe = normalizeHexColor(hex) ?? "#94A3B8";
       return [
@@ -32503,17 +31899,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         Number.parseInt(safe.slice(3, 5), 16),
         Number.parseInt(safe.slice(5, 7), 16),
       ];
-    };
-    const fitTextToWidth = (text: string, maxWidth: number) => {
-      const raw = String(text || "");
-      if (!raw) return "";
-      if (doc.getTextWidth(raw) <= maxWidth) return raw;
-      const ellipsis = "...";
-      let next = raw;
-      while (next.length > 0 && doc.getTextWidth(`${next}${ellipsis}`) > maxWidth) {
-        next = next.slice(0, -1);
-      }
-      return next ? `${next}${ellipsis}` : raw.slice(0, 1);
     };
     const drawArrowLine = (fromX: number, fromY: number, toX: number, toY: number) => {
       doc.setDrawColor(15, 23, 42);
@@ -32533,31 +31918,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
         toY,
         toX - arrowLen * Math.cos(angle + spread),
         toY - arrowLen * Math.sin(angle + spread),
-      );
-    };
-    const drawArrowPath = (points: Array<{ x: number; y: number }>) => {
-      if (points.length < 2) return;
-      doc.setDrawColor(15, 23, 42);
-      doc.setLineWidth(0.22);
-      for (let pointIdx = 0; pointIdx < points.length - 1; pointIdx += 1) {
-        doc.line(points[pointIdx].x, points[pointIdx].y, points[pointIdx + 1].x, points[pointIdx + 1].y);
-      }
-      const last = points[points.length - 1];
-      const prev = points[points.length - 2];
-      const angle = Math.atan2(last.y - prev.y, last.x - prev.x);
-      const arrowLen = 1.5;
-      const spread = Math.PI / 8;
-      doc.line(
-        last.x,
-        last.y,
-        last.x - arrowLen * Math.cos(angle - spread),
-        last.y - arrowLen * Math.sin(angle - spread),
-      );
-      doc.line(
-        last.x,
-        last.y,
-        last.x - arrowLen * Math.cos(angle + spread),
-        last.y - arrowLen * Math.sin(angle + spread),
       );
     };
     const drawPrintGrainArrow = (centerX: number, centerY: number, rotationDeg: number, baseLen: number) => {
@@ -33063,7 +32423,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               const verticalStep = Math.max(idTextH + 0.9, 3.2);
               const laneOffsets = [0, -1, 1, -2, 2, -3, 3, -4, 4];
               for (const candidate of candidates) {
-                let adjusted = { ...candidate };
+                const adjusted = { ...candidate };
                 let rect = getRectForCandidate(adjusted);
                 let attempts = 0;
                 while (
@@ -33477,7 +32837,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
       if (w) parts.push({ key: "width", value: w });
       if (d) parts.push({ key: "depth", value: d });
       if (parts.length === 0) return "";
-      const richText: Array<{ text: string; font?: Record<string, unknown> }> = [];
+      const richText: ExcelRichText[] = [];
       parts.forEach((part, idx) => {
         if (idx > 0) richText.push({ text: " x ", font: { color: { argb: "FF0F172A" }, size: 10 } });
         const isMatch = matchesGrainDimension(grainValue, part.value, part.key);
@@ -33538,7 +32898,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           const bottom = r === rowEnd ? thin : cell.border?.bottom;
           const left = c === colStart ? thin : cell.border?.left;
           const right = c === colEnd ? thin : cell.border?.right;
-          cell.border = { top, bottom, left, right } as any;
+          cell.border = { top, bottom, left, right };
         }
       }
     };
@@ -33918,7 +33278,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           cell.border = {
             ...(cell.border ?? {}),
             bottom: { style: "thin", color: { argb: darkBorder } },
-          } as any;
+          };
         }
         sheet.getRow(headerRow).height = 22;
 
@@ -33980,7 +33340,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               String(card.row.width ?? ""),
               String(card.row.depth ?? ""),
               String(card.row.grainValue ?? ""),
-            ) as any;
+            );
           } else {
             lvc.value = lv;
           }
@@ -34009,7 +33369,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 String(piece.depth ?? ""),
                 cabinetryPieceGrainValue(card.row, piece),
                 finalQty > 0 ? ` (x${finalQty})` : "",
-              ) as any;
+              );
             } else {
               rvc.value = rv;
             }
@@ -34120,7 +33480,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               height: Math.max(1, Math.round(drawHpx)),
             },
             editAs: "oneCell",
-          } as any);
+          });
         }
 
         rowPtr = cardEnd + 2;
@@ -34160,7 +33520,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
     };
     const themeRgb = toRgb(companyThemeColor);
     const headerTextRgb = toRgb(cncHeaderTextColor);
-    const whiteRgb: [number, number, number] = [255, 255, 255];
     const blackRgb: [number, number, number] = [17, 17, 17];
     const rowAltRgb: [number, number, number] = [246, 248, 251];
     const rowBaseRgb: [number, number, number] = [255, 255, 255];
@@ -34388,10 +33747,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           isCabinetryPartType(row.partType) && (row as CncDisplayRow).cncCabinetryRowKind && (row as CncDisplayRow).cncCabinetryRowKind !== "main"
             ? ""
             : String(row.partType ?? "");
-        const printPartHex =
-          normalizeHexColor(partTypeColors[partTypeForOutput] ?? partTypeColors[partTypeForOutput.toLowerCase()] ?? "") ?? null;
-        const printPartRgb = printPartHex ? toRgb(printPartHex) : null;
-        const printPartTextRgb = printPartHex ? (isLightHex(printPartHex) ? [15, 23, 42] : [255, 255, 255]) : [15, 23, 42];
         const isConfiguredDoorGroup = isConfiguredDoorRowLike(row);
         const isDrawer = isDrawerPartType(row.partType);
         const isDrawerOnGrainedBoard = isDrawer && boardGrainFor(String(row.board || "").trim());
@@ -34443,7 +33798,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           String(row.width ?? ""),
           String(row.depth ?? ""),
         ) || (row.grain ? "Yes" : "");
-        const tailCells: any[] = [
+        const tailCells: AutoTableCellInput[] = [
           String(row.name ?? ""),
           String(row.height ?? ""),
           String(row.width ?? ""),
@@ -34459,7 +33814,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             printRowKinds.push("grouped-continuation");
             printRowPartTypeByIndex.push(partTypeForOutput);
             printRowEndsGroup.push(!showGroupedBankNoteRow && isLastGroupedRowOfGroup);
-            const out: any[] = [tailCells];
+            const out: AutoTableRowInput[] = [tailCells];
             if (showGroupedBankNoteRow) {
               rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
               printRowKinds.push("grouped-note");
@@ -34476,20 +33831,20 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             return out;
           }
         const effectiveGroupedRowSpan = groupedRowSpan;
-        const idCell: any = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
+        const idCell: AutoTableCellInput = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
           ? { content: String(runningId), rowSpan: effectiveGroupedRowSpan, styles: { valign: "middle", halign: "center" } }
           : String(runningId);
-        const roomCell: any = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
+        const roomCell: AutoTableCellInput = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
           ? { content: String(row.room ?? ""), rowSpan: effectiveGroupedRowSpan, styles: { valign: "middle", halign: "center" } }
           : String(row.room ?? "");
-        const typeCell: any = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
+        const typeCell: AutoTableCellInput = (((!isDrawerOnGrainedBoard && isDrawer) || isConfiguredDoorGroup))
           ? { content: partTypeForOutput, rowSpan: effectiveGroupedRowSpan, styles: { valign: "middle", halign: "center" } }
           : partTypeForOutput;
         rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
         printRowKinds.push("normal");
         printRowPartTypeByIndex.push(partTypeForOutput);
         printRowEndsGroup.push(groupedRowSpan === 1 && !showGroupedBankNoteRow);
-        const out: any[] = [[idCell, roomCell, typeCell, ...tailCells] as any[]];
+        const out: AutoTableRowInput[] = [[idCell, roomCell, typeCell, ...tailCells]];
         if (showGroupedBankNoteRow) {
           rowBgByIndex.push(stripeIndex % 2 === 1 ? rowAltRgb : rowBaseRgb);
           printRowKinds.push("grouped-note");
@@ -34561,7 +33916,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               right: 0,
               bottom: 0.9,
               left: 0,
-            } as any;
+            };
             return;
           }
 
@@ -34573,30 +33928,22 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
           const isLastBodyRow = hookData.row.index === hookData.table.body.length - 1;
           // Last row background is painted once as a rounded row in willDrawCell.
           // Keep edge cells transparent so corners remain rounded.
-          hookData.cell.styles.fillColor = (isLastBodyRow && (colIndex === 0 || colIndex === lastCol)) ? (false as any) : rowBg;
-          hookData.cell.styles.lineColor = groupedDividerRgb;
+          hookData.cell.styles.fillColor = (isLastBodyRow && (colIndex === 0 || colIndex === lastCol)) ? false : rowBg;
+          hookData.cell.styles.lineColor = rowEndsGroup ? blackRgb : groupedDividerRgb;
           hookData.cell.styles.lineWidth = {
             top: 0,
             right: 0,
-            bottom: 0,
+            bottom: rowEndsGroup ? 0.7 : 0,
             left: 0,
-          } as any;
-          if (rowEndsGroup) {
-            hookData.cell.styles.lineColor = blackRgb;
-            (hookData.cell.styles.lineWidth as any).bottom = 0.7;
-          }
+          };
           if (rowKind === "grouped-continuation" && colIndex >= 3 && colIndex <= grainColIndex) {
-            hookData.cell.styles.lineColor = groupedDividerRgb;
+            hookData.cell.styles.lineColor = rowEndsGroup ? blackRgb : groupedDividerRgb;
             hookData.cell.styles.lineWidth = {
               top: 0.5,
               right: 0,
-              bottom: 0,
+              bottom: rowEndsGroup ? 0.7 : 0,
               left: 0,
-            } as any;
-            if (rowEndsGroup) {
-              hookData.cell.styles.lineColor = blackRgb;
-              (hookData.cell.styles.lineWidth as any).bottom = 0.7;
-            }
+            };
           }
           if (rowKind === "grouped-note") {
             if (colIndex === 3) {
@@ -34606,14 +33953,14 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                 right: 0,
                 bottom: 0,
                 left: 0,
-              } as any;
+              };
             } else if (colIndex === infoColIndex) {
               hookData.cell.styles.lineWidth = {
                 top: 0,
                 right: 0,
                 bottom: 0,
                 left: 0,
-              } as any;
+              };
             }
           }
 
@@ -34645,7 +33992,7 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
             hookData.cell.styles.textColor = isLightHex(notePartHex) ? [15, 23, 42] : [255, 255, 255];
             return;
           }
-          const raw = hookData.cell.raw as any;
+          const raw = hookData.cell.raw;
           const partType = String((raw && typeof raw === "object" && "content" in raw) ? raw.content : raw ?? "").trim();
           const partHex =
             normalizeHexColor(partTypeColors[partType] ?? partTypeColors[partType.toLowerCase()] ?? "") ?? null;
@@ -45251,6 +44598,24 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <p>No quote template configured yet.</p>
                   <p>Add one in Company Settings → Sales → Quote Layout.</p>
                 </div>
+              ) : quoteGridState.status === "error" ? (
+                // Without this branch, a failed fetch (permission hiccup, offline, etc.) left
+                // displayedQuoteGrid permanently null with nothing ever retrying it — the page just
+                // sat on "Setting up this project's quote…" forever with no way out short of a full
+                // reload. quoteGridState.retry() re-runs the same fetch effect (see its own bump of
+                // retryTick in lib/use-project-sales-grid.ts) without needing one.
+                <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
+                  <Quote size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
+                  <p>Couldn&apos;t load this project&apos;s quote.</p>
+                  <button
+                    type="button"
+                    onClick={() => quoteGridState.retry()}
+                    className="mt-1 rounded-full border px-3 py-1 text-[12px] font-medium"
+                    style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                  >
+                    Try again
+                  </button>
+                </div>
               ) : displayedQuoteGrid ? (
                 <SpecsGridEditor
                   key={quoteGridEditorKey}
@@ -45293,6 +44658,10 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // actually look even — tuned down from 72 per visual feedback; coincidentally lands
                   // on the same 56 as mobile's own value, unrelated to it).
                   canvasBottomInsetPx={56}
+                  // Requested padding between the formatting toolbar above and the page preview
+                  // below — see canvasTopInsetPx's own comment in specs-grid-editor.tsx for why this
+                  // lands outside the zoomable viewport rather than inside it.
+                  canvasTopInsetPx={16}
                   // The fixed title bar's own height, ABOVE this component — SpecsGridEditor has no
                   // way to know this on its own (the host reserves that space itself, via
                   // paddingTop on the wrapper around the whole component), but needs it to work out
@@ -46843,6 +46212,21 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   <p>No specifications template configured yet.</p>
                   <p>Add one in Company Settings → Sales → Specs Layout.</p>
                 </div>
+              ) : specsGridState.status === "error" ? (
+                // Matches the Quote tab's own identical fix — see its comment. Without this branch a
+                // failed fetch left the page stuck on "Setting up..." forever with nothing to retry.
+                <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
+                  <ClipboardList size={28} strokeWidth={1.5} style={{ opacity: 0.5 }} />
+                  <p>Couldn&apos;t load this project&apos;s specifications sheet.</p>
+                  <button
+                    type="button"
+                    onClick={() => specsGridState.retry()}
+                    className="mt-1 rounded-full border px-3 py-1 text-[12px] font-medium"
+                    style={{ borderColor: "var(--glass-border)", color: "var(--text-main)" }}
+                  >
+                    Try again
+                  </button>
+                </div>
               ) : displayedSpecsSheetGrid ? (
                 <SpecsGridEditor
                   key={specsSheetEditorKey}
@@ -46874,6 +46258,8 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                   // Same reasoning as the Quote tab's own identical prop — see its comment.
                   onSheetZoomedAwayFromEdge={setIsSpecsSheetZoomedAwayFromEdge}
                   canvasBottomInsetPx={56}
+                  // Same reasoning as the Quote tab's own identical prop — see its comment.
+                  canvasTopInsetPx={16}
                   // Same reasoning as the Quote tab's own identical prop — see its comment.
                   mobileTopOffsetPx={specsHeaderHeight}
                   highlightedGroupId={hoveredSpecsSectionGroupId}
@@ -48433,6 +47819,54 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
               <span className="truncate" style={{ color: "var(--text-main)" }}>{project?.name || "Project"}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {nestingEligibleMachines.length > 0 ? (
+                <div className="relative" ref={nestingMachineMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setNestingMachineMenuOpen((prev) => !prev)}
+                    title="Which machine this job is being cut on — changes the sheet size/kerf/margin and how pieces get packed below"
+                    className="inline-flex h-8 max-w-[120px] items-center justify-between gap-1 rounded-[8px] border px-2 text-[12px] font-bold lg:h-9 lg:max-w-[180px] lg:gap-2 lg:px-3"
+                    style={{ borderColor: projectPalette.border, backgroundColor: projectPalette.panelBg, color: projectPalette.text }}
+                  >
+                    <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
+                    <ChevronDown size={13} className="shrink-0" />
+                  </button>
+                  {nestingMachineMenuOpen && (
+                    <div
+                      className="absolute left-0 top-[42px] z-[120] w-[180px] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
+                      style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(16px) saturate(200%)", WebkitBackdropFilter: "blur(16px) saturate(200%)" }}
+                    >
+                      <p
+                        className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.5px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        Machine type
+                      </p>
+                      {nestingEligibleMachines.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedNestingMachineIdRaw(m.id);
+                            setNestingMachineMenuOpen(false);
+                          }}
+                          className="flex h-9 w-full items-center justify-between gap-2 border-t px-3 text-left text-[12px] font-semibold hover:brightness-95"
+                          style={{
+                            borderColor: "var(--glass-border)",
+                            color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
+                            backgroundColor: m.id === selectedNestingMachineId ? "var(--brand-soft)" : "transparent",
+                          }}
+                        >
+                          <span className="truncate">{m.name}</span>
+                          <span className="shrink-0 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)" }}>
+                            {m.type === "cnc" ? "CNC" : "Table Saw"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
               <button
                 type="button"
                 onClick={onPrintNesting}
@@ -51615,7 +51049,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                             const clashingValue = joinClashing(row.clashLeft ?? "", row.clashRight ?? "") || row.clashing || "-";
                             const hasFixedShelf = Number(row.fixedShelf || 0) > 0;
                             const hasAdjustableShelf = Number(row.adjustableShelf || 0) > 0;
-                            const rowHasExtraDetails = rowGrainValue || hasFixedShelf || hasAdjustableShelf;
                             return (
                               <article
                                 key={`cutlist_mobile_${row.id}`}
@@ -52672,7 +52105,6 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                                       }
                                       if (col.key === "clashing") {
                                         const rowIsCabinetry = isCabinetryPartType(row.partType);
-                                        const rowIsDoor = isDoorPartType(row.partType);
                                         return (
                                           <td
                                             key={`${row.id}_${col.label}`}
@@ -53124,6 +52556,54 @@ const cutlistListColumnStyle = (key: CutlistEditableField) => {
                       >
                         <div className="flex min-h-[46px] flex-col gap-2 border-b px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-0" style={{ borderColor: "var(--glass-border)", backgroundColor: productionContainerHeaderBg }}>
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] font-semibold" style={{ color: projectPalette.textSoft }}>
+                            {nestingEligibleMachines.length > 0 ? (
+                              <div className="relative" ref={nestingMachineMenuRef}>
+                                <button
+                                  type="button"
+                                  onClick={() => setNestingMachineMenuOpen((prev) => !prev)}
+                                  title="Which machine this job is being cut on — changes the sheet size/kerf/margin and how pieces get packed below"
+                                  className="inline-flex h-7 max-w-[160px] items-center justify-between gap-1 rounded-[6px] border px-2 text-[12px] font-bold"
+                                  style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-main)" }}
+                                >
+                                  <span className="truncate">{selectedNestingMachine?.name ?? "Machine"}</span>
+                                  <ChevronDown size={13} className="shrink-0" />
+                                </button>
+                                {nestingMachineMenuOpen && (
+                                  <div
+                                    className="absolute left-0 top-[34px] z-[120] w-[180px] overflow-hidden rounded-[10px] border shadow-[0_12px_30px_rgba(15,23,42,0.14)]"
+                                    style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--glass-modal-bg)", backdropFilter: "blur(16px) saturate(200%)", WebkitBackdropFilter: "blur(16px) saturate(200%)" }}
+                                  >
+                                    <p
+                                      className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.5px]"
+                                      style={{ color: "var(--text-muted)" }}
+                                    >
+                                      Machine type
+                                    </p>
+                                    {nestingEligibleMachines.map((m) => (
+                                      <button
+                                        key={m.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedNestingMachineIdRaw(m.id);
+                                          setNestingMachineMenuOpen(false);
+                                        }}
+                                        className="flex h-9 w-full items-center justify-between gap-2 border-t px-3 text-left text-[12px] font-semibold hover:brightness-95"
+                                        style={{
+                                          borderColor: "var(--glass-border)",
+                                          color: m.id === selectedNestingMachineId ? "var(--brand-strong)" : "var(--text-main)",
+                                          backgroundColor: m.id === selectedNestingMachineId ? "var(--brand-soft)" : "transparent",
+                                        }}
+                                      >
+                                        <span className="truncate">{m.name}</span>
+                                        <span className="shrink-0 text-[10px] font-bold uppercase" style={{ color: "var(--text-muted)" }}>
+                                          {m.type === "cnc" ? "CNC" : "Table Saw"}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
                             <span>Sheet H: {formatMm(nestingSettings.sheetHeight)} mm</span>
                             <span>Sheet W: {formatMm(nestingSettings.sheetWidth)} mm</span>
                             <span>Kerf: {formatMm(nestingSettings.kerf)} mm</span>

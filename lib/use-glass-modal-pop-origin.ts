@@ -86,6 +86,43 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
   if (distance < 1) return;
   const nx = dx / distance;
   const ny = dy / distance;
+  const BOUNCE_DURATION_MS = 460;
+  // The bounce below overshoots past the origin element's own resting transform (scale 1.02,
+  // translated up to 10px) — an origin button living inside a tightly-fitted overflow:hidden
+  // container (e.g. a bottom action bar sized exactly to its collapsed/expanded content, like
+  // FloatingBarSlot in the project page) clips that overshoot at the container's own edge, which
+  // reads as the bounce getting visibly cut off mid-motion rather than wobbling freely. Walking up
+  // from the origin element (not including it) for the nearest ancestor whose COMPUTED overflow
+  // actually clips, and lifting just that one constraint for the bounce's own duration, fixes this
+  // generically for whatever container happens to be in the way — rather than threading a specific
+  // wrapper ref through every possible call site (bottom bar, sidebar, anywhere else a
+  // useGlassModalPopOrigin-driven popup's origin might live). Restores the exact previous inline
+  // value afterward (usually "", letting the className's own rule take back over), not a hardcoded
+  // "hidden" — some ancestors set this via inline style rather than a class.
+  let clippingAncestor: HTMLElement | null = null;
+  let node = el.parentElement;
+  for (let depth = 0; depth < 6 && node && node !== document.body; depth += 1) {
+    const computed = getComputedStyle(node);
+    if (computed.overflow !== "visible" || computed.overflowX !== "visible" || computed.overflowY !== "visible") {
+      clippingAncestor = node;
+      break;
+    }
+    node = node.parentElement;
+  }
+  if (clippingAncestor) {
+    const ancestor = clippingAncestor;
+    const previousOverflow = ancestor.style.overflow;
+    const previousOverflowX = ancestor.style.overflowX;
+    const previousOverflowY = ancestor.style.overflowY;
+    ancestor.style.overflow = "visible";
+    ancestor.style.overflowX = "visible";
+    ancestor.style.overflowY = "visible";
+    window.setTimeout(() => {
+      ancestor.style.overflow = previousOverflow;
+      ancestor.style.overflowX = previousOverflowX;
+      ancestor.style.overflowY = previousOverflowY;
+    }, BOUNCE_DURATION_MS);
+  }
   // A decaying spring wobble — push out, overshoot back PAST rest, a smaller correction, settle —
   // with a gentle scale squash/stretch riding along with the displacement, instead of a single
   // straight-line push-and-snap-back. The Web Animations API (not a CSS transition/transitionend
@@ -103,7 +140,7 @@ function applyOriginArrival(panel: HTMLElement, el: HTMLElement, dx: number, dy:
       { transform: `translate(${nx * 1.6}px, ${ny * 1.6}px) scale(0.99, 0.99)`, offset: 0.78 },
       { transform: "translate(0px, 0px) scale(1, 1)" },
     ],
-    { duration: 460, easing: "ease-in-out" },
+    { duration: BOUNCE_DURATION_MS, easing: "ease-in-out" },
   );
 }
 

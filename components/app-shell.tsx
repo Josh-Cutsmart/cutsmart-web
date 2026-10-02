@@ -124,7 +124,7 @@ const topNav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Inbox },
   { href: "/recently-deleted", label: "Recently Deleted", icon: Trash2 },
-  { href: "/clients", label: "Clients", icon: Users },
+  { href: "/clients", label: "Contacts", icon: Users },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/wrapped", label: "Company Wrapped", icon: PartyPopper },
   { href: "/company-settings", label: "Company Settings", icon: Settings },
@@ -340,7 +340,7 @@ export function AppShell({
   const {
     chromeHidden,
     ownsMobileScroll,
-    isSheetZoomedAwayFromEdge,
+    isSheetZoomedAwayFromEdgeRef,
     fillMainViewport,
     reduceMainTopPadding,
     mobileNavOpen,
@@ -1057,8 +1057,12 @@ export function AppShell({
     // the user is currently panned to, so without this a one-finger drag to pan around a zoomed-in
     // sheet gets misread as the start of this pulldown gesture every time, fighting the sheet's own
     // pan for the same vertical touch (see isSheetZoomedAwayFromEdge's own comment in
-    // lib/app-tabs-context.tsx).
-    if (alreadyAtTop && mobileTopBarEnabled && !isSheetZoomedAwayFromEdge) {
+    // lib/app-tabs-context.tsx). Reading the REF here, not the state value destructured above —
+    // this handler fires directly off a native touchstart, not a React render, so it needs
+    // whatever's true at this exact instant; the state value can still be one or more renders
+    // behind on a real device, when a second gesture (e.g. a quick re-grab right after a pinch)
+    // starts before React has caught up, which let this pulldown arm mid-zoom.
+    if (alreadyAtTop && mobileTopBarEnabled && !isSheetZoomedAwayFromEdgeRef.current) {
       pullDashboardRef.current = { startY: touch.clientY, active: false, armed: false, selected: "dashboard" };
       pullTopBarElRef.current =
         typeof document !== "undefined" ? document.querySelector<HTMLElement>('[data-app-top-bar="true"]') : null;

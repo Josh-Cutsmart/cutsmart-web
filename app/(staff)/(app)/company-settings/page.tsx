@@ -45,6 +45,10 @@ type DashboardLegendRow = { id: string; name: string; color: string };
 type TagUsageRow = { value: string; count: string };
 type ItemCategoryItemRow = { name: string; description: string; subcategory: string; price: string; markupPercent: string };
 type ItemCategoryRow = { name: string; color: string; subcategories: string; items: ItemCategoryItemRow[] };
+// Company-wide categories for Contacts-page contacts — kept here (not per-user) so staff stay
+// consistent about what categories exist. Matched by name (not a synthetic id), same loose
+// convention Part Types/Item Categories already use.
+type ContactCategoryRow = { name: string; color: string };
 type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
 // "Grain" used to be its own checkbox; it's now one value of this Type dropdown, alongside the two
 // lacquer-sidedness options that drive the Company Wrapped lacquer-SQM calculation and "Melteca"
@@ -53,6 +57,44 @@ type JobTypeSheetPriceRow = { sheetSize: string; pricePerSheet: string };
 type JobTypeProductType = "" | "grain" | "lacquer-1" | "lacquer-2" | "melteca";
 type JobTypeRow = { name: string; sheetPrices: JobTypeSheetPriceRow[]; showInSales: boolean; type: JobTypeProductType };
 type EdgebandingRuleRow = { upToMeters: string; addMeters: string };
+// A CNC or table saw's own copy of what used to be the single global "Nesting Settings" panel —
+// same five fields, same string-typed form-input convention as every other settings object in this
+// file (converted to numbers only at save time, see the save patch's own nestingSettings handling).
+// Deliberately no sheetHeight/sheetWidth here — the real per-sheet size already lives on each
+// board/material's own entry in Materials & Board Types (nestingBoardLayouts' own parseBoardSize,
+// in the project page, reads it from there); a machine only needs what's genuinely its own —
+// cutting kerf, safety margin, and the smallest piece it can reliably handle.
+type MachineNestingSettings = { kerf: string; margin: string; minPieceSize: string };
+// An edge bander's own copy of what used to be the single global "Edgebanding" panel — same shape
+// normalizeEdgebandingSettings already produces.
+type MachineEdgebandingSettings = {
+  rules: EdgebandingRuleRow[];
+  excessPerEndMm: string;
+  roundEnabled: boolean;
+  roundDirection: "up" | "down";
+  roundNearestMeters: string;
+};
+type MachineServiceLogEntry = { id: string; date: string; notes: string };
+type MachineMaintenanceContact = { name: string; phone: string; email: string };
+// "other" covers any machine type without its own special settings section (drill press, dowel
+// inserter, etc.) — customTypeLabel is the free-text name shown for it, since "Other" alone isn't
+// a useful label on its own row.
+type MachineType = "cnc" | "table-saw" | "edge-bander" | "other";
+type Machine = {
+  id: string;
+  type: MachineType;
+  customTypeLabel: string;
+  name: string;
+  model: string;
+  serialNumber: string;
+  notes: string;
+  maintenanceContact: MachineMaintenanceContact;
+  serviceHistory: MachineServiceLogEntry[];
+  // At most one machine per `type` may have this true — see setMachineAsDefault's own comment.
+  isDefaultForType: boolean;
+  nestingSettings: MachineNestingSettings;
+  edgebandingSettings: MachineEdgebandingSettings;
+};
 type GapAllowancesSettings = {
   baseBelowBenchToTopOfDoorDrawer: string;
   baseHorizontalGapNormalHandles: string;
@@ -175,8 +217,8 @@ const desktopPermissionKeys = [
 const permissionLabels: Record<string, string> = {
   "company.*": "company.* - Full Company Access",
   "company.dashboard.view": "company.dashboard.view - View Dashboard",
-  "clients.view": "clients.view - Access Clients Tab (Own Created / Assigned Clients)",
-  "clients.view.all": "clients.view.all - View All Company Clients",
+  "clients.view": "clients.view - Access Contacts Tab (Own Created / Assigned Contacts)",
+  "clients.view.all": "clients.view.all - View All Company Contacts",
   "leads.view": "leads.view - Access Leads Tab (Own Assigned Leads)",
   "leads.view.others": "leads.view.others - View All Leads For All Users",
   "projects.create": "projects.create - Create Projects",
@@ -293,7 +335,7 @@ const sections: Array<{ key: SettingsSection; label: string; icon: React.Compone
   { key: "dashboard", label: "Dashboard", icon: Gauge },
   { key: "sales", label: "Sales", icon: CircleDollarSign },
   { key: "production", label: "Production", icon: Wrench },
-  { key: "nesting", label: "Nesting Settings", icon: Layers3 },
+  { key: "nesting", label: "Machining", icon: Layers3 },
   { key: "materials", label: "Materials & Board Types", icon: Package2 },
   { key: "hardware", label: "Hardware", icon: HardHat },
   { key: "staff", label: "Staff & Permissions", icon: Users },
@@ -358,6 +400,14 @@ function textColorForHex(hex: string): string {
 function generateZapierSecret() {
   const randomPart = () => Math.random().toString(36).slice(2, 10);
   return `zpr_${randomPart()}${randomPart()}${Date.now().toString(36)}`;
+}
+
+function genMachineId() {
+  return `mch_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+}
+
+function genMachineServiceLogId() {
+  return `msl_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
 
 function Panel({
@@ -728,6 +778,22 @@ function normalizeJobTypes(raw: unknown): JobTypeRow[] {
     .filter((r) => r.name);
 }
 
+function normalizeContactCategories(raw: unknown): ContactCategoryRow[] {
+  const defaults: ContactCategoryRow[] = [
+    { name: "Clients", color: "#4ADE80" },
+    { name: "Contractor", color: "#F2A33C" },
+    { name: "Supplier", color: "#7D99B3" },
+  ];
+  if (!Array.isArray(raw)) return defaults;
+  return raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return { name: toStr(row.name), color: toStr(row.color, "#7D99B3") };
+    })
+    .filter((row) => row.name);
+}
+
 function normalizePartTypes(raw: unknown): PartTypeRow[] {
   const defaults: PartTypeRow[] = [
     { name: "Front", color: "#F2D57A", category: "", autoClashLeft: "", autoClashRight: "", initialMeasure: true, inCutlists: true, inNesting: true },
@@ -798,6 +864,145 @@ function normalizeEdgebandingSettings(raw: unknown): {
     roundEnabled: Boolean(obj.roundEnabled ?? false),
     roundDirection: toStr(obj.roundDirection).toLowerCase() === "down" ? "down" : "up",
     roundNearestMeters: toStr(obj.roundNearestMeters),
+  };
+}
+
+const MACHINE_TYPES: MachineType[] = ["cnc", "table-saw", "edge-bander", "other"];
+function isMachineType(value: unknown): value is MachineType {
+  return typeof value === "string" && (MACHINE_TYPES as string[]).includes(value);
+}
+function machineTypeLabel(m: Pick<Machine, "type" | "customTypeLabel">): string {
+  if (m.type === "cnc") return "CNC";
+  if (m.type === "table-saw") return "Table Saw";
+  if (m.type === "edge-bander") return "Edge Bander";
+  return toStr(m.customTypeLabel, "Other");
+}
+function emptyMachineNestingSettings(): MachineNestingSettings {
+  return { kerf: "5", margin: "10", minPieceSize: "100" };
+}
+function emptyMachineEdgebandingSettings(): MachineEdgebandingSettings {
+  return { rules: [], excessPerEndMm: "", roundEnabled: false, roundDirection: "up", roundNearestMeters: "" };
+}
+function normalizeMachineNestingSettings(raw: unknown): MachineNestingSettings {
+  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    kerf: toStr(obj.kerf, "5"),
+    margin: toStr(obj.margin, "10"),
+    minPieceSize: toStr(obj.minPieceSize, "100"),
+  };
+}
+function normalizeMachineServiceHistory(raw: unknown): MachineServiceLogEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((row) => row && typeof row === "object")
+    .map((row) => {
+      const item = row as Record<string, unknown>;
+      return { id: toStr(item.id) || genMachineServiceLogId(), date: toStr(item.date), notes: toStr(item.notes) };
+    })
+    .filter((row) => row.date || row.notes);
+}
+function normalizeMachine(raw: unknown): Machine | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const name = toStr(row.name);
+  const type = isMachineType(row.type) ? row.type : "other";
+  if (!name && !toStr(row.id)) return null;
+  const contactRaw = row.maintenanceContact && typeof row.maintenanceContact === "object" ? (row.maintenanceContact as Record<string, unknown>) : {};
+  return {
+    id: toStr(row.id) || genMachineId(),
+    type,
+    customTypeLabel: toStr(row.customTypeLabel),
+    name,
+    model: toStr(row.model),
+    serialNumber: toStr(row.serialNumber),
+    notes: toStr(row.notes),
+    maintenanceContact: { name: toStr(contactRaw.name), phone: toStr(contactRaw.phone), email: toStr(contactRaw.email) },
+    serviceHistory: normalizeMachineServiceHistory(row.serviceHistory),
+    isDefaultForType: Boolean(row.isDefaultForType),
+    nestingSettings: normalizeMachineNestingSettings(row.nestingSettings),
+    edgebandingSettings: normalizeEdgebandingSettings(row.edgebandingSettings) as MachineEdgebandingSettings,
+  };
+}
+// legacyNesting/legacyEdgebanding are this company doc's OWN pre-Machining values (already parsed by
+// the load effect for the old, now-hidden global panels) — used ONLY the very first time a company
+// opens Machining with no machines saved yet, so production math (which immediately switches to
+// reading from the default machine of each type) doesn't go blank the moment this ships. Once any
+// machines exist, this seed path never runs again for that company.
+function normalizeMachines(raw: unknown, legacyNesting: MachineNestingSettings, legacyEdgebanding: MachineEdgebandingSettings): Machine[] {
+  if (Array.isArray(raw) && raw.length > 0) {
+    const out = raw.map(normalizeMachine).filter((m): m is Machine => m !== null);
+    if (out.length > 0) return out;
+  }
+  return [
+    {
+      id: genMachineId(),
+      type: "cnc",
+      customTypeLabel: "",
+      name: "CNC 1",
+      model: "",
+      serialNumber: "",
+      notes: "",
+      maintenanceContact: { name: "", phone: "", email: "" },
+      serviceHistory: [],
+      isDefaultForType: true,
+      nestingSettings: legacyNesting,
+      edgebandingSettings: emptyMachineEdgebandingSettings(),
+    },
+    {
+      id: genMachineId(),
+      type: "edge-bander",
+      customTypeLabel: "",
+      name: "Edge Bander 1",
+      model: "",
+      serialNumber: "",
+      notes: "",
+      maintenanceContact: { name: "", phone: "", email: "" },
+      serviceHistory: [],
+      isDefaultForType: true,
+      nestingSettings: emptyMachineNestingSettings(),
+      edgebandingSettings: legacyEdgebanding,
+    },
+  ];
+}
+
+// Mirrors the exact string->number conversion the old global nestingSettings/edgebandingSettings
+// save-patch entries already used (see their own call sites) — same fallback values, same "strip
+// commas before parsing" treatment for edgebanding's numeric fields.
+function serializeMachineForSave(m: Machine) {
+  return {
+    id: m.id,
+    type: m.type,
+    customTypeLabel: m.customTypeLabel,
+    name: m.name,
+    model: m.model,
+    serialNumber: m.serialNumber,
+    notes: m.notes,
+    maintenanceContact: { ...m.maintenanceContact },
+    serviceHistory: m.serviceHistory.map((entry) => ({ ...entry })),
+    isDefaultForType: m.isDefaultForType,
+    nestingSettings: {
+      kerf: Number(m.nestingSettings.kerf || 5),
+      margin: Number(m.nestingSettings.margin || 10),
+      minPieceSize: Number(m.nestingSettings.minPieceSize || 100),
+    },
+    edgebandingSettings: {
+      addToTotalRules: m.edgebandingSettings.rules
+        .map((r) => ({
+          upToMeters: Number(toStr(r.upToMeters).replace(/,/g, "")),
+          addMeters: Number(toStr(r.addMeters).replace(/,/g, "")),
+        }))
+        .filter((r) => Number.isFinite(r.upToMeters) && Number.isFinite(r.addMeters) && r.upToMeters > 0 && r.addMeters > 0),
+      excessPerEndMm: (() => {
+        const n = Number(toStr(m.edgebandingSettings.excessPerEndMm).replace(/,/g, ""));
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      })(),
+      roundEnabled: Boolean(m.edgebandingSettings.roundEnabled),
+      roundDirection: m.edgebandingSettings.roundDirection === "down" ? "down" : "up",
+      roundNearestMeters: (() => {
+        const n = Number(toStr(m.edgebandingSettings.roundNearestMeters).replace(/,/g, ""));
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      })(),
+    },
   };
 }
 
@@ -1199,6 +1404,7 @@ export default function CompanySettingsPage() {
   const [boardFinishes, setBoardFinishes] = useState<string[]>(["Satin"]);
   const [sheetSizes, setSheetSizes] = useState<SheetSizeRow[]>([{ h: "2440", w: "1220", isDefault: true }]);
   const [partTypes, setPartTypes] = useState<PartTypeRow[]>([]);
+  const [contactCategories, setContactCategories] = useState<ContactCategoryRow[]>([]);
   const [contractors, setContractors] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   // Fed to both the Specs and Quote grid builders' group-editor modal ("Allow Editable By") — the
@@ -1293,6 +1499,15 @@ export default function CompanySettingsPage() {
   const [edgebandingRoundEnabled, setEdgebandingRoundEnabled] = useState(false);
   const [edgebandingRoundDirection, setEdgebandingRoundDirection] = useState<"up" | "down">("up");
   const [edgebandingRoundNearestMeters, setEdgebandingRoundNearestMeters] = useState("");
+  // Machining (the old "Nesting Settings" tab, now a list of physical machines) — see normalizeMachines'
+  // own comment for how this seeds itself from the old global nesting/edgebanding settings above the
+  // very first time a company opens this tab with nothing saved yet.
+  const [machines, setMachines] = useState<Machine[]>([]);
+  const [activeMachineModalId, setActiveMachineModalId] = useState<string | null>(null);
+  const [machineModalOrigin, setMachineModalOrigin] = useState<GlassModalOrigin>(null);
+  const machineModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const machineModalOriginElRef = useRef<HTMLElement | null>(null);
+  const [newMachineTypePickerOpen, setNewMachineTypePickerOpen] = useState(false);
   const [gapAllowances, setGapAllowances] = useState<GapAllowancesSettings>({
     baseBelowBenchToTopOfDoorDrawer: "",
     baseHorizontalGapNormalHandles: "",
@@ -1472,6 +1687,7 @@ export default function CompanySettingsPage() {
         setBoardFinishes(normalizeStringList(doc.boardFinishes, ["Satin"]));
         setSheetSizes(normalizeSheetSizes(doc.sheetSizes));
         setPartTypes(normalizePartTypes(doc.partTypes));
+        setContactCategories(normalizeContactCategories((doc as Record<string, unknown>).contactCategories));
         setContractors(normalizeStringList(doc.contractors, []));
         setRoles(normalizeRoles(doc.roles));
         setItemCategories(normalizeItemCategories(doc.itemCategories));
@@ -1507,6 +1723,7 @@ export default function CompanySettingsPage() {
         setEdgebandingRoundEnabled(edgeSettings.roundEnabled);
         setEdgebandingRoundDirection(edgeSettings.roundDirection);
         setEdgebandingRoundNearestMeters(edgeSettings.roundNearestMeters);
+        setMachines(normalizeMachines((doc as Record<string, unknown>).machines, normalizeMachineNestingSettings(nestingRaw), edgeSettings as MachineEdgebandingSettings));
         setGapAllowances(normalizeGapAllowancesSettings(doc.gapAllowancesSettings));
         setUnlockSuffix(toStr(doc.productionUnlockPasswordSuffix));
         setUnlockHours(toStr(doc.productionUnlockDurationHours, "6"));
@@ -2262,6 +2479,33 @@ export default function CompanySettingsPage() {
     undefined,
     roleModalOriginElRef,
   );
+  const activeMachine = activeMachineModalId !== null ? machines.find((m) => m.id === activeMachineModalId) ?? null : null;
+  const shouldRenderMachineModal = useGlassModalPopOrigin(
+    activeMachineModalId !== null,
+    machineModalOrigin,
+    machineModalPanelRef,
+    undefined,
+    machineModalOriginElRef,
+  );
+  // Updates one field on whichever machine is currently open in the modal — every field in that
+  // modal goes through this, same "patch the active record by id" shape the rest of this file's
+  // list+modal pairs (e.g. roles, above) use via index instead, since machines are looked up by id
+  // (stable even if the list gets reordered/filtered) rather than array position.
+  const updateActiveMachine = (patch: Partial<Machine> | ((m: Machine) => Partial<Machine>)) => {
+    setMachines((prev) =>
+      prev.map((m) => (m.id === activeMachineModalId ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m)),
+    );
+  };
+  // Clears the flag on every OTHER machine of the SAME type first — at most one default per type,
+  // ever. Used both from the modal (a toggle on the active machine) and the list row (a quick-set
+  // star/badge) — see each call site's own comment.
+  const setMachineAsDefault = (id: string) => {
+    setMachines((prev) => {
+      const target = prev.find((m) => m.id === id);
+      if (!target) return prev;
+      return prev.map((m) => (m.type === target.type ? { ...m, isDefaultForType: m.id === id } : m));
+    });
+  };
   const shouldRenderOwnerTransferModal = useGlassModalPopOrigin(
     Boolean(pendingOwnerTransfer),
     ownerTransferOrigin,
@@ -2679,6 +2923,13 @@ export default function CompanySettingsPage() {
           };
         })
         .filter(Boolean),
+      contactCategories: contactCategories
+        .map((row) => {
+          const name = toStr(row.name);
+          if (!name) return null;
+          return { name, color: toStr(row.color, "#7D99B3") };
+        })
+        .filter(Boolean),
       nestingSettings: {
         sheetHeight: Number(nesting.sheetHeight || 2440),
         sheetWidth: Number(nesting.sheetWidth || 1220),
@@ -2711,6 +2962,7 @@ export default function CompanySettingsPage() {
           return Number.isFinite(n) && n > 0 ? n : 0;
         })(),
       },
+      machines: machines.map(serializeMachineForSave),
       gapAllowancesSettings: {
         baseBelowBenchToTopOfDoorDrawer: toStr(gapAllowances.baseBelowBenchToTopOfDoorDrawer),
         baseHorizontalGapNormalHandles: toStr(gapAllowances.baseHorizontalGapNormalHandles),
@@ -3441,6 +3693,31 @@ export default function CompanySettingsPage() {
                     </div>
                   </Panel>
                 </div>
+                <Panel title="Contact Categories">
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-[30px_1fr_90px] items-center gap-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.6px]" style={{ color: "var(--text-muted)" }}>
+                      <p></p>
+                      <p>Name</p>
+                      <p>Color</p>
+                    </div>
+                    {contactCategories.map((row, idx) => (
+                      <div key={`contact_category_${idx}`} className="grid grid-cols-[30px_1fr_90px] items-center gap-2">
+                        <button onClick={() => setContactCategories((prev) => prev.filter((_, i) => i !== idx))} className={dangerIconButtonClass} style={dangerIconButtonStyle}><X size={15} strokeWidth={2.8} /></button>
+                        <input value={row.name} onChange={(e) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, name: e.target.value } : v)))} className={fieldInputClass} />
+                        <label className="relative block h-8 w-10 cursor-pointer justify-self-center overflow-hidden rounded-[8px] border" style={{ borderColor: "var(--glass-border)" }} title={row.color || "#7D99B3"}>
+                          <span className="block h-full w-full" style={{ backgroundColor: row.color || "#7D99B3" }} />
+                          <input
+                            type="color"
+                            value={row.color || "#7D99B3"}
+                            onChange={(e) => setContactCategories((prev) => prev.map((v, i) => (i === idx ? { ...v, color: e.target.value } : v)))}
+                            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                          />
+                        </label>
+                      </div>
+                    ))}
+                    <button onClick={() => setContactCategories((prev) => [...prev, { name: "", color: "#7D99B3" }])} className={`${secondaryButtonClass} mt-1`}>+ Add Category</button>
+                  </div>
+                </Panel>
                 </div>
               )}
 
@@ -3846,28 +4123,425 @@ export default function CompanySettingsPage() {
 
               {active === "nesting" && (
                 <div className="w-full xl:w-1/2">
-                  <Panel title="Nesting Settings">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {[
-                        ["Sheet Height", "sheetHeight"],
-                        ["Sheet Width", "sheetWidth"],
-                        ["Kerf", "kerf"],
-                        ["Margin", "margin"],
-                        ["Minimum Piece Size", "minPieceSize"],
-                      ].map(([label, key]) => (
-                        <FieldRow key={key} label={label}>
-                          <div className="flex h-8 items-center gap-2">
-                            <input
-                              value={nesting[key as keyof typeof nesting]}
-                              onChange={(e) => setNesting((prev) => ({ ...prev, [key]: e.target.value }))}
-                              className={`${fieldInputClass} text-center`}
-                            />
-                            <p className="shrink-0 text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>mm</p>
-                          </div>
-                        </FieldRow>
+                  <Panel title="Machining">
+                    <div className="space-y-2">
+                      {machines.length === 0 ? (
+                        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No machines added yet.</p>
+                      ) : null}
+                      {machines.map((m) => (
+                        <div
+                          key={m.id}
+                          className="flex items-center gap-2 rounded-[10px] border px-2.5 py-2"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)" }}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              machineModalOriginElRef.current = e.currentTarget;
+                              setMachineModalOrigin(captureGlassModalOrigin(e));
+                              setActiveMachineModalId(m.id);
+                            }}
+                            className="min-w-0 flex-1 truncate text-left text-[12px] font-extrabold"
+                            style={{ color: "var(--text-main)" }}
+                          >
+                            {toStr(m.name, "Untitled Machine")}
+                            <span className="ml-2 text-[10px] font-bold uppercase tracking-[0.5px]" style={{ color: "var(--text-muted)" }}>
+                              {machineTypeLabel(m)}
+                            </span>
+                          </button>
+                          {m.type !== "other" ? (
+                            <button
+                              type="button"
+                              onClick={() => setMachineAsDefault(m.id)}
+                              title={m.isDefaultForType ? `Default ${machineTypeLabel(m)}` : `Set as default ${machineTypeLabel(m)}`}
+                              className="shrink-0 rounded-[8px] border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.5px] transition hover:brightness-95"
+                              style={
+                                m.isDefaultForType
+                                  ? { borderColor: "var(--brand)", backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }
+                                  : { borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }
+                              }
+                            >
+                              {m.isDefaultForType ? "Default" : "Set Default"}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => setMachines((prev) => prev.filter((row) => row.id !== m.id))}
+                            className={dangerIconButtonClass}
+                            style={dangerIconButtonStyle}
+                          >
+                            <X size={15} strokeWidth={2.8} />
+                          </button>
+                        </div>
                       ))}
+                      {newMachineTypePickerOpen ? (
+                        <div
+                          className="flex flex-wrap items-center gap-2 rounded-[10px] border px-2.5 py-2"
+                          style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-muted)" }}
+                        >
+                          {([
+                            ["cnc", "CNC"],
+                            ["table-saw", "Table Saw"],
+                            ["edge-bander", "Edge Bander"],
+                            ["other", "Other"],
+                          ] as [MachineType, string][]).map(([type, label]) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={(e) => {
+                                const newMachine: Machine = {
+                                  id: genMachineId(),
+                                  type,
+                                  customTypeLabel: type === "other" ? "Drill Press" : "",
+                                  name: `${label} ${machines.filter((m) => m.type === type).length + 1}`,
+                                  model: "",
+                                  serialNumber: "",
+                                  notes: "",
+                                  maintenanceContact: { name: "", phone: "", email: "" },
+                                  serviceHistory: [],
+                                  isDefaultForType: type !== "other" && !machines.some((m) => m.type === type),
+                                  nestingSettings: emptyMachineNestingSettings(),
+                                  edgebandingSettings: emptyMachineEdgebandingSettings(),
+                                };
+                                setMachines((prev) => [...prev, newMachine]);
+                                setNewMachineTypePickerOpen(false);
+                                machineModalOriginElRef.current = e.currentTarget;
+                                setMachineModalOrigin(captureGlassModalOrigin(e));
+                                setActiveMachineModalId(newMachine.id);
+                              }}
+                              className={secondaryButtonClass}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setNewMachineTypePickerOpen(false)}
+                            className="text-[11px] font-bold"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setNewMachineTypePickerOpen(true)}
+                          className={`${secondaryButtonClass} mt-1`}
+                        >
+                          + Add Machine
+                        </button>
+                      )}
                     </div>
                   </Panel>
+                  {shouldRenderMachineModal ? (
+                    <div className="fixed inset-0 z-[1700] flex items-center justify-center px-4 py-4">
+                      <button
+                        type="button"
+                        aria-label="Close machine settings"
+                        onClick={() => setActiveMachineModalId(null)}
+                        className="glass-modal-backdrop absolute inset-0"
+                      />
+                      <div
+                        ref={machineModalPanelRef}
+                        className="glass-modal-panel relative z-[1701] flex h-[min(760px,calc(100svh-32px))] w-full max-w-[880px] flex-col overflow-hidden"
+                      >
+                        <div className="glass-modal-header flex items-center justify-between px-4 py-3">
+                          <p className="text-[13px] font-extrabold uppercase tracking-[0.8px]" style={{ color: "var(--text-main)" }}>
+                            {activeMachine ? machineTypeLabel(activeMachine) : "Machine"} Settings
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setActiveMachineModalId(null)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border transition hover:brightness-95"
+                            style={{ borderColor: "var(--glass-border)", backgroundColor: "var(--panel-bg)", color: "var(--text-muted)" }}
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
+                          {activeMachine ? (
+                            <>
+                              <div className="space-y-2">
+                                <FieldGroupHeading first>Machine</FieldGroupHeading>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <FieldRow label="Name">
+                                    <input
+                                      value={activeMachine.name}
+                                      onChange={(e) => updateActiveMachine({ name: e.target.value })}
+                                      className={fieldInputClass}
+                                    />
+                                  </FieldRow>
+                                  {activeMachine.type === "other" ? (
+                                    <FieldRow label="Type">
+                                      <input
+                                        value={activeMachine.customTypeLabel}
+                                        onChange={(e) => updateActiveMachine({ customTypeLabel: e.target.value })}
+                                        placeholder="e.g. Drill Press"
+                                        className={fieldInputClass}
+                                      />
+                                    </FieldRow>
+                                  ) : null}
+                                  <FieldRow label="Model">
+                                    <input
+                                      value={activeMachine.model}
+                                      onChange={(e) => updateActiveMachine({ model: e.target.value })}
+                                      className={fieldInputClass}
+                                    />
+                                  </FieldRow>
+                                  <FieldRow label="Serial Number">
+                                    <input
+                                      value={activeMachine.serialNumber}
+                                      onChange={(e) => updateActiveMachine({ serialNumber: e.target.value })}
+                                      className={fieldInputClass}
+                                    />
+                                  </FieldRow>
+                                </div>
+                                <FieldRow label="Notes" align="start">
+                                  <textarea
+                                    value={activeMachine.notes}
+                                    onChange={(e) => updateActiveMachine({ notes: e.target.value })}
+                                    rows={3}
+                                    className={`${fieldInputClass} h-auto py-2`}
+                                  />
+                                </FieldRow>
+                                {activeMachine.type !== "other" ? (
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={activeMachine.isDefaultForType}
+                                      onChange={() => setMachineAsDefault(activeMachine.id)}
+                                      className="h-4 w-4"
+                                    />
+                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>
+                                      Default {machineTypeLabel(activeMachine)} — used when a job doesn&apos;t pick one explicitly
+                                    </p>
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <div className="space-y-2">
+                                <FieldGroupHeading>Maintenance Contact</FieldGroupHeading>
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                  <FieldRow label="Name">
+                                    <input
+                                      value={activeMachine.maintenanceContact.name}
+                                      onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, name: e.target.value } }))}
+                                      className={fieldInputClass}
+                                    />
+                                  </FieldRow>
+                                  <FieldRow label="Phone">
+                                    <input
+                                      value={activeMachine.maintenanceContact.phone}
+                                      onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, phone: e.target.value } }))}
+                                      className={fieldInputClass}
+                                    />
+                                  </FieldRow>
+                                  <FieldRow label="Email">
+                                    <input
+                                      value={activeMachine.maintenanceContact.email}
+                                      onChange={(e) => updateActiveMachine((m) => ({ maintenanceContact: { ...m.maintenanceContact, email: e.target.value } }))}
+                                      className={fieldInputClass}
+                                    />
+                                  </FieldRow>
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <FieldGroupHeading>Servicing History</FieldGroupHeading>
+                                <div className="space-y-1.5">
+                                  {activeMachine.serviceHistory.length === 0 ? (
+                                    <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>No service entries yet.</p>
+                                  ) : null}
+                                  {activeMachine.serviceHistory.map((entry, idx) => (
+                                    <div key={entry.id} className="flex flex-wrap items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          updateActiveMachine((m) => ({ serviceHistory: m.serviceHistory.filter((_, i) => i !== idx) }))
+                                        }
+                                        className={dangerIconButtonClass}
+                                        style={dangerIconButtonStyle}
+                                      >
+                                        <X size={15} strokeWidth={2.8} />
+                                      </button>
+                                      <input
+                                        type="date"
+                                        value={entry.date}
+                                        onChange={(e) =>
+                                          updateActiveMachine((m) => ({
+                                            serviceHistory: m.serviceHistory.map((row, i) => (i === idx ? { ...row, date: e.target.value } : row)),
+                                          }))
+                                        }
+                                        className={`${fieldInputClass} w-[150px]`}
+                                      />
+                                      <input
+                                        value={entry.notes}
+                                        onChange={(e) =>
+                                          updateActiveMachine((m) => ({
+                                            serviceHistory: m.serviceHistory.map((row, i) => (i === idx ? { ...row, notes: e.target.value } : row)),
+                                          }))
+                                        }
+                                        placeholder="What was done"
+                                        className={`${fieldInputClass} min-w-[200px] flex-1`}
+                                      />
+                                    </div>
+                                  ))}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateActiveMachine((m) => ({
+                                        serviceHistory: [{ id: genMachineServiceLogId(), date: "", notes: "" }, ...m.serviceHistory],
+                                      }))
+                                    }
+                                    className={secondaryButtonClass}
+                                  >
+                                    + Add Entry
+                                  </button>
+                                </div>
+                              </div>
+
+                              {activeMachine.type === "cnc" || activeMachine.type === "table-saw" ? (
+                                <div className="space-y-2">
+                                  <FieldGroupHeading>Nesting Settings</FieldGroupHeading>
+                                  <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                    Sheet size comes from each board&apos;s own entry in Materials &amp; Board Types —
+                                    only this machine&apos;s own cutting settings live here.
+                                  </p>
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    {(
+                                      [
+                                        ["Kerf", "kerf"],
+                                        ["Margin", "margin"],
+                                        ["Minimum Piece Size", "minPieceSize"],
+                                      ] as [string, keyof MachineNestingSettings][]
+                                    ).map(([label, key]) => (
+                                      <FieldRow key={key} label={label}>
+                                        <div className="flex h-8 items-center gap-2">
+                                          <input
+                                            value={activeMachine.nestingSettings[key]}
+                                            onChange={(e) =>
+                                              updateActiveMachine((m) => ({ nestingSettings: { ...m.nestingSettings, [key]: e.target.value } }))
+                                            }
+                                            className={`${fieldInputClass} text-center`}
+                                          />
+                                          <p className="shrink-0 text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>mm</p>
+                                        </div>
+                                      </FieldRow>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {activeMachine.type === "edge-bander" ? (
+                                <div className="space-y-2">
+                                  <FieldGroupHeading>Edgebanding</FieldGroupHeading>
+                                  <div className="space-y-1.5">
+                                    {activeMachine.edgebandingSettings.rules.map((rule, idx) => (
+                                      <div key={`machine_edgeband_rule_${idx}`} className="flex flex-wrap items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            updateActiveMachine((m) => ({
+                                              edgebandingSettings: { ...m.edgebandingSettings, rules: m.edgebandingSettings.rules.filter((_, i) => i !== idx) },
+                                            }))
+                                          }
+                                          className={dangerIconButtonClass}
+                                          style={dangerIconButtonStyle}
+                                        >
+                                          <X size={15} strokeWidth={2.8} />
+                                        </button>
+                                        <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>if edgetape is</p>
+                                        <input
+                                          value={rule.upToMeters}
+                                          onChange={(e) =>
+                                            updateActiveMachine((m) => ({
+                                              edgebandingSettings: {
+                                                ...m.edgebandingSettings,
+                                                rules: m.edgebandingSettings.rules.map((v, i) => (i === idx ? { ...v, upToMeters: e.target.value } : v)),
+                                              },
+                                            }))
+                                          }
+                                          className={`${fieldInputClass} w-[90px]`}
+                                        />
+                                        <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>or less, add</p>
+                                        <input
+                                          value={rule.addMeters}
+                                          onChange={(e) =>
+                                            updateActiveMachine((m) => ({
+                                              edgebandingSettings: {
+                                                ...m.edgebandingSettings,
+                                                rules: m.edgebandingSettings.rules.map((v, i) => (i === idx ? { ...v, addMeters: e.target.value } : v)),
+                                              },
+                                            }))
+                                          }
+                                          className={`${fieldInputClass} w-[90px]`}
+                                        />
+                                      </div>
+                                    ))}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        updateActiveMachine((m) => ({
+                                          edgebandingSettings: { ...m.edgebandingSettings, rules: [...m.edgebandingSettings.rules, { upToMeters: "", addMeters: "" }] },
+                                        }))
+                                      }
+                                      className={secondaryButtonClass}
+                                    >
+                                      + Add Rule
+                                    </button>
+                                  </div>
+                                  <FieldRow label="Excess per end (mm)">
+                                    <input
+                                      value={activeMachine.edgebandingSettings.excessPerEndMm}
+                                      onChange={(e) =>
+                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, excessPerEndMm: e.target.value } }))
+                                      }
+                                      className={`${fieldInputClass} max-w-[140px]`}
+                                    />
+                                  </FieldRow>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={activeMachine.edgebandingSettings.roundEnabled}
+                                      onChange={(e) =>
+                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundEnabled: e.target.checked } }))
+                                      }
+                                      className="h-4 w-4"
+                                    />
+                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>Round</p>
+                                    <select
+                                      value={activeMachine.edgebandingSettings.roundDirection}
+                                      onChange={(e) =>
+                                        updateActiveMachine((m) => ({
+                                          edgebandingSettings: { ...m.edgebandingSettings, roundDirection: e.target.value === "down" ? "down" : "up" },
+                                        }))
+                                      }
+                                      disabled={!activeMachine.edgebandingSettings.roundEnabled}
+                                      className={`${fieldInputClass} w-[90px]`}
+                                    >
+                                      <option value="up">up</option>
+                                      <option value="down">down</option>
+                                    </select>
+                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>to the nearest</p>
+                                    <input
+                                      value={activeMachine.edgebandingSettings.roundNearestMeters}
+                                      onChange={(e) =>
+                                        updateActiveMachine((m) => ({ edgebandingSettings: { ...m.edgebandingSettings, roundNearestMeters: e.target.value } }))
+                                      }
+                                      disabled={!activeMachine.edgebandingSettings.roundEnabled}
+                                      className={`${fieldInputClass} w-[80px]`}
+                                    />
+                                    <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>m.</p>
+                                  </div>
+                                </div>
+                              ) : null}
+                            </>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
 
@@ -4021,78 +4695,10 @@ export default function CompanySettingsPage() {
                       </button>
                     </div>
                   </Panel>
-                  <div className="xl:col-span-2 grid gap-3 xl:grid-cols-2">
-                    <Panel title="Edgebanding">
-                      <div className="space-y-3">
-                        <div className="space-y-1.5">
-                          {edgebandingRules.map((rule, idx) => (
-                            <div key={`edgeband_rule_${idx}`} className="flex flex-wrap items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setEdgebandingRules((prev) => prev.filter((_, i) => i !== idx))}
-                                className={dangerIconButtonClass}
-                                style={dangerIconButtonStyle}
-                              >
-                                <X size={15} strokeWidth={2.8} />
-                              </button>
-                              <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>if edgetape is</p>
-                              <input
-                                value={rule.upToMeters}
-                                onChange={(e) => setEdgebandingRules((prev) => prev.map((v, i) => (i === idx ? { ...v, upToMeters: e.target.value } : v)))}
-                                className={`${fieldInputClass} w-[90px]`}
-                              />
-                              <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>or less, add</p>
-                              <input
-                                value={rule.addMeters}
-                                onChange={(e) => setEdgebandingRules((prev) => prev.map((v, i) => (i === idx ? { ...v, addMeters: e.target.value } : v)))}
-                                className={`${fieldInputClass} w-[90px]`}
-                              />
-                            </div>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => setEdgebandingRules((prev) => [...prev, { upToMeters: "", addMeters: "" }])}
-                            className={secondaryButtonClass}
-                          >
-                            + Add Rule
-                          </button>
-                        </div>
-                        <FieldGroupHeading>Excess & Rounding</FieldGroupHeading>
-                        <FieldRow label="Excess per end (mm)">
-                          <input
-                            value={edgebandingExcessPerEndMm}
-                            onChange={(e) => setEdgebandingExcessPerEndMm(e.target.value)}
-                            className={`${fieldInputClass} max-w-[140px]`}
-                          />
-                        </FieldRow>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={edgebandingRoundEnabled}
-                            onChange={(e) => setEdgebandingRoundEnabled(e.target.checked)}
-                            className="h-4 w-4"
-                          />
-                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>Round</p>
-                          <select
-                            value={edgebandingRoundDirection}
-                            onChange={(e) => setEdgebandingRoundDirection(e.target.value === "down" ? "down" : "up")}
-                            disabled={!edgebandingRoundEnabled}
-                            className={`${fieldInputClass} w-[90px]`}
-                          >
-                            <option value="up">up</option>
-                            <option value="down">down</option>
-                          </select>
-                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>to the nearest</p>
-                          <input
-                            value={edgebandingRoundNearestMeters}
-                            onChange={(e) => setEdgebandingRoundNearestMeters(e.target.value)}
-                            disabled={!edgebandingRoundEnabled}
-                            className={`${fieldInputClass} w-[80px]`}
-                          />
-                          <p className="text-[12px] font-bold" style={{ color: "var(--text-muted)" }}>m.</p>
-                        </div>
-                      </div>
-                    </Panel>
+                  {/* Edgebanding used to be its own panel here — it now lives inside each Edge
+                      Bander machine's own settings modal (Machining tab), see machineTypeLabel's
+                      own usage and the edge-bander branch of the machine modal below. */}
+                  <div className="xl:col-span-2">
                     <Panel title="Gap Allowances">
                       <div className="grid gap-4 xl:grid-cols-2">
                         <div className="space-y-2">

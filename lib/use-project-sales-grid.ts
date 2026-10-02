@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getDoc } from "firebase/firestore";
 import type { Project } from "@/lib/types";
 import { normalizeSpecsGrid, type SpecsGrid } from "@/lib/specs-grid-types";
@@ -46,12 +46,21 @@ export function useProjectSalesGrid(project: Project | null, kind: SalesGridKind
     error: null,
   });
   const [retryTick, setRetryTick] = useState(0);
+  // Read inside the effect instead of closing over `project` directly — the effect's own deps key
+  // off project?.id (below), not the whole object, specifically so an unrelated field on `project`
+  // changing (the caller re-creates that object on practically every unrelated edit elsewhere on the
+  // page) can't cancel an in-flight fetch and restart it from scratch. A project whose id hasn't
+  // changed resolves to the same Firestore doc either way, so the slightly-stale object this reads is
+  // never actually wrong for that purpose — just not re-triggering work that doesn't need to rerun.
+  const projectRef = useRef(project);
+  projectRef.current = project;
 
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
-      if (!enabled || !project?.id) {
+      const currentProject = projectRef.current;
+      if (!enabled || !currentProject?.id) {
         if (!cancelled) setState({ status: "idle", grid: null, error: null });
         return;
       }
@@ -59,14 +68,14 @@ export function useProjectSalesGrid(project: Project | null, kind: SalesGridKind
       if (!cancelled) setState((prev) => ({ ...prev, status: "loading", error: null }));
 
       try {
-        const stored = await fetchSalesGridData(project, kind);
+        const stored = await fetchSalesGridData(currentProject, kind);
         if (cancelled) return;
         if (stored) {
           setState({ status: "ready", grid: stored.grid, error: null });
           return;
         }
 
-        const ref = await resolveProjectDocRef(project);
+        const ref = await resolveProjectDocRef(currentProject);
         const snap = ref ? await getDoc(ref) : null;
         const legacyRaw = snap?.exists()
           ? extractLegacySalesFieldFromRawDoc(snap.data() as Record<string, unknown>, LEGACY_KEY_BY_KIND[kind])
@@ -75,7 +84,7 @@ export function useProjectSalesGrid(project: Project | null, kind: SalesGridKind
         if (cancelled) return;
         setState({ status: "ready", grid: legacyGrid, error: null });
         if (legacyGrid) {
-          void saveSalesGridData(project, kind, legacyGrid);
+          void saveSalesGridData(currentProject, kind, legacyGrid);
         }
       } catch (error) {
         if (cancelled) return;
@@ -87,7 +96,8 @@ export function useProjectSalesGrid(project: Project | null, kind: SalesGridKind
     return () => {
       cancelled = true;
     };
-  }, [project, kind, enabled, retryTick]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id, kind, enabled, retryTick]);
 
   const retry = useCallback(() => setRetryTick((tick) => tick + 1), []);
   const setGridOptimistic = useCallback((grid: SpecsGrid) => {

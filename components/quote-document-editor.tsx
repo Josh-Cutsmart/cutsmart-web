@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import type { DecoupledEditor } from "ckeditor5";
 import "ckeditor5/ckeditor5.css";
 
 type QuoteDocumentEditorProps = {
@@ -18,7 +19,7 @@ type QuoteDocumentEditorProps = {
   autoFocus?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
-  onEditorReady?: (editor: any | null) => void;
+  onEditorReady?: (editor: DecoupledEditor | null) => void;
   toolbarDensity?: "default" | "compact";
   // Override the embedded card's own default white/bordered look (e.g. to match a glass panel
   // elsewhere) — replaces the built-in background/border classes entirely when set, rather than
@@ -58,7 +59,7 @@ export function QuoteDocumentEditor({
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
-  const editorRef = useRef<any>(null);
+  const editorRef = useRef<DecoupledEditor | null>(null);
   const isApplyingExternalValueRef = useRef(false);
   const lastEditorDataRef = useRef<string>(value || "<div class=\"quote-document-page\"><p></p></div>");
   const isFocusedRef = useRef(false);

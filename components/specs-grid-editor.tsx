@@ -219,6 +219,14 @@ export type SpecsGridEditorProps = {
   // separate, unstyled section of the host page's background — which reads as a visible seam
   // where the two backgrounds don't match. Only the two project-sheet callers set this.
   canvasBottomInsetPx?: number;
+  // Same idea as canvasBottomInsetPx, just the top edge, and mobile-only (fitToViewportOnMobile
+  // already defaults this gap to 0 — see that prop's own comment on the canvas's paddingTop below;
+  // off mobile the canvas's own py-6 already provides real top spacing). Requested so the mock
+  // page preview doesn't sit flush against the underside of the formatting toolbar above it — but
+  // applied to the CANVAS, not the zoomable viewport/page box inside it, specifically so it's
+  // never part of what pinch-zoom scales: this space stays fixed and un-zoomable on purpose,
+  // simply reserving room before the zoomable area starts rather than living inside it.
+  canvasTopInsetPx?: number;
   // fitToViewportOnMobile only: the host page's own fixed title bar height ABOVE this component
   // (quoteHeaderHeight/specsHeaderHeight, currently 56 for both) — this component has no way to
   // know that on its own, since the host reserves that space itself (paddingTop on the wrapper
@@ -998,6 +1006,7 @@ export default function SpecsGridEditor({
   isViewingSavedVersion,
   fitToViewportOnMobile,
   canvasBottomInsetPx,
+  canvasTopInsetPx,
   mobileTopOffsetPx,
   highlightedGroupId,
   onHoveredGroupChange,
@@ -2385,64 +2394,6 @@ export default function SpecsGridEditor({
     const id = setTimeout(() => setSettledTick((t) => t + 1), 400);
     return () => clearTimeout(id);
   }, []);
-  // TEMPORARY diagnostic — remove once the real-device-only "gap between a group's outline and its
-  // own text" bug is found. Every fix attempted so far (a geometry-aware React key, swapping the
-  // outline's box-shadow for an outline property, replacing a percentage min-height with the already-
-  // known pixel value) was reasoned from Chromium measurements that come back perfectly correct every
-  // time — none of them reproduce the bug here, so none of them can be verified here either. This logs
-  // the same measurements directly on the affected device instead, via the app's own existing
-  // ?debug=1 console-capture panel (see app/layout.tsx) — no dev tools or cable needed, just the
-  // floating "Logs" button already built for exactly this. Fires once, 600ms after mount (past
-  // settledTick's own 400ms) so layout has settled, and only when the debug console is active.
-  useEffect(() => {
-    if (!isProjectSheetView || typeof window === "undefined") return;
-    if (window.localStorage?.getItem("cutsmart_debug_console") !== "1") return;
-    const id = setTimeout(() => {
-      try {
-        const editable = Array.from(document.querySelectorAll<HTMLElement>('[contenteditable="true"]')).find((el) =>
-          /dear\s+[^,]+,/i.test(el.textContent ?? ""),
-        );
-        if (!editable) {
-          console.log("[gap-debug] no greeting cell found on this sheet");
-          return;
-        }
-        const flexParent = editable.parentElement;
-        const clipParent = flexParent?.parentElement;
-        const td = editable.closest("td");
-        const outline = Array.from(document.querySelectorAll<HTMLElement>("div")).find(
-          (d) => d.style.outline && td && d.getBoundingClientRect().top <= td.getBoundingClientRect().top + 2,
-        );
-        const rectOf = (el: Element | null | undefined) => {
-          if (!el) return null;
-          const r = el.getBoundingClientRect();
-          return { top: Math.round(r.top * 100) / 100, height: Math.round(r.height * 100) / 100 };
-        };
-        const flexStyle = flexParent
-          ? (({ display, justifyContent, minHeight, height }: CSSStyleDeclaration) => ({ display, justifyContent, minHeight, height }))(
-              getComputedStyle(flexParent),
-            )
-          : null;
-        console.log(
-          "[gap-debug]",
-          JSON.stringify({
-            ua: navigator.userAgent,
-            dpr: window.devicePixelRatio,
-            innerWidth: window.innerWidth,
-            innerHeight: window.innerHeight,
-            textRect: rectOf(editable),
-            flexParentRect: rectOf(flexParent),
-            flexParentComputedStyle: flexStyle,
-            clipParentRect: rectOf(clipParent),
-            tdRect: rectOf(td),
-            outlineOverlayRect: rectOf(outline),
-          }),
-        );
-      } catch (err) {
-        console.log("[gap-debug] threw", String(err));
-      }
-    }, 600);
-    return () => clearTimeout(id);
-  }, [isProjectSheetView, liveGrid]);
   // The canvas has no horizontal padding of its own on mobile now (it bleeds past the host page's
   // own px-3/sm:px-4/md:px-5 wrapper too — see the canvas div's own className below), so the page
   // is meant to reach the true screen edges exactly — just a few px of safety margin against
@@ -2465,18 +2416,24 @@ export default function SpecsGridEditor({
       : 1;
   // How tall the pinch-zoom/pan viewport (below) should be AT LEAST — the full room actually
   // available on screen (host title bar + this component's own toolbar spacer + the canvas's own
-  // bottom inset all subtracted out — NOT a top padding term, since the canvas now has none left
-  // on mobile, see its own paddingTop: 0 override below), regardless of whether the scaled page
-  // itself is shorter than that. Without this, a short page's viewport sized to just its own scaled
-  // content left genuine, un-zoomable padding above/below it (the canvas's own flex-1 stretch only
-  // grows the grey BACKGROUND, not this inner overflow:hidden box) — pinching in had nowhere to pan
-  // INTO across that gap, reading as "it's there no matter how much I zoom, and it still cuts the
-  // sheet off." The viewport's own style below takes Math.max of this and the page's real scaled
-  // height, so a TALL page still grows taller than the screen and simply scrolls with the rest of
-  // the view, same as sheetFitScale's own comment describes.
+  // top/bottom insets all subtracted out), regardless of whether the scaled page itself is shorter
+  // than that. Without this, a short page's viewport sized to just its own scaled content left
+  // genuine, un-zoomable padding above/below it (the canvas's own flex-1 stretch only grows the
+  // grey BACKGROUND, not this inner overflow:hidden box) — pinching in had nowhere to pan INTO
+  // across that gap, reading as "it's there no matter how much I zoom, and it still cuts the sheet
+  // off." The viewport's own style below takes Math.max of this and the page's real scaled height,
+  // so a TALL page still grows taller than the screen and simply scrolls with the rest of the view,
+  // same as sheetFitScale's own comment describes. canvasTopInsetPx has to come off here too, not
+  // just be added as the canvas's own paddingTop below — that padding sits ABOVE this viewport, so
+  // without subtracting it here the viewport's own explicit height would overflow the screen by
+  // exactly the padding amount (pushing its own bottom off-screen, past where canvasBottomInsetPx
+  // already accounts for).
   const sheetFitMinHeightPx =
     fitToViewportOnMobile
-      ? Math.max(0, viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - (canvasBottomInsetPx ?? 0))
+      ? Math.max(
+          0,
+          viewportInnerHeightPx - (mobileTopOffsetPx ?? 0) - PROJECT_TOOLBAR_HEIGHT_PX - (canvasBottomInsetPx ?? 0) - (canvasTopInsetPx ?? 0),
+        )
       : 0;
   const [sheetZoom, setSheetZoom] = useState(1);
   const [sheetPan, setSheetPan] = useState({ x: 0, y: 0 });
@@ -3469,12 +3426,15 @@ export default function SpecsGridEditor({
           ...(canvasBottomInsetPx
             ? { paddingBottom: fitToViewportOnMobile ? canvasBottomInsetPx : 24 + canvasBottomInsetPx }
             : {}),
-          // On mobile, no top padding either — same "edge to edge" reasoning the className's own
-          // comment gives for the horizontal bleed, just applied vertically too: the page starts
-          // immediately below the fixed toolbar's own flow spacer, nothing left for a zoomed-in
-          // pinch to find itself blocked by right at the top the way an un-zoomable, locked-in-
-          // place gap used to read. py-6's own 24px top value only still applies off mobile.
-          ...(fitToViewportOnMobile ? { paddingTop: 0 } : {}),
+          // On mobile, no top padding UNLESS the caller explicitly asked for some via
+          // canvasTopInsetPx (see its own comment) — same "edge to edge" reasoning the className's
+          // own comment gives for the horizontal bleed, just applied vertically too, EXCEPT when a
+          // host specifically wants a gap between its own toolbar and the page preview below it.
+          // This lands on the CANVAS (outside sheetFitViewportRef/pageBoxRef below), not inside the
+          // zoomable viewport, so it's never part of what pinch-zoom scales — a fixed, un-zoomable
+          // reservation before the zoomable area starts, same as canvasBottomInsetPx already is for
+          // the bottom edge. py-6's own 24px top value only still applies off mobile.
+          ...(fitToViewportOnMobile ? { paddingTop: canvasTopInsetPx ?? 0 } : {}),
         }}
       >
         {/* fitToViewportOnMobile: a fixed-height, overflow-hidden viewport the page below is scaled

@@ -59,6 +59,16 @@ type AppTabsContextValue = {
   // reasoning as ownsMobileScroll above — every other chromeHidden view has nothing like this.
   isSheetZoomedAwayFromEdge: boolean;
   setIsSheetZoomedAwayFromEdge: (zoomedAway: boolean) => void;
+  // Mirrors isSheetZoomedAwayFromEdge (same value, set in the same place — see
+  // setIsSheetZoomedAwayFromEdge's wrapper below), but as a plain ref app-shell.tsx's touchstart
+  // handler can read SYNCHRONOUSLY, with no React render in between. The state version above still
+  // exists for anything that wants to re-render off it; the handler specifically doesn't, because a
+  // handler reading state from a context several components removed from where the zoom gesture
+  // itself lives is reading however stale that state happened to be at the LAST render this
+  // provider committed — real-device touch events arrive fast enough (e.g. right after a pinch
+  // ends, or two quick gestures back to back) to beat that render, letting the pull-down-to-reveal-
+  // menu gesture arm even though the sheet is still genuinely zoomed in.
+  isSheetZoomedAwayFromEdgeRef: React.RefObject<boolean>;
   fillMainViewport: boolean;
   setFillMainViewport: (fill: boolean) => void;
   reduceMainTopPadding: boolean;
@@ -118,7 +128,13 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
   const [actionsByKey, setActionsByKey] = useState<Record<string, AppWorkspaceTabAction>>({});
   const [chromeHidden, setChromeHidden] = useState(false);
   const [ownsMobileScroll, setOwnsMobileScroll] = useState(false);
-  const [isSheetZoomedAwayFromEdge, setIsSheetZoomedAwayFromEdge] = useState(false);
+  const [isSheetZoomedAwayFromEdge, setIsSheetZoomedAwayFromEdgeState] = useState(false);
+  // See isSheetZoomedAwayFromEdgeRef's own comment on the context type above.
+  const isSheetZoomedAwayFromEdgeRef = useRef(false);
+  const setIsSheetZoomedAwayFromEdge = useCallback((zoomedAway: boolean) => {
+    isSheetZoomedAwayFromEdgeRef.current = zoomedAway;
+    setIsSheetZoomedAwayFromEdgeState(zoomedAway);
+  }, []);
   const [fillMainViewport, setFillMainViewport] = useState(false);
   const [reduceMainTopPadding, setReduceMainTopPadding] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -466,6 +482,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       setOwnsMobileScroll,
       isSheetZoomedAwayFromEdge,
       setIsSheetZoomedAwayFromEdge,
+      isSheetZoomedAwayFromEdgeRef,
       fillMainViewport,
       setFillMainViewport,
       reduceMainTopPadding,
@@ -483,6 +500,7 @@ export function AppTabsProvider({ children }: { children: React.ReactNode }) {
       closeTab,
       ownsMobileScroll,
       isSheetZoomedAwayFromEdge,
+      setIsSheetZoomedAwayFromEdge,
       fillMainViewport,
       reduceMainTopPadding,
       mobileNavOpen,

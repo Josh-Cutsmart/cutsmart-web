@@ -2719,6 +2719,8 @@ export type CompanyClientRow = {
   phone: string;
   address: string;
   notes: string;
+  category: string;
+  archived: boolean;
   createdAtIso: string;
   updatedAtIso: string;
   firstProjectAtIso: string;
@@ -2733,6 +2735,9 @@ export type CompanyClientRow = {
 type CompanyClientViewerFilter = {
   viewerUid?: string;
   includeAll?: boolean;
+  // Archived contacts are excluded from fetchCompanyClients by default (that's the whole point of
+  // archiving — it removes them from the main list); pass true to include them anyway.
+  includeArchived?: boolean;
 };
 
 function toCompanyClientSummaryRow(row: CompanyClientRow): CompanyClientRow {
@@ -2805,6 +2810,10 @@ function mergeCompanyClientRows(
     phone: existing.phone || next.phone,
     address: existing.address || next.address,
     notes: next.notes || existing.notes,
+    category: next.category || existing.category,
+    // Archiving is a sticky, explicit user decision — a newly-synced project for the same person
+    // (which always arrives with archived: false) must never silently un-archive them.
+    archived: Boolean(existing.archived || next.archived),
     createdAtIso: existing.createdAtIso || next.createdAtIso,
     updatedAtIso: pickLaterIso(existing.updatedAtIso, next.updatedAtIso),
     firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, next.firstProjectAtIso),
@@ -2910,6 +2919,8 @@ function buildCompanyClientRowFromProject(project: Project): CompanyClientRow {
     phone: String(project.clientPhone || "").trim(),
     address: String(project.clientAddress || "").trim(),
     notes: String(project.notes || "").trim(),
+    category: "",
+    archived: false,
     createdAtIso: String(project.createdAt || project.updatedAt || "").trim(),
     updatedAtIso: String(project.updatedAt || project.createdAt || "").trim(),
     firstProjectAtIso: String(project.createdAt || project.updatedAt || "").trim(),
@@ -3009,6 +3020,8 @@ function buildCompanyClientRowFromDoc(
     phone: String(data.phone ?? data.clientPhone ?? "").trim(),
     address: String(data.address ?? data.clientAddress ?? "").trim(),
     notes: String(data.notes ?? "").trim(),
+    category: String(data.category ?? "").trim(),
+    archived: Boolean(data.archived),
     createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
     updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
     firstProjectAtIso: toIsoString(data.firstProjectAtIso ?? data.firstProjectAt, ""),
@@ -3219,12 +3232,20 @@ export async function fetchCompanyClients(companyId: string, filter?: CompanyCli
 
   const merged = new Map<string, CompanyClientRow>();
 
+  // Split persisted rows into archived vs active, and check project candidates against the archived
+  // identities BEFORE adding them to `merged` at all. An archived contact must never reappear just
+  // because the project-derived pass below independently re-matches/re-keys them slightly
+  // differently than a straight row.id lookup would — this makes the exclusion correct regardless of
+  // whether findMatchingClientIdInMap happens to land on the same map key as the persisted row's id.
+  let archivedRows: CompanyClientRow[] = [];
   try {
     const clientsSnap = await getDocs(collection(db, "companies", cid, "clients"));
     const persistedRows = clientsSnap.docs
       .map((docSnap) => buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>))
       .filter((row) => row.id && row.id !== "__meta");
+    archivedRows = filter?.includeArchived ? [] : persistedRows.filter((row) => row.archived);
     for (const row of persistedRows) {
+      if (row.archived && !filter?.includeArchived) continue;
       merged.set(row.id, row);
     }
   } catch {
@@ -3234,6 +3255,7 @@ export async function fetchCompanyClients(companyId: string, filter?: CompanyCli
   try {
     const projects = await collectCompanyProjectsForClients(cid);
     for (const project of projects) {
+      if (archivedRows.some((archivedRow) => projectMatchesClientRow(project, archivedRow))) continue;
       const derived = buildCompanyClientRowFromProject(project);
       const matchId = findMatchingClientIdInMap(merged, project) || derived.id;
       merged.set(matchId, mergeCompanyClientRows(merged.get(matchId), { ...derived, id: matchId }));
@@ -3250,6 +3272,7 @@ export async function fetchCompanyClients(companyId: string, filter?: CompanyCli
 
   return Array.from(merged.values())
     .filter((row) => canViewerAccessCompanyClientRow(row, filter))
+    .filter((row) => filter?.includeArchived || !row.archived)
     .sort((a, b) => {
     const aName = String(a.name || a.email).trim().toLowerCase();
     const bName = String(b.name || b.email).trim().toLowerCase();
@@ -3282,6 +3305,174 @@ export async function fetchCompanyClientById(
     return row && canViewerAccessCompanyClientRow(row, filter) ? row : null;
   } catch {
     return null;
+  }
+}
+
+export type ManualCompanyClientInput = {
+  name: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  notes?: string;
+  category?: string;
+};
+
+function inputMatchesClientRow(input: ManualCompanyClientInput, row: CompanyClientRow): boolean {
+  const inputEmail = normalizeClientEmail(input.email);
+  const rowEmail = normalizeClientEmail(row.emailNormalized || row.email);
+  if (inputEmail && rowEmail) {
+    return inputEmail === rowEmail;
+  }
+
+  const inputPhone = normalizeClientPhone(input.phone);
+  const rowPhone = normalizeClientPhone(row.phone);
+  if (inputPhone && rowPhone) {
+    return inputPhone === rowPhone;
+  }
+
+  const inputName = normalizeClientNameKey(input.name);
+  const rowName = normalizeClientNameKey(row.name);
+  const inputAddress = normalizeClientAddressKey(input.address);
+  const rowAddress = normalizeClientAddressKey(row.address);
+  if (inputName && rowName && inputAddress && rowAddress) {
+    return inputName === rowName && inputAddress === rowAddress;
+  }
+  if (inputName && rowName) {
+    return inputName === rowName;
+  }
+  return false;
+}
+
+async function findMatchingCompanyClientRowByFields(
+  companyId: string,
+  input: ManualCompanyClientInput,
+): Promise<CompanyClientRow | null> {
+  const cid = String(companyId || "").trim();
+  if (!db || !cid) return null;
+  try {
+    const snap = await getDocs(collection(db, "companies", cid, "clients"));
+    for (const docSnap of snap.docs) {
+      if (docSnap.id === "__meta") continue;
+      const row = buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
+      if (inputMatchesClientRow(input, row)) {
+        return row;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+// Manually adding a contact goes through the exact same email -> phone -> name+address matching used
+// for projects (inputMatchesClientRow mirrors projectMatchesClientRow) so a contact a second user adds
+// for someone who already exists (as a project-derived client or another user's contact) attaches to
+// that same record — unioning the acting user into createdByUids/assignedToUids — instead of creating
+// a duplicate. canViewerAccessCompanyClientRow already grants visibility to the creator, the assigned
+// user, or anyone with the "view all" permission, so populating those two arrays is all that's needed.
+export async function createOrAttachManualCompanyClient(
+  companyId: string,
+  input: ManualCompanyClientInput,
+  actingUid: string,
+): Promise<{ ok: boolean; clientId?: string; merged?: boolean }> {
+  const cid = String(companyId || "").trim();
+  const uid = String(actingUid || "").trim();
+  const name = String(input.name || "").trim();
+  const email = String(input.email || "").trim();
+  const emailNormalized = normalizeClientEmail(email);
+  const phone = String(input.phone || "").trim();
+  const address = String(input.address || "").trim();
+  const notes = String(input.notes || "").trim();
+  const category = String(input.category || "").trim();
+  if (!db || !cid || !uid || (!name && !emailNormalized && !phone)) {
+    return { ok: false };
+  }
+
+  const nowIso = new Date().toISOString();
+  try {
+    await ensureCompanyClientsSection(cid);
+    const existingRow = await findMatchingCompanyClientRowByFields(cid, input);
+    const clientId = existingRow?.id || createCompanyClientUid();
+    const clientRef = doc(db, "companies", cid, "clients", clientId);
+
+    if (existingRow) {
+      const payload: Record<string, unknown> = {
+        name: existingRow.name || name,
+        email: existingRow.email || email,
+        emailNormalized: existingRow.emailNormalized || emailNormalized,
+        phone: existingRow.phone || phone,
+        address: existingRow.address || address,
+        notes: existingRow.notes || notes,
+        category: existingRow.category || category,
+        updatedAt: serverTimestamp(),
+        updatedAtIso: nowIso,
+        createdByUids: mergeUidLists(existingRow.createdByUids, [uid]),
+        assignedToUids: mergeUidLists(existingRow.assignedToUids, [uid]),
+      };
+      await setDoc(clientRef, payload, { merge: true });
+      return { ok: true, clientId, merged: true };
+    }
+
+    const payload: Record<string, unknown> = {
+      id: clientId,
+      companyId: cid,
+      name,
+      email,
+      emailNormalized,
+      phone,
+      address,
+      notes,
+      category,
+      archived: false,
+      createdAt: serverTimestamp(),
+      createdAtIso: nowIso,
+      updatedAt: serverTimestamp(),
+      updatedAtIso: nowIso,
+      firstProjectAtIso: "",
+      lastProjectAtIso: "",
+      lastProjectId: "",
+      projectCount: 0,
+      createdByUids: [uid],
+      assignedToUids: [uid],
+      completedProjectIds: [],
+      history: [],
+    };
+    await setDoc(clientRef, payload, { merge: true });
+    return { ok: true, clientId, merged: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function updateCompanyClientProfile(
+  companyId: string,
+  clientId: string,
+  patch: Partial<Pick<CompanyClientRow, "name" | "email" | "phone" | "address" | "notes" | "category" | "archived">>,
+  filter?: CompanyClientViewerFilter,
+): Promise<{ ok: boolean }> {
+  const cid = String(companyId || "").trim();
+  const id = String(clientId || "").trim();
+  if (!db || !cid || !id) return { ok: false };
+  try {
+    const snap = await getDoc(doc(db, "companies", cid, "clients", id));
+    if (!snap.exists()) return { ok: false };
+    const row = buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
+    if (!canViewerAccessCompanyClientRow(row, filter)) return { ok: false };
+    const payload: Record<string, unknown> = { updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() };
+    if (typeof patch.name === "string") payload.name = patch.name.trim();
+    if (typeof patch.email === "string") {
+      payload.email = patch.email.trim();
+      payload.emailNormalized = normalizeClientEmail(patch.email);
+    }
+    if (typeof patch.phone === "string") payload.phone = patch.phone.trim();
+    if (typeof patch.address === "string") payload.address = patch.address.trim();
+    if (typeof patch.notes === "string") payload.notes = patch.notes.trim();
+    if (typeof patch.category === "string") payload.category = patch.category.trim();
+    if (typeof patch.archived === "boolean") payload.archived = patch.archived;
+    await setDoc(doc(db, "companies", cid, "clients", id), payload, { merge: true });
+    return { ok: true };
+  } catch {
+    return { ok: false };
   }
 }
 

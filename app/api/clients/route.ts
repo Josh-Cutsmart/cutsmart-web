@@ -118,6 +118,8 @@ type ClientRow = {
   phone: string;
   address: string;
   notes: string;
+  category: string;
+  archived: boolean;
   createdAtIso: string;
   updatedAtIso: string;
   firstProjectAtIso: string;
@@ -201,6 +203,8 @@ function buildClientFromProject(companyId: string, project: Record<string, unkno
     phone: toStr(project.clientPhone ?? project.clientNumber),
     address: toStr(project.clientAddress ?? project.projectAddress),
     notes: toStr(project.notes),
+    category: "",
+    archived: false,
     createdAtIso,
     updatedAtIso,
     firstProjectAtIso: createdAtIso,
@@ -285,6 +289,8 @@ function mergeClientRows(existing: ClientRow | undefined, next: ClientRow): Clie
     phone: next.phone || existing.phone,
     address: next.address || existing.address,
     notes: next.notes || existing.notes,
+    category: next.category || existing.category,
+    archived: Boolean(existing.archived || next.archived),
     createdAtIso: existing.createdAtIso || next.createdAtIso,
     updatedAtIso: pickLaterIso(existing.updatedAtIso, next.updatedAtIso),
     firstProjectAtIso: pickEarlierIso(existing.firstProjectAtIso, next.firstProjectAtIso),
@@ -320,6 +326,8 @@ function buildClientFromDoc(companyId: string, id: string, data: Record<string, 
     phone: toStr(data.phone),
     address: toStr(data.address),
     notes: toStr(data.notes),
+    category: toStr(data.category),
+    archived: Boolean(data.archived),
     createdAtIso: toIsoString(data.createdAtIso ?? data.createdAt, ""),
     updatedAtIso: toIsoString(data.updatedAtIso ?? data.updatedAt, ""),
     firstProjectAtIso: toIsoString(data.firstProjectAtIso ?? data.firstProjectAt, ""),
@@ -396,38 +404,53 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // Read persisted clients first and split off the archived ones. An archived contact must never
+  // reappear just because the project-derived pass (below) independently re-matches/re-keys them
+  // slightly differently than this pass does — checking identity against archivedRows BEFORE a
+  // project candidate is ever added to `merged` makes the exclusion correct regardless of whether
+  // the two passes' own matching happens to land on the same map key.
+  const archivedRows: ClientRow[] = [];
+  const activeClientRows: ClientRow[] = [];
+  try {
+    const clientsSnap = await adminDb.collection("companies").doc(companyId).collection("clients").get();
+    clientsSnap.docs.forEach((docSnap) => {
+      if (docSnap.id === "__meta") return;
+      const row = buildClientFromDoc(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
+      (row.archived ? archivedRows : activeClientRows).push(row);
+    });
+  } catch {
+    // best-effort persisted load
+  }
+  const matchesArchivedIdentity = (input: Record<string, unknown>) =>
+    archivedRows.some((archivedRow) => projectMatchesClient(input, archivedRow));
+
   const merged = new Map<string, ClientRow>();
   try {
     const jobsSnap = await adminDb.collection("companies").doc(companyId).collection("jobs").get();
     jobsSnap.docs.forEach((docSnap) => {
       const data = (docSnap.data() ?? {}) as Record<string, unknown>;
-      const candidate = buildClientFromProject(companyId, { ...data, id: toStr(data.id) || docSnap.id });
+      const projectInput = { ...data, id: toStr(data.id) || docSnap.id };
+      if (matchesArchivedIdentity(projectInput)) return;
+      const candidate = buildClientFromProject(companyId, projectInput);
       if (!candidate.name && !candidate.email && !candidate.phone) return;
-      const matchId = findMatchingClientIdInMap(merged, { ...data, id: toStr(data.id) || docSnap.id }) || candidate.id;
+      const matchId = findMatchingClientIdInMap(merged, projectInput) || candidate.id;
       merged.set(matchId, mergeClientRows(merged.get(matchId), { ...candidate, id: matchId }));
     });
   } catch {
     // keep going so persisted client rows can still load
   }
 
-  try {
-    const clientsSnap = await adminDb.collection("companies").doc(companyId).collection("clients").get();
-    clientsSnap.docs.forEach((docSnap) => {
-      if (docSnap.id === "__meta") return;
-      const row = buildClientFromDoc(companyId, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
-      const matchId =
-        findMatchingClientIdInMap(merged, {
-          id: row.lastProjectId,
-          customer: row.name,
-          clientEmail: row.email,
-          clientPhone: row.phone,
-          clientAddress: row.address,
-        }) || row.id;
-      merged.set(matchId, mergeClientRows(merged.get(matchId), { ...row, id: matchId }));
-    });
-  } catch {
-    // best-effort persisted load
-  }
+  activeClientRows.forEach((row) => {
+    const matchId =
+      findMatchingClientIdInMap(merged, {
+        id: row.lastProjectId,
+        customer: row.name,
+        clientEmail: row.email,
+        clientPhone: row.phone,
+        clientAddress: row.address,
+      }) || row.id;
+    merged.set(matchId, mergeClientRows(merged.get(matchId), { ...row, id: matchId }));
+  });
 
   const clients = Array.from(merged.values()).sort((a, b) => {
     if (!canViewerAccessClientRow(a, viewerUid, includeAll)) return 1;
@@ -435,7 +458,7 @@ export async function GET(request: NextRequest) {
     const aName = toStr(a.name || a.email).toLowerCase();
     const bName = toStr(b.name || b.email).toLowerCase();
     return aName.localeCompare(bName);
-  }).filter((client) => canViewerAccessClientRow(client, viewerUid, includeAll));
+  }).filter((client) => canViewerAccessClientRow(client, viewerUid, includeAll) && !client.archived);
 
   return NextResponse.json({
     ok: true,
