@@ -1388,6 +1388,10 @@ export default function CompanySettingsPage() {
   const skipFirstDirtyEffectRef = useRef(true);
   const skipFirstZapierPersistEffectRef = useRef(true);
   const lastZapierPersistSignatureRef = useRef("");
+  const skipFirstContactCategoriesPersistEffectRef = useRef(true);
+  const lastContactCategoriesPersistSignatureRef = useRef("");
+  const contactCategoriesPersistTimerRef = useRef<number | null>(null);
+  const isSavingLatestRef = useRef(false);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   const [leadStatuses, setLeadStatuses] = useState<StatusRow[]>([]);
   const [dashboardLegend, setDashboardLegend] = useState<DashboardLegendRow[]>([]);
@@ -3177,6 +3181,7 @@ export default function CompanySettingsPage() {
   // save is recreated every render and the effect below should only re-register once.
   const saveRef = useRef(save);
   saveRef.current = save;
+  isSavingLatestRef.current = isSaving;
   useEffect(() => {
     setSaveAndBackHandler(async () => {
       await saveRef.current("manual");
@@ -3394,6 +3399,51 @@ export default function CompanySettingsPage() {
     setSaveLabel("Autosaving...");
     void save("auto");
   }, [activeCompanyId, isHydrated, isLoading, zapierLeads.enabled, zapierLeads.webhookSecret]);
+
+  // Contact Categories save themselves shortly after any change (name, colour, add, delete) instead of
+  // waiting on the Save button or an unrelated input's blur. Debounced so typing a name isn't one write
+  // per keystroke; goes through saveRef so the write carries the latest state, and retries while a
+  // previous save is still in flight (save() itself silently no-ops when it's busy).
+  useEffect(() => {
+    if (!isHydrated || isLoading || !activeCompanyId) return;
+    const nextSignature = JSON.stringify({
+      companyId: activeCompanyId,
+      categories: contactCategories.map((row) => [toStr(row.name), toStr(row.color)]).filter(([name]) => name),
+    });
+    if (skipFirstContactCategoriesPersistEffectRef.current) {
+      skipFirstContactCategoriesPersistEffectRef.current = false;
+      lastContactCategoriesPersistSignatureRef.current = nextSignature;
+      return;
+    }
+    if (lastContactCategoriesPersistSignatureRef.current === nextSignature) return;
+    lastContactCategoriesPersistSignatureRef.current = nextSignature;
+    if (contactCategoriesPersistTimerRef.current != null) {
+      window.clearTimeout(contactCategoriesPersistTimerRef.current);
+    }
+    setSaveLabel("Autosaving...");
+    const attempt = () => {
+      contactCategoriesPersistTimerRef.current = null;
+      if (isSavingLatestRef.current) {
+        contactCategoriesPersistTimerRef.current = window.setTimeout(attempt, 300);
+        return;
+      }
+      hasPendingBlurSaveRef.current = false;
+      void saveRef.current("auto");
+    };
+    contactCategoriesPersistTimerRef.current = window.setTimeout(attempt, 500);
+  }, [activeCompanyId, contactCategories, isHydrated, isLoading]);
+
+  // Leaving the page inside the debounce window must not drop the pending category change: flush it
+  // (save carries the latest state via saveRef) instead of just clearing the timer.
+  useEffect(() => {
+    return () => {
+      if (contactCategoriesPersistTimerRef.current != null) {
+        window.clearTimeout(contactCategoriesPersistTimerRef.current);
+        contactCategoriesPersistTimerRef.current = null;
+        if (!isSavingLatestRef.current) void saveRef.current("auto");
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isHydrated || isLoading || !activeCompanyId) return;

@@ -1,47 +1,72 @@
-Version: v0.4.6
+Version: v0.4.7
 
 whatsNew: [
-<u><b>Quote & Specifications</b></u>
+<u><b>Contacts</b></u>
 <ul>
-<li>New: template authors can mark Specifications cells "Confirmable" in the Company Settings builder, making them eligible for the "Mark for Confirmation" button in a live project — marking it in the template doesn't automatically turn it into an active question, staff still choose which ones to activate per project</li>
-<li>Duplicating a row (the + button) now carries over its Confirmable eligibility/active state to the new row</li>
-<li>"Mark for Confirmation" moved out of the toolbar into a floating button that appears next to whatever's selected (matching "Import from Quote"'s own style), instead of a fixed toolbar button — centers across a multi-cell selection and smoothly slides between rows instead of jumping, and now matches the green "Submitted Version" colour</li>
-<li>"Import from Quote" now only appears while its linked zone is selected, pops in/out instead of always floating, sits outside the zone so it never covers content, and flashes green to confirm a successful import</li>
-<li>Importing from Quote now also brings over bold/underline formatting, not just plain text</li>
-<li>Importing from Quote now asks for confirmation first if the zone's text was edited by hand since the last import, instead of silently overwriting it</li>
-<li>Fixed: a new project (or one reset from the template) could start with a cell already showing as "Pending" if it had been marked Confirmable in the template before — it now always starts blank until staff actively mark it in that project</li>
-<li>Right-clicking a cell no longer does anything in a live project's Quote/Specifications windows — group management is a template-only action now</li>
-<li>The Sections (Specifications) and Quote Extras sidebars now list groups in the same top-to-bottom order they appear on the sheet, instead of creation order — categorised groups keep that same order within their own category too</li>
-<li>The floating bottom bar's buttons now pop in instead of fading in as they appear, matching the Import/Mark for Confirmation buttons</li>
-<li>Fixed a few small animation glitches on the floating buttons (one sitting too low when it first appeared, a pop-in getting clipped by its own container, a brief flash right after a button popped in)</li>
-<li>The <b>Client Portal</b> link now opens in a normal new tab instead of a cramped popup window</li>
-<li>Staff previewing their own project's Client Portal link now see a small back/exit button to return to CutSmart — never shown to actual clients viewing their own link</li>
-<li>Mobile: the bottom action strip (Save/Reset/Download/Client Portal/etc.) is no longer a row of cramped icon-only buttons — it's now a single blue <b>Actions</b> button that opens a small floating card listing every action as icon+text rows; drag it down or tap outside to dismiss</li>
-<li>Mobile: holding down an unsent/unsubmitted row in Version History now opens the same delete confirmation desktop gets from hovering the row's delete icon (a normal tap still opens that version)</li>
-<li>Mobile: holding down on a cell marked Confirmable now opens a small menu to mark it — or a whole highlighted group of cells — for confirmation, instead of needing the floating button; a normal tap still just selects the cell</li>
-<li>Mobile: added an explicit <b>Back</b> button to the top of the Version History panel instead of relying only on the swipe gesture</li>
-<li>Mobile: fixed the Accepted/Pending status badge getting squeezed out of sight in the title bar on narrow screens — it now shows in its own band just below the title</li>
+<li>The <b>Clients</b> page is now <b>Contacts</b> — in the sidebar, the mobile nav and the staff permission labels — since it's no longer only for clients</li>
+<li>New: <b>Add Contact</b> lets you add your own contacts (name, email, phone, address, notes and a category). If the email, phone number or name matches someone already in your contacts — including people who came in through a project — it links to that same contact instead of creating a duplicate. A contact is visible to whoever created it, whoever it's assigned to, and anyone with the "view all" contacts permission</li>
+<li>New: <b>Contact Categories</b> in Company Settings → Company — Clients, Contractor and Supplier to start with, and you can add your own, rename them and give each one a colour. They save themselves a moment after you change them, so there's no Save button to remember</li>
+<li>Each contact now has an initials emblem in their category's colour beside their name in the list, and the list can be filtered by category from a new glass dropdown at the top (with a colour dot beside each category)</li>
+<li>Tapping a contact no longer opens a popup — the whole list slides away to reveal that contact's own page, and the Back button, your browser's Back or Escape slides you back. Refreshing keeps you on the contact, and coming back from one of their projects returns you to them</li>
+<li>Contact page on desktop: a glass banner across the top with their name in large text and a soft glow of their category colour, with <b>Edit</b> in the top right</li>
+<li>Contact page on mobile: a large initials badge glowing in their category colour. As you scroll it shrinks down into a pinned bar — the badge slides to the left, the name is revealed beside it and Edit shrinks to just a pencil. The colour carries down the whole page, and the containers are frosted glass that picks it up</li>
+<li>The category pill under the name is now a dropdown — tap it, in or out of Edit mode, to change the contact's category. The colour fades from the old category into the new one, and the change saves straight away (if a save ever fails it's rolled back and you're told)</li>
+<li>Mobile: <b>Call</b>, <b>Text</b> and <b>Email</b> buttons sit under the badge. If a contact has more than one number or email (for example different people on different projects) a glass menu asks which one — the person's name on the left, the number or email on the right</li>
+<li>Mobile: Phone, Email, Address and Notes each sit in their own container, with a call button on Phone, an email button on Email and a maps button on Address that opens your phone's default maps app</li>
+<li>Details now read as plain text until you press <b>Edit</b> (the button becomes <b>Done</b>), though Notes can always be typed into. While editing on mobile, Name and Category appear (they're otherwise already in the header), the cards that can't be edited step aside, and the boxes match the glass look of their containers</li>
+<li>New: <b>Archive</b> a contact — a big red button at the bottom of the contact, shown while editing — to remove them from the main list. They're kept rather than deleted, and adding someone who matches an archived contact brings them back</li>
+<li>Fixed: archiving a contact, or editing their details or category, did nothing for contacts that came from projects (including ones whose project is in Recently Deleted) — it now works for every contact</li>
+<li>Contacts now has a proper dark mode — the page used to stay white</li>
+<li>The contact page lists their Active Projects and Completed Projects, and tapping a project opens it</li>
+<li>Mobile: a small A–Z strip floats down the right edge of the list — slide a finger along it to jump straight to a letter</li>
+<li>Mobile: the top bar of the list is tidier — a + button, the category filter in the middle and a search that expands in place, with the search icon staying put when it opens</li>
 </ul>
 
-<u><b>Design Tab</b></u>
+<u><b>Machining & Nesting</b></u>
 <ul>
-<li>Fixed printing the Cost by Room breakdown sometimes coming out at the wrong size/scale, and on mobile leaving you stranded on a blank print tab — it now prints in place instead of opening a separate tab/window</li>
+<li>New: the <b>Nesting Settings</b> tab in Company Settings is now <b>Machining</b> — a list of your physical machines (CNC, Table Saw, Edge Bander or Other) instead of one set of nesting numbers. Click <b>+ Add Machine</b>, pick a type, and it's named for you and opens straight into its own settings window; click any machine to reopen it, or the red X to delete it</li>
+<li>Each machine's window has Name, Model, Serial Number and Notes, a Maintenance Contact (name, phone, email) and a Servicing History log where you add dated entries of what was done. CNCs and Table Saws have their own Kerf, Margin and Minimum Piece Size; Edge Banders have their own edge tape rules (extra meters, excess per end and rounding)</li>
+<li>Mark one machine of each type as the <b>Default</b> — the first one you add of a type is made the default automatically. The first time a company opens Machining it's pre-filled with a CNC and an Edge Bander carrying over your existing nesting and edge banding numbers, so nothing starts blank</li>
+<li>The Edgebanding panel has moved out of the Production tab and into each Edge Bander's window, and edge tape totals in a project now follow your default Edge Bander. Sheet Height and Width are gone from the old nesting panel — sheet sizes come from each board's own entry in Materials & Board Types</li>
+<li>New: the Nesting view has a <b>Machine type</b> picker (a button in the full-screen top bar and in the info row above the sheets) listing your CNCs and Table Saws. Picking one switches nesting to that machine's kerf, margin and minimum piece size and updates the sheet counts in Board Settings. A CNC packs pieces tighter, tucking smaller pieces into leftover gaps, while a Table Saw keeps every cut a full straight line across the sheet</li>
+<li>Each project remembers the machine you picked on that device, starting on the default (or the first in the list). The picker only appears once at least one CNC or Table Saw exists — until then nesting keeps using the old company-wide settings</li>
+</ul>
+
+<u><b>Quote & Specifications</b></u>
+<ul>
+<li>New: the Quote and Specifications template builders have a <b>Split Line</b> toolbar button that drops a red "Bottom-mount split (page 1)" line into the sheet — everything below it lands flush with the bottom of printed page 1. Drag it between groups to move it, and "Remove Split Line" clears it. This replaces the old per-group "Anchor to bottom of first page" checkbox, and the builder's preview now shows the same bottom-pinned spacing a project's sheet does</li>
+<li>Importing from Quote now leaves out any Quote group that's been toggled off (hidden from print), instead of pulling its text into Specifications anyway</li>
+<li>Cells set to the "Default" font now render in Arial/Helvetica with the same line spacing as the PDF — in the builder, the project sheet and the Client Portal — instead of the app's own UI font, which looked (and wrapped) differently on Windows than on Mac/iPhone</li>
+<li>Fixed: a row could get stuck permanently too tall (for example a blank spacer row after its text was measured at the wrong moment) — rows now shrink back to fit once every cell confirms it needs less room</li>
+<li>Fixed: text and cell fill sometimes not lining up with a group's border while the Signature font was still loading — every cell now re-measures itself once fonts have loaded, including locked cells</li>
+<li>Fixed: if a project's Quote or Specifications sheet failed to load, the page sat on "Setting up this project's..." forever — it now shows a "Couldn't load" message with a <b>Try again</b> button</li>
+<li>Deleting a version from Version History now lets the confirmation shrink back into that row first, and only then removes the row, instead of pulling the row out from under the animation</li>
+</ul>
+
+<u><b>Production & Design</b></u>
+<ul>
+<li>Save & Back from Initial Measure and the Production Cutlist now only pops open the "what changed" summary if something in that cutlist was actually changed during the visit, instead of every time you leave</li>
+<li>The Order title bar, the activity strip and part-type header bar in Initial Measure and the Production Cutlist, and the CNC and Nesting title bars now use the same frosted-glass look as the rest of the app instead of a flat or solid white background</li>
 </ul>
 
 <u><b>Mobile</b></u>
 <ul>
-<li>Fixed the browser's address bar/toolbar on iPhone unexpectedly sliding up and down on pages whose content doesn't fill the screen</li>
-<li>The pull-down-to-switch-dashboard gesture now also works correctly from the Initial Measure, Production Cutlist, Nesting and CNC full-screen views (previously only worked reliably elsewhere)</li>
-<li>Fixed pinch-zooming the Quote/Specifications sheet preview sometimes also triggering the pull-down or side-nav-swipe gesture underneath it</li>
-<li>Fixed a rare case where an interrupted swipe (e.g. an incoming call mid-gesture) could leave a nav drawer, notification panel, or the new Actions sheet stuck half-open until the page was reloaded</li>
+<li>Holding down a cell inside a linked Quote zone now opens an <b>Import from Quote</b> menu (same style as the Mark for Confirmation hold menu), replacing the floating Import button that used to hover over the sheet on phones</li>
+<li>The hold menus are larger and easier to tap, pop away when dismissed, and no longer show the text-selection magnifier, highlighted text or keyboard under your finger while you hold</li>
+<li>Selected cells now have a small drag handle on each edge so you can stretch a selection across more rows and columns with your finger, and holding a cell inside an already-highlighted range acts on the whole range instead of just that one cell</li>
+<li>Panning around a zoomed-in Quote or Specifications sheet with one finger no longer also opens the Version History or Sections drawer, or triggers the pull-down-to-switch-dashboard gesture; the Back button on those views also no longer risks popping open the side nav with a slightly sideways tap</li>
+<li>Improved the Quote/Specifications sheet preview on iPhone: a small gap between the formatting toolbar and the sheet, a grey backdrop that fills the whole screen down to the Actions bar, pinch-zoom and pan across the full height on a short page, no more flashing as the browser's address bar collapses, and tapping a cell no longer scrolls the preview to somewhere else</li>
+<li>Improved several iPhone-only alignment glitches on the sheet (and the Client Portal view of it): gaps between a tall merged cell's outline and its text, an oversized blank line between paragraphs, wrapped text spilling below a cell's border, and rows with merged cells rendering taller than set</li>
+<li>Holding down a version in Version History to delete it now keeps its confirmation open until you tap Cancel or Delete, instead of it vanishing when you lift your finger</li>
+<li>The buttons in the Actions sheet now slide up with a fade and a small bounce, staggered one after another, and sit slightly further apart so they never touch while moving</li>
+<li>The Colour and Edging suggestion dropdowns in Board Settings now follow the text box when the on-screen keyboard opens</li>
+<li>Fixed text on iPhone sometimes being drawn larger than designed (iOS auto-inflating font sizes), so it now matches desktop</li>
+<li>Changelog: tapping a version bar now pops its popup out of — and shrinks it back into — the whole bar, not just the version number inside it</li>
 </ul>
 
 <u><b>App-Wide</b></u>
 <ul>
-<li>Popups and confirmation dialogs across the app (New Project, Log out, Leads, Recently Deleted, User Settings, Company Settings, Changelog, and most popups inside a project) now visually shrink back into the button that opened them when closed, with a small bounce, instead of just fading out in place</li>
-<li>Fixed click-and-drag text selection being broken app-wide — dragging to select text now works normally again, while dragging cards/scrollbar handles/resize handles still correctly avoids selecting text underneath</li>
-<li>Fixed clicking inside a dialog opened from the account/settings panel (e.g. the Log out confirmation) also closing the settings panel behind it</li>
-<li>Fixed being logged into CutSmart in two browser tabs occasionally causing one tab to get silently logged out when the other one reloaded</li>
-<li>The Quote tab's header icon changed from a quote-mark icon to a dollar-sign icon, matching its sidebar nav icon</li>
+<li>Fixed the small bounce on the button or tab a popup shrinks back into getting cut off at the edge of its container (for example the floating bottom bar) — it now wobbles freely</li>
+<li>New glass dropdown menus (the same frosted style as the dashboard's mobile filter) with colour dots, working from the keyboard and following the light and dark themes</li>
 </ul>
 ]

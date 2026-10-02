@@ -3343,25 +3343,33 @@ function inputMatchesClientRow(input: ManualCompanyClientInput, row: CompanyClie
   return false;
 }
 
-async function findMatchingCompanyClientRowByFields(
+// Every persisted client doc that is the same person as `input` — there can be more than one (project
+// sync writes a doc under a random uid while other docs may carry the same email/phone/name).
+async function findMatchingCompanyClientRowsByFields(
   companyId: string,
   input: ManualCompanyClientInput,
-): Promise<CompanyClientRow | null> {
+  alsoMatchId?: string,
+  // A write that decides "no doc exists yet, create one" must not mistake a failed read for "none" —
+  // callers like that pass strict so the error propagates instead of coming back as an empty list.
+  strict = false,
+): Promise<CompanyClientRow[]> {
   const cid = String(companyId || "").trim();
-  if (!db || !cid) return null;
+  if (!db || !cid) return [];
+  const matches: CompanyClientRow[] = [];
   try {
     const snap = await getDocs(collection(db, "companies", cid, "clients"));
     for (const docSnap of snap.docs) {
       if (docSnap.id === "__meta") continue;
       const row = buildCompanyClientRowFromDoc(cid, docSnap.id, (docSnap.data() ?? {}) as Record<string, unknown>);
-      if (inputMatchesClientRow(input, row)) {
-        return row;
+      if ((alsoMatchId && row.id === alsoMatchId) || inputMatchesClientRow(input, row)) {
+        matches.push(row);
       }
     }
-  } catch {
-    return null;
+  } catch (error) {
+    if (strict) throw error;
+    return [];
   }
-  return null;
+  return matches;
 }
 
 // Manually adding a contact goes through the exact same email -> phone -> name+address matching used
@@ -3391,7 +3399,8 @@ export async function createOrAttachManualCompanyClient(
   const nowIso = new Date().toISOString();
   try {
     await ensureCompanyClientsSection(cid);
-    const existingRow = await findMatchingCompanyClientRowByFields(cid, input);
+    const matchedRows = await findMatchingCompanyClientRowsByFields(cid, input);
+    const existingRow = matchedRows[0] ?? null;
     const clientId = existingRow?.id || createCompanyClientUid();
     const clientRef = doc(db, "companies", cid, "clients", clientId);
 
@@ -3404,12 +3413,21 @@ export async function createOrAttachManualCompanyClient(
         address: existingRow.address || address,
         notes: existingRow.notes || notes,
         category: existingRow.category || category,
+        // Deliberately adding someone who was previously archived brings them back to the main list.
+        archived: false,
         updatedAt: serverTimestamp(),
         updatedAtIso: nowIso,
         createdByUids: mergeUidLists(existingRow.createdByUids, [uid]),
         assignedToUids: mergeUidLists(existingRow.assignedToUids, [uid]),
       };
       await setDoc(clientRef, payload, { merge: true });
+      // Archiving writes every doc that is the same person, so un-archive all of them or the archived
+      // twins would keep hiding this contact's project-derived rows.
+      for (const twin of matchedRows.slice(1)) {
+        if (twin.archived) {
+          await setDoc(doc(db, "companies", cid, "clients", twin.id), { archived: false }, { merge: true });
+        }
+      }
       return { ok: true, clientId, merged: true };
     }
 
@@ -3444,21 +3462,45 @@ export async function createOrAttachManualCompanyClient(
   }
 }
 
+// A contact row on the Contacts page is not always a persisted client doc: the read path keys
+// job-derived contacts by an identity key (client_<email>, client_<name>, ...) while the doc project sync
+// persisted for the same person has a random uid, and a contact that only exists as job data has no doc
+// at all. So when the caller passes the `contact` row it is looking at, a write goes to EVERY persisted
+// doc that is the same person (the row's own id, plus the same email -> phone -> name matching used for
+// dedup), and if there is none one is created at the row's id carrying the row's identity. Without that,
+// an archive/edit aimed at the derived id found no doc and silently did nothing.
 export async function updateCompanyClientProfile(
   companyId: string,
   clientId: string,
   patch: Partial<Pick<CompanyClientRow, "name" | "email" | "phone" | "address" | "notes" | "category" | "archived">>,
   filter?: CompanyClientViewerFilter,
+  contact?: CompanyClientRow | null,
 ): Promise<{ ok: boolean }> {
   const cid = String(companyId || "").trim();
   const id = String(clientId || "").trim();
   if (!db || !cid || !id) return { ok: false };
   try {
-    const snap = await getDoc(doc(db, "companies", cid, "clients", id));
-    if (!snap.exists()) return { ok: false };
-    const row = buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>);
-    if (!canViewerAccessCompanyClientRow(row, filter)) return { ok: false };
-    const payload: Record<string, unknown> = { updatedAt: serverTimestamp(), updatedAtIso: new Date().toISOString() };
+    let targets: CompanyClientRow[];
+    if (contact) {
+      targets = await findMatchingCompanyClientRowsByFields(
+        cid,
+        { name: contact.name, email: contact.email || contact.emailNormalized, phone: contact.phone, address: contact.address },
+        id,
+        true,
+      );
+    } else {
+      const snap = await getDoc(doc(db, "companies", cid, "clients", id));
+      targets = snap.exists()
+        ? [buildCompanyClientRowFromDoc(cid, snap.id, (snap.data() ?? {}) as Record<string, unknown>)]
+        : [];
+    }
+    // Visibility is checked against the row the viewer is looking at (the merged view), falling back to
+    // the persisted doc when no row was supplied.
+    const gateRow = contact ?? targets[0];
+    if (!gateRow || !canViewerAccessCompanyClientRow(gateRow, filter)) return { ok: false };
+
+    const nowIso = new Date().toISOString();
+    const payload: Record<string, unknown> = { updatedAt: serverTimestamp(), updatedAtIso: nowIso };
     if (typeof patch.name === "string") payload.name = patch.name.trim();
     if (typeof patch.email === "string") {
       payload.email = patch.email.trim();
@@ -3469,7 +3511,51 @@ export async function updateCompanyClientProfile(
     if (typeof patch.notes === "string") payload.notes = patch.notes.trim();
     if (typeof patch.category === "string") payload.category = patch.category.trim();
     if (typeof patch.archived === "boolean") payload.archived = patch.archived;
-    await setDoc(doc(db, "companies", cid, "clients", id), payload, { merge: true });
+
+    if (targets.length > 0) {
+      for (const target of targets) {
+        await setDoc(doc(db, "companies", cid, "clients", target.id), payload, { merge: true });
+      }
+      return { ok: true };
+    }
+    if (!contact) return { ok: false };
+
+    // Last guard before creating a doc at the row's id: if one is already there (and simply wasn't picked
+    // up as a target), merge the patch into it rather than replacing its history/created fields.
+    const existingAtId = await getDoc(doc(db, "companies", cid, "clients", id));
+    if (existingAtId.exists()) {
+      await setDoc(doc(db, "companies", cid, "clients", id), payload, { merge: true });
+      return { ok: true };
+    }
+
+    await ensureCompanyClientsSection(cid);
+    await setDoc(
+      doc(db, "companies", cid, "clients", id),
+      {
+        id,
+        companyId: cid,
+        name: contact.name,
+        email: contact.email,
+        emailNormalized: normalizeClientEmail(contact.emailNormalized || contact.email),
+        phone: contact.phone,
+        address: contact.address,
+        notes: contact.notes,
+        category: contact.category,
+        archived: false,
+        createdAt: serverTimestamp(),
+        createdAtIso: contact.createdAtIso || nowIso,
+        firstProjectAtIso: contact.firstProjectAtIso,
+        lastProjectAtIso: contact.lastProjectAtIso,
+        lastProjectId: contact.lastProjectId,
+        projectCount: contact.projectCount,
+        createdByUids: contact.createdByUids,
+        assignedToUids: contact.assignedToUids,
+        completedProjectIds: [],
+        history: [],
+        ...payload,
+      },
+      { merge: true },
+    );
     return { ok: true };
   } catch {
     return { ok: false };
