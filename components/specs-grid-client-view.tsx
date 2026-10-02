@@ -225,6 +225,12 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                         </td>
                       );
                     })}
+                    {/* Matches specs-grid-editor.tsx's own identical fix (see its comment) — a row
+                        fully covered by an earlier row's rowSpan renders none of its own <td>s from
+                        the map just above, and this view has no row-header column to fall back on
+                        either, so a childless <tr> here is the norm whenever any rowSpan'd cell
+                        exists, not an edge case. Zero width/padding/border, purely to anchor height. */}
+                    {row.cells.every((c) => c === null) ? <td style={{ width: 0, padding: 0, border: "none" }} /> : null}
                   </tr>
                 </Fragment>
                 );

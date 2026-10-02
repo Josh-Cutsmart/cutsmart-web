@@ -1347,7 +1347,11 @@ export default function SpecsGridEditor({
     const { rowSpan } = getCellSpan(cell);
     const rows = liveGridRef.current.rows;
     const lastRow = row + Math.max(1, rowSpan) - 1;
-    cellNaturalHeightsRef.current.set(`${row}:${col}`, naturalHeightPx);
+    const cellKey = `${row}:${col}`;
+    // Read before overwriting — the multi-row-span shrink branch below needs to know what THIS cell
+    // itself reported last time, not just what it's reporting now (see that branch's own comment).
+    const previousNaturalHeightPx = cellNaturalHeightsRef.current.get(cellKey);
+    cellNaturalHeightsRef.current.set(cellKey, naturalHeightPx);
     const readHeightPx = (ri: number): number => {
       const h = rows[ri]?.heightPx;
       return typeof h === "number" && Number.isFinite(h) && h > 0 ? h : DEFAULT_ROW_HEIGHT_PX;
@@ -1409,6 +1413,21 @@ export default function SpecsGridEditor({
         if (rCells[c]) return;
       }
     }
+    // The single-row shrink path above gets its "don't act on one bad reading" safety from needing
+    // every OTHER cell sharing the row to separately confirm the smaller size — a multi-row span has
+    // no such neighbor to cross-check against (that's the whole reason it's allowed to shrink alone
+    // in the first place). Without ANY confirmation, a single unsettled first measurement (the exact
+    // race this function's own top comment already warns about — a cell measured before layout/
+    // fonts/width had actually finished, which the SINGLE-row path explicitly stays safe from) can
+    // permanently clamp a tall rowSpan'd cell's content straight down to MIN_ROW_HEIGHT_PX in one
+    // shot, for real — confirmed live: this exact mechanism left a real project's rowSpan'd cell
+    // stuck at a 5px last row, well before this safeguard existed, even though the cell's own real
+    // content plainly needed far more room. Requiring the cell's OWN previous reading to already
+    // have agreed a shrink is warranted — not just its current one — means a one-off bad measurement
+    // gets recorded and ignored rather than acted on immediately; a genuine shrink (text actually
+    // deleted, etc.) still goes through on whichever measurement follows that confirms it, which in
+    // practice is at most one keystroke/remeasure later.
+    if (previousNaturalHeightPx === undefined || previousNaturalHeightPx > currentHeight - GROW_ROW_TOLERANCE_PX) return;
     // Mirrors growing's own behavior exactly (grow only ever adds to the LAST row of a span,
     // leaving the others at whatever they already were) — shrink removes the same total deficit
     // from just the last row, clamped to the sheet's own minimum row height.
@@ -4152,6 +4171,23 @@ export default function SpecsGridEditor({
                     </td>
                   );
                 })}
+                {/* A row fully covered by an earlier row's rowSpan (every column here is null —
+                    the spanning cell already claims all of them) renders NONE of its own <td>s from
+                    the map just above. In the template builder that's fine, since the row-number
+                    header <td> a few lines up still gives the <tr> one real cell to anchor to; in a
+                    project's own compact view (isCompactPreview, no header column at all) a row
+                    like this ends up with ZERO <td> children — a childless <tr>, which is unusual
+                    enough that not every engine reliably honors its own explicit `height` style the
+                    same way a <tr> actually owning a sized cell does. Confirmed on a real iPhone (via
+                    this file's own on-device diagnostic, never reproducible in Chromium): a tall
+                    rowSpan'd cell whose covered rows were all childless like this rendered
+                    noticeably taller than every one of those rows' own heights summed to, throwing
+                    off every group's position below it — collapsing back to correct the moment the
+                    same rows had a real (if invisible) <td> of their own to size against. Zero
+                    width/padding/border so it's visually inert either way. */}
+                {isCompactPreview && row.cells.every((c) => c === null) ? (
+                  <td style={{ width: 0, padding: 0, border: "none" }} />
+                ) : null}
                 </tr>
               </Fragment>
               );
