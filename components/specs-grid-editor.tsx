@@ -96,6 +96,7 @@ import {
   DEFAULT_COL_WIDTH_PX,
   DEFAULT_ROW_HEIGHT_PX,
   DEFAULT_CELL_FONT_SIZE_PX,
+  DEFAULT_CELL_FONT_FAMILY,
   DEFAULT_BORDER_WIDTH_PX,
   MIN_BORDER_WIDTH_PX,
   MAX_BORDER_WIDTH_PX,
@@ -5481,7 +5482,7 @@ function SpecsCellTextArea({
         title={readOnlyReason ?? "You don't have permission to edit this section"}
         className={`whitespace-pre-wrap break-words px-2 py-0.5 ${dimmed ? "opacity-80" : ""}`}
         style={{
-          fontFamily: style.fontFamily || "inherit",
+          fontFamily: style.fontFamily || DEFAULT_CELL_FONT_FAMILY,
           fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
           textAlign: style.align ?? "left",
           color: dimmed ? style.textColor ?? "var(--text-main)" : style.textColor ?? "#000000",
@@ -5548,7 +5549,7 @@ function SpecsCellTextArea({
       // (see onNaturalHeightChange above) rather than clipping it.
       className="whitespace-pre-wrap break-words px-2 py-0.5 outline-none"
       style={{
-        fontFamily: style.fontFamily || "inherit",
+        fontFamily: style.fontFamily || DEFAULT_CELL_FONT_FAMILY,
         fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
         textAlign: style.align ?? "left",
         color: style.textColor ?? "var(--text-main)",

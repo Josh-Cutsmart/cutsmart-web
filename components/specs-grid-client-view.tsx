@@ -14,6 +14,7 @@ import {
   DEFAULT_COL_WIDTH_PX,
   DEFAULT_ROW_HEIGHT_PX,
   DEFAULT_CELL_FONT_SIZE_PX,
+  DEFAULT_CELL_FONT_FAMILY,
   type SpecsCell,
   type SpecsCellStyle,
   type SpecsGrid,
@@ -187,7 +188,7 @@ export default function SpecsGridClientView({ grid, locked, onAnswer, answeringK
                               <div
                                 className="whitespace-pre-wrap break-words px-2 py-0.5"
                                 style={{
-                                  fontFamily: style.fontFamily || "inherit",
+                                  fontFamily: style.fontFamily || DEFAULT_CELL_FONT_FAMILY,
                                   fontSize: `${style.fontSize ?? DEFAULT_CELL_FONT_SIZE_PX}px`,
                                   textAlign: style.align ?? "left",
                                   color: style.textColor ?? "var(--text-main)",

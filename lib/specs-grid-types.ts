@@ -309,6 +309,22 @@ export const DEFAULT_ROW_HEIGHT_PX = 20;
 export const MIN_COL_WIDTH_PX = 5;
 export const MIN_ROW_HEIGHT_PX = 5;
 export const DEFAULT_CELL_FONT_SIZE_PX = 12;
+// A cell with no explicit font (the "Default" option — absent from SYSTEM_QUOTE_FONT_OPTIONS in
+// lib/quote-font-options.ts, since it means "nothing chosen") used to render with CSS
+// `fontFamily: "inherit"`, pulling in app/globals.css's own body font stack — which starts with
+// "SF Pro Text"/"SF Pro Display" (Apple-only) before falling back to "Segoe UI" (Windows-only).
+// That stack exists to make the app's OWN UI chrome feel native per-platform, which is the right
+// call for buttons/menus — but a document's own CONTENT inheriting it meant the SAME "Default"
+// text was actually rendered in a genuinely different TYPEFACE depending on the viewer's OS
+// (Segoe UI on Windows, SF Pro on macOS/iOS), not just a subtle metrics difference — different
+// glyphs, different widths, different wrap points for identical text. buildSpecsGridPdfBlob's own
+// resolvePdfFontFamily already defaults an unset font to "helvetica" (jsPDF's platform-independent
+// built-in, confirmed at lib/specs-grid-pdf.ts's own resolvePdfFontFamily) — this stack is chosen
+// to match that as closely as a CSS font-family can: Arial and Helvetica are near-metric-identical
+// by design, and between the two names every major OS (Windows, macOS, iOS, Android) has at least
+// one of them actually installed, so every live-preview surface now renders "Default" text with
+// the same real typeface as the PDF, not three different ones.
+export const DEFAULT_CELL_FONT_FAMILY = 'Arial, Helvetica, "Helvetica Neue", sans-serif';
 export const DEFAULT_BORDER_WIDTH_PX = 2;
 export const MIN_BORDER_WIDTH_PX = 1;
 export const MAX_BORDER_WIDTH_PX = 12;
