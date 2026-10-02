@@ -119,6 +119,14 @@
  * instead of the page staying completely still while only the menu itself responds. */
 html {
   overscroll-behavior-y: none;
+  /* iOS Safari can independently inflate rendered font size ("text autosizing") beyond the
+   * explicit CSS font-size a cell was actually measured against — maximumScale/userScalable in
+   * app/layout.tsx's own viewport meta no longer suppresses this on modern iOS, Apple decoupled
+   * the two some versions back. Pinning this to 100% keeps a real device's own rendering
+   * consistent with whatever was measured (here or in any other browser), rather than adding a
+   * silent, unmeasured source of extra text height on top of it. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {

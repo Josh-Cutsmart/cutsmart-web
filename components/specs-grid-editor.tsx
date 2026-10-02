@@ -2348,6 +2348,23 @@ export default function SpecsGridEditor({
       cancelled = true;
     };
   }, []);
+  // A genuine second chance to re-measure every cell once the page has actually had time to
+  // settle, independent of fonts or width — remeasureSignal's other two inputs (mockPageBoxWidthPx,
+  // fontsReadyTick) each only cover ONE specific known cause of a bad first reading (see their own
+  // comments), not a general retry. mockPageBoxWidthPx in particular no longer varies after mount
+  // in current code (it's pure arithmetic over stored page size/column width data, nothing async
+  // feeds it) despite SpecsCellTextArea's own remeasureSignal comment still describing it as
+  // something that "can still be settling" — stale relative to today's code. A cell using the
+  // default (non-"Signature") font on a slow/cold real-device load has no mechanism to ever be
+  // measured a second time without this: confirmed live (a wrapped paragraph's own row staying
+  // under-grown on a real iPhone, with Chromium testing of the identical cell never reproducing
+  // it) that a single rAF-deferred read isn't always enough there. One extra pass, fired once,
+  // after real content has had a real chance to finish laying out.
+  const [settledTick, setSettledTick] = useState(0);
+  useEffect(() => {
+    const id = setTimeout(() => setSettledTick((t) => t + 1), 400);
+    return () => clearTimeout(id);
+  }, []);
   // The canvas has no horizontal padding of its own on mobile now (it bleeds past the host page's
   // own px-3/sm:px-4/md:px-5 wrapper too — see the canvas div's own className below), so the page
   // is meant to reach the true screen edges exactly — just a few px of safety margin against
@@ -3872,6 +3889,21 @@ export default function SpecsGridEditor({
                         </>
                       ) : (
                         <div
+                          // Plain block, not flex — the actual clip boundary. A flex container's own
+                          // child defaults its auto min main-axis size to its CONTENT size (not 0)
+                          // whenever that child's own overflow is visible, per spec — "flexbugs #1" —
+                          // which let a taller-than-expected cell's text paint straight past this same
+                          // div's height+overflow:hidden when it was ALSO the flex container doing the
+                          // vertical-align layout (confirmed live: a wrapped second line rendering
+                          // below this box's own border, in the next group's gap, on real Safari —
+                          // never reproduced in Chromium, which clips this exact shape more leniently).
+                          // Splitting "clips" from "flex-aligns" into two nested divs puts the actual
+                          // clipping on a plain block, the one shape every engine has always reliably
+                          // honored height+overflow:hidden on, regardless of what its flex-positioned
+                          // content inside wants to be.
+                          style={{ height: spannedHeightPx, overflow: "hidden", position: "relative", WebkitTransform: "translateZ(0)" }}
+                        >
+                        <div
                           onMouseDown={(e) => {
                             // SpecsCellTextArea's own contentEditable div is left its natural height
                             // (see its own comment) and only vertically positioned within this taller
@@ -3903,8 +3935,7 @@ export default function SpecsGridEditor({
                             });
                           }}
                           style={{
-                            height: spannedHeightPx,
-                            overflow: "hidden",
+                            minHeight: "100%",
                             display: "flex",
                             flexDirection: "column",
                             justifyContent:
@@ -3940,7 +3971,7 @@ export default function SpecsGridEditor({
                             // for change (see its own comment: "its actual value is never read"),
                             // so a combined value that changes whenever EITHER input does serves
                             // the same purpose without widening SpecsCellTextArea's own props.
-                            remeasureSignal={mockPageBoxWidthPx + fontsReadyTick}
+                            remeasureSignal={mockPageBoxWidthPx + fontsReadyTick + settledTick}
                             readOnly={!isCellTextEditableHere}
                             readOnlyReason={
                               isRowAnsweredByClient
@@ -3961,6 +3992,7 @@ export default function SpecsGridEditor({
                             // text should read exactly as authored rather than looking greyed-out.
                             dimmed={!isSentToClient && !isRowOutsideZone}
                           />
+                        </div>
                         </div>
                       )}
                       {/* Read-only status for a confirmable cell — this editor never writes
