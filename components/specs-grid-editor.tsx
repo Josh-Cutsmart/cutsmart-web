@@ -3944,7 +3944,25 @@ export default function SpecsGridEditor({
                             });
                           }}
                           style={{
-                            minHeight: "100%",
+                            // A plain pixel number (not "100%") deliberately — this flex div's own
+                            // parent (the clip div right above) already has that exact same pixel
+                            // value as its OWN explicit height, so a percentage here should resolve
+                            // to the identical number either way, and did in every Chromium check this
+                            // session (confirmed live: this div's own getBoundingClientRect height came
+                            // back as exactly spannedHeightPx, flush top AND bottom against its parent,
+                            // zero gap). Real iPhone Safari (confirmed: also iOS Chrome, same engine —
+                            // not a caching/device-setting issue) was still found leaving a gap between
+                            // this div's top and its own text specifically on a tall rowSpan'd cell —
+                            // several other fixes targeting the SEPARATE outline overlay div already
+                            // shipped and didn't help, meaning the real content itself (not just the
+                            // border drawn over it) is being positioned wrong on that device. A
+                            // percentage height resolving against an ancestor that's several levels
+                            // deep inside a <td> (itself inside a transform:scale()'d ancestor on
+                            // mobile) is exactly the kind of nested-percentage-in-table-cell resolution
+                            // real WebKit has a long history of getting wrong even when every other
+                            // engine agrees — passing the already-known pixel number instead removes
+                            // that resolution step entirely rather than trusting it to come out right.
+                            minHeight: spannedHeightPx,
                             display: "flex",
                             flexDirection: "column",
                             justifyContent:
